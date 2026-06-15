@@ -15,11 +15,16 @@ class SimplePipelineHarness(AgentHarness):
     用于保证"不依赖 Deep Agents 也能跑通闭环"的底线能力。
     """
 
-    # __init__ 和 _run_dir / _validate_run_id 继承自 AgentHarness 基类
+    def __init__(self, runs_root: str | Path = "runs") -> None:
+        super().__init__(runs_root=runs_root)
+        # 延迟导入避免 core ↔ harness 循环依赖
+        from autoad_researcher.core import ArtifactStore
+
+        self._artifacts = ArtifactStore(runs_root=runs_root)
 
     def run_experiment_planning(self, run_id: str) -> None:
-        run_dir = self._run_dir(run_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
+        # 保留 run_dir 调用，确保 harness 自身 run_id 校验仍然生效
+        self._run_dir(run_id)
 
         plan = ExperimentPlan(
             experiment_goal="[SimplePipelineHarness] 验证实验计划生成流程",
@@ -33,15 +38,15 @@ class SimplePipelineHarness(AgentHarness):
             risks=["SimplePipelineHarness 占位输出，未经过真实推理"],
         )
 
-        output_path = run_dir / "experiment_plan.json"
-        output_path.write_text(
-            plan.model_dump_json(indent=2, exclude_none=True),
-            encoding="utf-8",
+        self._artifacts.write_json(
+            run_id,
+            "experiment_plan.json",
+            plan,
+            overwrite=True,
         )
 
     def run_patch_planning(self, run_id: str) -> None:
-        run_dir = self._run_dir(run_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
+        self._run_dir(run_id)
 
         patch = PatchPlan(
             target_repo="patchcore-inspection",
@@ -52,8 +57,9 @@ class SimplePipelineHarness(AgentHarness):
             requires_approval=True,
         )
 
-        output_path = run_dir / "patch_plan.json"
-        output_path.write_text(
-            patch.model_dump_json(indent=2, exclude_none=True),
-            encoding="utf-8",
+        self._artifacts.write_json(
+            run_id,
+            "patch_plan.json",
+            patch,
+            overwrite=True,
         )

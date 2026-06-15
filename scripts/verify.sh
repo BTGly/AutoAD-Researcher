@@ -70,6 +70,14 @@ PatchPlan.model_validate(
 print("[verify] schemas ok.")
 PY
 
+echo "[verify] checking core imports..."
+"$UV_BIN" run python - <<'PY'
+from autoad_researcher.core import ArtifactStore
+
+store = ArtifactStore(runs_root="runs")
+print("[verify] core import ok.")
+PY
+
 echo "[verify] checking fixture JSON..."
 "$UV_BIN" run python - <<'PY'
 import json
