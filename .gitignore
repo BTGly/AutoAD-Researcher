@@ -6,11 +6,24 @@ dist/
 build/
 .venv/
 venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # uv
 uv.lock
 
-# Experiments (runtime artifacts)
+# Environment
+.env
+.env.*
+
+# AutoAD runtime artifacts
+runs/
+workspace/datasets/
+workspace/repos/
+workspace/papers/
+
+# Experiments (keep .gitkeep if needed)
 experiments/*/
 !experiments/.gitkeep
 data/*
@@ -18,16 +31,21 @@ data/*
 papers/*
 !papers/.gitkeep
 
-# Environment
-.env
-.env.local
+# Logs
 *.log
 
-# IDE
-.vscode/
-.idea/
-.cursor/
-
-# OS
+# OS / IDE
 .DS_Store
+.idea/
+.vscode/
+.cursor/
 Thumbs.db
+
+# Large files
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.zip
+*.tar
+*.tar.gz

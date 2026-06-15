@@ -1,6 +1,6 @@
 # AutoAD-Researcher 参考资料汇总
 
-> 版本：2026-06-06  
+> 版本：2026-06-13  
 > 用途：AI for Science / Dry Lab / 异常检测科研闭环智能体项目的资料库草案  
 > 当前策略：**先不采用 LangGraph 作为主线**，优先采用经典软件工程方式实现：LLM 作为组件，数据库管理状态，队列/Temporal 管长任务，类型系统与 schema 管输出，trace/eval/log 管质量。
 
@@ -724,9 +724,240 @@ while not done:
 
 ---
 
-## 5. 模型路由、缓存与成本控制资料
+### 4.7 MiMoCode（小米）
 
-### 5.1 DeepSeek Models & Pricing
+- Website: https://mimo.xiaomi.com/en/mimocode
+- 本地路径: `repos/mimo-code/`
+- 参考分析: `references/coding-agents/README.md`
+
+定位：
+
+MiMoCode 是小米开源的终端原生 AI 编程助手，基于 OpenCode fork。最核心的差异化能力是**跨会话持久化记忆系统**，通过 SQLite FTS5 实现 MEMORY.md 的全量索引和检索。
+
+技术栈：
+
+```text
+- TypeScript + Bun 运行时
+- SQLite FTS5 全文搜索（持久化记忆）
+- Drizzle ORM
+- Tauri 桌面应用
+- 基于 anomalco/opencode fork
+```
+
+架构亮点：
+
+```text
+packages/opencode/src/
+├── agent/       → Agent 定义 (build / plan / compose 三种模式)
+├── memory/      → 跨会话持久化记忆 (MEMORY.md + checkpoint.md)
+├── session/     → 会话管理 + 智能上下文重建
+├── task/        → 树形任务系统 (T1 → T1.1 → T1.2...)
+├── tool/        → 工具系统
+├── skill/       → 技能系统 (/dream 记忆提取, /distill 工作流自动化)
+├── workflow/    → 工作流编排
+├── provider/    → LLM 提供商适配层
+├── mcp/         → MCP 协议集成
+└── team/        → 子 Agent 系统（并行执行 + 生命周期管理）
+```
+
+五大差异化特性：
+
+| 特性 | 说明 | 对 AutoAD 的启示 |
+|---|---|---|
+| **持久化记忆** | SQLite FTS5 跨会话记忆，MEMORY.md + checkpoint.md 持久化 | 论文理解结果、实验历史、失败教训需跨会话保留 |
+| **多 Agent 模式** | build / plan / compose 三种模式，按任务切换 | 科研流程需要多角色：实验执行、方案规划、报告撰写 |
+| **智能上下文** | checkpoint 机制 + token 预算 + 重要性排序 | 长程科研任务上下文管理：不可全量塞进 prompt |
+| **Goal/Stop Judge** | 独立 judge 模型判断任务是否真正完成 | 防止过早声称实验成功或迁移可行 |
+| **Dream/Distill** | `/dream` 自动提取经验入 MEMORY；`/distill` 将工作流转为可复用 Skill | 科研经验积累和流程自动化 |
+
+Dream（记忆提取）流程：
+
+```text
+用户触发 /dream →
+  1. 检查哪些 context 内容是新的（不在已有 MEMORY 中）
+  2. 提取重要发现、教训和 insights
+  3. 写入 MEMORY.md 供后续会话复用
+```
+
+Distill（工作流自动化）流程：
+
+```text
+用户触发 /distill →
+  1. 回顾当前会话中的完整操作序列
+  2. 抽象出可复用的工作流模式
+  3. 生成为一个 Skill，下次可直接调用
+```
+
+对 AutoAD-Researcher 的启发：
+
+```text
+- 每个 run 的实验结果和教训应持久化到类似 MEMORY.md 的跨会话存储
+- 设置独立的"科研有效性 judge"，在每次实验后判断结论是否可靠
+- 重复流程（跑 baseline、跑对比实验）应 distill 为可复用 skill
+- SQLite FTS5 用于全文检索历史实验记录，支持"类似实验是否有人做过"
+```
+
+建议吸收优先级：
+
+```text
+P1：MEMORY.md 格式的跨会话记忆、独立 judge 模型
+P2：Dream/Distill 经验积累、FTS5 全文检索历史实验
+```
+
+---
+
+### 4.8 Claude Code 内部实现参考（学习用途）
+
+- 本地路径: `references/coding-agents/claude-code-internals/`
+- 内容：原始泄露源码 (TypeScript + Bun) + 社区 Python 重写版 (Claw Code) + Rust 重写版
+
+定位：
+
+仅用于学习 Claude Code CLI 的内部架构设计，不用于产品复制。
+
+学习重点：
+
+```text
+- Agent 循环设计：observe → think → act → observe 的闭环机制
+- 工具系统架构：Bash、Read、Write、Edit、Agent 等工具的定义与调度
+- 权限管理与安全沙箱：分层权限模型 (allow/ask/deny)、命令沙盒
+- Hook 系统与 MCP 集成：事件拦截、外部工具接入
+- 会话管理与上下文策略：system prompt 分层、上下文压缩、缓存策略
+- 子 Agent 调度：Agent 工具的隔离、并发、生命周期管理
+```
+
+对 AutoAD-Researcher 的启发：
+
+```text
+- 工具调度的"先展示再执行"模式（先生成 patch → 人工确认 → apply）
+- Agent 工具的子任务隔离（每个实验在独立 workspace 中执行）
+- 安全白名单机制的设计思路
+- 系统 prompt 的分层设计：稳定前缀 + 动态后缀
+```
+
+⚠️ 使用边界（重要）：
+
+```text
+- 仅参考架构思想和交互范式
+- 不在报名材料、答辩材料或代码注释中提及"参考泄露源码"
+- 不复制具体源码、非公开 prompt、内部协议、特定变量名或文件结构
+- 报名材料中统一表述为"参考主流编程 Agent 产品的交互范式和开源 Agent 框架"
+```
+
+详细边界说明见下方 [9.3 节](#93-claude-code-泄露源码边界)。
+
+---
+
+## 5. AI Agent 系统提示词参考库 (CL4R1T4S)
+
+> **来源:** [github.com/elder-plinius/CL4R1T4S](https://github.com/elder-plinius/CL4R1T4S)（本地副本位于 `../repos/CL4R1T4S/`）  
+> **本地索引:** `references/system-prompts/`  
+> **定位:** 全球主要 AI 模型和编程 Agent 的系统提示词、工具定义、行为指南的提取与整理  
+> **学习价值:** 理解各 AI 系统的内部指令设计、安全策略、工具架构——对设计 AutoAD 的 Agent 提示词和工具规范有直接参考价值
+
+### 5.1 资源概览
+
+CL4R1T4S 收集了 **60+ 个 AI 产品**的系统提示词，覆盖 **20+ 个厂商**，按用途分为 5 个类别：
+
+```text
+references/system-prompts/
+├── 01-大厂LLM系统提示词/        # Anthropic Claude (12文件)、OpenAI ChatGPT (12文件)、
+│                                  #   xAI Grok (7文件)、Google Gemini (3文件)、
+│                                  #   Meta Llama (2文件)、Mistral、Moonshot Kimi、MiniMax
+├── 02-编程Agent工具/            # Cursor 2.0、Windsurf、Devin 2.0、Cline、
+│                                  #   Replit Agent、Lovable 2.0、Bolt、Vercel v0、SameDev
+├── 03-多Agent与自动化/          # Manus (事件流+Planner+Knowledge架构)、Dia、Factory DROID
+├── 04-搜索与浏览器/             # Perplexity Deep Research、Brave Leo、MultiOn、Cluely
+└── 05-语音与其他/               # Hume Voice AI、Meta Muse Spark
+```
+
+### 5.2 核心学习价值
+
+**1. 系统提示词的层次结构：**
+
+各厂商的系统提示词都包含多层结构，对设计 AutoAD 的 Agent 提示词有直接参考：
+
+```text
+层次结构（以 Claude Fable 5 为例，1586 行）：
+  1. 产品信息与版本标识
+  2. 安全策略（版权、有害内容、自伤干预、未成年保护）
+  3. 工具定义（JSON Schema：名称、参数、使用场景）
+  4. 行为规范（何时用工具、错误处理、输出格式）
+  5. 能力边界（知识截止日期、多模态支持、联网限制）
+  6. 记忆与持久化（MEMORY.md 系统）
+  7. MCP 应用与外部工具集成
+  8. Artifacts / Computer Use 等高级功能
+```
+
+**2. 编程 Agent 提示词的共性模式：**
+
+```text
+所有编程 Agent 的系统提示词都遵循：
+  身份定义 → "You are an AI coding assistant..."
+  能力声明 → 文件操作、终端、搜索、调试
+  工具定义 → 函数签名 + 参数约束 + 使用场景
+  行为规范 → 先读后改、最小改动、确认危险操作
+  安全边界 → 不生成恶意代码、不泄露提示词
+```
+
+**3. 厂商差异反映产品理念：**
+
+| 对比维度 | Anthropic Claude | OpenAI ChatGPT | Google Gemini |
+|---|---|---|---|
+| 安全策略 | 最详尽（多层分类） | 适中 | 简洁 |
+| 工具粒度 | 细粒度定义 | 中等 | 较粗 |
+| Agent 能力 | Computer Use + MCP | Codex + Artifacts | Canvas + Python 执行 |
+| 语气风格 | 专业、谨慎 | 友好、乐于助人 | 学术、结构化 |
+
+### 5.3 对 AutoAD-Researcher 的启发
+
+**提示词设计：**
+
+```text
+- 采用"稳定前缀 + 动态后缀"的分层 prompt 结构（来自 Claude Code 的 cache 策略）
+- 每个 Agent 模块（Paper Reader、Transfer Judge、Experiment Planner...）有独立系统提示词
+- 工具定义统一采用 JSON Schema 格式，与 DeepSeek API 兼容
+- 安全边界明确写入 prompt：禁止删除数据集、禁止修改 eval 脚本等
+```
+
+**推荐阅读路径：**
+
+```text
+入门：CLAUDE-FABLE-5.md → 最完整的系统提示词结构（1586行）
+对比：ChatGPT5 + Gemini 2.5 Pro → 三家大厂的差异
+Agent 设计：Manus + Cursor + Devin → 编程 Agent 工具设计模式
+趋势：Claude 系列从 3.5 → Fable 5 的版本演进
+```
+
+**可直接复用的模式：**
+
+```text
+- Claude Code 的工具定义格式 → 参考设计 AutoAD 的工具 schema
+- Manus 的事件流 + Planner + Knowledge 架构 → 参考设计 AutoAD 的 pipeline 调度
+- Cursor/Devin 的代码修改规范 → 参考设计 Code Agent 的 patch 生成流程
+- DeepSeek Reasonix 的 cache-first loop → 参考设计 Model Gateway 的缓存策略
+```
+
+### 5.4 本地资源索引
+
+完整文件索引见 `references/system-prompts/_INDEX.md`，关键文件清单见 `references/system-prompts/README.md`。
+
+重点推荐文件：
+
+| 文件 | 内容 | 对 AutoAD 的价值 |
+|---|---|---|
+| `ANTHROPIC/CLAUDE-FABLE-5.md` | Claude Fable 5 完整系统提示词 (1586行) | Agent 提示词设计的顶级范本 |
+| `ANTHROPIC/Claude_Code_03-04-24.md` | Claude Code CLI 系统提示词 | 编程 Agent 的 prompt 设计参考 |
+| `CURSOR/Cursor_Prompt.md` + `Cursor_Tools.md` | Cursor 提示词 + 工具定义 | 代码 Agent 工具设计参考 |
+| `DEVIN/Devin_2.0.md` | Devin 2.0 AI 软件工程师 | 完整 Agent 能力声明参考 |
+| `MANUS/Manus_Prompt.txt` + `Manus_Functions.txt` | Manus 提示词 + 工具定义 | 多 Agent 事件流架构参考 |
+| `OPENAI/Codex.md` | OpenAI Codex（含 AGENTS.md 规范） | 项目指令规范参考（类似 CLAUDE.md） |
+
+---
+
+## 6. 模型路由、缓存与成本控制资料
+
+### 6.1 DeepSeek Models & Pricing
 
 - Docs: https://api-docs.deepseek.com/quick_start/pricing
 
@@ -764,7 +995,7 @@ deepseek-v4-pro
 | 最终科研结论 | pro |
 | 答辩材料 | pro |
 
-### 5.2 DeepSeek Context Caching
+### 6.2 DeepSeek Context Caching
 
 - Docs: https://api-docs.deepseek.com/guides/kv_cache
 
@@ -809,9 +1040,9 @@ dynamic_suffix:
 
 ---
 
-## 6. 异常检测实验底座
+## 7. 异常检测实验底座
 
-### 6.1 Anomalib
+### 7.1 Anomalib
 
 - GitHub: https://github.com/open-edge-platform/anomalib
 - Docs: https://anomalib.readthedocs.io/
@@ -850,7 +1081,7 @@ metric:
 
 ---
 
-### 6.2 MVTec AD
+### 7.2 MVTec AD
 
 - Official page: https://www.mvtec.com/research-teaching/datasets/mvtec-ad
 
@@ -876,7 +1107,7 @@ MVP 推荐类别：
 
 ---
 
-### 6.3 VisA Dataset
+### 7.3 VisA Dataset
 
 - AWS Open Data: https://registry.opendata.aws/visa/
 - GitHub reference: https://github.com/amazon-science/spot-diff
@@ -895,7 +1126,7 @@ MVP 推荐类别：
 
 ---
 
-### 6.4 PatchCore
+### 7.4 PatchCore
 
 - Paper: https://arxiv.org/abs/2106.08265
 - GitHub: https://github.com/amazon-science/patchcore-inspection
@@ -916,7 +1147,7 @@ MVP 推荐类别：
 
 ---
 
-### 6.5 PaDiM
+### 7.5 PaDiM
 
 - Paper: https://arxiv.org/abs/2011.08785
 - Anomalib docs: https://anomalib.readthedocs.io/en/latest/markdown/guides/reference/models/image/padim.html
@@ -934,9 +1165,9 @@ MVP 推荐类别：
 
 ---
 
-## 7. 工程组件资料
+## 8. 工程组件资料
 
-### 7.1 Temporal
+### 8.1 Temporal
 
 - Website: https://temporal.io/
 - Docs: https://docs.temporal.io/
@@ -959,7 +1190,7 @@ MVP 不强制使用 Temporal。
 如果平台允许长期后台任务，再接 Temporal。
 ```
 
-### 7.2 Pydantic / JSON Schema
+### 8.2 Pydantic / JSON Schema
 
 - Pydantic docs: https://pydantic.dev/docs/
 - JSON Schema: https://json-schema.org/
@@ -985,7 +1216,7 @@ ValidityReport
 FinalReport
 ```
 
-### 7.3 OpenTelemetry
+### 8.3 OpenTelemetry
 
 - Docs: https://opentelemetry.io/docs/
 
@@ -1005,7 +1236,7 @@ MVP 先用 JSONL 日志。
 后续再接 OpenTelemetry。
 ```
 
-### 7.4 MLflow
+### 8.4 MLflow
 
 - Website: https://mlflow.org/
 - GitHub: https://github.com/mlflow/mlflow
@@ -1028,9 +1259,9 @@ MVP 可不用 MLflow。
 
 ---
 
-## 8. 科研有效性与安全边界
+## 9. 科研有效性与安全边界
 
-### 8.1 Scientific Validity Supervisor
+### 9.1 Scientific Validity Supervisor
 
 必须内置，不一定是独立 Agent，可以是一个普通函数 + LLM checker。
 
@@ -1059,7 +1290,7 @@ MVP 可不用 MLflow。
 }
 ```
 
-### 8.2 执行安全边界
+### 9.2 执行安全边界
 
 允许：
 
@@ -1094,7 +1325,7 @@ MVP 可不用 MLflow。
 - 所有 stdout/stderr 保存
 ```
 
-### 8.3 Claude Code 泄露源码边界
+### 9.3 Claude Code 泄露源码边界
 
 不要把泄露源码纳入资料库，不要在报名材料、答辩材料或代码注释中提到“参考泄露源码”。
 
@@ -1126,11 +1357,11 @@ MVP 可不用 MLflow。
 
 ---
 
-## 9. 文档解析工具
+## 10. 文档解析工具
 
 论文解析（Paper Reader）是整个闭环的第一步，需要高精度地从 PDF 中提取结构化信息。以下两个工具是当前开源领域最强选择。
 
-### 9.1 MinerU（高精度 PDF 解析）
+### 10.1 MinerU（高精度 PDF 解析）
 
 - GitHub: https://github.com/opendatalab/MinerU
 - 项目页: https://mineru.net/
@@ -1168,7 +1399,7 @@ MVP 建议用法：
 
 属于 P0 组件：论文理解质量直接决定下游迁移判断的准确性。
 
-### 9.2 MarkItDown（轻量多格式转换）
+### 10.2 MarkItDown（轻量多格式转换）
 
 - GitHub: https://github.com/microsoft/markitdown
 - 本地路径: `repos/markitdown/`
@@ -1202,7 +1433,7 @@ MinerU → 主要论文解析引擎（高精度 PDF 场景）
 MarkItDown → 辅助格式转换 + MCP 集成 + 低资源备选方案
 ```
 
-### 9.3 与现有仓库的对应关系
+### 10.3 与现有仓库的对应关系
 
 本地目录结构：
 
@@ -1217,7 +1448,7 @@ repos/
 
 ---
 
-## 10. 资料优先级
+## 11. 资料优先级
 
 ### P0：必须读
 
@@ -1231,20 +1462,24 @@ repos/
 7. MVTec AD
 8. MinerU（论文解析核心引擎）
 9. DeepSeek Pricing + Context Caching
+10. CL4R1T4S Claude Fable 5 系统提示词（Agent 设计顶级范本）
 ```
 
 ### P1：重要但不影响报名
 
 ```text
 1. AutoScientists
-2. OpenHands SDK
-3. SWE-agent
-4. mini-SWE-agent
-5. Aider
-6. MarkItDown（辅助格式转换 + MCP）
-7. Reasonix
-8. PaperBench
-9. CORE-Bench
+2. MiMoCode（持久化记忆 + judge 模型 + Dream/Distill）
+3. Claude Code 内部实现参考（Agent 循环 + 工具系统 + 权限模型）
+4. OpenHands SDK
+5. SWE-agent
+6. mini-SWE-agent
+7. Aider
+8. MarkItDown（辅助格式转换 + MCP）
+9. CL4R1T4S 完整系统提示词库（Agent 提示词设计参考）
+10. Reasonix
+11. PaperBench
+12. CORE-Bench
 ```
 
 ### P2：后期加分
@@ -1255,23 +1490,25 @@ repos/
 3. The AI Scientist
 4. MLAgentBench
 5. OpenCode
-6. VisA Dataset
-7. MLflow / OpenTelemetry / Temporal
+6. MiMoCode Dream/Distill 深入集成
+7. CL4R1T4S 全量系统提示词比对研究
+8. VisA Dataset
+9. MLflow / OpenTelemetry / Temporal
 ```
 
 ---
 
-## 11. 推荐最终技术路线表述
+## 12. 推荐最终技术路线表述
 
 可以在报名材料中使用：
 
 > 本项目面向异常检测科研流程中“论文理解—方法迁移—实验验证—结果反思”的高频痛点，构建一个人机协同的科研智能体系统。系统不依赖复杂黑盒 Agent 框架，而是采用经典软件工程架构：将大模型封装为可替换组件，用数据库和文件工作区管理长期状态，用类型系统和 JSON Schema 约束模型输出，用沙盒、白名单和人工确认控制代码执行风险，用日志、trace 和评测集持续衡量系统质量。  
 >
-> 系统参考 AutoLab、AutoSOTA、AiScientist、Claw AI Lab 等长周期科研智能体工作，将科研流程拆解为意图澄清、论文解析、迁移判断、实验规划、代码修改、实验执行、日志分析、有效性监督和结果反思等模块。第一版聚焦视觉异常检测，基于 Anomalib、MVTec AD 和 PatchCore 等开源实验底座，实现从论文输入到最小实验结论输出的 Dry Lab 闭环。
+> 系统参考 AutoLab、AutoSOTA、AiScientist、Claw AI Lab 等长周期科研智能体工作，借鉴 MiMoCode 的持久化记忆和 judge 模型设计，参考 Claude Code 等主流编程 Agent 的交互范式和工具系统架构，基于 CL4R1T4S 系统提示词库进行 Agent 提示词工程，将科研流程拆解为意图澄清、论文解析、迁移判断、实验规划、代码修改、实验执行、日志分析、有效性监督和结果反思等模块。第一版聚焦视觉异常检测，基于 Anomalib、MVTec AD 和 PatchCore 等开源实验底座，实现从论文输入到最小实验结论输出的 Dry Lab 闭环。
 
 ---
 
-## 12. BibTeX 汇总
+## 13. BibTeX 汇总
 
 ```bibtex
 @misc{xu2026autolabfrontiermodelssolve,
@@ -1353,7 +1590,7 @@ repos/
 
 ---
 
-## 13. 下一步建议
+## 14. 下一步建议
 
 短期只做三件事：
 

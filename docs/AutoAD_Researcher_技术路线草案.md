@@ -1,7 +1,7 @@
 # AutoAD-Researcher 技术路线草案
 
 > 用途：用于和导师讨论是否参加 AI for Science 相关比赛，以及确定项目边界、MVP、技术路线和队伍分工。  
-> 当前版本：讨论稿。部分赛题平台、提交方式、测试环境尚不明确，本文不做确定性假设。
+> 当前版本：讨论稿 v2。本文已吸收“AutoAD Core + DeepAgentsHarness”的第一层开发路线。部分赛题平台、提交方式、测试环境尚不明确，本文不做确定性假设。
 
 ---
 
@@ -20,7 +20,13 @@
 - 不是通用编程 Agent；
 - 不是全自动 AI 科学家；
 - 不是复刻 AutoSOTA；
+- 不是把 Deep Agents、LangGraph、CrewAI 或任一 Agent 框架当作项目本体；
 - 而是一个面向异常检测科研流程的 **Dry Lab 闭环系统**。
+
+当前第一层开发原则：
+
+> **AutoAD Core 是领域闭环控制层，Deep Agents 是可选执行内核 / harness backend。**  
+> 即：可以在 Deep Agents 基础上做针对性修改和扩展，但 `run_id` 生命周期、结构化 schema、实验资产、审批、日志、白名单执行和科研有效性监督必须由 AutoAD Core 控制。
 
 核心闭环：
 
@@ -90,7 +96,9 @@
 - 不同时支持大量论文和大量代码仓库；
 - 不让 Agent 不经确认直接改代码和跑训练；
 - 不依赖未经授权的泄露源码；
-- 不把某个具体大模型 API 或 Agent 框架写死。
+- 不把某个具体大模型 API 或 Agent 框架写死；
+- 不把 Deep Agents 的默认执行能力直接暴露给科研实验流程；
+- 不让 Agent 默认 shell / execute 工具绕过 AutoAD 的白名单和审批。
 
 ### 3.2 第一阶段只做什么
 
@@ -172,55 +180,272 @@ MVP 可以支持以下输入之一：
 
 ## 5. 系统总体架构
 
-建议按经典软件工程拆分，而不是一开始绑定复杂黑盒 Agent 框架。
+本项目第一层不再理解为“简单 Python pipeline 和 Deep Agents 二选一”，而是拆成：
 
 ```text
-用户界面层
+AutoAD Core：领域闭环控制层
   ↓
-任务理解与意图澄清层
+Harness Backend：执行内核，可选 SimplePipelineHarness / DeepAgentsHarness
   ↓
-论文解析与知识检索层
-  ↓
-实验规划层
-  ↓
-模型网关与路由层
-  ↓
-代码修改与 patch 生成层
-  ↓
-人工确认层
-  ↓
-实验执行层
-  ↓
-日志、指标与状态存储层
-  ↓
-结果分析与报告生成层
+Tools / Services：论文解析、代码仓库读取、实验运行、日志分析、报告生成
 ```
 
-### 5.1 推荐技术栈
+也就是说：
 
-| 模块 | MVP 选择 | 后续可扩展 |
-|---|---|---|
-| 前端 | Gradio / Streamlit | Web 前端 + FastAPI |
-| 后端 | Python pipeline | FastAPI 服务化 |
-| Agent 编排 | 简单状态机 / 自写 pipeline | LangGraph / Temporal |
-| 论文解析 | MinerU（主力）+ MarkItDown（辅助）| 更多格式 + VLM 增强 |
-| 模型调用 | 自定义 Model Gateway | 多供应商模型路由 |
-| 输出约束 | Pydantic / JSON Schema | 更严格 schema + eval |
-| 状态管理 | SQLite / JSONL | PostgreSQL |
-| 实验执行 | conda / Docker + subprocess | 沙盒执行平台 |
-| 日志追踪 | 文件系统 + JSONL | trace / eval / dashboard |
-| 报告生成 | Markdown | Markdown + HTML + PDF |
+```text
+AutoAD Core 负责“科研闭环正确性”
+Deep Agents 负责“长程 Agent 执行能力”
+```
 
-### 5.2 核心设计原则
+### 5.1 三层工程架构
+
+```text
+第一层：AutoAD Core
+  - run_id 生命周期
+  - Pydantic / JSON Schema
+  - runs/{run_id}/ artifact workspace
+  - events.jsonl / llm_calls.jsonl
+  - approval checkpoints
+  - Scientific Validity Supervisor
+  - sandbox / command whitelist
+  - final_report.md
+
+第二层：Harness Backend
+  - SimplePipelineHarness：稳定、可测试、可离线、适合 MVP smoke test
+  - DeepAgentsHarness：基于 Deep Agents 的长程任务执行内核
+  - 后续可选：OpenHandsHarness / CodeBuddyHarness / ClaudeAgentSDKHarness
+
+第三层：运行与协作平台
+  - 本地开发环境
+  - Docker / conda
+  - CNB / GitHub / CI/CD
+  - Gradio / Streamlit / CLI
+```
+
+### 5.2 为什么引入 Deep Agents
+
+Deep Agents 代表 2026 年开源 long-running agent harness 的趋势，适合处理复杂、多步骤、需要计划、文件系统、上下文管理和子任务分发的任务。它对本项目有直接价值：
+
+```text
+- planning：把科研任务拆成可执行步骤
+- virtual filesystem：承载长程任务中的中间文件
+- subagents：隔离论文理解、代码分析、日志分析等上下文
+- context management：避免把所有历史内容塞进 prompt
+- tool execution：调用受控工具完成 repo 读取、patch 规划、日志分析
+- long-term memory：后续沉淀实验经验和失败教训
+```
+
+但 Deep Agents 不能替代 AutoAD Core。它是通用 agent harness，不天然理解异常检测科研协议，也不天然保证实验公平性、数据划分、评价脚本一致性和 baseline 可比性。
+
+因此采用如下原则：
+
+> **Deep Agents 可以执行任务，但不能定义科研闭环的事实源。**
+
+事实源必须是：
+
+```text
+runs/{run_id}/
+  input_task.yaml
+  paper_summary.json
+  transfer_report.json
+  experiment_plan.json
+  patch_plan.json
+  approval_*.json
+  run_command.sh
+  stdout.log
+  stderr.log
+  metrics.json
+  validity_report.json
+  reflection.md
+  final_report.md
+  events.jsonl
+  llm_calls.jsonl
+```
+
+### 5.3 推荐技术栈
+
+| 模块 | MVP 选择 | Deep Agents 版增强 | 后续可扩展 |
+|---|---|---|---|
+| 前端 | CLI + Gradio / Streamlit | 展示 DeepAgentsHarness 事件流与 artifact | Web 前端 + FastAPI |
+| 后端 | Python pipeline | AutoAD Core + DeepAgentsHarness adapter | FastAPI 服务化 |
+| Agent 编排 | SimplePipelineHarness | DeepAgentsHarness 处理长程任务 | LangGraph / Temporal / Managed Agents |
+| 论文解析 | MinerU（主力）+ MarkItDown（辅助） | Paper Reader 可作为 Deep Agents 子任务 | 更多格式 + VLM 增强 |
+| 模型调用 | 自定义 Model Gateway | Deep Agents 通过统一 ModelClient 接模型 | 多供应商模型路由 |
+| 输出约束 | Pydantic / JSON Schema | Deep Agents 输出必须过 schema 校验 | 更严格 schema + eval |
+| 状态管理 | runs/{run_id} + JSONL | Deep Agents workspace 同步到 runs/{run_id} | SQLite / PostgreSQL |
+| 实验执行 | conda / Docker + subprocess whitelist | 禁止直接暴露默认 shell，封装为 AutoAD Runner Tool | 沙盒执行平台 |
+| 日志追踪 | 文件系统 + JSONL | Deep Agents tool call / subtask 写入 events.jsonl | trace / eval / dashboard |
+| 报告生成 | Markdown | Deep Agents 汇总 artifact 生成报告草稿 | Markdown + HTML + PDF |
+
+### 5.4 核心设计原则
 
 1. **LLM 只是组件，不是系统本身**；
-2. **状态必须落盘，不能只存在对话上下文里**；
-3. **实验必须可复现、可追踪、可审计**；
-4. **代码修改必须以 diff / patch 形式展示**；
-5. **关键节点必须有人确认**；
-6. **模型、数据集、baseline、执行环境都必须可配置**；
-7. **不确定的赛题平台信息不能写死**。
+2. **Deep Agents 是 harness backend，不是项目本体**；
+3. **状态必须落盘，不能只存在对话上下文、agent memory 或虚拟文件系统中**；
+4. **所有阶段产物必须写入 `runs/{run_id}/`**；
+5. **所有关键输出必须通过 Pydantic / JSON Schema 校验**；
+6. **实验必须可复现、可追踪、可审计**；
+7. **代码修改必须以 diff / patch 形式展示**；
+8. **关键节点必须有人确认**；
+9. **Deep Agents 的执行工具必须经过 AutoAD 白名单封装**；
+10. **模型、数据集、baseline、执行环境都必须可配置**；
+11. **不确定的赛题平台信息不能写死**。
 
+### 5.5 第一层代码结构建议
+
+```text
+autoad-researcher/
+  README.md
+  pyproject.toml
+  config.example.yaml
+  .env.example
+
+  src/autoad/
+    cli.py
+    app.py
+    config.py
+
+    core/
+      pipeline.py
+      run_manager.py
+      approval.py
+      events.py
+      artifacts.py
+      errors.py
+
+    harness/
+      base.py                  # AgentHarness 抽象接口
+      simple_pipeline.py        # SimplePipelineHarness
+      deepagents_backend.py     # DeepAgentsHarness
+
+    schemas/
+      task.py
+      paper.py
+      transfer.py
+      experiment.py
+      patch.py
+      run.py
+      validity.py
+      report.py
+
+    model/
+      client.py
+      router.py
+      prompts/
+
+    services/
+      intent_clarifier.py
+      paper_reader.py
+      transfer_judge.py
+      experiment_planner.py
+      patch_planner.py
+      runner.py
+      log_analyzer.py
+      validity_supervisor.py
+      reporter.py
+
+    tools/
+      autoad_file_tools.py
+      autoad_runner_tools.py
+      autoad_repo_tools.py
+      autoad_report_tools.py
+
+    storage/
+      db.py
+      repositories.py
+
+    execution/
+      sandbox.py
+      command_whitelist.py
+
+    evals/
+      fixtures/
+      smoke_tests.py
+
+  workspace/
+    papers/
+    repos/
+    datasets/
+
+  runs/
+```
+
+### 5.6 `AgentHarness` 抽象接口
+
+第一层应先定义统一接口，避免业务代码直接依赖 Deep Agents 的具体 API。
+
+```python
+class AgentHarness:
+    def run_stage(self, run_id: str, stage: str) -> str:
+        """执行指定阶段，并返回写入的 artifact 路径。"""
+        raise NotImplementedError
+```
+
+可选实现：
+
+```text
+SimplePipelineHarness
+  - 用普通 Python service 串行执行
+  - 用于 mock、测试、离线运行、稳定闭环
+
+DeepAgentsHarness
+  - 用 Deep Agents 处理规划、文件操作、子任务和长程上下文
+  - 所有输出回写 AutoAD artifact
+  - 所有工具调用写入 events.jsonl
+```
+
+### 5.7 DeepAgentsHarness 的硬边界
+
+DeepAgentsHarness 必须遵守以下约束：
+
+```text
+1. 不直接修改真实实验代码，必须先生成 patch_plan 或 patch.diff；
+2. 不直接运行任意 shell，必须通过 AutoAD Runner Tool；
+3. 不直接覆盖 runs/{run_id} 中已有关键 artifact；
+4. 不跳过 approval checkpoint；
+5. 不自行宣布实验有效，必须经过 ValiditySupervisor；
+6. 不把 agent memory 当成唯一状态源；
+7. 不生成未通过 schema 校验的阶段产物；
+8. 不修改 evaluation script、dataset split、baseline result，除非人工明确审批。
+```
+
+### 5.8 Deep Agents 本地接入 spike
+
+你准备把 Deep Agents 弄到本地开发环境里，建议先做一个 2 天 spike，不要一开始就全量重构。
+
+目标：
+
+```text
+输入：
+  runs/run_demo/input_task.yaml
+  runs/run_demo/paper_summary.json
+  一个 toy repo 或 anomalib repo 摘要
+
+任务：
+  由 DeepAgentsHarness 生成 experiment_plan.json
+  由 DeepAgentsHarness 生成 patch_plan.json
+  由 DeepAgentsHarness 生成 final_report.md 草稿
+
+限制：
+  不允许真实修改代码
+  不允许自由 shell
+  必须写入 runs/run_demo/
+  必须输出符合 schema 的 JSON
+```
+
+验收标准：
+
+```text
+1. 能稳定读取 runs/{run_id}/ 中的 artifact；
+2. 能写出符合 schema 的 experiment_plan.json；
+3. 能生成 patch_plan.json；
+4. 能把执行过程写入 events.jsonl；
+5. 工具调用路径可控；
+6. 出错时能被 AutoAD Core 捕获；
+7. Deep Agents 替换为 SimplePipelineHarness 后，主流程仍能运行。
+```
+
+如果 spike 失败，不影响主线；继续用 SimplePipelineHarness 跑 MVP。如果 spike 成功，再把 DeepAgentsHarness 纳入 P0/P1。
 ---
 
 ## 6. 功能模块设计
@@ -649,47 +874,72 @@ Model Gateway
 
 ## 8. 状态管理与文件结构
 
-系统状态不能只保存在对话里，必须落盘。
+系统状态不能只保存在对话里，也不能只保存在 Deep Agents 的 agent memory 或 virtual filesystem 里。AutoAD 的唯一事实源必须是 `runs/{run_id}/` 与结构化 artifact。
 
-建议项目目录结构：
+### 8.1 推荐 run 目录
 
 ```text
-autoad_researcher/
-  configs/
-  data/
-  papers/
-  parsed_papers/
-  experiments/
-    exp_001/
-      input.md
-      paper_summary.json
-      transfer_judgement.json
-      experiment_plan.yaml
-      patch.diff
-      command.txt
-      stdout.log
-      stderr.log
-      metrics.json
-      report.md
-  logs/
-  db.sqlite
+runs/{run_id}/
+  input_task.yaml
+  task_state.json
+
+  paper_summary.json
+  transfer_report.json
+  experiment_plan.json
+
+  approval_plan.json
+  patch_plan.json
+  patch.diff
+  approval_patch.json
+
+  run_command.sh
+  stdout.log
+  stderr.log
+  metrics.json
+  run_result.json
+
+  validity_report.json
+  reflection.md
+  final_report.md
+
+  events.jsonl
+  llm_calls.jsonl
 ```
 
-说明：这是设计草案，不是现有代码结构。实际实现前需要根据代码仓库确定最终路径和字段。
+### 8.2 Deep Agents workspace 与 AutoAD artifact 的关系
 
-每次实验至少保存：
+```text
+Deep Agents workspace：临时草稿、上下文工作区、子任务中间产物
+AutoAD runs/{run_id}：审计事实源、评审材料、恢复依据、最终报告来源
+```
+
+约束：
+
+```text
+1. Deep Agents 可以在自己的 workspace 中规划和试写；
+2. 进入下一阶段前，必须把结果同步为 AutoAD artifact；
+3. 同步后的 artifact 必须通过 schema 校验；
+4. 后续模块只能依赖 AutoAD artifact，不能依赖未同步的内部记忆；
+5. 每次工具调用、文件写入、命令执行都必须写入 events.jsonl。
+```
+
+### 8.3 每次实验至少保存
 
 1. 输入论文或方法想法；
 2. 用户约束；
-3. 迁移判断；
-4. 实验计划；
-5. 代码 diff；
-6. 运行命令；
-7. 环境信息；
-8. 日志；
-9. 指标；
-10. 最终分析报告。
+3. 论文结构化理解；
+4. 迁移判断；
+5. 实验计划；
+6. 代码修改计划或 diff；
+7. 人工审批记录；
+8. 运行命令；
+9. 环境信息；
+10. stdout / stderr；
+11. 指标；
+12. 科学有效性检查；
+13. 最终分析报告。
 
+说明：以上路径和字段是当前设计草案。正式编码时应以 `schemas/` 和 `core/artifacts.py` 中的实现为准，不应在其他模块临时发明字段名。
 ---
 
 ## 9. 安全边界
@@ -720,7 +970,31 @@ autoad_researcher/
 - 未经确认直接跑大规模训练
 ```
 
-### 9.3 人工确认点
+### 9.3 Deep Agents 工具边界
+
+如果使用 DeepAgentsHarness，必须封装默认工具能力：
+
+```text
+默认文件工具 → AutoADFileTool
+默认 shell / execute → AutoADRunnerTool
+默认 repo 读取 → AutoADRepoTool
+默认报告写入 → AutoADReportTool
+```
+
+其中 `AutoADRunnerTool` 必须执行以下检查：
+
+```text
+1. 命令是否在白名单内；
+2. 是否访问允许的 workspace；
+3. 是否尝试删除或覆盖数据集；
+4. 是否修改 evaluation script；
+5. 是否覆盖 baseline 结果；
+6. 是否已经通过运行命令审批；
+7. stdout / stderr 是否写入当前 run 目录；
+8. command 是否记录到 run_command.sh。
+```
+
+### 9.4 人工确认点
 
 至少设置 5 个确认点：
 
@@ -806,26 +1080,32 @@ autoad_researcher/
 ### P0：必须完成
 
 ```text
-1. 用户输入论文 / 方法想法
-2. MinerU 解析论文 PDF → 结构化 Markdown（公式、表格、布局）
-3. Agent 主动追问实验目标
-4. 输出结构化迁移判断
-5. 输出实验计划
-6. 生成代码修改建议或伪 patch
-7. 人工确认
-8. 运行一个固定 benchmark 或 smoke test
-9. 读取结果并生成报告
+1. 建立 AutoAD Core：run_id、schemas、artifact store、events.jsonl
+2. 建立 SimplePipelineHarness：保证不依赖 Deep Agents 也能跑通闭环
+3. 建立 DeepAgentsHarness spike：只处理 experiment_plan、patch_plan、report 草稿
+4. 用户输入论文 / 方法想法
+5. MinerU 解析论文 PDF → 结构化 Markdown（公式、表格、布局）
+6. Agent 主动追问实验目标
+7. 输出结构化迁移判断
+8. 输出实验计划并通过 schema 校验
+9. 生成代码修改建议或伪 patch
+10. 人工确认实验方案和 patch 计划
+11. 运行一个固定 benchmark 或 smoke test
+12. 读取结果并生成报告
 ```
 
 ### P1：最好完成
 
 ```text
-1. 模型路由
-2. 缓存命中统计
-3. 实验日志归档
-4. 代码 diff 展示
-5. 失败自动归因
-6. 科学有效性检查
+1. DeepAgentsHarness 扩展到 PatchPlanner / LogAnalyzer / Reporter
+2. 模型路由
+3. 缓存命中统计
+4. 实验日志归档
+5. 代码 diff 展示
+6. 失败自动归因
+7. 科学有效性检查
+8. Deep Agents 子任务事件流可视化
+9. Deep Agents workspace 与 runs/{run_id} 的同步机制
 ```
 
 ### P2：有时间再做
@@ -837,6 +1117,9 @@ autoad_researcher/
 4. 多 Agent 并行执行
 5. 自动修复复杂环境错误
 6. 自动生成完整论文草稿
+7. Deep Agents long-term memory / skill 沉淀
+8. 接入 OpenHands / CodeBuddy / Claude Agent SDK 作为替代 harness backend
+9. 视比赛平台情况接入 CNB / Temporal / Managed Agent Platform
 ```
 
 优先级原则：
@@ -870,6 +1153,9 @@ autoad_researcher/
 7. **队伍配置是否足够？**  
    至少需要一个人负责 Agent / 后端，一个人负责异常检测实验，一个人负责前端展示和材料。
 
+8. **Deep Agents 是否适合作为第一层执行内核？**  
+   建议先做本地 spike，让 DeepAgentsHarness 只负责 experiment_plan、patch_plan 和 report 草稿，验证其对长程任务、文件系统和子任务分发的帮助是否大于集成成本。
+
 ---
 
 ## 13. 对老师的汇报口径
@@ -894,6 +1180,8 @@ autoad_researcher/
 | 组委会平台未知 | 不清楚能否联网、能否调用外部 API、是否支持 Docker | 做 CLI、Docker、离线 mock、配置化模型接口 |
 | 实验难跑通 | 异常检测环境和数据依赖复杂 | 优先用已有 repo 和小规模 smoke test |
 | Agent 幻觉 | 可能生成错误实验方案或错误结论 | schema 约束、人工确认、日志追踪、科学有效性检查 |
+| Deep Agents 过度接管状态 | 状态散落在 agent memory 或 virtual filesystem 中，难以审计 | AutoAD Core 规定唯一事实源为 `runs/{run_id}`，Deep Agents 只做 backend |
+| Deep Agents 默认执行能力风险 | 默认 execute / 文件工具可能绕过实验安全边界 | 封装 AutoADRunnerTool / AutoADFileTool，所有命令走白名单和审批 |
 | 代码安全 | Agent 可能执行危险命令 | subprocess 白名单、沙盒、patch 审批 |
 | 指标不公平 | 改变协议导致虚假提升 | 固定 evaluation script，保存 config，加入 Supervisor |
 | 合规风险 | 参考非公开源码存在问题 | 只参考公开产品交互和开源项目，不使用泄露源码 |
@@ -914,9 +1202,10 @@ autoad_researcher/
 2. **Dry Lab 闭环**：不是文献助手，而是推进到实验和结论；
 3. **人机协同**：关键节点主动追问和确认，避免 Agent 自作主张；
 4. **实验可追溯**：保存 config、patch、command、log、metrics、report；
-5. **成本可控**：模型路由、缓存稳定前缀、轻重模型分工；
-6. **科学有效性约束**：检查数据泄漏、评价协议、baseline 公平性和 ablation。
+5. **长程任务能力**：通过 DeepAgentsHarness 探索 planning、virtual filesystem、subagents、context management；
+6. **成本可控**：模型路由、缓存稳定前缀、轻重模型分工；
+7. **科学有效性约束**：检查数据泄漏、评价协议、baseline 公平性和 ablation。
 
 一句话结论：
 
-> 第一阶段只做视觉异常检测一个方向、一个 baseline、一个数据集、一个最小闭环。先证明系统能把论文想法推进到实验结论，再考虑扩展到多论文、多数据集、多 Agent。
+> 第一阶段只做视觉异常检测一个方向、一个 baseline、一个数据集、一个最小闭环。技术上采用 AutoAD Core 作为领域闭环控制层，先用 SimplePipelineHarness 保底跑通，再用 DeepAgentsHarness 做长程任务增强。先证明系统能把论文想法推进到实验结论，再考虑扩展到多论文、多数据集、多 Agent。
