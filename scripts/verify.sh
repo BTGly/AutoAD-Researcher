@@ -38,7 +38,7 @@ echo "[verify] DeepAgents spike files exist."
 echo "[verify] checking Python syntax..."
 "$UV_BIN" run python -m compileall -q spikes/deepagents_harness src tests
 
-echo "[verify] checking AutAD schemas..."
+echo "[verify] checking AutoAD schemas..."
 "$UV_BIN" run python - <<'PY'
 from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 

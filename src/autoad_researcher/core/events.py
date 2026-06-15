@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.core.run_id import run_dir_path
 
@@ -29,7 +29,7 @@ class EventRecord(BaseModel):
     event_type: str
     run_id: str
     timestamp: datetime
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class EventStore:
