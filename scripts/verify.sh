@@ -72,9 +72,10 @@ PY
 
 echo "[verify] checking core imports..."
 "$UV_BIN" run python - <<'PY'
-from autoad_researcher.core import ArtifactStore
+from autoad_researcher.core import ArtifactStore, EventStore
 
 store = ArtifactStore(runs_root="runs")
+events = EventStore(runs_root="runs")
 print("[verify] core import ok.")
 PY
 

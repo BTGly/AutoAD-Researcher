@@ -1,5 +1,8 @@
 """测试 SimplePipelineHarness 确定性输出。"""
 
+import json
+
+from autoad_researcher.core import EventStore
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
 from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
@@ -14,9 +17,6 @@ class TestSimplePipelineHarness:
         plan_path = tmp_path / "test_run" / "experiment_plan.json"
         assert plan_path.exists()
 
-        # 输出符合 ExperimentPlan schema
-        import json
-
         data = json.loads(plan_path.read_text())
         ExperimentPlan.model_validate(data)
 
@@ -27,7 +27,24 @@ class TestSimplePipelineHarness:
         patch_path = tmp_path / "test_run" / "patch_plan.json"
         assert patch_path.exists()
 
-        import json
-
         data = json.loads(patch_path.read_text())
         PatchPlan.model_validate(data)
+
+    def test_simple_pipeline_records_artifact_events(self, tmp_path):
+        harness = SimplePipelineHarness(runs_root=tmp_path)
+        harness.run_experiment_planning("test_run")
+        harness.run_patch_planning("test_run")
+
+        events = EventStore(runs_root=tmp_path).read_events("test_run")
+        event_types = [e.event_type for e in events]
+
+        assert event_types == [
+            "artifact_written",
+            "artifact_written",
+        ]
+
+        artifacts = [e.payload["artifact"] for e in events]
+        assert artifacts == [
+            "experiment_plan.json",
+            "patch_plan.json",
+        ]

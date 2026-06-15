@@ -6,11 +6,14 @@
 
 import json
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel
 
-from autoad_researcher.core.run_id import run_dir_path, validate_run_id
+from autoad_researcher.core.run_id import run_dir_path
+
+if TYPE_CHECKING:
+    from autoad_researcher.core.events import EventStore
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -30,10 +33,21 @@ class ArtifactStore:
     - artifact filename 白名单
     - 统一 JSON 写入与读取
     - Pydantic schema 校验
+    - 自动记录 artifact_written / artifact_read 事件
     """
 
-    def __init__(self, runs_root: str | Path = "runs") -> None:
+    def __init__(
+        self,
+        runs_root: str | Path = "runs",
+        *,
+        enable_events: bool = True,
+    ) -> None:
         self._runs_root = Path(runs_root)
+        self._events: EventStore | None = None
+        if enable_events:
+            from autoad_researcher.core.events import EventStore
+
+            self._events = EventStore(runs_root=self._runs_root)
 
     # ------------------------------------------------------------------
     # 路径 API
@@ -102,6 +116,8 @@ class ArtifactStore:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+        self._record_artifact_written(run_id, filename, overwrite=overwrite)
         return path
 
     # ------------------------------------------------------------------
@@ -122,6 +138,8 @@ class ArtifactStore:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"artifact must be a JSON object: {path}")
+
+        self._record_artifact_read(run_id, filename)
         return data
 
     def read_model(
@@ -142,3 +160,25 @@ class ArtifactStore:
         """只允许白名单 JSON artifact 文件名，防止路径穿越。"""
         if filename not in _ALLOWED_JSON_ARTIFACTS:
             raise ValueError(f"unsupported artifact filename: {filename!r}")
+
+    # ------------------------------------------------------------------
+    # 事件记录
+    # ------------------------------------------------------------------
+
+    def _record_artifact_written(
+        self,
+        run_id: str,
+        filename: str,
+        *,
+        overwrite: bool,
+    ) -> None:
+        if self._events is None:
+            return
+        self._events.record_artifact_written(
+            run_id, filename, overwrite=overwrite
+        )
+
+    def _record_artifact_read(self, run_id: str, filename: str) -> None:
+        if self._events is None:
+            return
+        self._events.record_artifact_read(run_id, filename)

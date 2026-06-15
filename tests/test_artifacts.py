@@ -2,7 +2,7 @@
 
 import pytest
 
-from autoad_researcher.core import ArtifactStore
+from autoad_researcher.core import ArtifactStore, EventStore
 from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
 
@@ -133,3 +133,29 @@ class TestArtifactStore:
 
         with pytest.raises(FileNotFoundError):
             store.read_json("run_demo", "experiment_plan.json")
+
+    def test_write_json_records_artifact_written_event(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        plan = make_experiment_plan()
+
+        store.write_json("run_demo", "experiment_plan.json", plan)
+
+        events = EventStore(runs_root=tmp_path).read_events("run_demo")
+        assert len(events) == 1
+        assert events[0].event_type == "artifact_written"
+        assert events[0].payload["artifact"] == "experiment_plan.json"
+        assert events[0].payload["overwrite"] is True
+
+    def test_read_json_records_artifact_read_event(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        plan = make_experiment_plan()
+
+        store.write_json("run_demo", "experiment_plan.json", plan)
+        store.read_json("run_demo", "experiment_plan.json")
+
+        events = EventStore(runs_root=tmp_path).read_events("run_demo")
+        assert [e.event_type for e in events] == [
+            "artifact_written",
+            "artifact_read",
+        ]
+        assert events[1].payload["artifact"] == "experiment_plan.json"
