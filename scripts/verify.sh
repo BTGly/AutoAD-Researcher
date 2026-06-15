@@ -74,6 +74,9 @@ json.loads(Path("spikes/deepagents_harness/runs/run_demo/paper_summary.json").re
 print("[verify] fixture json ok.")
 PY
 
+echo "[verify] checking development log..."
+test -f notes/development-log.md
+
 echo "[verify] checking git status..."
 git rev-parse --is-inside-work-tree >/dev/null
 
