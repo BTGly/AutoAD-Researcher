@@ -5,11 +5,13 @@
 
 安全约束：
 - FilesystemBackend 不实现 SandboxBackendProtocol，execute 工具自动屏蔽
-- FilesystemPermission 将读写限制在 runs/{run_id}/** 内
+- FilesystemPermission 将读写限制在 runs_root/{run_id}/** 内
 - 不修改源码，不删除文件
 """
 
+import json
 import os
+import sys
 from pathlib import Path
 
 from deepagents import create_deep_agent
@@ -19,8 +21,6 @@ from deepagents.middleware import FilesystemPermission
 from autoad_researcher.harness.base import AgentHarness
 
 # 复用 spike schema（后续统一迁到 autoad_researcher/schemas/）
-import sys
-
 SPIKE_DIR = Path(__file__).resolve().parents[3] / "spikes" / "deepagents_harness"
 sys.path.insert(0, str(SPIKE_DIR))
 from schema import ExperimentPlan, PatchPlan  # noqa: E402
@@ -30,7 +30,7 @@ class DeepAgentsHarness(AgentHarness):
     """基于 Deep Agents 的 harness backend。
 
     每个方法创建一个受限 Deep Agent：
-    - 只能读写 runs/{run_id}/** 内的文件
+    - 只能读写 runs_root/{run_id}/** 内的文件
     - 不能执行 shell
     - 输出必须符合 AutoAD schema
     """
@@ -40,18 +40,18 @@ class DeepAgentsHarness(AgentHarness):
         runs_root: str | Path = "runs",
         model: str | None = None,
     ) -> None:
-        self._runs_root = Path(runs_root)
+        super().__init__(runs_root=runs_root)
         self._model = model or os.getenv("DEEPAGENTS_MODEL", "anthropic:claude-sonnet-4-6")
-
-    def _run_dir(self, run_id: str) -> Path:
-        return self._runs_root / run_id
+        # filesystem backend 以 runs_root 为根，虚拟 / 映射到 runs_root
+        self._backend_root = str(self._runs_root.resolve())
 
     def _create_agent(self, run_id: str, task_prompt: str):
         """创建针对特定 run_id 的受限 Deep Agent。
 
-        路径白名单：runs/{run_id}/** allow，其他 deny。
+        虚拟路径白名单：/{run_id}/** allow，其他 deny。
+        backend root = runs_root，所以 /{run_id}/ 映射到 runs_root/{run_id}/。
         """
-        run_allow_path = f"/runs/{run_id}/**"
+        run_allow_path = f"/{run_id}/**"
 
         return create_deep_agent(
             model=self._model,
@@ -62,7 +62,7 @@ class DeepAgentsHarness(AgentHarness):
                 "Do NOT wrap JSON in markdown. Do NOT add explanatory text to JSON files."
             ),
             backend=FilesystemBackend(
-                root_dir=str(Path.cwd()),
+                root_dir=self._backend_root,
                 virtual_mode=True,
             ),
             permissions=[
@@ -85,8 +85,6 @@ class DeepAgentsHarness(AgentHarness):
 
     def _validate_output(self, run_dir: Path, filename: str, schema_cls):
         """校验输出的 JSON 是否符合 schema。"""
-        import json
-
         filepath = run_dir / filename
         if not filepath.exists():
             raise FileNotFoundError(f"Agent did not produce: {filepath}")
@@ -102,8 +100,8 @@ class DeepAgentsHarness(AgentHarness):
         run_dir = self._run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        task = f"""读取 /runs/{run_id}/input_task.yaml 和 /runs/{run_id}/paper_summary.json，
-生成实验计划，写入 /runs/{run_id}/experiment_plan.json。
+        task = f"""读取 /{run_id}/input_task.yaml 和 /{run_id}/paper_summary.json，
+生成实验计划，写入 /{run_id}/experiment_plan.json。
 
 experiment_plan.json 必须包含字段：
 - experiment_goal (str)
@@ -116,7 +114,7 @@ experiment_plan.json 必须包含字段：
 - resource_budget (str)
 - risks (list[str])
 
-不允许写入 /runs/{run_id}/ 之外的任何路径。"""
+不允许写入 /{run_id}/ 之外的任何路径。"""
 
         self._invoke(run_id, task)
         self._validate_output(run_dir, "experiment_plan.json", ExperimentPlan)
@@ -125,8 +123,8 @@ experiment_plan.json 必须包含字段：
         run_dir = self._run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        task = f"""读取 /runs/{run_id}/input_task.yaml 和 /runs/{run_id}/paper_summary.json，
-生成代码修改计划，写入 /runs/{run_id}/patch_plan.json。
+        task = f"""读取 /{run_id}/input_task.yaml 和 /{run_id}/paper_summary.json，
+生成代码修改计划，写入 /{run_id}/patch_plan.json。
 
 patch_plan.json 必须包含字段：
 - target_repo (str)
@@ -136,7 +134,7 @@ patch_plan.json 必须包含字段：
 - expected_risks (list[str])
 - requires_approval (bool)
 
-不允许写入 /runs/{run_id}/ 之外的任何路径。"""
+不允许写入 /{run_id}/ 之外的任何路径。"""
 
         self._invoke(run_id, task)
         self._validate_output(run_dir, "patch_plan.json", PatchPlan)

@@ -4,14 +4,12 @@
 不调用任何 LLM，直接从输入生成符合 schema 的占位输出。
 """
 
-import json
+import sys
 from pathlib import Path
 
 from autoad_researcher.harness.base import AgentHarness
 
 # 复用 spike 里已验证过的 schema（后续移到 autoad_researcher/schemas/）
-import sys
-
 SPIKE_DIR = Path(__file__).resolve().parents[3] / "spikes" / "deepagents_harness"
 sys.path.insert(0, str(SPIKE_DIR))
 from schema import ExperimentPlan, PatchPlan  # noqa: E402
@@ -24,11 +22,7 @@ class SimplePipelineHarness(AgentHarness):
     用于保证"不依赖 Deep Agents 也能跑通闭环"的底线能力。
     """
 
-    def __init__(self, runs_root: str | Path = "runs") -> None:
-        self._runs_root = Path(runs_root)
-
-    def _run_dir(self, run_id: str) -> Path:
-        return self._runs_root / run_id
+    # __init__ 和 _run_dir / _validate_run_id 继承自 AgentHarness 基类
 
     def run_experiment_planning(self, run_id: str) -> None:
         run_dir = self._run_dir(run_id)

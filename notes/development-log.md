@@ -159,3 +159,34 @@
 - `git -c http.extraHeader=` token 硬化待后续
 
 **下一步**: 审查通过→ Step 2
+
+---
+
+### 修复: run_id 路径穿越 + DeepAgents runs_root 一致性
+
+**目标**: 修复审核发现的两个安全问题。
+
+**操作**:
+
+1. **run_id 校验（High — 路径穿越）**
+   - `_validate_run_id()` 加入 `AgentHarness` 基类，所有子类共享
+   - 校验规则：拒绝空字符串、`..`、`/`、`\`；只允许 `[A-Za-z0-9_.-]+`
+   - 额外检查 `(runs_root / run_id).resolve()` 仍在 `runs_root.resolve()` 内
+   - 测试：`../escape`、`..`、`foo/bar`、`foo\bar`、空字符串 全部被 ValueError 拒绝
+   - `SimplePipelineHarness` 移除重复的 `__init__` 和 `_run_dir`，继承基类实现
+
+2. **DeepAgentsHarness runs_root 一致性（Medium）**
+   - `FilesystemBackend.root_dir` 从 `Path.cwd()` 改为 `self._runs_root.resolve()`
+   - 虚拟路径从 `/runs/{run_id}/**` 改为 `/{run_id}/**`（因为 backend root 就是 runs_root）
+   - prompt 中的路径同理：`/{run_id}/input_task.yaml`
+   - 测试：`DeepAgentsHarness(runs_root='/tmp/xxx')` → `backend_root='/tmp/xxx'` 对齐
+
+3. **测试覆盖**
+   - 5 种无效 run_id → 全部 ValueError
+   - 有效 run_id → SimplePipeline 正常生成 experiment_plan + patch_plan
+   - DeepAgentsHarness backend_root 与 runs_root 一致
+
+**遗留问题**:
+- 无新增
+
+**下一步**: 审查通过→ Step 2
