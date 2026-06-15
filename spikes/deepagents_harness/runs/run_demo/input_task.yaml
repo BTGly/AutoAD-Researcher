@@ -1,0 +1,7 @@
+user_goal: "判断一篇表征学习论文是否适合迁移到工业图像异常检测，并给出最小实验计划。"
+input_type: "paper_text"
+anomaly_domain: "industrial_visual_anomaly_detection"
+dataset: "MVTec AD"
+baseline: "PatchCore"
+expected_mode: "smoke_test"
+compute_budget: "single_gpu_or_unknown"

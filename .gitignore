@@ -23,6 +23,13 @@ workspace/datasets/
 workspace/repos/
 workspace/papers/
 
+# Spike fixtures kept as static, offline verification evidence.
+!spikes/deepagents_harness/runs/
+!spikes/deepagents_harness/runs/run_demo/
+spikes/deepagents_harness/runs/run_demo/*
+!spikes/deepagents_harness/runs/run_demo/input_task.yaml
+!spikes/deepagents_harness/runs/run_demo/paper_summary.json
+
 # Experiments (keep .gitkeep if needed)
 experiments/*/
 !experiments/.gitkeep
