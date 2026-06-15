@@ -123,6 +123,39 @@
    - 两脚本均已添加 `SCRIPT_DIR` / `PROJECT_ROOT`，可从任意目录调用
 
 **遗留问题**:
-- 无
+- token 暂存于进程参数，可再硬化为 `git -c http.extraHeader=`（不阻塞后续步骤）
 
-**下一步**: Step 1 — 连接 AgentHarness 抽象接口，抽取 `src/autoad_researcher/harness/base.py` + `deepagents_backend.py`
+**下一步**: Step 1 — 连接 AgentHarness 抽象接口
+
+---
+
+### Step 1: AgentHarness 抽象接口
+
+**目标**: 建立统一的 harness 接口层，让 AutoAD Core 不依赖具体 Agent 框架。
+
+**操作**:
+
+1. 创建 `src/autoad_researcher/harness/__init__.py` — 模块 docstring + 导出
+2. 创建 `src/autoad_researcher/harness/base.py` — AgentHarness ABC
+   - `abc.ABC` 基类，项目首个抽象接口
+   - 两个抽象方法：`run_experiment_planning(run_id)`, `run_patch_planning(run_id)`
+3. 创建 `src/autoad_researcher/harness/simple_pipeline.py` — SimplePipelineHarness
+   - 不依赖 LLM，确定性占位输出，冒烟测试通过
+   - 保底能力："Deep Agents 替换为 SimplePipelineHarness 后，主流程仍能运行"
+4. 创建 `src/autoad_researcher/harness/deepagents_backend.py` — DeepAgentsHarness
+   - 封装 spike 模式：create_deep_agent + FilesystemBackend + FilesystemPermission
+   - 每个 run_id 独立 Agent，路径白名单 runs/{run_id}/**
+   - 输出自动 Pydantic 校验
+
+**关键设计决策**:
+- ABC 模式：项目首次使用，建立 swap-able backend 约定
+- 接口最小化：先只定义两个方法，不预判
+- Schema 临时从 spikes/ 导入，后续迁移到 src/autoad_researcher/schemas/
+- 未用 `from __future__ import annotations`，与现有 src 风格一致
+
+**遗留问题**:
+- Schema 需从 spikes/ 迁移
+- DeepAgentsHarness 未在真实 LLM 环境下跑过
+- `git -c http.extraHeader=` token 硬化待后续
+
+**下一步**: 审查通过→ Step 2
