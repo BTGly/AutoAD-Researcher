@@ -215,6 +215,6 @@
    - 15 tests passed in 0.83s
 
 **遗留问题**:
-- 无
+- commit `06fed51` message 有歧义：写的是 "fix: add dot-only run_id rejection" 但实际 dot-only 逻辑已在 `fb15210` 完成，本 commit 内容为测试 + verify.sh。功能无影响，后续 message 会更精确区分 `fix:` / `test:` / `chore:`
 
 **下一步**: Step 2.2 — 迁移 schema 从 spikes/ 到 src/autoad_researcher/schemas/
