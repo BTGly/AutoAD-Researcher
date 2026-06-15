@@ -300,7 +300,7 @@ autoad-researcher/
   config.example.yaml
   .env.example
 
-  src/autoad/
+  src/autoad_researcher/
     cli.py
     app.py
     config.py

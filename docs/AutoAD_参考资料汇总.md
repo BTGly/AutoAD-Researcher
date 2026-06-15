@@ -68,7 +68,7 @@ autoad-researcher/
   config.example.yaml
   .env.example
 
-  src/autoad/
+  src/autoad_researcher/
     app.py                         # FastAPI/Gradio 可选入口
     cli.py                         # 核心 CLI 入口
     config.py
@@ -137,7 +137,7 @@ autoad-researcher/
 | 提供在线交互平台 | 提供 FastAPI / Gradio 服务入口，并保留 CLI |
 | 要求模型 API 可配置 | 所有模型名、API key、base_url 放到配置文件和环境变量 |
 | 无法联网 | 准备 mock LLM / 小样例缓存 / 离线报告模式 |
-| 有固定评测接口 | 在 `src/autoad/adapters/` 下新增平台适配层，不改核心逻辑 |
+| 有固定评测接口 | 在 `src/autoad_researcher/adapters/` 下新增平台适配层，不改核心逻辑 |
 
 必须向组委会确认的事项：
 

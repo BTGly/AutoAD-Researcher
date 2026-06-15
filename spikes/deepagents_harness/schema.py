@@ -1,5 +1,7 @@
 """Minimal AutoAD schemas for DeepAgentsHarness spike validation."""
 
+from __future__ import annotations
+
 from pydantic import BaseModel, ConfigDict
 
 
