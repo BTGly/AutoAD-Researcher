@@ -80,7 +80,7 @@ print("[verify] fixture json ok.")
 PY
 
 echo "[verify] running pytest..."
-"$UV_BIN" run pytest -q
+"$UV_BIN" run --extra dev pytest -q
 
 echo "[verify] checking development log..."
 test -f notes/development-log.md

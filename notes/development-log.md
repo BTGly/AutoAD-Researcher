@@ -218,3 +218,31 @@
 - commit `06fed51` message 有歧义：写的是 "fix: add dot-only run_id rejection" 但实际 dot-only 逻辑已在 `fb15210` 完成，本 commit 内容为测试 + verify.sh。功能无影响，后续 message 会更精确区分 `fix:` / `test:` / `chore:`
 
 **下一步**: Step 2.2 — 迁移 schema 从 spikes/ 到 src/autoad_researcher/schemas/
+
+---
+
+### 修复: GitHub Actions pytest 缺失
+
+**目标**: 修复 CI 中 `uv run pytest -q` 报 `Failed to spawn: pytest` 的问题。
+
+**操作**:
+
+1. 核对失败日志
+   - GitHub Actions 在 `Run verification` 阶段失败
+   - 精确错误：`error: Failed to spawn: pytest`
+   - 说明 `pytest` 没有安装进 CI 的 uv 环境
+
+2. 修正 uv extra 安装方式
+   - 原命令 `uv sync --locked --dev` 不会安装 `[project.optional-dependencies].dev`
+   - 改为 `uv sync --locked --extra dev`
+
+3. 修正 verify gate
+   - `scripts/verify.sh` 中 pytest 调用改为 `uv run --extra dev pytest -q`
+   - 让本地门禁和 CI 使用同一 dev extra 语义
+
+**结果**:
+- 本地 `uv sync --locked --extra dev` 成功安装 dev extra
+- 本地 `uv run --extra dev pytest -q` 通过，15 tests passed
+
+**遗留问题**:
+- 需要推送后确认 GitHub Actions 通过
