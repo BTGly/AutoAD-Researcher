@@ -1,15 +1,7 @@
 """测试 SimplePipelineHarness 确定性输出。"""
 
-from pathlib import Path
-
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
-
-# 复用 spike schema 做输出校验
-import sys
-
-SPIKE_DIR = Path(__file__).resolve().parents[1] / "spikes" / "deepagents_harness"
-sys.path.insert(0, str(SPIKE_DIR))
-from schema import ExperimentPlan, PatchPlan  # noqa: E402
+from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
 
 class TestSimplePipelineHarness:

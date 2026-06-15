@@ -38,9 +38,9 @@ echo "[verify] DeepAgents spike files exist."
 echo "[verify] checking Python syntax..."
 "$UV_BIN" run python -m compileall -q spikes/deepagents_harness src tests
 
-echo "[verify] checking DeepAgents spike schema import..."
-PYTHONPATH=spikes/deepagents_harness "$UV_BIN" run python - <<'PY'
-from schema import ExperimentPlan, PatchPlan
+echo "[verify] checking AutAD schemas..."
+"$UV_BIN" run python - <<'PY'
+from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
 ExperimentPlan.model_validate(
     {
@@ -67,7 +67,7 @@ PatchPlan.model_validate(
         "extra_field": {"kept": True},
     }
 )
-print("[verify] schema import ok.")
+print("[verify] schemas ok.")
 PY
 
 echo "[verify] checking fixture JSON..."

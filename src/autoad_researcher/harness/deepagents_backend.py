@@ -11,7 +11,6 @@
 
 import json
 import os
-import sys
 from pathlib import Path
 
 from deepagents import create_deep_agent
@@ -19,11 +18,7 @@ from deepagents.backends import FilesystemBackend
 from deepagents.middleware import FilesystemPermission
 
 from autoad_researcher.harness.base import AgentHarness
-
-# 复用 spike schema（后续统一迁到 autoad_researcher/schemas/）
-SPIKE_DIR = Path(__file__).resolve().parents[3] / "spikes" / "deepagents_harness"
-sys.path.insert(0, str(SPIKE_DIR))
-from schema import ExperimentPlan, PatchPlan  # noqa: E402
+from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
 
 class DeepAgentsHarness(AgentHarness):

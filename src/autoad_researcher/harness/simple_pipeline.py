@@ -4,15 +4,8 @@
 不调用任何 LLM，直接从输入生成符合 schema 的占位输出。
 """
 
-import sys
-from pathlib import Path
-
 from autoad_researcher.harness.base import AgentHarness
-
-# 复用 spike 里已验证过的 schema（后续移到 autoad_researcher/schemas/）
-SPIKE_DIR = Path(__file__).resolve().parents[3] / "spikes" / "deepagents_harness"
-sys.path.insert(0, str(SPIKE_DIR))
-from schema import ExperimentPlan, PatchPlan  # noqa: E402
+from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
 
 class SimplePipelineHarness(AgentHarness):
