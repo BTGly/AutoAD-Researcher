@@ -31,7 +31,11 @@ class AgentHarness(ABC):
         """
         if not run_id:
             raise ValueError("run_id must not be empty")
-        if run_id == ".." or ".." in run_id.split("/") or ".." in run_id.split("\\"):
+        if set(run_id) == {"."}:
+            raise ValueError(
+                f"run_id must not be dot-only (resolves to runs_root itself): {run_id!r}"
+            )
+        if ".." in run_id.split("/") or ".." in run_id.split("\\"):
             raise ValueError(f"run_id contains path traversal: {run_id!r}")
         if not _RUN_ID_PATTERN.match(run_id):
             raise ValueError(
