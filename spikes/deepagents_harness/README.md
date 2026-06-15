@@ -12,10 +12,11 @@
 
 ## 运行
 
+从项目根目录执行：
+
 ```bash
-cd spikes/deepagents_harness
-uv add deepagents pydantic
-python run_spike.py
+uv sync                      # 安装项目依赖（含 deepagents）
+uv run python spikes/deepagents_harness/run_spike.py
 ```
 
 ## 验收标准
