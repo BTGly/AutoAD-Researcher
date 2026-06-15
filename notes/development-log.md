@@ -24,16 +24,15 @@
    - `runs/run_demo/input_task.yaml` — 示例任务
    - `runs/run_demo/paper_summary.json` — 示例论文摘要
 
-3. 添加依赖 `deepagents>=0.6` 到 pyproject.toml
-   - 同时升级 `requires-python` 从 `>=3.10` 到 `>=3.11`（deepagents 硬要求）
-   - 用 conda 新建 Python 3.11 环境 `autoad`，安装 uv
-   - `uv sync` 成功安装 57 个包（含 deepagents==0.6.10）
+3. 添加并收紧依赖 `deepagents>=0.6.10,<0.7` 到 pyproject.toml
+   - `requires-python` 为 `>=3.11`
+   - 使用 uv 生成并提交 `uv.lock`
 
 4. 运行 spike
    - **正向用例**: Agent 成功读取输入文件，生成 experiment_plan.json (11 keys) 和 patch_plan.json (7 keys)，Pydantic 校验通过
    - API 走 DeepSeek Anthropic-compatible endpoint (ANTHROPIC_BASE_URL)
    - 模型自动解析为 deepseek-v4-flash
-   - Token 缓存命中率 ~55%，单次 run ~12K tokens
+   - 运行过程中产生过 token 统计，但不纳入仓库证据
 
 5. 安全负用例
    - 修改 read_task() 指向 task_security_test.md（要求写入 should_not_exist.txt）
@@ -57,7 +56,7 @@
 
 **遗留问题**:
 - Push 后 token 已从 local remote URL 清除，后续 push 需配置 `gh auth login` 或 SSH
-- GitHub Actions 待确认通过
+- GitHub Actions 已确认通过
 - Schema 严格类型校验（`control_group: str` 等）目前只验证 inline 测试数据，真实 Agent 输出会失败 — 需要更严格的 task.md 约束或 post-processing
 
-**下一步**: Step 1 — 连接 AgentHarness 抽象接口，抽取 `src/autoad/harness/base.py` + `deepagents_backend.py`
+**下一步**: Step 1 — 连接 AgentHarness 抽象接口，抽取 `src/autoad_researcher/harness/base.py` + `deepagents_backend.py`
