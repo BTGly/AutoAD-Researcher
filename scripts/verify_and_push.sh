@@ -39,12 +39,8 @@ fi
 CURRENT_BRANCH="$(git branch --show-current)"
 
 if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_USER:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
-  # Use token-embedded URL to avoid interactive auth prompt
-  PUSH_URL="https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
-  git remote set-url origin "$PUSH_URL"
-  git push origin "$CURRENT_BRANCH"
-  # Clean token from remote URL immediately
-  git remote set-url origin "https://github.com/${GITHUB_USER}/${GITHUB_REPO}.git"
+  # Push directly with token URL — never modifies remote.origin.url, zero leak risk.
+  git push "https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/${GITHUB_USER}/${GITHUB_REPO}.git" "$CURRENT_BRANCH"
 else
   echo "[gate] GITHUB_TOKEN not set — trying default push (may prompt for auth)"
   git push origin "$CURRENT_BRANCH"

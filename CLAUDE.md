@@ -28,7 +28,7 @@ make changes
 ### Push rules
 
 - **GitHub**: `https://github.com/BTGly/AutoAD-Researcher.git` (main branch)
-- **Token**: stored in `scripts/verify_and_push.sh` — do NOT commit raw tokens
+- **Token**: stored in local `.env` only; never commit raw tokens or write them into scripts
 - **Every commit must pass `verify.sh` before push**
 - **Push after every meaningful change** — not batched, not deferred
 - **Force push only when remote has conflicting auto-generated files** (new repo setup)

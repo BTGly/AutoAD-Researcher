@@ -100,3 +100,29 @@
 - 无
 
 **下一步**: Step 1 — 连接 AgentHarness 抽象接口，抽取 `src/autoad_researcher/harness/base.py` + `deepagents_backend.py`
+
+---
+
+### Session 3: 安全修复 — token 泄露风险 + 文档修正
+
+**目标**: 修复审核发现的 token 泄露风险和文档错误。
+
+**操作**:
+
+1. 修复 `scripts/verify_and_push.sh` — tokenized push 的泄露风险
+   - **问题**: `git remote set-url origin "<token_url>"` 后如果 push 失败（`set -e` 退出），清理命令不执行，token 残留在 `.git/config`
+   - **修复**: 改为 `git push "https://user:token@github.com/..." <branch>` 直接推送，不经过 remote URL。token 仅存于 shell 命令字符串中，进程退出即消失，零残留风险
+   - 删除了 `git remote set-url` 的三行模式（set → push → clean），改为单行 `git push <token_url>`
+
+2. 修复 `CLAUDE.md` — token 存储位置描述错误
+   - **问题**: 写的是 "Token: stored in `scripts/verify_and_push.sh`"，实际在 `.env`
+   - **修复**: 改为 "Token: stored in local `.env` only; never commit raw tokens or write them into scripts"
+   - 防止后续 Claude Code 按错误文档把 token 写进脚本
+
+3. `scripts/verify.sh` + `scripts/verify_and_push.sh` — 路径自定位
+   - 两脚本均已添加 `SCRIPT_DIR` / `PROJECT_ROOT`，可从任意目录调用
+
+**遗留问题**:
+- 无
+
+**下一步**: Step 1 — 连接 AgentHarness 抽象接口，抽取 `src/autoad_researcher/harness/base.py` + `deepagents_backend.py`
