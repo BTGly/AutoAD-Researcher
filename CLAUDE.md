@@ -2,6 +2,46 @@
 
 This file provides guidance to Claude Code when working on this project.
 
+---
+
+## ⚠️ MANDATORY WORKFLOW — READ FIRST
+
+### Every operation must follow this cycle:
+
+```
+make changes
+  → log to notes/development-log.md (what, why, result)
+  → bash scripts/verify.sh
+  → if pass: bash scripts/verify_and_push.sh "descriptive commit message"
+  → if fail: fix, re-verify, then push
+  → NEVER proceed to next step without pushing current step
+```
+
+### Logging rules
+
+- **File**: `notes/development-log.md`
+- **Format**: Append new entries at the **bottom** under the current date heading
+- **Every entry must include**: what you did, why, the result, and any leftover issues
+- **Do NOT** proceed without logging — the verify.sh gate checks this file exists
+- **Goal**: every version is traceable; you can rewind to any commit and know exactly what happened
+
+### Push rules
+
+- **GitHub**: `https://github.com/BTGly/AutoAD-Researcher.git` (main branch)
+- **Token**: stored in `scripts/verify_and_push.sh` — do NOT commit raw tokens
+- **Every commit must pass `verify.sh` before push**
+- **Push after every meaningful change** — not batched, not deferred
+- **Force push only when remote has conflicting auto-generated files** (new repo setup)
+
+### After every push
+
+Confirm:
+1. `git log --oneline -3` shows the commit
+2. GitHub Actions verify workflow passes
+3. `notes/development-log.md` entry is accurate
+
+---
+
 ## Project Overview
 
 AutoAD-Researcher is a **semi-automated research agent for visual anomaly detection**. It closes the loop from paper ingestion → experiment execution → results analysis.

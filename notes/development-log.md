@@ -60,3 +60,43 @@
 - Schema 严格类型校验（`control_group: str` 等）目前只验证 inline 测试数据，真实 Agent 输出会失败 — 需要更严格的 task.md 约束或 post-processing
 
 **下一步**: Step 1 — 连接 AgentHarness 抽象接口，抽取 `src/autoad_researcher/harness/base.py` + `deepagents_backend.py`
+
+---
+
+### Session 2: 项目基础设施完善 — 日志 + 推送机制
+
+**目标**: 确保每次操作都有日志记录和版本回溯能力。
+
+**操作**:
+
+1. 更新 `CLAUDE.md`
+   - 新增 MANDATORY WORKFLOW 节：每次改动 → log → verify → commit → push
+   - 明确日志格式（date heading，每项包含 what/why/result/leftovers）
+   - 明确 push 使用 token 认证（不受交互式限制）
+
+2. 创建 `.env` 文件
+   - 含 GITHUB_TOKEN / GITHUB_USER / GITHUB_REPO
+   - 已在 .gitignore 中，不提交
+
+3. 更新 `scripts/verify_and_push.sh`
+   - 自动从 .env 加载 token
+   - push 时可以 token-embedded URL 认证
+   - push 完成后立即清除 remote URL 中的 token
+   - 保留 fallback 默认 push（无 token 时）
+
+4. 更新 `notes/development-log.md`
+   - 补充 Session 1 的最终依赖信息（deepagents>=0.6.10,<0.7, requires-python>=3.11, uv.lock）
+   - 追加 Session 2 记录
+
+5. 验证门禁增强
+   - verify.sh 新增 `test -f notes/development-log.md` 检查
+
+**关键发现**:
+- HTTPS remote 在非交互式 shell 中 `fatal: could not read Username for 'https://github.com'`，必须用 token-embedded URL
+- `gh auth setup-git` 设置的 credential helper 在此环境中不生效
+- 方案：push 前临时替换 remote URL（含 token），push 后立刻替换回去
+
+**遗留问题**:
+- 无
+
+**下一步**: Step 1 — 连接 AgentHarness 抽象接口，抽取 `src/autoad_researcher/harness/base.py` + `deepagents_backend.py`
