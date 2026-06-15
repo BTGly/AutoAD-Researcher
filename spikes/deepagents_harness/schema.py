@@ -1,30 +1,13 @@
-"""Minimal AutoAD schemas for DeepAgentsHarness spike validation."""
+"""Compatibility shim for Spike 01.
 
-from __future__ import annotations
+正式 schema 已迁移到 autoad_researcher.schemas。
+保留此文件是为了让 spikes/deepagents_harness/run_spike.py
+在不改入口的情况下继续可运行。
+"""
 
-from pydantic import BaseModel, ConfigDict
+from autoad_researcher.schemas import ExperimentPlan, PatchPlan  # noqa: F401
 
-
-class ExperimentPlan(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    experiment_goal: str
-    baseline: str
-    dataset: str
-    categories: list[str]
-    metrics: list[str]
-    control_group: str
-    experiment_group: str
-    resource_budget: str
-    risks: list[str]
-
-
-class PatchPlan(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    target_repo: str
-    files_to_inspect: list[str]
-    files_to_modify: list[str]
-    planned_changes: list[str]
-    expected_risks: list[str]
-    requires_approval: bool
+__all__ = [
+    "ExperimentPlan",
+    "PatchPlan",
+]

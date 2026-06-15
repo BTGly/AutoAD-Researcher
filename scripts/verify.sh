@@ -79,6 +79,26 @@ json.loads(Path("spikes/deepagents_harness/runs/run_demo/paper_summary.json").re
 print("[verify] fixture json ok.")
 PY
 
+echo "[verify] checking forbidden spike schema imports..."
+"$UV_BIN" run python - <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(".")
+
+for base in ["src", "tests", "scripts"]:
+    for pyfile in sorted((root / base).rglob("*.py")):
+        text = pyfile.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("from schema import") or s.startswith("import schema"):
+                # Only flag if the file also references spikes (sys.path hack)
+                if "spikes" in text or "sys.path.insert" in text:
+                    print(f"Forbidden spike schema import in {pyfile}: {s}", file=sys.stderr)
+                    sys.exit(1)
+print("[verify] no forbidden spike schema imports.")
+PY
+
 echo "[verify] running pytest..."
 "$UV_BIN" run --extra dev pytest -q
 
