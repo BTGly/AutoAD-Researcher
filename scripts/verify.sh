@@ -79,6 +79,9 @@ json.loads(Path("spikes/deepagents_harness/runs/run_demo/paper_summary.json").re
 print("[verify] fixture json ok.")
 PY
 
+echo "[verify] running pytest..."
+"$UV_BIN" run pytest -q
+
 echo "[verify] checking development log..."
 test -f notes/development-log.md
 

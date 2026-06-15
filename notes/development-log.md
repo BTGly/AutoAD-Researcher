@@ -190,3 +190,31 @@
 - 无新增
 
 **下一步**: 审查通过→ Step 2
+
+---
+
+### Step 2.1: dot-only run_id 边界修复 + 测试体系建设
+
+**目标**: 补全 run_id 安全校验（纯点号），建立 parametrized 测试体系。
+
+**操作**:
+
+1. **`base.py` — dot-only run_id 拒绝**
+   - 新增 `if set(run_id) == {"."}` 检查，拒绝 `.`、`..`、`...`、`....` 等纯点号
+   - 不会误伤 `run.v1`、`exp_001.test`、`demo-1.0`
+
+2. **`tests/test_harness_base.py`** — 新建
+   - 8 个非法 run_id parametrized → 全部 ValueError
+   - 5 个合法 run_id parametrized → 全部 PASS + 验证输出文件存在
+
+3. **`tests/test_simple_pipeline.py`** — 新建
+   - 验证 experiment_plan + patch_plan 写入 + Pydantic 校验
+
+4. **`scripts/verify.sh` 升级**
+   - 新增 `uv run pytest -q` 步骤
+   - 15 tests passed in 0.83s
+
+**遗留问题**:
+- 无
+
+**下一步**: Step 2.2 — 迁移 schema 从 spikes/ 到 src/autoad_researcher/schemas/
