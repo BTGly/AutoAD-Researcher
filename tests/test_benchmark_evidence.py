@@ -261,7 +261,7 @@ class TestExecutionResult:
             exit_code=0, timed_out=False,
             duration_seconds=100.0,
             started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
-            repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
+            repository_fingerprint_before=SHA, repository_fingerprint_after=SHA,
             case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
             weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
             command_sha256=SHA, metrics_sha256=SHA,
@@ -393,7 +393,7 @@ class TestFailureFields:
         kw = _fail_kw("success")
         kw.update(dict(exit_code=0, timed_out=False,
                        started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
-                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
+                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA,
                        case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
                        weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
                        command_sha256=SHA, metrics_sha256=SHA, duration_seconds=100.0,
@@ -411,7 +411,7 @@ class TestTimestamps:
         kw.update(dict(exit_code=0, timed_out=False,
                        started_at=dt(2026, 1, 1, 10, 0),
                        finished_at=dt(2026, 1, 1, 11, 0),
-                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
+                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA,
                        case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
                        weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
                        command_sha256=SHA, metrics_sha256=SHA, duration_seconds=100.0))
@@ -422,7 +422,7 @@ class TestTimestamps:
         kw = _fail_kw("success")
         kw.update(dict(exit_code=0, timed_out=False,
                        started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
-                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
+                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA,
                        case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
                        weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
                        command_sha256=SHA, metrics_sha256=SHA))
@@ -461,3 +461,73 @@ class TestCudaDeviceCount:
                 cuda_available=True, cuda_device_count=0,
                 lockfile_sha256=SHA, environment_sha256=SHA2,
             )
+
+# --- Execution status gaps ---
+
+class TestStatusGaps:
+    def _base(self, **kw):
+        d = dict(schema_version=1, case_id="c1", run_id="r1", attempt="attempt_01")
+        d.update(kw)
+        return d
+
+    def test_execution_failed_exit_zero_rejected(self):
+        with pytest.raises(ValidationError, match="exit_code!=0"):
+            BenchmarkExecutionResult(**self._base(
+                status="execution_failed", exit_code=0, timed_out=False,
+                failure_code="PROCESS_FAILED", failure_message="x",
+            ))
+
+    def test_execution_failed_nonzero_ok(self):
+        r = BenchmarkExecutionResult(**self._base(
+            status="execution_failed", exit_code=1,
+            failure_code="PROCESS_FAILED", failure_message="x",
+        ))
+        assert r.status == "execution_failed"
+
+    def test_success_before_after_fingerprint_differ_rejected(self):
+        kw = self._base(status="success")
+        kw.update(dict(
+            exit_code=0, timed_out=False, duration_seconds=100.0,
+            started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
+            repository_fingerprint_before=SHA, repository_fingerprint_after="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
+            weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
+            command_sha256=SHA, metrics_sha256=SHA,
+        ))
+        with pytest.raises(ValidationError, match="unchanged repository fingerprint"):
+            BenchmarkExecutionResult(**kw)
+
+    def test_metric_parse_failed_missing_exit_code_rejected(self):
+        kw = self._base(status="metric_parse_failed",
+                        failure_code="RESULTS_MISSING", failure_message="x")
+        with pytest.raises(ValidationError, match="exit_code=0"):
+            BenchmarkExecutionResult(**kw)
+
+    def test_metric_parse_failed_nonzero_exit_rejected(self):
+        kw = self._base(status="metric_parse_failed",
+                        exit_code=1, failure_code="RESULTS_MISSING", failure_message="x")
+        with pytest.raises(ValidationError, match="exit_code=0"):
+            BenchmarkExecutionResult(**kw)
+
+    def test_metric_parse_failed_missing_preflight_shas_rejected(self):
+        kw = self._base(status="metric_parse_failed",
+                        exit_code=0, timed_out=False, duration_seconds=100.0,
+                        started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
+                        failure_code="RESULTS_MISSING", failure_message="x")
+        with pytest.raises(ValidationError, match="repository_fingerprint_before"):
+            BenchmarkExecutionResult(**kw)
+
+    def test_metric_parse_failed_full_ok(self):
+        kw = self._base(status="metric_parse_failed")
+        kw.update(dict(
+            exit_code=0, timed_out=False, duration_seconds=100.0,
+            started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
+            repository_fingerprint_before=SHA, repository_fingerprint_after=SHA,
+            case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
+            weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
+            command_sha256=SHA,
+            failure_code="RESULTS_MISSING", failure_message="x",
+        ))
+        r = BenchmarkExecutionResult(**kw)
+        assert r.status == "metric_parse_failed"
+        assert r.metrics_sha256 is None  # allowed for parse failure

@@ -372,44 +372,60 @@ class BenchmarkExecutionResult(BaseModel):
     @model_validator(mode="after")
     def _validate_status_consistency(self):
         if self.status == "success":
-            if self.exit_code != 0:
-                raise ValueError("success requires exit_code=0")
-            if self.timed_out:
-                raise ValueError("success requires timed_out=false")
-            if self.started_at is None or self.finished_at is None:
-                raise ValueError("success requires started_at and finished_at")
-            if self.started_at.tzinfo is None or self.finished_at.tzinfo is None:
-                raise ValueError("success requires timezone-aware timestamps")
-            if self.finished_at < self.started_at:
-                raise ValueError("finished_at must be >= started_at")
-            if self.duration_seconds is None:
-                raise ValueError("success requires duration_seconds")
+            self._require_execution_context()
+            if self.repository_fingerprint_before != self.repository_fingerprint_after:
+                raise ValueError("success requires unchanged repository fingerprint")
             if self.failure_code is not None or self.failure_message is not None:
                 raise ValueError("success must not set failure_code or failure_message")
-            required_shas = [
-                "repository_fingerprint_before", "repository_fingerprint_after",
-                "case_sha256", "environment_sha256", "dataset_manifest_sha256",
-                "weights_manifest_sha256", "evaluation_contract_sha256",
-                "command_sha256", "metrics_sha256",
-            ]
-            for name in required_shas:
+            required_extras = ["metrics_sha256"]
+            for name in required_extras:
                 if getattr(self, name) is None:
                     raise ValueError(f"success requires {name}")
-        else:
+        elif self.status == "metric_parse_failed":
+            self._require_execution_context()
+        elif self.status == "execution_failed":
+            if self.exit_code is not None and self.exit_code == 0 and not self.timed_out:
+                raise ValueError("execution_failed requires exit_code!=0 or timed_out")
+            if self.exit_code is None and not self.timed_out:
+                raise ValueError("execution_failed requires exit_code or timed_out")
+        elif self.status == "preflight_failed":
+            if self.exit_code is not None:
+                raise ValueError("preflight_failed must not set exit_code")
+        elif self.status == "invalid_repository_mutation":
+            if self.repository_fingerprint_before is None or self.repository_fingerprint_after is None:
+                raise ValueError("repository_mutation requires both fingerprints")
+
+        if self.status != "success":
             if self.failure_code is None:
                 raise ValueError(f"{self.status} requires failure_code")
             if not _FAILURE_CODE_RE.match(self.failure_code):
                 raise ValueError(f"failure_code must match ^[A-Z][A-Z0-9_]{{2,63}}$: {self.failure_code!r}")
             if self.failure_message is None or not self.failure_message.strip():
                 raise ValueError(f"{self.status} requires failure_message")
-
-            if self.status == "preflight_failed":
-                if self.exit_code is not None:
-                    raise ValueError("preflight_failed must not set exit_code")
-            elif self.status == "execution_failed":
-                if self.exit_code is None and not self.timed_out:
-                    raise ValueError("execution_failed requires exit_code or timed_out")
-            elif self.status == "invalid_repository_mutation":
-                if self.repository_fingerprint_before is None or self.repository_fingerprint_after is None:
-                    raise ValueError("repository_mutation requires both fingerprints")
         return self
+
+    def _require_execution_context(self):
+        """success 和 metric_parse_failed 共用的执行证据检查。"""
+        if self.exit_code != 0:
+            raise ValueError(f"{self.status} requires exit_code=0")
+        if self.timed_out:
+            raise ValueError(f"{self.status} requires timed_out=false")
+        if self.started_at is None or self.finished_at is None:
+            raise ValueError(f"{self.status} requires started_at and finished_at")
+        if self.started_at.tzinfo is None or self.finished_at.tzinfo is None:
+            raise ValueError(f"{self.status} requires timezone-aware timestamps")
+        if self.started_at.utcoffset() is None or self.finished_at.utcoffset() is None:
+            raise ValueError(f"{self.status} requires valid UTC offset")
+        if self.finished_at < self.started_at:
+            raise ValueError("finished_at must be >= started_at")
+        if self.duration_seconds is None:
+            raise ValueError(f"{self.status} requires duration_seconds")
+        preflight_shas = [
+            "repository_fingerprint_before", "repository_fingerprint_after",
+            "case_sha256", "environment_sha256", "dataset_manifest_sha256",
+            "weights_manifest_sha256", "evaluation_contract_sha256",
+            "command_sha256",
+        ]
+        for name in preflight_shas:
+            if getattr(self, name) is None:
+                raise ValueError(f"{self.status} requires {name}")
