@@ -9,7 +9,15 @@ from autoad_researcher.benchmarks.config import (
     compute_case_sha256,
     load_internal_benchmark_case,
 )
-from autoad_researcher.schemas import InternalBenchmarkCase
+from autoad_researcher.schemas import (
+    BenchmarkDataset,
+    BenchmarkEvaluationContract,
+    BenchmarkMetric,
+    BenchmarkReproducibility,
+    BenchmarkRepository,
+    BenchmarkSafety,
+    InternalBenchmarkCase,
+)
 
 
 def _save_temp_yaml(case: InternalBenchmarkCase) -> Path:
@@ -72,7 +80,15 @@ class TestBenchmarkConfigLoader:
         Path(tmp.name).unlink()
 
     def test_canonical_json_deterministic(self):
-        from autoad_researcher.schemas import InternalBenchmarkCase
+        from autoad_researcher.schemas import (
+    BenchmarkDataset,
+    BenchmarkEvaluationContract,
+    BenchmarkMetric,
+    BenchmarkReproducibility,
+    BenchmarkRepository,
+    BenchmarkSafety,
+    InternalBenchmarkCase,
+)
         case = InternalBenchmarkCase(
             schema_version=1, case_id="t", scope="internal_benchmark_only",
             must_not_be_used_as_user_default=True, purpose="x", baseline_name="B",
@@ -112,7 +128,15 @@ class TestBenchmarkConfigLoader:
         assert sha1 == sha2
 
     def test_field_change_changes_sha(self):
-        from autoad_researcher.schemas import InternalBenchmarkCase
+        from autoad_researcher.schemas import (
+    BenchmarkDataset,
+    BenchmarkEvaluationContract,
+    BenchmarkMetric,
+    BenchmarkReproducibility,
+    BenchmarkRepository,
+    BenchmarkSafety,
+    InternalBenchmarkCase,
+)
         case = InternalBenchmarkCase(
             schema_version=1, case_id="t", scope="internal_benchmark_only",
             must_not_be_used_as_user_default=True, purpose="x", baseline_name="B",
