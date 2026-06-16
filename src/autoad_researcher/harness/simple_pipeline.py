@@ -6,6 +6,7 @@
 
 from pathlib import Path
 
+from autoad_researcher.core.stage_result import StageResult
 from autoad_researcher.harness.base import AgentHarness
 from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
@@ -24,8 +25,7 @@ class SimplePipelineHarness(AgentHarness):
 
         self._artifacts = ArtifactStore(runs_root=runs_root)
 
-    def run_experiment_planning(self, run_id: str) -> None:
-        # 保留 run_dir 调用，确保 harness 自身 run_id 校验仍然生效
+    def run_experiment_planning(self, run_id: str) -> StageResult:
         self._run_dir(run_id)
 
         plan = ExperimentPlan(
@@ -47,7 +47,15 @@ class SimplePipelineHarness(AgentHarness):
             overwrite=True,
         )
 
-    def run_patch_planning(self, run_id: str) -> None:
+        return StageResult(
+            run_id=run_id,
+            stage="experiment_planning",
+            status="success",
+            artifacts=["experiment_plan.json"],
+            metadata={"backend": "simple_pipeline"},
+        )
+
+    def run_patch_planning(self, run_id: str) -> StageResult:
         self._run_dir(run_id)
 
         patch = PatchPlan(
@@ -64,4 +72,12 @@ class SimplePipelineHarness(AgentHarness):
             "patch_plan.json",
             patch,
             overwrite=True,
+        )
+
+        return StageResult(
+            run_id=run_id,
+            stage="patch_planning",
+            status="success",
+            artifacts=["patch_plan.json"],
+            metadata={"backend": "simple_pipeline"},
         )

@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from autoad_researcher.core.run_id import run_dir_path, validate_run_id
+from autoad_researcher.core.stage_result import StageResult
 
 
 class AgentHarness(ABC):
@@ -33,21 +34,27 @@ class AgentHarness(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def run_experiment_planning(self, run_id: str) -> None:
+    def run_experiment_planning(self, run_id: str) -> StageResult:
         """生成 experiment_plan.json。
 
         从 runs/{run_id}/ 读取 input_task.yaml 和 paper_summary.json，
         产出实验计划，写入 runs/{run_id}/experiment_plan.json。
         输出必须符合 ExperimentPlan schema。
+
+        Returns:
+            StageResult with stage="experiment_planning"
         """
         ...
 
     @abstractmethod
-    def run_patch_planning(self, run_id: str) -> None:
+    def run_patch_planning(self, run_id: str) -> StageResult:
         """生成 patch_plan.json。
 
         从 runs/{run_id}/ 读取 input_task.yaml 和 paper_summary.json，
         产出代码修改计划，写入 runs/{run_id}/patch_plan.json。
         输出必须符合 PatchPlan schema。
+
+        Returns:
+            StageResult with stage="patch_planning"
         """
         ...

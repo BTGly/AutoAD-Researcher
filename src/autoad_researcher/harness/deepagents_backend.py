@@ -17,6 +17,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware import FilesystemPermission
 
+from autoad_researcher.core.stage_result import StageResult
 from autoad_researcher.harness.base import AgentHarness
 from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 
@@ -91,7 +92,7 @@ class DeepAgentsHarness(AgentHarness):
     # AgentHarness 接口实现
     # ------------------------------------------------------------------
 
-    def run_experiment_planning(self, run_id: str) -> None:
+    def run_experiment_planning(self, run_id: str) -> StageResult:
         run_dir = self._run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -114,7 +115,15 @@ experiment_plan.json 必须包含字段：
         self._invoke(run_id, task)
         self._validate_output(run_dir, "experiment_plan.json", ExperimentPlan)
 
-    def run_patch_planning(self, run_id: str) -> None:
+        return StageResult(
+            run_id=run_id,
+            stage="experiment_planning",
+            status="success",
+            artifacts=["experiment_plan.json"],
+            metadata={"backend": "deepagents", "model": self._model},
+        )
+
+    def run_patch_planning(self, run_id: str) -> StageResult:
         run_dir = self._run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -133,3 +142,11 @@ patch_plan.json 必须包含字段：
 
         self._invoke(run_id, task)
         self._validate_output(run_dir, "patch_plan.json", PatchPlan)
+
+        return StageResult(
+            run_id=run_id,
+            stage="patch_planning",
+            status="success",
+            artifacts=["patch_plan.json"],
+            metadata={"backend": "deepagents", "model": self._model},
+        )

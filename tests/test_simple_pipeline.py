@@ -12,7 +12,13 @@ class TestSimplePipelineHarness:
 
     def test_experiment_plan_written_and_valid(self, tmp_path):
         harness = SimplePipelineHarness(runs_root=tmp_path)
-        harness.run_experiment_planning("test_run")
+        result = harness.run_experiment_planning("test_run")
+
+        assert result.run_id == "test_run"
+        assert result.stage == "experiment_planning"
+        assert result.status == "success"
+        assert result.artifacts == ["experiment_plan.json"]
+        assert result.metadata["backend"] == "simple_pipeline"
 
         plan_path = tmp_path / "test_run" / "experiment_plan.json"
         assert plan_path.exists()
@@ -22,7 +28,13 @@ class TestSimplePipelineHarness:
 
     def test_patch_plan_written_and_valid(self, tmp_path):
         harness = SimplePipelineHarness(runs_root=tmp_path)
-        harness.run_patch_planning("test_run")
+        result = harness.run_patch_planning("test_run")
+
+        assert result.run_id == "test_run"
+        assert result.stage == "patch_planning"
+        assert result.status == "success"
+        assert result.artifacts == ["patch_plan.json"]
+        assert result.metadata["backend"] == "simple_pipeline"
 
         patch_path = tmp_path / "test_run" / "patch_plan.json"
         assert patch_path.exists()

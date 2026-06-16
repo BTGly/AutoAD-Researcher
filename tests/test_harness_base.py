@@ -38,8 +38,12 @@ class TestRunIdValidation:
     )
     def test_valid_run_id_accepted(self, tmp_path, valid_run_id):
         harness = SimplePipelineHarness(runs_root=tmp_path)
-        harness.run_experiment_planning(valid_run_id)
-        harness.run_patch_planning(valid_run_id)
+
+        exp_result = harness.run_experiment_planning(valid_run_id)
+        patch_result = harness.run_patch_planning(valid_run_id)
+
+        assert exp_result.status == "success"
+        assert patch_result.status == "success"
 
         run_dir = tmp_path / valid_run_id
         assert (run_dir / "experiment_plan.json").exists()
