@@ -21,12 +21,14 @@ This file provides guidance to Claude Code when working on this project.
 
 ### Logging rules
 
-- **File**: `notes/development-log.md`
+- **Daily file**: `notes/YYYY-MM-DD.md` — one file per day
+- **Index file**: `notes/development-log.md` — table of contents only（don't write entries here）
 - **When**: BEFORE running verify_and_push.sh — not after, not "I'll do it next time"
-- **Format**: Append at the **bottom** under `## YYYY-MM-DD` heading. Use `### Session N:` for each step.
+- **Format**: Append at the **bottom** of today's file. Use `### Session N:` for each step.
 - **Every entry**: what, why, result, leftovers
-- **Self-check before every push**: "Did I write the log entry for this change?" If no — stop and write it first.
-- **Goal**: anyone can read the log and understand every decision without looking at git diff
+- **New day → new file**: if today's `notes/$(date +%Y-%m-%d).md` doesn't exist, create it
+- **verify.sh gate**: checks both index AND today's daily file exist
+- **Self-check**: "Did I write today's log entry?" If no — stop and write it first.
 
 ### Push rules
 

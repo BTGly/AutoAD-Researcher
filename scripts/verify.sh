@@ -114,6 +114,12 @@ echo "[verify] running pytest..."
 
 echo "[verify] checking development log..."
 test -f notes/development-log.md
+# Also check today's daily log exists
+TODAY=$(date +%Y-%m-%d)
+if ! test -f "notes/${TODAY}.md"; then
+  echo "[verify] today's log (notes/${TODAY}.md) is missing — write it first"
+  exit 1
+fi
 
 echo "[verify] checking git status..."
 git rev-parse --is-inside-work-tree >/dev/null
