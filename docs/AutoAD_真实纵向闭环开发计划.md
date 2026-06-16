@@ -1,17 +1,59 @@
-# AutoAD-Researcher 下一阶段开发计划：单一 Idea 真实纵向闭环
+# AutoAD-Researcher 下一阶段开发计划：证据驱动任务确认与真实纵向闭环
 
-> 文档状态：执行版 v1  
+> 文档状态：执行版 v2  
 > 制定日期：2026-06-16  
 > 适用阶段：Step 2.15.1 地基封板之后  
-> 核心目标：**停止继续扩展通用抽象，用一个固定案例跑通“真实材料 → 单一 Idea → patch → 真实实验 → 指标 → 有效性 → 报告”的纵向闭环。**
+> 配套规范：[AutoAD 任务参数决策与来源协议](./AutoAD_任务参数决策与来源协议.md)  
+> 核心目标：**先由证据与用户确认确定 baseline、dataset、metrics 等任务参数，再跑通“真实材料 → 单一 Idea → patch → 真实实验 → 指标 → 有效性 → 报告”的纵向闭环。**
 
 ---
 
-## 0. 当前状态与下一步结论
+## 0. 关键修正
 
-### 0.1 已完成
+### 0.1 内部 Benchmark 不等于系统默认
 
-当前仓库已经具备确定性控制地基：
+团队可以固定一个 PatchCore + MVTec AD 案例，用于：
+
+```text
+CI fixture
+Demo
+Runner 调试
+Metrics Parser 调试
+Validity Supervisor 回归测试
+```
+
+但真实用户任务不能默认使用 PatchCore、MVTec AD、`bottle` 或 image AUROC。
+
+真实任务必须遵循：
+
+```text
+读取用户输入和材料
+→ 识别候选参数及其来源
+→ 展示证据和推荐理由
+→ 用户确认
+→ 写入正式任务参数
+```
+
+### 0.2 AutoAD 可以推荐，但不能替用户决定
+
+该原则适用于：
+
+```text
+baseline
+dataset
+metrics
+category
+compute budget
+evaluation protocol
+```
+
+论文中提到的方法、repo 中识别出的模型、历史实验中的配置和系统推荐都只是候选，不能静默成为正式任务参数。
+
+---
+
+## 1. 当前状态
+
+### 1.1 已完成
 
 ```text
 run_id / runs/{run_id}
@@ -27,7 +69,7 @@ DirectIdeaBackend / IdeaGenerator
 pytest / verify.sh / GitHub Actions
 ```
 
-当前 artifact 链已经能够稳定生成：
+当前确定性 artifact 链：
 
 ```text
 input_task.yaml
@@ -38,68 +80,21 @@ input_task.yaml
 → idea_candidates.json
 ```
 
-但目前仍缺少以下真实能力：
+### 1.2 尚未完成
 
 ```text
+任务参数候选与确认来源的正式协议
 真实 PDF 解析
 真实代码仓库分析
+Single Idea 用户确认
 方法迁移判断
 动态实验计划
 真实 patch / diff
 人工审批
 受控命令执行
-真实 AUROC 等指标解析
+真实指标解析
 科研有效性检查
 最终实验报告
-```
-
-### 0.2 立即执行的下一步
-
-**先做 Step 3.0：固定 MVP 案例与 baseline 复现。**
-
-在此步骤完成前，不开始数据库、对象存储、Temporal、多 Agent、Web UI 或模型路由扩建。
-
----
-
-## 1. 第一条真实闭环的固定范围
-
-第一条纵向闭环只支持一个 active Idea，固定范围如下：
-
-```text
-任务方向：视觉异常检测 / 工业缺陷检测
-baseline：PatchCore
-数据集：MVTec AD 单一类别
-推荐首个类别：bottle
-代码仓库：只选择一个公开实现，并锁定 commit SHA
-Idea：只推进一个经用户明确确认的 Idea
-实验规模：单机、单类别、小规模 smoke / benchmark
-主要指标：image-level AUROC；条件允许再增加 pixel AUROC
-```
-
-### 1.1 两种允许的入口
-
-```text
-模式 A：用户给出明确实现方案
-  → 直接进入 Single Idea 确认和迁移判断
-
-模式 B：用户提供固定论文 PDF
-  → 系统提取一个主要可迁移 Idea
-  → 用户确认后继续
-```
-
-### 1.2 当前明确不做
-
-```text
-多 Agent 自由讨论
-同时维护多个候选 Idea
-候选投票与多分支并行实验
-自动搜索最新论文
-自动生成复杂 ablation
-数据库 / PostgreSQL
-对象存储 / MinIO / S3
-LangGraph / Temporal 重写
-多用户权限系统
-完整 Web 产品
 ```
 
 ---
@@ -107,7 +102,7 @@ LangGraph / Temporal 重写
 ## 2. 总体交付链路
 
 ```text
-Step 3.0  MVP 案例锁定与 baseline 复现
+Step 3.0  任务参数来源协议 + 内部 Benchmark 锁定与复现
     ↓
 Step 3.1  真实 Repository Reader
     ↓
@@ -158,189 +153,372 @@ events.jsonl
 
 ---
 
-## 3. Step 3.0：固定 MVP 案例与 baseline 复现
+# Step 3.0：任务参数来源协议 + 内部 Benchmark 锁定与复现
 
-### 3.0.1 目标
+## 3.0A：任务参数候选与用户确认协议
 
-在 AutoAD 自动化之前，先人工确认实验底座能够独立运行并重复产出指标。
+### 目标
 
-### 3.0.2 待办
+在开始真实实验前，先明确 baseline 等关键参数从哪里来，以及何时才算正式确认。
 
-- [ ] 选择唯一 PatchCore 实现；优先使用团队已经跑通过的仓库，否则选择维护状态清晰、可固定版本的公开实现。
-- [ ] 记录仓库 URL、branch、commit SHA 和 license。
-- [ ] 固定 Python、PyTorch、CUDA、依赖版本。
-- [ ] 固定 MVTec AD 类别，默认 `bottle`。
-- [ ] 固定 baseline 配置、随机种子、输入分辨率和指标口径。
-- [ ] 手工运行 baseline，保存完整命令、stdout、stderr、耗时和指标。
-- [ ] 连续运行两次，确认命令可重复且输出位置稳定。
-- [ ] 保存 evaluation script 的 SHA256，后续禁止静默修改。
-- [ ] 编写 `docs/mvp_case.md`，记录固定案例和实验协议。
-- [ ] 新增最小 fixture，供 CI 在无数据集/GPU环境下验证命令组装和指标解析。
-
-### 3.0.3 建议新增文件
+### baseline 决策顺序
 
 ```text
-docs/mvp_case.md
-configs/mvp/patchcore_mvtec_bottle.yaml
-fixtures/mvp/baseline_stdout.txt
-fixtures/mvp/baseline_metrics.json
-scripts/run_mvp_baseline.sh
+1. 用户明确指定 baseline
+2. 从用户提供的 repo / config / 历史实验中识别候选
+3. 从论文实验部分识别作者依赖或对比的方法
+4. 如果仍不明确，Intent Clarifier 询问用户
+5. 用户没有偏好时，系统给出带理由的候选推荐
+6. 用户确认后，候选才能成为正式 baseline
 ```
 
-### 3.0.4 验收标准
+### 来源语义
 
-- [ ] 一条人工命令可以重复运行 baseline。
-- [ ] 真实指标来自固定 evaluation script。
-- [ ] 第二次运行不会覆盖第一次结果。
-- [ ] repo commit、环境和配置可追溯。
-- [ ] 无 GPU 的 CI 可以使用 fixture 完成非执行类测试。
+```text
+候选来源：
+  repo_detected
+  paper_mentioned
+  history_detected
+  system_recommended
 
-### 3.0.5 阻塞规则
+正式确认来源：
+  user_provided
+  user_confirmed
+```
 
-如果 baseline 不能稳定复现，**暂停后续 Agent 开发，优先修复实验环境**。
+`paper_mentioned`、`repo_detected` 和 `system_recommended` 不能直接成为最终 baseline 来源。
+
+### 建议 schema
+
+```python
+class DecisionCandidate(BaseModel):
+    value: str
+    source: Literal[
+        "repo_detected",
+        "paper_mentioned",
+        "history_detected",
+        "system_recommended",
+    ]
+    rationale: str
+    references: list[ArtifactReference]
+
+
+class ConfirmedDecision(BaseModel):
+    value: str
+    source: Literal[
+        "user_provided",
+        "user_confirmed",
+    ]
+    evidence: str
+
+
+class ClarifiedTask(BaseModel):
+    # baseline 只保存已确认值
+    baseline: str | None = None
+    baseline_candidates: list[DecisionCandidate] = []
+    baseline_decision: ConfirmedDecision | None = None
+```
+
+### 一致性规则
+
+```text
+baseline=None
+  → baseline_decision 必须为 None
+  → baseline_candidates 可以非空
+
+baseline 非空
+  → baseline_decision 必须存在
+  → baseline_decision.value 必须等于 baseline
+  → source 只能是 user_provided / user_confirmed
+```
+
+### 待办
+
+- [ ] 新增 `DecisionCandidate` 与 `ConfirmedDecision` schema。
+- [ ] 为 `ClarifiedTask` 增加 `baseline_candidates` 与 `baseline_decision`。
+- [ ] 保持当前 `baseline` 字段，明确它只表示已确认值。
+- [ ] repo 检测结果只生成候选，不自动填写 baseline。
+- [ ] 论文中出现的对比方法只生成候选，不自动填写 baseline。
+- [ ] 系统推荐必须包含理由、工程成本和 evidence。
+- [ ] 用户确认后才写入正式 baseline。
+- [ ] 将相同模式逐步推广到 dataset、metrics、category、compute budget 和 evaluation protocol。
+
+### 测试
+
+```text
+用户直接提供 baseline → 保留正式值且不询问
+repo 检测 baseline → 只生成候选
+论文提到 baseline → 只生成候选
+系统推荐 baseline → 只生成候选
+用户确认候选 → 正式 baseline 写入
+baseline 与 decision.value 不一致 → ValidationError
+候选缺 evidence → ValidationError
+```
+
+### 提交建议
+
+```text
+feat: track baseline candidates and user confirmation provenance
+```
 
 ---
 
-## 4. Step 3.1：真实 Repository Reader
+## 3.0B：内部 Benchmark 案例锁定
 
-### 4.1 目标
+### 目标
 
-把现有 `RepositoryReaderBackend` contract 接到一个真实本地仓库分析实现，生成可信的 `repo_summary.json`。
+建立一个团队内部、可重复、可回归的真实实验案例。该案例不参与真实用户 baseline 决策。
 
-### 4.2 实现范围
-
-首版只支持：
+### 内部案例建议
 
 ```text
-本地已存在的仓库目录
-只读分析
-固定 PatchCore 仓库
-不自动 clone
-不执行任意 shell
+case_id: internal_patchcore_mvtec_bottle_v1
+baseline: PatchCore
+implementation: 团队选定并锁定的唯一实现
+dataset: MVTec AD
+category: bottle
+required_metric: image AUROC
+attempts: 2
 ```
 
-### 4.3 待办
+这是团队内部测试选择，不是产品默认值。
+
+### 待办
+
+- [ ] 选择唯一 PatchCore 实现并记录选择理由。
+- [ ] 锁定 repository URL、branch/tag、完整 commit SHA 和 license。
+- [ ] 固定 Python、PyTorch、CUDA 和依赖版本。
+- [ ] 固定 MVTec AD `bottle`，记录数据集 license。
+- [ ] 固定 seed、backbone、feature layers、输入分辨率和指标口径。
+- [ ] 保存 evaluation contract fingerprint。
+- [ ] 编写 `docs/internal_benchmark_case.md`。
+- [ ] 配置文件明确标记 `scope: internal_benchmark_only`。
+
+### 建议文件
+
+```text
+docs/internal_benchmark_case.md
+configs/benchmarks/internal_patchcore_mvtec_bottle.yaml
+```
+
+### 配置硬约束
+
+```yaml
+scope: internal_benchmark_only
+must_not_be_used_as_user_default: true
+```
+
+### 提交建议
+
+```text
+chore: lock internal PatchCore benchmark case
+```
+
+---
+
+## 3.0C：Baseline 双跑复现与证据固化
+
+### 目标
+
+人工确认内部 Benchmark 能独立运行并重复产出指标，为后续 Runner 和 Metrics Parser 提供真实样例。
+
+### 待办
+
+- [ ] 在独立实验环境安装 baseline 依赖，不污染 AutoAD Core 环境。
+- [ ] 手工运行内部 baseline。
+- [ ] 保存 argv、cwd、环境摘要、stdout、stderr、exit code 和原始指标文件。
+- [ ] 使用相同 commit/config/evaluation contract 连续运行两次。
+- [ ] 第二次运行不得覆盖第一次。
+- [ ] 比较两次 required metric 的差值。
+- [ ] 生成 `reproducibility_report.json`。
+- [ ] 从真实结果制作脱敏 CI fixture。
+
+### 建议目录
+
+```text
+scripts/benchmark/
+├── bootstrap_environment.sh
+├── run_internal_baseline.sh
+├── capture_environment.py
+├── fingerprint_case.py
+└── compare_attempts.py
+
+fixtures/benchmarks/internal_patchcore_mvtec_bottle/
+├── attempt_01/
+├── attempt_02/
+└── reproducibility_report.json
+```
+
+### 运行产物
+
+```text
+runs/{run_id}/internal_benchmark/
+├── attempt_01/
+│   ├── case_snapshot.yaml
+│   ├── repo_state.json
+│   ├── environment.json
+│   ├── command.json
+│   ├── fingerprints.json
+│   ├── stdout.log
+│   ├── stderr.log
+│   ├── raw_results/
+│   └── metrics.json
+├── attempt_02/
+└── reproducibility_report.json
+```
+
+### 复现通过条件
+
+```text
+两个 exit code 均为 0
+相同 repository commit
+相同 case config hash
+相同 evaluation contract hash
+required metric 均成功解析
+指标差值处于配置容差内
+```
+
+### CI 边界
+
+普通 CI 不运行：
+
+```text
+MVTec AD
+GPU
+完整训练/推理
+外部网络下载
+```
+
+普通 CI 只验证：
+
+```text
+配置结构
+路径和 overwrite guard
+fixture 指标解析
+fingerprint 稳定性
+双跑比较逻辑
+失败结果处理
+```
+
+### 提交建议
+
+```text
+chore: add isolated internal benchmark environment
+feat: add reproducible internal baseline runner
+test: add internal benchmark reproducibility fixtures
+docs: record internal benchmark reproduction results
+```
+
+---
+
+# Step 3.1：真实 Repository Reader
+
+## 目标
+
+让现有 `RepositoryReaderBackend` 分析用户提供的真实本地仓库，并生成带证据的 `repo_summary.json`。
+
+内部 PatchCore Benchmark 只作为测试 fixture，不限制真实用户仓库类型。
+
+## 首版范围
+
+```text
+本地已存在仓库
+只读分析
+仓库类型不限于 PatchCore
+不自动 clone
+不执行任意自由 shell
+```
+
+## 待办
 
 - [ ] 新增 `LocalRepositoryReaderBackend`。
-- [ ] 校验仓库根目录必须在允许的 workspace 下。
-- [ ] 读取并记录当前 commit SHA、dirty 状态和默认分支。
-- [ ] 枚举有限深度目录结构，忽略 `.git`、缓存、checkpoint 和大文件目录。
-- [ ] 定位训练、推理、评价入口和主要配置文件。
-- [ ] 定位 PatchCore model、feature extraction、memory bank、scoring 相关代码。
-- [ ] 识别可修改路径和 protected paths。
-- [ ] 记录 test / smoke / evaluation 命令。
+- [ ] 校验 repo 路径位于允许 workspace。
+- [ ] 读取 commit SHA、dirty 状态和默认分支。
+- [ ] 枚举有限深度目录结构，忽略缓存、checkpoint 和大型输出目录。
+- [ ] 定位训练、推理、评价入口与配置文件。
+- [ ] 从 repo/config 中识别 baseline 候选及 evidence。
+- [ ] baseline 识别结果写入候选，不直接成为正式 baseline。
+- [ ] 识别 editable paths、protected paths 和 test/evaluation commands。
 - [ ] 计算 evaluation script fingerprint。
-- [ ] 对每个结论生成文件路径或行号级 evidence。
-- [ ] 将真实结果写入现有 `RepositorySummary`，不新增平行 schema。
+- [ ] 每个关键结论提供文件路径或行号 evidence。
+- [ ] 内部 Benchmark 仓库提供确定性 fixture 测试。
 
-### 4.4 建议文件
+## 验收
 
-```text
-src/autoad_researcher/readers/local_repository.py
-tests/test_local_repository_reader.py
-fixtures/repos/patchcore_mini/
-```
-
-### 4.5 验收标准
-
-- [ ] 对固定 repo 可稳定生成 `repo_summary.json`。
-- [ ] 相同 commit 重复读取结果确定性一致。
-- [ ] evaluation script fingerprint 正确。
-- [ ] protected paths 至少包含固定 evaluation 入口。
-- [ ] 所有 evidence 指向真实存在的文件或行范围。
-- [ ] Reader 不修改仓库文件。
+- [ ] 可以分析至少一个固定 Benchmark repo 和一个不同结构的最小 fixture repo。
+- [ ] 不同模型名不会被强制归类为 PatchCore。
+- [ ] 相同 commit 重复读取结果一致。
+- [ ] Reader 不修改用户仓库。
+- [ ] baseline 候选包含来源与 evidence。
 
 ---
 
-## 5. Step 3.2：真实 Paper Reader
+# Step 3.2：真实 Paper Reader
 
-### 5.1 目标
+## 目标
 
-从一篇固定 PDF 生成结构化、带证据定位的 `paper_summary.json`。
+从用户提供的 PDF 生成结构化 `paper_summary.json`，并识别可能相关的 baseline、dataset 和 metrics 候选。
 
-### 5.2 两阶段实现
+## 待办
 
-#### 3.2A：确定性 PDF 文本提取
+### 确定性文本提取
 
-- [ ] 选择一个 PDF 解析器并锁定版本。
-- [ ] 提取页级文本，保留页码映射。
-- [ ] 生成 `paper_text.json` 或受控中间文件。
+- [ ] 选择并锁定 PDF 解析器版本。
+- [ ] 提取页级文本并保留页码映射。
 - [ ] 检测空页、乱码、扫描 PDF 和解析失败。
-- [ ] 不在本步骤做向量数据库或 RAG。
+- [ ] 不在首版引入向量数据库。
 
-#### 3.2B：结构化摘要
+### 结构化摘要
 
-- [ ] 实现真实 `PaperReaderBackend`，输入页级文本。
-- [ ] 输出研究问题、核心方法、组件、数据假设、训练目标、指标和迁移点。
-- [ ] 每项关键事实必须引用页码或章节。
-- [ ] LLM 输出必须重新经过 `PaperSummary.model_validate()`。
-- [ ] 记录模型、prompt 版本、token、耗时和缓存命中信息。
-- [ ] 提供离线 fixture backend，CI 不调用外部模型。
+- [ ] 输出研究问题、核心方法、组件、数据假设、训练目标和迁移点。
+- [ ] 提取论文使用或对比的方法、数据集和指标，标记为 `paper_mentioned`。
+- [ ] `paper_mentioned` 只进入候选，不能自动成为正式参数。
+- [ ] 每项关键事实引用页码或章节。
+- [ ] LLM 输出重新经过 schema 校验。
+- [ ] 提供离线 fixture，CI 不调用外部模型。
 
-### 5.3 建议文件
+## 验收
 
-```text
-src/autoad_researcher/readers/pdf_text.py
-src/autoad_researcher/readers/llm_paper.py
-src/autoad_researcher/model/client.py
-src/autoad_researcher/model/prompts/paper_reader.md
-tests/test_pdf_text_reader.py
-tests/test_llm_paper_reader.py
-fixtures/papers/sample_pages.json
-```
-
-### 5.4 验收标准
-
-- [ ] 固定 PDF 可重复生成合法 `paper_summary.json`。
+- [ ] 固定 PDF 可重复生成合法摘要。
 - [ ] 核心结论可追溯到页码或章节。
-- [ ] 解析失败有明确错误，不生成伪摘要。
-- [ ] 模型不得填充原文中不存在的实验事实。
-- [ ] 离线 CI 使用固定响应 fixture。
+- [ ] 论文对比 baseline 不会被自动选中。
+- [ ] 解析失败不生成伪摘要。
 
 ---
 
-## 6. Step 3.3：Single Idea 确认
+# Step 3.3：Single Idea 与任务参数确认
 
-### 6.1 目标
+## 目标
 
-把现有 `idea_candidates.json` 收缩为一个用户确认的 active Idea，形成后续流程唯一输入。
+在进入迁移判断前，确保只有一个 active Idea，并且执行所需关键参数已经由用户确认。
 
-### 6.2 待办
+## 待办
 
 - [ ] 新增 `SingleIdea` schema。
-- [ ] 新增 `IdeaConfirmation` schema：`approve / revise / reject`。
+- [ ] 新增 `IdeaConfirmation`：approve / revise / reject。
 - [ ] 首版只允许一个 active Idea。
-- [ ] 支持从 `direct_user_idea` 选择唯一候选。
-- [ ] 支持从固定论文摘要提取一个主要候选，再等待用户确认。
-- [ ] 未批准时禁止进入 Transferability Judge。
-- [ ] revise 必须产生新版本，不覆盖旧确认记录。
-- [ ] reject 后流程可生成终止报告，而不是静默结束。
+- [ ] 展示 baseline、dataset、metrics、category、compute budget 和 evaluation protocol 的候选与来源。
+- [ ] 明确标记哪些字段已确认、哪些仍缺失。
+- [ ] 未确认的 blocking 参数禁止进入 Experiment Planner。
+- [ ] revise 产生新版本，不覆盖旧记录。
+- [ ] reject 可以进入终止报告。
 
-### 6.3 Artifact
+## Artifact
 
 ```text
 single_idea.json
 idea_confirmation.json
 ```
 
-### 6.4 验收标准
-
-- [ ] 一个 run 同时只有一个 active Idea。
-- [ ] approval 状态可审计。
-- [ ] 未批准 Idea 无法进入后续 stage。
-- [ ] 修改历史不被覆盖。
-
 ---
 
-## 7. Step 3.4：Transferability Judge
+# Step 3.4：Transferability Judge
 
-### 7.1 目标
+## 目标
 
-基于论文、仓库、任务和已确认 Idea，判断该方法是否值得迁移到固定 PatchCore 案例。
+基于论文、仓库、任务参数和已确认 Idea 判断方法是否值得迁移。
 
-### 7.2 输出 schema
-
-建议新增 `TransferReport`：
+## 输出
 
 ```text
 run_id
@@ -359,36 +537,36 @@ minimum_validation_experiment
 blocking_questions
 ```
 
-### 7.3 待办
+## 待办
 
-- [ ] 先实现 rule-based validity checks。
-- [ ] 检查训练阶段是否需要异常标签。
-- [ ] 检查是否依赖与当前任务冲突的数据假设。
-- [ ] 检查 proposal 是否要求修改 protected evaluation path。
-- [ ] 检查仓库中是否存在可插入位置。
-- [ ] 再接 LLM backend 补充语义判断。
-- [ ] LLM 不得覆盖 deterministic rule 的硬拒绝结果。
-- [ ] insufficient information 必须列出具体缺口。
-
-### 7.4 验收标准
-
-- [ ] 明显不兼容的方法能够被拒绝。
-- [ ] 每个判断有 paper/repo evidence。
-- [ ] 没有足够证据时返回 insufficient，而不是猜测。
-- [ ] `reject` 仍能进入 Final Reporter 生成终止报告。
+- [ ] 先实现 deterministic validity checks。
+- [ ] 检查异常标签、数据假设和任务目标兼容性。
+- [ ] 检查是否要求修改 protected evaluation path。
+- [ ] 检查仓库是否存在可插入位置。
+- [ ] LLM backend 只补充语义判断，不能覆盖硬规则拒绝。
+- [ ] insufficient information 必须列出缺口。
 
 ---
 
-## 8. Step 3.5：Dynamic Experiment Planner
+# Step 3.5：Dynamic Experiment Planner
 
-### 8.1 目标
+## 目标
 
-替换 `SimplePipelineHarness` 的固定占位计划，生成针对当前案例的真实 `experiment_plan.json`。
+根据用户已经确认的 baseline、dataset、metrics 和预算生成真实 `experiment_plan.json`。
 
-### 8.2 必须包含
+## 硬边界
+
+```text
+不得从内部 Benchmark 配置继承用户任务参数
+不得把候选字段当成已确认字段
+缺少 blocking 参数时必须停止
+```
+
+## 必须包含
 
 ```text
 baseline
+baseline_decision evidence
 method_variant
 dataset
 category
@@ -403,43 +581,28 @@ stop_conditions
 protected_evaluation_contract
 ```
 
-### 8.3 待办
+## 验收
 
-- [ ] 从 `repo_summary.json` 和 `transfer_report.json` 构造计划。
-- [ ] baseline、dataset 和 metrics 必须来自已确认事实。
-- [ ] 生成 baseline 与 variant 两组命令模板。
-- [ ] 固定相同数据划分、seed 和 evaluation script。
-- [ ] 计划必须能映射到后续 Runner 参数。
-- [ ] 输出无法执行时应失败，不生成“看起来合理”的计划。
-
-### 8.4 验收标准
-
-- [ ] 计划可以直接转换为命令和配置。
-- [ ] baseline 与 variant 只在批准的变量上不同。
+- [ ] 所有任务参数可追溯到用户提供或用户确认记录。
+- [ ] baseline 与 variant 仅在批准变量上不同。
 - [ ] evaluation contract 有 fingerprint。
-- [ ] success / stop 条件可程序化判断。
+- [ ] 计划可以转换为结构化 Runner 参数。
 
 ---
 
-## 9. Step 3.6：Patch Planner + Human Approval
+# Step 3.6：Patch Planner + Human Approval
 
-### 9.1 目标
+## 待办
 
-生成最小可审计 patch，并在人类批准前禁止修改真实仓库。
+- [ ] 生成目标文件、修改目的、依赖、测试、风险和回滚计划。
+- [ ] 在临时 worktree/workspace 中生成 patch。
+- [ ] 只修改 editable paths。
+- [ ] 禁止修改 protected paths。
+- [ ] 输出标准 unified diff。
+- [ ] approval 绑定 patch SHA256。
+- [ ] 未批准时 Runner 拒绝执行。
 
-### 9.2 待办
-
-- [ ] 定义 `PatchPlan` 的真实字段：目标文件、修改目的、依赖、测试、风险和回滚。
-- [ ] 在临时 worktree 或复制 workspace 中生成 patch。
-- [ ] 只允许修改 `editable_paths`。
-- [ ] 禁止修改 `protected_paths`。
-- [ ] 输出标准 unified diff：`patch.diff`。
-- [ ] 记录 changed files、行数和依赖变化。
-- [ ] 新增 `ApprovalDecision`：approve / revise / reject。
-- [ ] 未批准时 Runner 必须拒绝执行。
-- [ ] 批准对象必须绑定 patch SHA256，防止批准后 patch 被替换。
-
-### 9.3 Artifact
+## Artifact
 
 ```text
 patch_plan.json
@@ -447,242 +610,146 @@ patch.diff
 approval.json
 ```
 
-### 9.4 验收标准
-
-- [ ] patch 仅修改允许文件。
-- [ ] patch hash 与 approval 一致。
-- [ ] 人工拒绝时不会执行任何命令。
-- [ ] 可在临时 worktree 中干净应用和回滚。
-
 ---
 
-## 10. Step 3.7：Runner / Sandbox
+# Step 3.7：Runner / Sandbox
 
-### 10.1 目标
+## 待办
 
-在受控环境中执行 baseline 与 variant，保存完整证据。
-
-### 10.2 待办
-
-- [ ] 定义 command whitelist，不接受任意自由 shell。
-- [ ] 只执行 `ExperimentPlan` 生成的结构化命令。
-- [ ] 使用独立 worktree / workspace，禁止覆盖 baseline。
-- [ ] 记录命令、cwd、环境变量白名单、开始/结束时间和 exit code。
+- [ ] 只执行结构化白名单命令。
+- [ ] 使用独立 workspace，禁止覆盖 baseline 和历史 run。
+- [ ] 记录 argv、cwd、环境变量白名单、时间和 exit code。
 - [ ] 支持 timeout、cancel 和失败状态。
-- [ ] 保存 stdout / stderr，不只保留最后几行。
-- [ ] 保存 GPU/CPU/RAM 基本信息。
-- [ ] 保存代码 commit、patch hash、配置 hash。
-- [ ] 首版可以使用 subprocess；暂不引入 Temporal。
-- [ ] 条件允许时增加 Docker/conda 隔离，但不作为第一提交前置条件。
-
-### 10.3 Artifact
-
-```text
-run_command.json
-environment.json
-stdout.log
-stderr.log
-execution_result.json
-```
-
-### 10.4 验收标准
-
-- [ ] baseline 与 variant 均可独立执行。
-- [ ] 失败能被记录并进入报告流程。
-- [ ] 命令超时可终止。
-- [ ] 不允许删除数据集或访问工作区外路径。
-- [ ] 重跑不会覆盖历史结果。
+- [ ] 保存完整 stdout/stderr。
+- [ ] 保存 repo commit、patch hash、config hash 和环境摘要。
+- [ ] 首版可使用 subprocess，暂不引入 Temporal。
 
 ---
 
-## 11. Step 3.8：Metrics Parser + Validity Supervisor
+# Step 3.8：Metrics Parser + Validity Supervisor
 
-### 11.1 Metrics Parser
+## Metrics Parser
 
-- [ ] 从真实输出文件或 stdout 中解析 image AUROC。
-- [ ] 条件允许时解析 pixel AUROC、PRO、耗时和显存。
-- [ ] 保存原始值、来源文件、解析规则和单位。
-- [ ] 解析失败必须显式标记，不允许默认填 0。
+- [ ] 从真实结果文件或 stdout 解析用户确认的指标。
+- [ ] 保存原始值、来源文件、规则和单位。
+- [ ] 解析失败显式标记，不允许默认填 0。
 - [ ] baseline 与 variant 使用同一 parser。
 
-### 11.2 Validity Supervisor
+## Validity Supervisor
 
-必须检查：
-
-- [ ] dataset split 是否一致。
-- [ ] 是否使用 test label / ground-truth mask 参与训练。
-- [ ] 是否修改 evaluation script。
-- [ ] 是否改变后处理或指标口径。
-- [ ] 是否只挑有利类别。
-- [ ] 是否覆盖或删除失败实验。
-- [ ] 是否仅凭单次随机结果宣称有效。
-- [ ] 指标是否来自真实执行。
-- [ ] patch 是否与批准版本一致。
-
-### 11.3 Artifact
-
-```text
-metrics.json
-validity_report.json
-```
-
-### 11.4 验收标准
-
-- [ ] 指标能追溯到真实文件和命令。
-- [ ] evaluation fingerprint 不一致时结论无效。
-- [ ] validity 不通过时，报告不得宣称方法提升。
-- [ ] 失败和无效实验仍被完整保留。
+- [ ] 检查 dataset split 是否一致。
+- [ ] 检查 test label/mask 是否进入训练。
+- [ ] 检查 evaluation script 与 protocol 是否变化。
+- [ ] 检查后处理和指标口径是否变化。
+- [ ] 检查 patch 是否与批准版本一致。
+- [ ] 检查指标是否来自真实执行。
+- [ ] 检查是否凭单次结果过度宣称。
 
 ---
 
-## 12. Step 3.9：Final Reporter
+# Step 3.9：Final Reporter
 
-### 12.1 目标
-
-无论成功、失败、拒绝还是停止，都生成一份可追溯报告。
-
-### 12.2 报告内容
+## 原则
 
 ```text
-任务与用户约束
+无论成功、失败、拒绝还是停止，都生成报告。
+所有数字来自 artifact，不由 LLM 自由生成。
+LLM 只允许润色已有事实。
+```
+
+## 内容
+
+```text
+任务和用户确认参数
+参数来源与证据
 材料和版本
 已确认 Idea
 迁移判断
 实验计划
-patch 摘要与批准记录
-执行环境和命令
-baseline / variant 指标
+patch 和审批
+环境与命令
+指标
 有效性检查
-失败原因或限制
-可以支持的结论
-不能支持的结论
+可支持和不可支持的结论
 下一步建议
 artifact 索引
 ```
 
-### 12.3 待办
+---
 
-- [ ] 先实现 deterministic Markdown reporter。
-- [ ] 所有数字从 artifact 读取，不从 LLM 自由生成。
-- [ ] LLM 只允许润色已有事实，不得新增实验结论。
-- [ ] 每个关键结论链接到对应 artifact / evidence。
-- [ ] 支持 success / failed / rejected / stopped 四类报告。
+# Step 3.10：一键真实纵向 Demo + 回归评测
 
-### 12.4 Artifact
+## 双入口
 
 ```text
-final_report.md
+内部 Benchmark Demo
+  使用明确标记的固定 PatchCore 案例
+
+真实用户任务
+  必须经过参数候选识别与用户确认
 ```
 
-### 12.5 验收标准
-
-- [ ] 任意终态都有报告。
-- [ ] 报告中的指标与 `metrics.json` 一致。
-- [ ] validity 失败时使用明确警告。
-- [ ] 报告可以在无 LLM 模式下生成。
-
----
-
-## 13. Step 3.10：一键真实纵向 Demo 与回归评测
-
-### 13.1 目标
-
-提供一个命令执行固定案例，并产生完整 artifact 链。
-
-建议 CLI：
+内部 Demo CLI 可以是：
 
 ```bash
-uv run autoad run-mvp \
-  --run-id run_patchcore_bottle_001 \
-  --case configs/mvp/patchcore_mvtec_bottle.yaml
+uv run autoad run-internal-benchmark \
+  --run-id run_internal_patchcore_001 \
+  --case configs/benchmarks/internal_patchcore_mvtec_bottle.yaml
 ```
 
-### 13.2 待办
+真实用户 CLI 不得默认填充 baseline：
 
-- [ ] 串联 Step 3.0–3.9。
-- [ ] 支持从已有 stage 恢复，不重复覆盖已完成 artifact。
-- [ ] CLI 显示当前 stage、关键 artifact 和失败原因。
-- [ ] 增加固定成功案例 fixture。
-- [ ] 增加固定失败案例 fixture。
-- [ ] 增加 evaluation leakage 案例。
-- [ ] 增加不适合迁移的论文/Idea 案例。
-- [ ] 生成一份可供答辩展示的 `runs/demo_*` 脱敏样例。
-
-### 13.3 最终验收
-
-- [ ] 一个固定案例可以从输入运行到报告。
-- [ ] 产生真实 baseline 与 variant 指标。
-- [ ] 所有关键操作有 event。
-- [ ] patch 和命令经过审批。
-- [ ] 评价协议未被破坏。
-- [ ] 相同版本和配置可重复运行。
-- [ ] 成功、失败和拒绝均可生成报告。
-- [ ] README 提供 10 分钟内可理解的 Demo 指南。
+```bash
+uv run autoad run \
+  --run-id run_user_001 \
+  --task input_task.yaml
+```
 
 ---
 
-## 14. 测试与评测策略
+## 4. 测试与评测策略
 
-### 14.1 三层测试
+### 三层测试
 
 ```text
 单元测试
-  schema、validator、parser、路径和命令边界
+  schema、provenance、validator、parser、路径和命令边界
 
 集成测试
   artifact → stage → artifact
   使用 fixture，不依赖 GPU 和外部模型
 
 真实案例测试
-  固定 PatchCore + MVTec AD 类别
-  允许较慢，不在每次普通 CI 中运行
+  内部固定 Benchmark
+  允许较慢，不进入普通 CI
 ```
 
-### 14.2 建议新增测试标记
+### 最小 AD-AgentBench
 
 ```text
-@pytest.mark.unit
-@pytest.mark.integration
-@pytest.mark.external_model
-@pytest.mark.gpu
-@pytest.mark.slow
-```
-
-### 14.3 最小 AD-AgentBench
-
-```text
-Case 1：固定直接 Idea，完整成功闭环
-Case 2：不兼容 Idea，被 Transferability Judge 拒绝
-Case 3：patch 尝试修改 evaluation script，被拒绝
-Case 4：实验命令失败，仍生成失败报告
-Case 5：指标提升但 evaluation fingerprint 变化，判定无效
-```
-
-### 14.4 质量指标
-
-```text
-schema validation success rate
-artifact completeness
-source/evidence coverage
-command reproducibility
-metric parse accuracy
-validity violation detection rate
-report factual consistency
-stage failure observability
+Case 1：用户明确指定 UniAD，系统不得改成 PatchCore
+Case 2：上传 PatchCore repo，只生成 repo_detected 候选
+Case 3：论文对比 PaDiM/PatchCore，不能自动选择 baseline
+Case 4：用户无偏好，系统推荐候选并等待确认
+Case 5：patch 尝试修改 evaluation script，被拒绝
+Case 6：实验失败，仍生成失败报告
+Case 7：指标提升但 evaluation fingerprint 改变，判定无效
 ```
 
 ---
 
-## 15. 近期执行优先级
+## 5. 近期优先级
 
-### P0：立刻执行
+### P0：立即执行
 
 ```text
-Step 3.0 固定案例与 baseline 复现
-Step 3.1 真实 Repository Reader
-Step 3.2 真实 Paper Reader
-Step 3.3 Single Idea 确认
-Step 3.4 Transferability Judge
+Step 3.0A 参数来源与确认 schema
+Step 3.0B 内部 Benchmark 案例锁定
+Step 3.0C 内部 Baseline 双跑复现
+Step 3.1  真实 Repository Reader
+Step 3.2  真实 Paper Reader
+Step 3.3  Single Idea 与任务参数确认
+Step 3.4  Transferability Judge
 ```
 
 ### P0：随后完成闭环
@@ -696,14 +763,13 @@ Step 3.9 Report
 Step 3.10 End-to-end Demo
 ```
 
-### P1：闭环之后
+### P1：真实闭环之后
 
 ```text
 SQLite 元数据仓储
-Run / Stage / Artifact / Event 查询
-模型调用记录与成本统计
-简单 Gradio / Web UI
+简单 Web UI
 历史 run 浏览
+模型调用与成本统计
 ```
 
 ### P2：数据库稳定之后
@@ -711,8 +777,7 @@ Run / Stage / Artifact / Event 查询
 ```text
 多 Agent Idea
 多个候选去重和选择
-Idea → Experiment 关联
-低成本多分支 smoke
+多分支低成本 smoke
 历史失败经验检索
 ```
 
@@ -721,138 +786,86 @@ Idea → Experiment 关联
 ```text
 MinIO / S3
 PostgreSQL
-Temporal / LangGraph durable runtime
+Temporal / LangGraph
 多 worker / 多 GPU
-多用户与权限
-完整可观测性
+多用户权限
 ```
 
 ---
 
-## 16. 明确延后条件
+## 6. 开发节奏
 
-### 16.1 数据库
-
-满足以下任意两项再启动：
+每个 Step：
 
 ```text
-run 数量超过 100
-需要按状态 / baseline / dataset 查询
-多个进程并发读写
-UI 需要历史分页
-需要统计失败率和 stage latency
-events.jsonl 查询成为瓶颈
-```
-
-### 16.2 对象存储
-
-满足任一项再启动：
-
-```text
-本地磁盘成为瓶颈
-Runner 与 API 不在同一机器
-需要共享 checkpoint / PDF / 图像
-需要版本化和生命周期管理
-```
-
-### 16.3 Workflow Runtime
-
-满足任意两项再启动：
-
-```text
-实验持续数十分钟或数小时
-需要进程重启恢复
-需要统一 retry / timeout / cancel
-需要长时间等待人工审批
-需要并行实验分支
-需要跨机器 GPU worker
-```
-
-### 16.4 多 Agent
-
-以下条件全部满足后再启动：
-
-```text
-单一 Idea 真实闭环已经跑通
-Idea 与实验结果可以稳定关联
-有至少 5 个可评测真实案例
-能测量多 Agent 相比单 Agent 的收益
-候选去重、证据和用户选择状态有可靠存储
-```
-
----
-
-## 17. 开发节奏建议
-
-每个 Step 采用同一节奏：
-
-```text
-1. 定义单一目标和明确非目标
-2. 先写 schema / 输入输出契约
+1. 明确目标与非目标
+2. 定义 schema 和来源语义
 3. 写 fixture 与失败用例
 4. 实现最小功能
-5. 本地相关测试
-6. 全量 pytest
-7. verify.sh
-8. 手工真实案例验证
-9. 更新 README / 路线 / notes
+5. 运行相关测试
+6. 运行全量 pytest
+7. 运行 verify.sh
+8. 运行真实案例
+9. 更新 README / docs / notes
 10. 单一职责 commit
 ```
 
-每个 Step 必须回答：
+每步必须回答：
 
 ```text
-它解决了哪个已经出现的真实问题？
-是否真的需要 Agent，还是普通函数即可？
-失败时是否留下 artifact 和事件？
-用户是否仍拥有关键确认权？
+参数来自哪里？
+它是候选还是已确认事实？
+用户是否拥有最终确认权？
+失败是否留下 artifact 和 event？
 结论是否来自真实材料或实验？
+内部 Benchmark 是否被错误泄漏为产品默认？
 ```
 
 ---
 
-## 18. 建议的提交序列
+## 7. 建议提交序列
 
 ```text
-chore: lock reproducible PatchCore MVP case
+feat: track baseline candidates and user confirmation provenance
+chore: lock internal PatchCore benchmark case
+chore: add isolated internal benchmark environment
+feat: add reproducible internal baseline runner
+test: add internal benchmark reproducibility fixtures
+docs: record internal benchmark reproduction results
 feat: add local repository reader
 feat: add real PDF paper reader
-feat: add single idea confirmation flow
+feat: add single idea and task parameter confirmation
 feat: add transferability judge
 feat: add dynamic experiment planning
 feat: add patch planning and approval
 feat: add controlled experiment runner
 feat: add metrics parsing and validity checks
 feat: add deterministic final reporting
-feat: add end-to-end MVP command
+feat: add end-to-end user flow and internal benchmark command
 ```
-
-每个提交保持可独立测试，不把整个 Step 3.x 压成一个大提交。
 
 ---
 
-## 19. 完成定义
+## 8. Step 3.x 完成定义
 
-当以下条件全部满足时，Step 3.x 真实纵向闭环完成：
-
-- [ ] 使用固定 PatchCore repo 和 commit。
-- [ ] 使用固定 MVTec AD 类别。
-- [ ] 真实读取一篇论文或接受一个明确用户 Idea。
+- [ ] 内部 Benchmark 明确标记为 internal-only。
+- [ ] 真实用户任务不预设 baseline、dataset、metric 或 category。
+- [ ] 候选参数包含来源、理由和 evidence。
+- [ ] 正式参数只来自 user_provided / user_confirmed。
+- [ ] 使用用户确认的真实 repo 和数据集。
+- [ ] 真实读取论文或接受明确用户 Idea。
 - [ ] 用户确认唯一 active Idea。
 - [ ] 生成有证据的迁移判断。
 - [ ] 生成可执行实验计划。
 - [ ] 生成并批准最小 patch。
 - [ ] 在受控环境运行 baseline 和 variant。
-- [ ] 从真实输出解析指标。
+- [ ] 从真实输出解析用户确认的指标。
 - [ ] 检查评价协议和数据泄漏风险。
 - [ ] 无论结果如何都生成最终报告。
 - [ ] 完整 artifact 和 events 可审计。
-- [ ] 固定案例可以重复运行。
-
-完成后再进入 Step 4.x：SQLite 元数据层。
 
 ---
 
-## 20. 一句话路线
+## 9. 一句话路线
 
-> **现在先把一个已确认 Idea 在固定 PatchCore + MVTec AD 案例上真正跑完：读材料、判断迁移、生成并批准 patch、执行实验、读取指标、检查有效性、输出报告；闭环跑通后，再引入数据库、多 Agent、对象存储和可靠工作流。**
+> **先用证据识别 baseline、dataset、metrics 等候选并让用户确认；再把一个已确认 Idea 在用户选择的真实实验底座上跑完。PatchCore + MVTec AD 只保留为团队内部 Benchmark，不是系统默认。**
