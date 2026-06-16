@@ -11,7 +11,7 @@ ArtifactStore 负责 artifact 级生命周期。
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.core.events import EventStore
 from autoad_researcher.core.run_id import run_dir_path
@@ -35,6 +35,20 @@ class PipelineResult(BaseModel):
     failed_stage: str | None = None
     error_type: str | None = None
     error_message: str | None = None
+
+    @model_validator(mode="after")
+    def _check_failure_fields_consistency(self):
+        if self.status == "success":
+            if self.failed_stage is not None:
+                raise ValueError("success result must not set failed_stage")
+            if self.error_type is not None:
+                raise ValueError("success result must not set error_type")
+        elif self.status == "failed":
+            if self.failed_stage is None:
+                raise ValueError("failed result must set failed_stage")
+            if self.error_type is None:
+                raise ValueError("failed result must set error_type")
+        return self
 
 
 class PipelineController:

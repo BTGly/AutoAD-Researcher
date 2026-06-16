@@ -1,10 +1,10 @@
 """测试 PipelineController。"""
 
-from pathlib import Path
-
 import pytest
 
 from autoad_researcher.core import EventStore, PipelineController, PipelineResult, StageResult
+from pydantic import ValidationError
+
 from autoad_researcher.harness.base import AgentHarness
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
 
@@ -150,3 +150,18 @@ class TestPipelineControllerFailure:
             "stage_failed",
         ]
         assert events[1].payload["stage"] == "patch_planning"
+
+    def test_success_result_rejects_failure_fields(self):
+        with pytest.raises(ValidationError):
+            PipelineResult(
+                run_id="run_demo",
+                status="success",
+                failed_stage="experiment_planning",
+            )
+
+    def test_failed_result_requires_failed_stage_and_error_type(self):
+        with pytest.raises(ValidationError):
+            PipelineResult(
+                run_id="run_demo",
+                status="failed",
+            )
