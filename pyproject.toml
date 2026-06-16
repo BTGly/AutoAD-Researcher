@@ -16,6 +16,9 @@ dependencies = [
     "deepagents>=0.6.10,<0.7",
 ]
 
+[project.scripts]
+autoad = "autoad_researcher.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8",

@@ -131,6 +131,11 @@ for base in ["src", "tests", "scripts"]:
 print("[verify] no forbidden spike schema imports.")
 PY
 
+echo "[verify] checking CLI entrypoints..."
+"$UV_BIN" run autoad --help >/dev/null
+"$UV_BIN" run python -m autoad_researcher --help >/dev/null
+echo "[verify] CLI entrypoints ok."
+
 echo "[verify] running pytest..."
 "$UV_BIN" run --extra dev pytest -q
 
