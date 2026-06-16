@@ -26,6 +26,17 @@ _IMMUTABLE_FIELDS = (
 )
 
 
+def _revalidate_result(raw_result) -> "ClarifiedTask":
+    """强制完整 Pydantic 校验，防止 model_copy() / model_construct() 绕过。"""
+    from autoad_researcher.schemas import ClarifiedTask
+
+    if isinstance(raw_result, ClarifiedTask):
+        payload = raw_result.model_dump(mode="json")
+    else:
+        payload = raw_result
+    return ClarifiedTask.model_validate(payload)
+
+
 class IntentClarifier:
     """基于已落盘事实的意图澄清 core service。"""
 
@@ -59,7 +70,8 @@ class IntentClarifier:
             repo_summary=repo_summary,
         )
 
-        result = self._backend.clarify(context=context)
+        raw_result = self._backend.clarify(context=context)
+        result = _revalidate_result(raw_result)
 
         # --- 校验 backend 输出 ---
         if result.run_id != run_id:

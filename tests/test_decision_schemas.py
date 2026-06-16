@@ -9,8 +9,14 @@ from autoad_researcher.schemas import (
     ConfirmedDecision,
     DecisionCandidate,
     DecisionEvidence,
-    MissingInformation,
 )
+
+# Helper to make artifact references with correct artifact for source
+def _repo_ref(locator="baseline_methods", source_id="r"):
+    return ArtifactReference(artifact="repo_summary.json", locator=locator, source_id=source_id)
+
+def _paper_ref(locator="compared_methods", source_id="p"):
+    return ArtifactReference(artifact="paper_summary.json", locator=locator, source_id=source_id)
 
 
 class TestDecisionEvidence:
@@ -26,7 +32,7 @@ class TestDecisionCandidate:
         with pytest.raises(ValidationError):
             DecisionCandidate(value="", evidence=[
                 DecisionEvidence(source="repo_detected", rationale="x",
-                                 references=[ArtifactReference(artifact="input_task.yaml", locator="x")]),
+                                 references=[_repo_ref()]),
             ])
 
     def test_evidence_empty_rejected(self):
@@ -73,11 +79,11 @@ class TestClarifiedTaskBaselineProvenance:
                 baseline_candidates=[
                     DecisionCandidate(value="PatchCore", evidence=[
                         DecisionEvidence(source="repo_detected", rationale="x",
-                                         references=[ArtifactReference(artifact="input_task.yaml", locator="x")]),
+                                         references=[_repo_ref()]),
                     ]),
                     DecisionCandidate(value="patchcore", evidence=[
                         DecisionEvidence(source="paper_mentioned", rationale="y",
-                                         references=[ArtifactReference(artifact="input_task.yaml", locator="y")]),
+                                         references=[_paper_ref()]),
                     ]),
                 ],
             )
@@ -90,7 +96,7 @@ class TestClarifiedTaskBaselineProvenance:
                 baseline_candidates=[
                     DecisionCandidate(value="UniAD", evidence=[
                         DecisionEvidence(source="repo_detected", rationale="x",
-                                         references=[ArtifactReference(artifact="input_task.yaml", locator="x")]),
+                                         references=[_repo_ref()]),
                     ]),
                 ],
             )
@@ -107,7 +113,7 @@ class TestClarifiedTaskBaselineProvenance:
             baseline_candidates=[
                 DecisionCandidate(value="PatchCore", evidence=[
                     DecisionEvidence(source="repo_detected", rationale="x",
-                                     references=[ArtifactReference(artifact="input_task.yaml", locator="x")]),
+                                     references=[_repo_ref()]),
                 ]),
             ],
         )

@@ -124,3 +124,69 @@ class TestRuleBasedClarifier:
         result = RuleBasedIntentClarifierBackend().clarify(context=ctx)
 
         assert "不修改 evaluation script" in result.constraints
+
+    def test_user_provided_baseline_decision(self):
+        ctx = _make_context(baseline="UniAD")
+        result = RuleBasedIntentClarifierBackend().clarify(context=ctx)
+
+        assert result.baseline == "UniAD"
+        assert result.baseline_decision is not None
+        assert result.baseline_decision.source == "user_provided"
+        assert result.baseline_candidates == []
+        # No baseline question when already provided
+        assert not any(q.missing_item_id == "missing_baseline" for q in result.questions)
+
+    def test_paper_only_candidate(self):
+        ctx = ClarificationContext(
+            run_id="run_demo",
+            task=InputTask(run_id="run_demo", request="迁移方法", source_ids=["paper_main"]),
+            paper_summary=PaperSummary(
+                run_id="run_demo", source_id="paper_main",
+                research_problem="x", core_idea="y",
+                compared_methods=["PaDiM"],
+            ),
+            repo_summary=None,
+        )
+        result = RuleBasedIntentClarifierBackend().clarify(context=ctx)
+
+        assert result.baseline is None
+        assert len(result.baseline_candidates) == 1
+        c = result.baseline_candidates[0]
+        assert c.value == "PaDiM"
+        assert all(e.source == "paper_mentioned" for e in c.evidence)
+
+    def test_repo_paper_merge(self):
+        ctx = ClarificationContext(
+            run_id="run_demo",
+            task=InputTask(run_id="run_demo", request="迁移方法", source_ids=["p", "r"]),
+            paper_summary=PaperSummary(
+                run_id="run_demo", source_id="p",
+                research_problem="x", core_idea="y",
+                compared_methods=["PatchCore"],
+            ),
+            repo_summary=RepositorySummary(
+                run_id="run_demo", source_id="r",
+                baseline_methods=["PatchCore"],
+            ),
+        )
+        result = RuleBasedIntentClarifierBackend().clarify(context=ctx)
+
+        assert len(result.baseline_candidates) == 1
+        c = result.baseline_candidates[0]
+        assert c.value == "PatchCore"
+        sources = {e.source for e in c.evidence}
+        assert sources == {"repo_detected", "paper_mentioned"}
+
+    def test_blank_methods_filtered(self):
+        ctx = ClarificationContext(
+            run_id="run_demo",
+            task=InputTask(run_id="run_demo", request="x", source_ids=["r"]),
+            repo_summary=RepositorySummary(
+                run_id="run_demo", source_id="r",
+                baseline_methods=["PatchCore", "", "  "],
+            ),
+        )
+        result = RuleBasedIntentClarifierBackend().clarify(context=ctx)
+
+        assert len(result.baseline_candidates) == 1
+        assert result.baseline_candidates[0].value == "PatchCore"

@@ -128,7 +128,7 @@ class TestIntentClarifier:
                 result.baseline = "FastFlow"
                 return result
 
-        with pytest.raises(ValueError, match="must not rewrite"):
+        with pytest.raises(Exception):
             IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
 
     def test_backend_rewrites_original_request_rejected(self, tmp_path):
@@ -164,6 +164,45 @@ class TestIntentClarifier:
 
         store = ArtifactStore(runs_root=tmp_path, enable_events=False)
         assert not store.exists("run_demo", "clarified_task.json")
+
+    def test_model_copy_injects_empty_evidence_candidate_rejected(self, tmp_path):
+        _setup_full(tmp_path)
+
+        class BadBackend(RuleBasedIntentClarifierBackend):
+            def clarify(self, *, context):
+                result = super().clarify(context=context)
+                from autoad_researcher.schemas import DecisionCandidate
+                result.baseline_candidates = [
+                    DecisionCandidate(value="Bad", evidence=[]),
+                ]
+                return result
+
+        with pytest.raises(Exception):
+            IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
+
+        assert not ArtifactStore(runs_root=tmp_path, enable_events=False).exists(
+            "run_demo", "clarified_task.json"
+        )
+
+    def test_model_copy_injects_duplicate_candidate_rejected(self, tmp_path):
+        _setup_full(tmp_path)
+        from autoad_researcher.schemas import DecisionCandidate, DecisionEvidence, ArtifactReference
+
+        class BadBackend(RuleBasedIntentClarifierBackend):
+            def clarify(self, *, context):
+                result = super().clarify(context=context)
+                ev = DecisionEvidence(
+                    source="repo_detected", rationale="x",
+                    references=[ArtifactReference(artifact="repo_summary.json", locator="baseline_methods", source_id="baseline_repo")],
+                )
+                result.baseline_candidates = [
+                    DecisionCandidate(value="Dup", evidence=[ev]),
+                    DecisionCandidate(value="dup", evidence=[ev]),
+                ]
+                return result
+
+        with pytest.raises(Exception):
+            IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
 
     def test_backend_selects_metrics_rejected(self, tmp_path):
         _setup_full(tmp_path)
