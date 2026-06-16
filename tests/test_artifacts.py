@@ -169,3 +169,51 @@ class TestArtifactStore:
 
         event_path = tmp_path / "run_demo" / "events.jsonl"
         assert not event_path.exists()
+
+    def test_write_yaml_and_read_yaml(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+
+        path = store.write_yaml(
+            "run_demo",
+            "input_task.yaml",
+            {"request": "test task", "baseline": "PatchCore"},
+        )
+
+        assert path == tmp_path / "run_demo" / "input_task.yaml"
+        assert path.exists()
+
+        data = store.read_yaml("run_demo", "input_task.yaml")
+        assert data["request"] == "test task"
+        assert data["baseline"] == "PatchCore"
+
+    def test_write_json_rejects_yaml_file(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        with pytest.raises(ValueError, match="write_json requires a JSON artifact"):
+            store.write_json("run_demo", "input_task.yaml", {"x": 1})
+
+    def test_write_yaml_rejects_json_file(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        with pytest.raises(ValueError, match="write_yaml requires a YAML artifact"):
+            store.write_yaml("run_demo", "experiment_plan.json", {"x": 1})
+
+    def test_write_yaml_records_artifact_written_event(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+
+        store.write_yaml("run_demo", "input_task.yaml", {"request": "test"})
+
+        events = EventStore(runs_root=tmp_path).read_events("run_demo")
+        assert len(events) == 1
+        assert events[0].event_type == "artifact_written"
+        assert events[0].payload["artifact"] == "input_task.yaml"
+
+    def test_read_yaml_records_artifact_read_event(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+
+        store.write_yaml("run_demo", "input_task.yaml", {"request": "test"})
+        store.read_yaml("run_demo", "input_task.yaml")
+
+        events = EventStore(runs_root=tmp_path).read_events("run_demo")
+        assert [e.event_type for e in events] == [
+            "artifact_written",
+            "artifact_read",
+        ]

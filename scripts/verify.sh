@@ -75,11 +75,17 @@ echo "[verify] checking core imports..."
 from autoad_researcher.core import (
     ArtifactStore,
     EventStore,
+    InputIntake,
     PipelineController,
     PipelineResult,
     StageResult,
 )
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
+from autoad_researcher.schemas import (
+    InputTask,
+    SourceEntry,
+    SourceManifest,
+)
 
 store = ArtifactStore(runs_root="runs")
 events = EventStore(runs_root="runs")
