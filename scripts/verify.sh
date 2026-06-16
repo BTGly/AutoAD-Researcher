@@ -195,6 +195,12 @@ test -f src/autoad_researcher/benchmarks/dataset.py
 test -f src/autoad_researcher/benchmarks/environment.py
 test -f src/autoad_researcher/benchmarks/preflight.py
 test -f scripts/benchmark/preflight.py
+echo "[verify] checking benchmark environment lock..."
+test -f src/autoad_researcher/benchmarks/environment_lock.py
+test -f configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml
+test -f configs/benchmarks/environments/patchcore_linux_gpu/requirements.in
+"$UV_BIN" run python -c "from autoad_researcher.benchmarks.environment_lock import BenchmarkEnvironmentSpec, validate_lockfile; print('[verify] environment lock ok.')"
+echo "[verify] benchmark environment lock ok."
 echo "[verify] benchmark preflight files ok."
 
 echo "[verify] running pytest..."

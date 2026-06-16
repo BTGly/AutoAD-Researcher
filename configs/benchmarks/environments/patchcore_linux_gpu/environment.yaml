@@ -1,0 +1,24 @@
+schema_version: 1
+environment_id: patchcore_linux_gpu_v1
+case_id: internal_patchcore_mvtec_bottle_v1
+
+platform: linux_x86_64
+python_version: "<filled after first build>"
+package_manager: uv
+
+requirements_input_path: requirements.in
+lockfile_path: requirements.lock.txt
+lockfile_sha256: "<filled after lock generation>"
+
+required_imports:
+  - torch
+  - torchvision
+  - faiss
+  - timm
+  - patchcore.backbones
+
+accelerator: cuda
+gpu_index: 0
+
+allow_network_during_build: true
+allow_network_during_execution: false

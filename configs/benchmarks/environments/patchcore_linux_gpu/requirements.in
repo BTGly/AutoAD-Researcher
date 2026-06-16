@@ -1,0 +1,28 @@
+# PatchCore benchmark environment — input constraints for uv lock.
+# Do NOT edit versions here blindly; the actual lockfile is requirements.lock.txt.
+# This file is the input specification for regenerating the lockfile.
+
+# Core runtime (upstream requirements.txt)
+click
+matplotlib
+pillow
+pretrainedmodels
+scipy
+tqdm
+
+# ML — choose torch/torchvision version compatible with target GPU driver
+torch
+torchvision
+
+# Backbone (required by PatchCore backbones.py, NOT in upstream requirements.txt)
+timm
+
+# FAISS (case uses faiss_on_gpu=false)
+faiss-cpu
+
+# Image processing
+scikit-image
+scikit-learn
+
+# Numerical
+numpy
