@@ -67,15 +67,18 @@ def collect_environment_snapshot(
     probe_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> BenchmarkEnvironmentSnapshot:
     # Python boundary: launcher path must be in workspace/envs
+    import os as _os
+    launcher = Path(_os.path.abspath(str(benchmark_python)))
+    envs_root = (workspace_root / "envs").resolve(strict=True)
     try:
-        benchmark_python.relative_to(workspace_root / "envs")
+        launcher.relative_to(envs_root)
     except ValueError:
         raise BenchmarkPreflightError(check_name="environment", code="ENV_PYTHON_OUTSIDE_WORKSPACE",
                                       message="benchmark python must be inside workspace/envs")
-    if not benchmark_python.exists():
+    if not launcher.exists():
         raise BenchmarkPreflightError(check_name="environment", code="ENV_PYTHON_NOT_FOUND",
                                       message="benchmark python not found")
-    if not os.access(benchmark_python, os.X_OK):
+    if not _os.access(launcher, _os.X_OK):
         raise BenchmarkPreflightError(check_name="environment", code="ENV_PYTHON_NOT_EXECUTABLE",
                                       message="benchmark python not executable")
 

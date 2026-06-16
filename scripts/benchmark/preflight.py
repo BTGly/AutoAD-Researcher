@@ -22,6 +22,10 @@ def main() -> int:
     p.add_argument("--json", action="store_true", dest="json_output")
     args = p.parse_args()
 
+    def project_path(value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
     out = Path(args.output_dir)
     if out.exists():
         print(f"error: output-dir already exists: {out}", file=sys.stderr)
@@ -30,7 +34,7 @@ def main() -> int:
     # Load case via official schema
     try:
         from autoad_researcher.benchmarks.config import load_internal_benchmark_case
-        case = load_internal_benchmark_case(Path(args.case))
+        case = load_internal_benchmark_case(project_path(args.case))
     except Exception as exc:
         print(f"error: cannot load case: {exc}", file=sys.stderr)
         return 2
@@ -39,9 +43,9 @@ def main() -> int:
 
     try:
         bundle = run_preflight(
-            case=case, repo_path=Path(args.repo),
-            benchmark_python=Path(args.benchmark_python),
-            lockfile_path=Path(args.lockfile),
+            case=case, repo_path=project_path(args.repo),
+            benchmark_python=project_path(args.benchmark_python),
+            lockfile_path=project_path(args.lockfile),
             workspace_root=workspace_root,
             attempt=args.attempt,
             environ=dict(os.environ),

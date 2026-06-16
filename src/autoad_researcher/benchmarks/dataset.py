@@ -45,6 +45,12 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
             message="dataset must be inside workspace/datasets")
 
     cat = case.dataset.category
+    # Reject required directory symlinks
+    for check_path in [dataset_root, dataset_root / cat, dataset_root / cat / "train",
+                       dataset_root / cat / "test", dataset_root / cat / "ground_truth"]:
+        if check_path.is_symlink():
+            raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
+                message=f"required path must not be a symlink: {check_path.name}")
     train_good_dir = dataset_root / cat / "train" / "good"
     test_dir = dataset_root / cat / "test"
     gt_dir = dataset_root / cat / "ground_truth"
@@ -147,9 +153,9 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
                 raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
                     message=f"unexpected nested directory in ground_truth: {mf.name}")
             if mf.is_file():
-                if mf.suffix != ".png":
+                if not mf.name.endswith("_mask.png"):
                     raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
-                        message=f"unexpected file in ground_truth: {mf.name}")
+                        message=f"ground_truth file must end with _mask.png: {mf.name}")
                 stem = mf.stem.removesuffix("_mask")
                 expected_img = test_dir / atype / f"{stem}.png"
                 if not expected_img.exists():

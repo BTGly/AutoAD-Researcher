@@ -42,7 +42,8 @@ def _run_one(name: str, fn, *args, **kwargs):
 
 def run_preflight(*, case, repo_path: Path, benchmark_python: Path, lockfile_path: Path,
                   workspace_root: Path, attempt: AllowedAttempt,
-                  environ: Mapping[str, str]) -> BenchmarkPreflightBundle:
+                  environ: Mapping[str, str],
+                  probe_runner=None) -> BenchmarkPreflightBundle:
     repo_ev, repo_check = _run_one("repository", collect_repository_state,
                                    case=case, repo_path=repo_path, workspace_root=workspace_root)
     ds_ev, ds_check = _run_one("dataset",
@@ -53,7 +54,8 @@ def run_preflight(*, case, repo_path: Path, benchmark_python: Path, lockfile_pat
     env_ev, env_check = _run_one("environment",
                                  lambda: collect_environment_snapshot(
                                      case=case, benchmark_python=benchmark_python,
-                                     lockfile_path=lockfile_path, workspace_root=workspace_root))
+                                     lockfile_path=lockfile_path, workspace_root=workspace_root,
+                                     probe_runner=probe_runner))
 
     report = BenchmarkPreflightReport(
         schema_version=1, case_id=case.case_id, attempt=attempt,

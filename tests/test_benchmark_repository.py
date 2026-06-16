@@ -161,3 +161,20 @@ class TestRepositoryPreflight:
         case = _mock_case(commit, entrypoint="missing.py")
         with pytest.raises(BenchmarkPreflightError, match="required file missing"):
             collect_repository_state(case=case, repo_path=repo, workspace_root=ws)
+
+class TestVerifyUnchangedMismatch:
+    def test_verify_mismatch_rejected(self):
+        from autoad_researcher.benchmarks.evidence import BenchmarkRepositoryState
+
+        s1 = BenchmarkRepositoryState(
+            schema_version=1, case_id="c", expected_commit="a" * 40,
+            actual_commit="b" * 40, detached_head=True, dirty=False,
+            remote_url="github.com/x/y", repository_fingerprint="c" * 64,
+        )
+        s2 = BenchmarkRepositoryState(
+            schema_version=1, case_id="c", expected_commit="a" * 40,
+            actual_commit="b" * 40, detached_head=True, dirty=False,
+            remote_url="github.com/x/y", repository_fingerprint="d" * 64,
+        )
+        with pytest.raises(BenchmarkPreflightError, match="fingerprint changed"):
+            verify_repository_unchanged(before=s1, after=s2)
