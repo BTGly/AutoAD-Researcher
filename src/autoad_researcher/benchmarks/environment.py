@@ -72,7 +72,7 @@ def collect_environment_snapshot(
     launcher = Path(_os.path.abspath(str(benchmark_python)))
     envs_root = (workspace_root / "envs").resolve(strict=True)
     try:
-        launcher.parent.resolve(strict=True).relative_to(envs_root)
+        launcher.parent.resolve(strict=False).relative_to(envs_root)
     except ValueError:
         raise BenchmarkPreflightError(check_name="environment", code="ENV_PYTHON_OUTSIDE_WORKSPACE",
                                       message="benchmark python must be inside workspace/envs")

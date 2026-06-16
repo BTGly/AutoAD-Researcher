@@ -143,3 +143,53 @@ class TestEnvironmentPreflight:
         s2 = collect_environment_snapshot(case=_case(), benchmark_python=py, lockfile_path=lf,
                                           workspace_root=tmp_path / "workspace", probe_runner=runner)
         assert s1.environment_sha256 == s2.environment_sha256
+
+    def test_symlink_launcher_allowed(self, tmp_path):
+        (tmp_path / "workspace" / "envs" / "benchmark" / "bin").mkdir(parents=True)
+        real_py = tmp_path / "real_python"
+        real_py.write_text("fake"); real_py.chmod(0o755)
+        py = tmp_path / "workspace" / "envs" / "benchmark" / "bin" / "python"
+        py.symlink_to(real_py)
+        (tmp_path / "configs" / "benchmarks" / "environments" / "e").mkdir(parents=True)
+        lf = tmp_path / "configs" / "benchmarks" / "environments" / "e" / "lock.txt"
+        lf.write_text("x")
+
+        def runner(python, source, timeout):
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=_cuda_probe(), stderr="")
+
+        result = collect_environment_snapshot(
+            case=_case(), benchmark_python=py, lockfile_path=lf,
+            workspace_root=tmp_path / "workspace", probe_runner=runner,
+        )
+        assert result is not None
+
+    def test_intermediate_dir_symlink_rejected(self, tmp_path):
+        (tmp_path / "outside" / "benchmark" / "bin").mkdir(parents=True)
+        py = tmp_path / "outside" / "benchmark" / "bin" / "python"
+        py.write_text("fake"); py.chmod(0o755)
+        (tmp_path / "workspace" / "envs").mkdir(parents=True)
+        link = tmp_path / "workspace" / "envs" / "benchmark"
+        link.symlink_to(tmp_path / "outside" / "benchmark")
+        (tmp_path / "configs" / "benchmarks" / "environments" / "e").mkdir(parents=True)
+        lf = tmp_path / "configs" / "benchmarks" / "environments" / "e" / "lock.txt"
+        lf.write_text("x")
+
+        with pytest.raises(BenchmarkPreflightError, match="inside workspace/envs"):
+            collect_environment_snapshot(
+                case=_case(), benchmark_python=link / "bin" / "python", lockfile_path=lf,
+                workspace_root=tmp_path / "workspace",
+            )
+
+    def test_missing_launcher_preserves_not_found(self, tmp_path):
+        (tmp_path / "workspace" / "envs" / "b" / "bin").mkdir(parents=True)
+        py = tmp_path / "workspace" / "envs" / "b" / "bin" / "python"
+        # File does NOT exist
+        (tmp_path / "configs" / "benchmarks" / "environments" / "e").mkdir(parents=True)
+        lf = tmp_path / "configs" / "benchmarks" / "environments" / "e" / "lock.txt"
+        lf.write_text("x")
+
+        with pytest.raises(BenchmarkPreflightError, match="not found"):
+            collect_environment_snapshot(
+                case=_case(), benchmark_python=py, lockfile_path=lf,
+                workspace_root=tmp_path / "workspace",
+            )
