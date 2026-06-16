@@ -36,6 +36,12 @@ class IdeaRouteDecision(BaseModel):
     requested_mode: IdeaMode | None = None
     reason: str = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _validate_mode_consistency(self):
+        if self.requested_mode is not None and self.mode != self.requested_mode:
+            raise ValueError("mode must match requested_mode when both are set")
+        return self
+
 
 # ------------------------------------------------------------------
 # IdeaContext

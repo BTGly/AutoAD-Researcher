@@ -230,26 +230,49 @@ class TestArtifactStore:
         assert data["status"] == "ready"
 
     def test_write_and_read_idea_context(self, tmp_path):
-        store = ArtifactStore(runs_root=tmp_path)
-        path = store.write_json(
-            "run_demo",
-            "idea_context.json",
-            {"run_id": "run_demo", "route": {"mode": "idea_decomposition", "reason": "test"}},
+        from autoad_researcher.schemas import (
+            ClarifiedTask,
+            IdeaContext,
+            IdeaRouteDecision,
         )
+        model = IdeaContext(
+            run_id="run_demo",
+            route=IdeaRouteDecision(mode="idea_decomposition", reason="has idea"),
+            clarified_task=ClarifiedTask(
+                run_id="run_demo", status="ready", original_request="x",
+            ),
+        )
+        store = ArtifactStore(runs_root=tmp_path)
+        path = store.write_json("run_demo", "idea_context.json", model)
         assert path == tmp_path / "run_demo" / "idea_context.json"
-        data = store.read_json("run_demo", "idea_context.json")
-        assert data["route"]["mode"] == "idea_decomposition"
+        loaded = store.read_model("run_demo", "idea_context.json", IdeaContext)
+        assert loaded.route.mode == "idea_decomposition"
 
     def test_write_and_read_idea_candidates(self, tmp_path):
-        store = ArtifactStore(runs_root=tmp_path)
-        path = store.write_json(
-            "run_demo",
-            "idea_candidates.json",
-            {"run_id": "run_demo", "mode": "idea_decomposition", "candidates": []},
+        from autoad_researcher.schemas import (
+            ArtifactReference,
+            IdeaCandidate,
+            IdeaGenerationResult,
         )
+        model = IdeaGenerationResult(
+            run_id="run_demo",
+            mode="idea_decomposition",
+            candidates=[
+                IdeaCandidate(
+                    idea_id="idea_001",
+                    title="test", description="desc",
+                    insertion_point="backbone", rationale="good",
+                    minimum_experiment="smoke",
+                    estimated_cost="low", confidence=0.8,
+                    evidence=[ArtifactReference(artifact="input_task.yaml", locator="request")],
+                )
+            ],
+        )
+        store = ArtifactStore(runs_root=tmp_path)
+        path = store.write_json("run_demo", "idea_candidates.json", model)
         assert path == tmp_path / "run_demo" / "idea_candidates.json"
-        data = store.read_json("run_demo", "idea_candidates.json")
-        assert data["mode"] == "idea_decomposition"
+        loaded = store.read_model("run_demo", "idea_candidates.json", IdeaGenerationResult)
+        assert len(loaded.candidates) == 1
 
     def test_write_and_read_repo_summary(self, tmp_path):
         store = ArtifactStore(runs_root=tmp_path)

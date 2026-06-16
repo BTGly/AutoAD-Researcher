@@ -112,13 +112,20 @@ class IdeaSourceRouter:
 # ------------------------------------------------------------------
 
 
+def _has_user_idea(clarified: ClarifiedTask) -> bool:
+    idea = clarified.user_idea
+    return bool(idea is not None and idea.strip())
+
+
 def _select_route(
     clarified: ClarifiedTask,
     requested_mode: IdeaMode | None,
 ) -> IdeaRouteDecision:
+    has_idea = _has_user_idea(clarified)
+
     # 显式模式校验
     if requested_mode is not None:
-        if requested_mode in {"direct_user_idea", "idea_decomposition"} and not clarified.user_idea:
+        if requested_mode in {"direct_user_idea", "idea_decomposition"} and not has_idea:
             raise ValueError(
                 f"{requested_mode} requires user_idea, but none is present"
             )
@@ -129,7 +136,7 @@ def _select_route(
         )
 
     # 默认路由
-    if clarified.user_idea is None:
+    if not has_idea:
         return IdeaRouteDecision(
             mode="multi_agent_exploration",
             reason="no user idea provided; candidate exploration required",

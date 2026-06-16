@@ -158,6 +158,45 @@ class TestIdeaSourceRouter:
         with pytest.raises(ValueError, match="not in clarified"):
             IdeaSourceRouter(runs_root=tmp_path).run("run_demo")
 
+    def test_empty_idea_defaults_to_exploration(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        _write_clarified(store, user_idea="")
+
+        result = IdeaSourceRouter(runs_root=tmp_path).run("run_demo")
+        assert result.metadata["mode"] == "multi_agent_exploration"
+
+    def test_whitespace_idea_defaults_to_exploration(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        _write_clarified(store, user_idea="   ")
+
+        result = IdeaSourceRouter(runs_root=tmp_path).run("run_demo")
+        assert result.metadata["mode"] == "multi_agent_exploration"
+
+    def test_empty_idea_direct_mode_rejected(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        _write_clarified(store, user_idea="")
+
+        with pytest.raises(ValueError, match="requires user_idea"):
+            IdeaSourceRouter(runs_root=tmp_path).run("run_demo", requested_mode="direct_user_idea")
+
+    def test_repo_run_id_mismatch(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        _write_clarified(store)
+        store.write_json("run_demo", "repo_summary.json", RepositorySummary(
+            run_id="other", source_id="baseline_repo",
+        ))
+
+        with pytest.raises(ValueError, match="run_id mismatch"):
+            IdeaSourceRouter(runs_root=tmp_path).run("run_demo")
+
+    def test_repo_source_id_not_in_clarified(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        _write_clarified(store, source_ids=["paper_main"])
+        _write_repo(store)
+
+        with pytest.raises(ValueError, match="not in clarified"):
+            IdeaSourceRouter(runs_root=tmp_path).run("run_demo")
+
     def test_snapshot_consistency(self, tmp_path):
         store = ArtifactStore(runs_root=tmp_path, enable_events=False)
         _write_clarified(store)

@@ -21,6 +21,14 @@ class TestIdeaRouteDecision:
         with pytest.raises(ValidationError):
             IdeaRouteDecision(mode="multi_agent_exploration", reason="x", extra="no")  # type: ignore[call-arg]
 
+    def test_mode_must_match_requested(self):
+        with pytest.raises(ValidationError, match="mode must match"):
+            IdeaRouteDecision(
+                mode="idea_decomposition",
+                requested_mode="direct_user_idea",
+                reason="x",
+            )
+
 
 class TestIdeaContext:
     def test_minimal_valid(self):
