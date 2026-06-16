@@ -199,8 +199,16 @@ echo "[verify] checking benchmark environment lock..."
 test -f src/autoad_researcher/benchmarks/environment_lock.py
 test -f configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml
 test -f configs/benchmarks/environments/patchcore_linux_gpu/requirements.in
-"$UV_BIN" run python -c "from autoad_researcher.benchmarks.environment_lock import BenchmarkEnvironmentSpec, validate_lockfile; print('[verify] environment lock ok.')"
-echo "[verify] benchmark environment lock ok."
+"$UV_BIN" run python -c "
+import yaml
+from autoad_researcher.benchmarks.environment_lock import BenchmarkEnvironmentSpec
+data = yaml.safe_load(open('configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml'))
+spec = BenchmarkEnvironmentSpec.model_validate(data)
+reqs = open('configs/benchmarks/environments/patchcore_linux_gpu/requirements.in').read()
+assert 'timm' in reqs
+assert 'faiss-cpu' in reqs
+print('[verify] benchmark environment lock ok.')
+"
 echo "[verify] benchmark preflight files ok."
 
 echo "[verify] running pytest..."

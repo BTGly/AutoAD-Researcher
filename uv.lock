@@ -59,6 +59,7 @@ source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
     { name = "httpx" },
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -76,6 +77,7 @@ requires-dist = [
     { name = "deepagents", specifier = ">=0.6.10,<0.7" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "ipython", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "packaging", specifier = ">=24" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
