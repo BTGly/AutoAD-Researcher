@@ -22,6 +22,14 @@ from autoad_researcher.schemas import SourceManifest
 # ------------------------------------------------------------------
 
 
+def _validate_manifest_run_id(manifest: SourceManifest, run_id: str) -> None:
+    if manifest.run_id != run_id:
+        raise ValueError(
+            f"source manifest run_id mismatch: "
+            f"expected {run_id!r}, got {manifest.run_id!r}"
+        )
+
+
 def _find_source(manifest: SourceManifest, source_id: str):
     for source in manifest.sources:
         if source.source_id == source_id:
@@ -50,6 +58,7 @@ class PaperReader:
         manifest = self._artifacts.read_model(
             run_id, "source_manifest.json", SourceManifest
         )
+        _validate_manifest_run_id(manifest, run_id)
         source = _find_source(manifest, source_id)
 
         if source.kind not in {"paper_pdf", "paper_text"}:
@@ -98,6 +107,7 @@ class RepositoryReader:
         manifest = self._artifacts.read_model(
             run_id, "source_manifest.json", SourceManifest
         )
+        _validate_manifest_run_id(manifest, run_id)
         source = _find_source(manifest, source_id)
 
         if source.kind != "repository":

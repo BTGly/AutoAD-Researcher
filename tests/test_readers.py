@@ -98,10 +98,14 @@ class TestPaperReader:
         )
 
         events = EventStore(runs_root=tmp_path).read_events("run_demo")
-        event_types = [e.event_type for e in events]
-
-        assert "artifact_read" in event_types  # source_manifest
-        assert "artifact_written" in event_types  # paper_summary
+        # Last 2 events: read source_manifest, write paper_summary
+        assert [
+            (e.event_type, e.payload.get("artifact"))
+            for e in events[-2:]
+        ] == [
+            ("artifact_read", "source_manifest.json"),
+            ("artifact_written", "paper_summary.json"),
+        ]
 
     def test_source_not_found(self, tmp_path):
         _setup_run(tmp_path)
@@ -145,6 +149,22 @@ class TestPaperReader:
             reader.run("run_demo", source_id="paper_main")
 
 
+    def test_manifest_run_id_mismatch_rejected(self, tmp_path):
+        _setup_run(tmp_path)
+        # Write a manifest with wrong run_id into run_demo dir
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        bad_manifest = SourceManifest(
+            run_id="other_run",
+            created_at=datetime.now(timezone.utc),
+            sources=[SourceEntry(source_id="p", kind="paper_pdf", original_reference="/x")],
+        )
+        store.write_json("run_demo", "source_manifest.json", bad_manifest, overwrite=True)
+
+        reader = PaperReader(StaticPaperReaderBackend(_paper_summary()), runs_root=tmp_path)
+        with pytest.raises(ValueError, match="source manifest run_id mismatch"):
+            reader.run("run_demo", source_id="p")
+
+
 class TestRepositoryReader:
     def test_run_success(self, tmp_path):
         _setup_run(tmp_path)
@@ -170,9 +190,13 @@ class TestRepositoryReader:
         )
 
         events = EventStore(runs_root=tmp_path).read_events("run_demo")
-        event_types = [e.event_type for e in events]
-        assert "artifact_read" in event_types
-        assert "artifact_written" in event_types
+        assert [
+            (e.event_type, e.payload.get("artifact"))
+            for e in events[-2:]
+        ] == [
+            ("artifact_read", "source_manifest.json"),
+            ("artifact_written", "repo_summary.json"),
+        ]
 
     def test_wrong_source_kind(self, tmp_path):
         _setup_run(tmp_path)
@@ -187,4 +211,30 @@ class TestRepositoryReader:
         bad = _repo_summary(run_id="other_id")
         reader = RepositoryReader(StaticRepositoryReaderBackend(bad), runs_root=tmp_path)
         with pytest.raises(ValueError, match="run_id mismatch"):
+            reader.run("run_demo", source_id="baseline_repo")
+
+    def test_source_not_found(self, tmp_path):
+        _setup_run(tmp_path)
+        reader = RepositoryReader(
+            StaticRepositoryReaderBackend(_repo_summary()), runs_root=tmp_path
+        )
+        with pytest.raises(ValueError, match="source_id not found"):
+            reader.run("run_demo", source_id="nonexistent")
+
+    def test_source_id_mismatch_rejected(self, tmp_path):
+        _setup_run(tmp_path)
+        bad = _repo_summary(source_id="other_source")
+        reader = RepositoryReader(StaticRepositoryReaderBackend(bad), runs_root=tmp_path)
+        with pytest.raises(ValueError, match="source_id mismatch"):
+            reader.run("run_demo", source_id="baseline_repo")
+
+    def test_backend_exception_propagates(self, tmp_path):
+        _setup_run(tmp_path)
+
+        class FailingBackend(StaticRepositoryReaderBackend):
+            def read_repository(self, *, run_id, source):
+                raise RuntimeError("backend crash")
+
+        reader = RepositoryReader(FailingBackend(_repo_summary()), runs_root=tmp_path)
+        with pytest.raises(RuntimeError, match="backend crash"):
             reader.run("run_demo", source_id="baseline_repo")
