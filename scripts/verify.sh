@@ -80,9 +80,17 @@ from autoad_researcher.core import (
     PipelineResult,
     StageResult,
 )
+from autoad_researcher.core import PaperReader, RepositoryReader
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
+from autoad_researcher.readers import (
+    StaticPaperReaderBackend,
+    StaticRepositoryReaderBackend,
+)
 from autoad_researcher.schemas import (
+    EvidenceReference,
     InputTask,
+    PaperSummary,
+    RepositorySummary,
     SourceEntry,
     SourceManifest,
 )

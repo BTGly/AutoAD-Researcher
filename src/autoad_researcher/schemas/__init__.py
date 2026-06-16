@@ -12,11 +12,21 @@ from autoad_researcher.schemas.intake import (
     SourceManifest,
 )
 from autoad_researcher.schemas.patch import PatchPlan
+from autoad_researcher.schemas.readers import (
+    EvidenceReference,
+    KnowledgeState,
+    PaperSummary,
+    RepositorySummary,
+)
 
 __all__ = [
+    "EvidenceReference",
     "ExperimentPlan",
     "InputTask",
+    "KnowledgeState",
+    "PaperSummary",
     "PatchPlan",
+    "RepositorySummary",
     "SourceEntry",
     "SourceKind",
     "SourceManifest",

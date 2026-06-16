@@ -218,6 +218,17 @@ class TestArtifactStore:
             "artifact_read",
         ]
 
+    def test_write_and_read_repo_summary(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        path = store.write_json(
+            "run_demo",
+            "repo_summary.json",
+            {"repository_name": "test", "protected_paths": ["eval.py"]},
+        )
+        assert path == tmp_path / "run_demo" / "repo_summary.json"
+        data = store.read_json("run_demo", "repo_summary.json")
+        assert data["repository_name"] == "test"
+
     def test_read_json_rejects_yaml_file(self, tmp_path):
         store = ArtifactStore(runs_root=tmp_path)
         store.write_yaml("run_demo", "input_task.yaml", {"request": "test"})

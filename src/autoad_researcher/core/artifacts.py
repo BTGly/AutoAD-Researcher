@@ -21,6 +21,7 @@ T = TypeVar("T", bound=BaseModel)
 # JSON artifact 文件名白名单。write_json() 只接受这些。
 _ALLOWED_JSON_ARTIFACTS = {
     "paper_summary.json",
+    "repo_summary.json",
     "experiment_plan.json",
     "patch_plan.json",
     "source_manifest.json",

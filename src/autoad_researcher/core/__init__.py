@@ -8,6 +8,7 @@ from autoad_researcher.core.pipeline import (
     PipelineResult,
     PipelineStatus,
 )
+from autoad_researcher.core.readers import PaperReader, RepositoryReader
 from autoad_researcher.core.stage_result import StageResult, StageStatus
 
 __all__ = [
@@ -15,9 +16,11 @@ __all__ = [
     "EventRecord",
     "EventStore",
     "InputIntake",
+    "PaperReader",
     "PipelineController",
     "PipelineResult",
     "PipelineStatus",
+    "RepositoryReader",
     "StageResult",
     "StageStatus",
 ]
