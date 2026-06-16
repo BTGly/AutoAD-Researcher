@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # ------------------------------------------------------------------
 
 _FORBIDDEN_PLACEHOLDERS = re.compile(
-    r"(TODO|TBD|PLACEHOLDER|REPLACE_ME|<[a-z]+>)", re.IGNORECASE
+    r"(TODO|TBD|PLACEHOLDER|REPLACE_ME|CHANGEME|FIXME|<[^>]+>)", re.IGNORECASE
 )
 _ALL_ZERO_SHA = "0" * 40
 
@@ -35,6 +35,18 @@ def _validate_relative_path(value: str) -> str:
 def _reject_placeholders(value: str, field_name: str) -> None:
     if _FORBIDDEN_PLACEHOLDERS.search(value):
         raise ValueError(f"placeholder found in {field_name}: {value!r}")
+
+
+def _reject_placeholders_recursive(value: object, path: str) -> None:
+    """Recursively check all strings for placeholders."""
+    if isinstance(value, str):
+        _reject_placeholders(value, path)
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _reject_placeholders_recursive(item, f"{path}[{i}]")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _reject_placeholders_recursive(item, f"{path}.{key}")
 
 
 # ------------------------------------------------------------------
@@ -130,6 +142,8 @@ class BenchmarkEvaluationContract(BaseModel):
             _validate_relative_path(p)
         for p in self.protected_paths:
             _validate_relative_path(p)
+        for p in self.raw_result_paths:
+            _validate_relative_path(p)
         evaluator_set = set(self.evaluator_paths)
         protected_set = set(self.protected_paths)
         if not evaluator_set.issubset(protected_set):
@@ -197,13 +211,18 @@ class InternalBenchmarkCase(BaseModel):
     safety: BenchmarkSafety
 
     @model_validator(mode="after")
-    def _validate_no_placeholders(self):
-        _reject_placeholders(self.implementation_name, "implementation_name")
+    def _validate_no_placeholders_or_bad_floats(self):
+        # Recursive placeholder check over all string fields
+        _reject_placeholders_recursive(self.model_dump(mode="python"), "case")
+
+        # NaN/Infinity check in fixed_parameters
+        import math
         for key, val in self.fixed_parameters.items():
-            if isinstance(val, str):
-                _reject_placeholders(val, f"fixed_parameters.{key}")
-            elif isinstance(val, list):
-                for item in val:
-                    if isinstance(item, str):
-                        _reject_placeholders(item, f"fixed_parameters.{key}")
+            if isinstance(val, float) and not math.isfinite(val):
+                raise ValueError(f"fixed parameter {key!r} must be finite")
+            if isinstance(val, list):
+                for i, item in enumerate(val):
+                    if isinstance(item, float) and not math.isfinite(item):
+                        raise ValueError(f"fixed parameter {key!r}[{i}] must be finite")
+
         return self

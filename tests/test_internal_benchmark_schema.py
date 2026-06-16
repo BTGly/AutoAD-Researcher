@@ -162,3 +162,35 @@ class TestInternalBenchmarkCase:
                 url="https://github.com/example/patchcore", ref="v1", commit_sha="a" * 40,
                 license="Apache-2.0", entrypoint_path="../escape.py", dependency_files=["x.txt"],
             ))
+
+    def test_raw_result_absolute_path_rejected(self):
+        with pytest.raises(ValidationError):
+            _valid_case(evaluation=BenchmarkEvaluationContract(
+                metrics=[BenchmarkMetric(name="m", required=True, direction="maximize", unit="ratio", absolute_tolerance=0.0)],
+                evaluator_paths=["e.py"], protected_paths=["e.py"],
+                raw_result_paths=["/absolute/results.json"],
+                fingerprint_strategy="repo_commit_paths_and_config_v1",
+            ))
+
+    def test_raw_result_dotdot_path_rejected(self):
+        with pytest.raises(ValidationError, match=".."):
+            _valid_case(evaluation=BenchmarkEvaluationContract(
+                metrics=[BenchmarkMetric(name="m", required=True, direction="maximize", unit="ratio", absolute_tolerance=0.0)],
+                evaluator_paths=["e.py"], protected_paths=["e.py"],
+                raw_result_paths=["../../results.json"],
+                fingerprint_strategy="repo_commit_paths_and_config_v1",
+            ))
+
+    def test_nan_in_fixed_parameters_rejected(self):
+        import math
+        with pytest.raises(ValidationError, match="finite"):
+            _valid_case(fixed_parameters={"ratio": float("nan")})
+
+    def test_infinity_in_fixed_parameters_rejected(self):
+        import math
+        with pytest.raises(ValidationError, match="finite"):
+            _valid_case(fixed_parameters={"ratio": float("inf")})
+
+    def test_changeme_in_baseline_name_rejected(self):
+        with pytest.raises(ValidationError, match="placeholder"):
+            _valid_case(baseline_name="CHANGEME")

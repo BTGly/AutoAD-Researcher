@@ -146,3 +146,87 @@ class TestBenchmarkConfigLoader:
         sha1 = compute_case_sha256(case)
         case2 = case.model_copy(update={"case_id": "changed"})
         assert compute_case_sha256(case2) != sha1
+
+
+class TestValidateCaseCLI:
+    def test_json_output(self):
+        from scripts.benchmark.validate_case import main
+        case = InternalBenchmarkCase(
+            schema_version=1, case_id="t", scope="internal_benchmark_only",
+            must_not_be_used_as_user_default=True, purpose="x", baseline_name="B",
+            implementation_name="I",
+            repository=BenchmarkRepository(
+                url="https://x", ref="v1", commit_sha="a" * 40, license="L",
+                entrypoint_path="m.py", dependency_files=["r.txt"],
+            ),
+            dataset=BenchmarkDataset(
+                name="D", category="c", root_env="E", license="L",
+                required_relative_paths=["x"], manifest_strategy="relative_path_size_v1",
+            ),
+            fixed_parameters={},
+            evaluation=BenchmarkEvaluationContract(
+                metrics=[BenchmarkMetric(name="m", required=True, direction="maximize", unit="ratio", absolute_tolerance=0.0)],
+                evaluator_paths=["e.py"], protected_paths=["e.py"],
+                raw_result_paths=["r"], fingerprint_strategy="repo_commit_paths_and_config_v1",
+            ),
+            reproducibility=BenchmarkReproducibility(
+                attempts=2, seed=0, require_same_repository_commit=True,
+                require_same_case_config=True, require_same_dataset_manifest=True,
+                require_same_evaluation_contract=True,
+            ),
+            safety=BenchmarkSafety(
+                allow_network_during_execution=False, require_clean_repository=True,
+                overwrite_existing_attempt=False, allow_paths_outside_workspace=False,
+            ),
+        )
+        path = _save_temp_yaml(case)
+        import json as _json, sys, io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        exit_code = main(["--json", str(path)])
+        sys.stdout = old_stdout
+        assert exit_code == 0
+        Path(path).unlink()
+
+    def test_print_sha256(self):
+        from scripts.benchmark.validate_case import main
+        case = InternalBenchmarkCase(
+            schema_version=1, case_id="t", scope="internal_benchmark_only",
+            must_not_be_used_as_user_default=True, purpose="x", baseline_name="B",
+            implementation_name="I",
+            repository=BenchmarkRepository(
+                url="https://x", ref="v1", commit_sha="a" * 40, license="L",
+                entrypoint_path="m.py", dependency_files=["r.txt"],
+            ),
+            dataset=BenchmarkDataset(
+                name="D", category="c", root_env="E", license="L",
+                required_relative_paths=["x"], manifest_strategy="relative_path_size_v1",
+            ),
+            fixed_parameters={},
+            evaluation=BenchmarkEvaluationContract(
+                metrics=[BenchmarkMetric(name="m", required=True, direction="maximize", unit="ratio", absolute_tolerance=0.0)],
+                evaluator_paths=["e.py"], protected_paths=["e.py"],
+                raw_result_paths=["r"], fingerprint_strategy="repo_commit_paths_and_config_v1",
+            ),
+            reproducibility=BenchmarkReproducibility(
+                attempts=2, seed=0, require_same_repository_commit=True,
+                require_same_case_config=True, require_same_dataset_manifest=True,
+                require_same_evaluation_contract=True,
+            ),
+            safety=BenchmarkSafety(
+                allow_network_during_execution=False, require_clean_repository=True,
+                overwrite_existing_attempt=False, allow_paths_outside_workspace=False,
+            ),
+        )
+        path = _save_temp_yaml(case)
+        import sys, io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        exit_code = main(["--print-sha256", str(path)])
+        sys.stdout = old_stdout
+        assert exit_code == 0
+        Path(path).unlink()
+
+    def test_missing_file_returns_2(self):
+        from scripts.benchmark.validate_case import main
+        assert main(["/nonexistent/file.yaml"]) == 2
