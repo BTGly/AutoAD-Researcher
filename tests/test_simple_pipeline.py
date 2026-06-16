@@ -42,8 +42,9 @@ class TestSimplePipelineHarness:
         data = json.loads(patch_path.read_text())
         PatchPlan.model_validate(data)
 
-    def test_simple_pipeline_records_artifact_events(self, tmp_path):
+    def test_simple_pipeline_records_stage_and_artifact_events(self, tmp_path):
         harness = SimplePipelineHarness(runs_root=tmp_path)
+
         harness.run_experiment_planning("test_run")
         harness.run_patch_planning("test_run")
 
@@ -51,12 +52,20 @@ class TestSimplePipelineHarness:
         event_types = [e.event_type for e in events]
 
         assert event_types == [
+            "stage_started",
             "artifact_written",
+            "stage_completed",
+            "stage_started",
             "artifact_written",
+            "stage_completed",
         ]
 
-        artifacts = [e.payload["artifact"] for e in events]
-        assert artifacts == [
-            "experiment_plan.json",
-            "patch_plan.json",
-        ]
+        assert events[0].payload["stage"] == "experiment_planning"
+        assert events[1].payload["artifact"] == "experiment_plan.json"
+        assert events[2].payload["stage"] == "experiment_planning"
+        assert events[2].payload["artifacts"] == ["experiment_plan.json"]
+
+        assert events[3].payload["stage"] == "patch_planning"
+        assert events[4].payload["artifact"] == "patch_plan.json"
+        assert events[5].payload["stage"] == "patch_planning"
+        assert events[5].payload["artifacts"] == ["patch_plan.json"]

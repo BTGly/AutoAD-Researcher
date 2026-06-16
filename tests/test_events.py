@@ -79,3 +79,47 @@ class TestEventStore:
 
         with pytest.raises(ValueError):
             events.read_events("run_demo")
+
+    def test_record_stage_started(self, tmp_path):
+        events = EventStore(runs_root=tmp_path)
+
+        event = events.record_stage_started(
+            "run_demo",
+            "experiment_planning",
+            backend="simple_pipeline",
+        )
+
+        assert event.event_type == "stage_started"
+        assert event.payload["stage"] == "experiment_planning"
+        assert event.payload["backend"] == "simple_pipeline"
+
+    def test_record_stage_completed(self, tmp_path):
+        events = EventStore(runs_root=tmp_path)
+
+        event = events.record_stage_completed(
+            "run_demo",
+            "experiment_planning",
+            backend="simple_pipeline",
+            artifacts=["experiment_plan.json"],
+            status="success",
+        )
+
+        assert event.event_type == "stage_completed"
+        assert event.payload["stage"] == "experiment_planning"
+        assert event.payload["status"] == "success"
+        assert event.payload["artifacts"] == ["experiment_plan.json"]
+
+    def test_record_stage_failed(self, tmp_path):
+        events = EventStore(runs_root=tmp_path)
+
+        event = events.record_stage_failed(
+            "run_demo",
+            "experiment_planning",
+            backend="simple_pipeline",
+            error_type="RuntimeError",
+            error_message="boom",
+        )
+
+        assert event.event_type == "stage_failed"
+        assert event.payload["error_type"] == "RuntimeError"
+        assert event.payload["error_message"] == "boom"

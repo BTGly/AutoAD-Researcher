@@ -41,6 +41,10 @@ class DeepAgentsHarness(AgentHarness):
         # filesystem backend 以 runs_root 为根，虚拟 / 映射到 runs_root
         self._backend_root = str(self._runs_root.resolve())
 
+        from autoad_researcher.core import EventStore
+
+        self._events = EventStore(runs_root=runs_root)
+
     def _create_agent(self, run_id: str, task_prompt: str):
         """创建针对特定 run_id 的受限 Deep Agent。
 
@@ -96,6 +100,12 @@ class DeepAgentsHarness(AgentHarness):
         run_dir = self._run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        stage = "experiment_planning"
+        backend = "deepagents"
+        artifact = "experiment_plan.json"
+
+        self._events.record_stage_started(run_id, stage, backend=backend)
+
         task = f"""读取 /{run_id}/input_task.yaml 和 /{run_id}/paper_summary.json，
 生成实验计划，写入 /{run_id}/experiment_plan.json。
 
@@ -113,19 +123,35 @@ experiment_plan.json 必须包含字段：
 不允许写入 /{run_id}/ 之外的任何路径。"""
 
         self._invoke(run_id, task)
-        self._validate_output(run_dir, "experiment_plan.json", ExperimentPlan)
+        self._validate_output(run_dir, artifact, ExperimentPlan)
 
-        return StageResult(
+        result = StageResult(
             run_id=run_id,
-            stage="experiment_planning",
+            stage=stage,
             status="success",
-            artifacts=["experiment_plan.json"],
-            metadata={"backend": "deepagents", "model": self._model},
+            artifacts=[artifact],
+            metadata={"backend": backend, "model": self._model},
         )
+
+        self._events.record_stage_completed(
+            run_id,
+            stage,
+            backend=backend,
+            artifacts=result.artifacts,
+            status=result.status,
+        )
+
+        return result
 
     def run_patch_planning(self, run_id: str) -> StageResult:
         run_dir = self._run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
+
+        stage = "patch_planning"
+        backend = "deepagents"
+        artifact = "patch_plan.json"
+
+        self._events.record_stage_started(run_id, stage, backend=backend)
 
         task = f"""读取 /{run_id}/input_task.yaml 和 /{run_id}/paper_summary.json，
 生成代码修改计划，写入 /{run_id}/patch_plan.json。
@@ -141,12 +167,22 @@ patch_plan.json 必须包含字段：
 不允许写入 /{run_id}/ 之外的任何路径。"""
 
         self._invoke(run_id, task)
-        self._validate_output(run_dir, "patch_plan.json", PatchPlan)
+        self._validate_output(run_dir, artifact, PatchPlan)
 
-        return StageResult(
+        result = StageResult(
             run_id=run_id,
-            stage="patch_planning",
+            stage=stage,
             status="success",
-            artifacts=["patch_plan.json"],
-            metadata={"backend": "deepagents", "model": self._model},
+            artifacts=[artifact],
+            metadata={"backend": backend, "model": self._model},
         )
+
+        self._events.record_stage_completed(
+            run_id,
+            stage,
+            backend=backend,
+            artifacts=result.artifacts,
+            status=result.status,
+        )
+
+        return result

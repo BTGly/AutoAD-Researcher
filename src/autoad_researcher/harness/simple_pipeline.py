@@ -21,12 +21,19 @@ class SimplePipelineHarness(AgentHarness):
     def __init__(self, runs_root: str | Path = "runs") -> None:
         super().__init__(runs_root=runs_root)
         # 延迟导入避免 core ↔ harness 循环依赖
-        from autoad_researcher.core import ArtifactStore
+        from autoad_researcher.core import ArtifactStore, EventStore
 
         self._artifacts = ArtifactStore(runs_root=runs_root)
+        self._events = EventStore(runs_root=runs_root)
 
     def run_experiment_planning(self, run_id: str) -> StageResult:
         self._run_dir(run_id)
+
+        stage = "experiment_planning"
+        backend = "simple_pipeline"
+        artifact = "experiment_plan.json"
+
+        self._events.record_stage_started(run_id, stage, backend=backend)
 
         plan = ExperimentPlan(
             experiment_goal="[SimplePipelineHarness] 验证实验计划生成流程",
@@ -40,23 +47,34 @@ class SimplePipelineHarness(AgentHarness):
             risks=["SimplePipelineHarness 占位输出，未经过真实推理"],
         )
 
-        self._artifacts.write_json(
-            run_id,
-            "experiment_plan.json",
-            plan,
-            overwrite=True,
+        self._artifacts.write_json(run_id, artifact, plan, overwrite=True)
+
+        result = StageResult(
+            run_id=run_id,
+            stage=stage,
+            status="success",
+            artifacts=[artifact],
+            metadata={"backend": backend},
         )
 
-        return StageResult(
-            run_id=run_id,
-            stage="experiment_planning",
-            status="success",
-            artifacts=["experiment_plan.json"],
-            metadata={"backend": "simple_pipeline"},
+        self._events.record_stage_completed(
+            run_id,
+            stage,
+            backend=backend,
+            artifacts=result.artifacts,
+            status=result.status,
         )
+
+        return result
 
     def run_patch_planning(self, run_id: str) -> StageResult:
         self._run_dir(run_id)
+
+        stage = "patch_planning"
+        backend = "simple_pipeline"
+        artifact = "patch_plan.json"
+
+        self._events.record_stage_started(run_id, stage, backend=backend)
 
         patch = PatchPlan(
             target_repo="patchcore-inspection",
@@ -67,17 +85,22 @@ class SimplePipelineHarness(AgentHarness):
             requires_approval=True,
         )
 
-        self._artifacts.write_json(
-            run_id,
-            "patch_plan.json",
-            patch,
-            overwrite=True,
+        self._artifacts.write_json(run_id, artifact, patch, overwrite=True)
+
+        result = StageResult(
+            run_id=run_id,
+            stage=stage,
+            status="success",
+            artifacts=[artifact],
+            metadata={"backend": backend},
         )
 
-        return StageResult(
-            run_id=run_id,
-            stage="patch_planning",
-            status="success",
-            artifacts=["patch_plan.json"],
-            metadata={"backend": "simple_pipeline"},
+        self._events.record_stage_completed(
+            run_id,
+            stage,
+            backend=backend,
+            artifacts=result.artifacts,
+            status=result.status,
         )
+
+        return result

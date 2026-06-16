@@ -16,6 +16,9 @@ from autoad_researcher.core.run_id import run_dir_path
 # 当前阶段支持的 event_type 白名单
 ALLOWED_EVENT_TYPES = {
     "run_created",
+    "stage_started",
+    "stage_completed",
+    "stage_failed",
     "artifact_written",
     "artifact_read",
 }
@@ -108,6 +111,59 @@ class EventStore:
             run_id,
             "artifact_read",
             payload={"artifact": artifact},
+        )
+
+    def record_stage_started(
+        self,
+        run_id: str,
+        stage: str,
+        *,
+        backend: str,
+    ) -> EventRecord:
+        return self.append(
+            run_id,
+            "stage_started",
+            payload={"stage": stage, "backend": backend},
+        )
+
+    def record_stage_completed(
+        self,
+        run_id: str,
+        stage: str,
+        *,
+        backend: str,
+        artifacts: list[str],
+        status: str = "success",
+    ) -> EventRecord:
+        return self.append(
+            run_id,
+            "stage_completed",
+            payload={
+                "stage": stage,
+                "backend": backend,
+                "status": status,
+                "artifacts": artifacts,
+            },
+        )
+
+    def record_stage_failed(
+        self,
+        run_id: str,
+        stage: str,
+        *,
+        backend: str,
+        error_type: str,
+        error_message: str,
+    ) -> EventRecord:
+        return self.append(
+            run_id,
+            "stage_failed",
+            payload={
+                "stage": stage,
+                "backend": backend,
+                "error_type": error_type,
+                "error_message": error_message,
+            },
         )
 
     # ------------------------------------------------------------------
