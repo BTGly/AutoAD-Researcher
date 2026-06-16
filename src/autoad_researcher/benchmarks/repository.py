@@ -20,7 +20,7 @@ def collect_repository_state(*, case, repo_path: Path, workspace_root: Path) -> 
         raise BenchmarkPreflightError(check_name="repository", code="REPO_HEAD_MISMATCH",
             message=f"expected {case.repository.commit_sha}")
 
-    symref = _git(repo_path, ["symbolic-ref", "-q", "HEAD"])
+    symref = _git(repo_path, ["symbolic-ref", "-q", "HEAD"], allow_nonzero=True)
     if symref.returncode == 0:
         raise BenchmarkPreflightError(check_name="repository", code="REPO_NOT_DETACHED",
             message="HEAD must be detached")
@@ -53,26 +53,24 @@ def collect_repository_state(*, case, repo_path: Path, workspace_root: Path) -> 
     )
 
 
-def verify_repository_unchanged(*, before: BenchmarkRepositoryState, repo_path: Path, workspace_root: Path) -> BenchmarkRepositoryState:
-    after = collect_repository_state(case=_fake_case(before), repo_path=repo_path, workspace_root=workspace_root)
+def verify_repository_unchanged(*, before: BenchmarkRepositoryState, after: BenchmarkRepositoryState) -> None:
     if before.repository_fingerprint != after.repository_fingerprint:
         raise BenchmarkPreflightError(check_name="repository", code="REPO_MUTATED",
             message="repository fingerprint changed after execution")
-    return after
 
 
 # --- helpers ---
 
 def _validate_repo_boundary(repo_path: Path, workspace_root: Path) -> None:
+    if repo_path.is_symlink():
+        raise BenchmarkPreflightError(check_name="repository", code="REPO_SYMLINK_FORBIDDEN",
+            message="repository root must not be a symlink")
     allowed = (workspace_root / "repos").resolve(strict=True)
     try:
         rp = repo_path.resolve(strict=True)
     except (FileNotFoundError, OSError):
         raise BenchmarkPreflightError(check_name="repository", code="REPO_NOT_FOUND",
             message="repository path does not exist")
-    if rp.is_symlink():
-        raise BenchmarkPreflightError(check_name="repository", code="REPO_SYMLINK_FORBIDDEN",
-            message="repository root must not be a symlink")
     try:
         rp.relative_to(allowed)
     except ValueError:
@@ -88,10 +86,10 @@ def _ensure_git(repo_path: Path) -> None:
             message="not a git repository")
 
 
-def _git(repo_path: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
+def _git(repo_path: Path, argv: list[str], *, allow_nonzero: bool = False) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(["git", "-C", str(repo_path)] + argv,
         shell=False, check=False, capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
+    if result.returncode != 0 and not allow_nonzero:
         raise BenchmarkPreflightError(check_name="repository", code="REPO_GIT_COMMAND_FAILED",
             message=f"git {' '.join(argv)} failed")
     return result
@@ -106,7 +104,7 @@ def _remote_url(repo_path: Path) -> str:
     return result.stdout.strip()
 
 
-_CREDENTIALS_RE = re.compile(r"://[^@:]+:[^@]+@")
+_CREDENTIALS_RE = re.compile(r"://[^@]+@")
 
 
 def _normalize_url(url: str) -> str:
@@ -147,6 +145,18 @@ def _collect_required_files(repo_path: Path, case) -> list[BenchmarkFileFingerpr
         if resolved.is_symlink() or fp.is_symlink():
             raise BenchmarkPreflightError(check_name="repository", code="REPO_REQUIRED_FILE_SYMLINK",
                 message=f"required file must not be symlink: {rel}")
+        try:
+            resolved.relative_to(repo_path)
+        except ValueError:
+            raise BenchmarkPreflightError(check_name="repository", code="REPO_PATH_OUTSIDE_WORKSPACE",
+                message=f"required file escapes repo: {rel}")
+        # Check no parent dir is symlink
+        for parent in fp.parents:
+            if str(parent) == str(repo_path):
+                break
+            if parent.is_symlink():
+                raise BenchmarkPreflightError(check_name="repository", code="REPO_REQUIRED_FILE_SYMLINK",
+                    message=f"parent directory is symlink: {rel}")
         if not resolved.is_file():
             raise BenchmarkPreflightError(check_name="repository", code="REPO_REQUIRED_FILE_NOT_REGULAR",
                 message=f"required file not a regular file: {rel}")
@@ -157,15 +167,3 @@ def _collect_required_files(repo_path: Path, case) -> list[BenchmarkFileFingerpr
         files.append(BenchmarkFileFingerprint(path=rel, size_bytes=size, sha256=sha256_file(resolved)))
     return files
 
-
-def _fake_case(state: BenchmarkRepositoryState):
-    """Create a minimal case-like object for postflight verification."""
-    from dataclasses import dataclass
-    @dataclass
-    class FakeRepo:
-        commit_sha: str
-    @dataclass
-    class FakeCase:
-        case_id: str
-        repository: object
-    return FakeCase(case_id=state.case_id, repository=FakeRepo(commit_sha=state.expected_commit))

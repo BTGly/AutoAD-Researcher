@@ -11,11 +11,10 @@ from autoad_researcher.benchmarks.hashing import canonical_sha256
 
 def resolve_dataset_root(*, case, environ: Mapping[str, str], workspace_root: Path) -> Path:
     env_name = case.dataset.root_env
-    val = environ.get(env_name, "")
-    if not val:
+    if env_name not in environ:
         raise BenchmarkPreflightError(check_name="dataset", code="DATASET_ROOT_ENV_MISSING",
             message=f"environment variable {env_name} not set")
-    val = val.strip()
+    val = environ[env_name].strip()
     if not val:
         raise BenchmarkPreflightError(check_name="dataset", code="DATASET_ROOT_ENV_EMPTY",
             message=f"environment variable {env_name} is empty")
@@ -33,6 +32,14 @@ def resolve_dataset_root(*, case, environ: Mapping[str, str], workspace_root: Pa
 
 
 def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) -> BenchmarkDatasetManifest:
+    # Validate dataset is inside workspace/datasets
+    allowed = (workspace_root / "datasets").resolve(strict=True)
+    try:
+        dataset_root.resolve(strict=True).relative_to(allowed)
+    except ValueError:
+        raise BenchmarkPreflightError(check_name="dataset", code="DATASET_PATH_OUTSIDE_WORKSPACE",
+            message="dataset must be inside workspace/datasets")
+
     cat = case.dataset.category
     train_good_dir = dataset_root / cat / "train" / "good"
     test_dir = dataset_root / cat / "test"
@@ -89,6 +96,9 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
                 message="ground_truth must not contain symlinks")
         if d.is_dir():
             gt_types.add(d.name)
+        elif d.is_file():
+            raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                message=f"unexpected file in ground_truth root: {d.name}")
 
     anomaly_types = set(test_anomaly_files.keys())
     if anomaly_types != gt_types:
@@ -99,6 +109,9 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
     for atype in anomaly_types:
         for img in test_anomaly_files[atype]:
             mask_path = gt_dir / atype / f"{img.stem}_mask.png"
+            if mask_path.is_symlink():
+                raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
+                    message=f"mask is symlink: {mask_path.name}")
             if not mask_path.is_file():
                 raise BenchmarkPreflightError(check_name="dataset", code="DATASET_MASK_MISSING",
                     message=f"missing mask for {img.name}")
@@ -107,7 +120,13 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
 
         # Check for orphan masks
         for mf in sorted((gt_dir / atype).iterdir()):
-            if mf.is_file() and mf.suffix.lower() == ".png":
+            if mf.is_symlink():
+                raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
+                    message=f"ground_truth symlink: {mf.name}")
+            if mf.is_file():
+                if mf.suffix != ".png":
+                    raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                        message=f"unexpected file in ground_truth: {mf.name}")
                 stem = mf.stem.removesuffix("_mask")
                 expected_img = test_dir / atype / f"{stem}.png"
                 if not expected_img.exists():
