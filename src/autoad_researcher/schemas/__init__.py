@@ -16,6 +16,13 @@ from autoad_researcher.schemas.clarification import (
     QuestionAnswerType,
 )
 from autoad_researcher.schemas.experiment import ExperimentPlan
+from autoad_researcher.schemas.ideas import (
+    IdeaCandidate,
+    IdeaContext,
+    IdeaGenerationResult,
+    IdeaMode,
+    IdeaRouteDecision,
+)
 from autoad_researcher.schemas.intake import (
     InputTask,
     SourceEntry,
@@ -39,6 +46,11 @@ __all__ = [
     "ClarifiedTask",
     "EvidenceReference",
     "ExperimentPlan",
+    "IdeaCandidate",
+    "IdeaContext",
+    "IdeaGenerationResult",
+    "IdeaMode",
+    "IdeaRouteDecision",
     "InputTask",
     "KnownFact",
     "KnowledgeState",

@@ -69,6 +69,11 @@ class TestRuleBasedClarifier:
         assert result.baseline is None
         q = next(q for q in result.questions if q.missing_item_id == "missing_baseline")
         assert q.options == ["PatchCore", "PaDiM"]
+        assert q.answer_type == "single_choice"
+
+        m = next(m for m in result.missing_information if m.item_id == "missing_baseline")
+        assert len(m.references) == 1
+        assert m.references[0].locator == "baseline_methods"
 
     def test_dataset_missing_suggested_from_paper(self):
         ctx = _make_context(baseline="PatchCore", compute_budget="single GPU")
@@ -77,6 +82,19 @@ class TestRuleBasedClarifier:
         assert result.dataset is None
         q = next(q for q in result.questions if q.missing_item_id == "missing_dataset")
         assert q.options == ["MVTec AD", "VisA"]
+        assert q.answer_type == "single_choice"
+
+    def test_metrics_hint_from_paper(self):
+        ctx = _make_context(baseline="PatchCore")
+        result = RuleBasedIntentClarifierBackend().clarify(context=ctx)
+
+        q = next(q for q in result.questions if q.missing_item_id == "missing_metrics")
+        assert q.options == ["image AUROC"]
+        assert q.answer_type == "multiple_choice"
+
+        m = next(m for m in result.missing_information if m.item_id == "missing_metrics")
+        assert len(m.references) == 1
+        assert m.references[0].locator == "metrics"
 
     def test_user_idea_missing_not_a_problem(self):
         ctx = _make_context(baseline="PatchCore")

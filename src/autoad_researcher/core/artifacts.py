@@ -26,6 +26,8 @@ _ALLOWED_JSON_ARTIFACTS = {
     "patch_plan.json",
     "source_manifest.json",
     "clarified_task.json",
+    "idea_context.json",
+    "idea_candidates.json",
 }
 
 # YAML artifact 文件名白名单。write_yaml() 只接受这些。

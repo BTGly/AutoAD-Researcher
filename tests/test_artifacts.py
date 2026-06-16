@@ -229,6 +229,28 @@ class TestArtifactStore:
         data = store.read_json("run_demo", "clarified_task.json")
         assert data["status"] == "ready"
 
+    def test_write_and_read_idea_context(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        path = store.write_json(
+            "run_demo",
+            "idea_context.json",
+            {"run_id": "run_demo", "route": {"mode": "idea_decomposition", "reason": "test"}},
+        )
+        assert path == tmp_path / "run_demo" / "idea_context.json"
+        data = store.read_json("run_demo", "idea_context.json")
+        assert data["route"]["mode"] == "idea_decomposition"
+
+    def test_write_and_read_idea_candidates(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        path = store.write_json(
+            "run_demo",
+            "idea_candidates.json",
+            {"run_id": "run_demo", "mode": "idea_decomposition", "candidates": []},
+        )
+        assert path == tmp_path / "run_demo" / "idea_candidates.json"
+        data = store.read_json("run_demo", "idea_candidates.json")
+        assert data["mode"] == "idea_decomposition"
+
     def test_write_and_read_repo_summary(self, tmp_path):
         store = ArtifactStore(runs_root=tmp_path)
         path = store.write_json(

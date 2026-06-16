@@ -53,6 +53,8 @@ class ArtifactReference(BaseModel):
         "input_task.yaml",
         "paper_summary.json",
         "repo_summary.json",
+        "clarified_task.json",
+        "idea_context.json",
     ]
     locator: str = Field(min_length=1)
     source_id: str | None = None

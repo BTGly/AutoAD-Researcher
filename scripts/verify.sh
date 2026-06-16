@@ -79,12 +79,14 @@ from autoad_researcher.clarifiers import (
 from autoad_researcher.core import (
     ArtifactStore,
     EventStore,
+    IdeaSourceRouter,
     InputIntake,
     IntentClarifier,
     PipelineController,
     PipelineResult,
     StageResult,
 )
+from autoad_researcher.ideation import IdeaGenerationBackend
 from autoad_researcher.core import PaperReader, RepositoryReader
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
 from autoad_researcher.readers import (
@@ -96,6 +98,10 @@ from autoad_researcher.schemas import (
     ClarificationQuestion,
     ClarifiedTask,
     EvidenceReference,
+    IdeaCandidate,
+    IdeaContext,
+    IdeaGenerationResult,
+    IdeaRouteDecision,
     InputTask,
     KnownFact,
     PaperSummary,
