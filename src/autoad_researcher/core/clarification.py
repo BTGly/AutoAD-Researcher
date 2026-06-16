@@ -80,6 +80,11 @@ class IntentClarifier:
         if result.constraints != task.constraints:
             raise ValueError("clarifier must preserve user constraints")
 
+        if result.metrics:
+            raise ValueError(
+                "clarifier must not select metrics before user confirmation"
+            )
+
         # --- 写入 ---
         self._artifacts.write_json(run_id, "clarified_task.json", result)
 

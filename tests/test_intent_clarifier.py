@@ -164,3 +164,75 @@ class TestIntentClarifier:
 
         store = ArtifactStore(runs_root=tmp_path, enable_events=False)
         assert not store.exists("run_demo", "clarified_task.json")
+
+    def test_backend_selects_metrics_rejected(self, tmp_path):
+        _setup_full(tmp_path)
+
+        class BadBackend(RuleBasedIntentClarifierBackend):
+            def clarify(self, *, context):
+                result = super().clarify(context=context)
+                return result.model_copy(update={"metrics": ["image AUROC"]})
+
+        with pytest.raises(ValueError, match="must not select metrics"):
+            IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
+
+        assert not ArtifactStore(runs_root=tmp_path, enable_events=False).exists(
+            "run_demo", "clarified_task.json"
+        )
+
+    def test_backend_removes_constraint_rejected(self, tmp_path):
+        _setup_full(tmp_path)
+
+        class BadBackend(RuleBasedIntentClarifierBackend):
+            def clarify(self, *, context):
+                result = super().clarify(context=context)
+                return result.model_copy(update={"constraints": []})
+
+        with pytest.raises(ValueError, match="must preserve user constraints"):
+            IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
+
+    def test_backend_modifies_source_ids_rejected(self, tmp_path):
+        _setup_full(tmp_path)
+
+        class BadBackend(RuleBasedIntentClarifierBackend):
+            def clarify(self, *, context):
+                result = super().clarify(context=context)
+                return result.model_copy(update={"source_ids": ["new_id"]})
+
+        with pytest.raises(ValueError, match="must preserve source_ids"):
+            IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
+
+    def test_repo_summary_run_id_mismatch(self, tmp_path):
+        _setup_full(tmp_path)
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        store.write_json("run_demo", "repo_summary.json", RepositorySummary(
+            run_id="other", source_id="baseline_repo",
+        ), overwrite=True)
+
+        with pytest.raises(ValueError, match="run_id mismatch"):
+            IntentClarifier(RuleBasedIntentClarifierBackend(), runs_root=tmp_path).run("run_demo")
+
+    def test_repo_source_id_not_in_task(self, tmp_path):
+        _setup_full(tmp_path)
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        store.write_json("run_demo", "repo_summary.json", RepositorySummary(
+            run_id="run_demo", source_id="unknown_source",
+        ), overwrite=True)
+
+        with pytest.raises(ValueError, match="not referenced"):
+            IntentClarifier(RuleBasedIntentClarifierBackend(), runs_root=tmp_path).run("run_demo")
+
+    def test_exact_event_order_full_input(self, tmp_path):
+        _setup_full(tmp_path)
+        IntentClarifier(RuleBasedIntentClarifierBackend(), runs_root=tmp_path).run("run_demo")
+
+        events = EventStore(runs_root=tmp_path).read_events("run_demo")
+        assert [
+            (e.event_type, e.payload.get("artifact"))
+            for e in events[-4:]
+        ] == [
+            ("artifact_read", "input_task.yaml"),
+            ("artifact_read", "paper_summary.json"),
+            ("artifact_read", "repo_summary.json"),
+            ("artifact_written", "clarified_task.json"),
+        ]

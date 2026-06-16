@@ -98,61 +98,73 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
         paper = context.paper_summary
         if paper is None:
             return
-        ref = ArtifactReference(artifact="paper_summary.json", locator="", source_id=paper.source_id)
+
+        def _ref(field: str) -> list[ArtifactReference]:
+            return [ArtifactReference(
+                artifact="paper_summary.json",
+                locator=field,
+                source_id=paper.source_id,
+            )]
 
         known.append(KnownFact(
             fact_id="paper_research_problem",
             category="task_scope",
             statement=f"论文研究问题：{paper.research_problem}",
-            references=[ref],
+            references=_ref("research_problem"),
         ))
         known.append(KnownFact(
             fact_id="paper_core_idea",
             category="method",
             statement=f"论文核心思路：{paper.core_idea}",
-            references=[ref],
+            references=_ref("core_idea"),
         ))
         if paper.datasets:
             known.append(KnownFact(
                 fact_id="paper_datasets",
                 category="dataset",
                 statement=f"论文使用数据集：{', '.join(paper.datasets)}",
-                references=[ref],
+                references=_ref("datasets"),
             ))
         if paper.metrics:
             known.append(KnownFact(
                 fact_id="paper_metrics",
                 category="metrics",
                 statement=f"论文使用指标：{', '.join(paper.metrics)}",
-                references=[ref],
+                references=_ref("metrics"),
             ))
         if paper.potential_transfer_points:
             known.append(KnownFact(
                 fact_id="paper_transfer_points",
                 category="method",
                 statement=f"潜在迁移点：{', '.join(paper.potential_transfer_points)}",
-                references=[ref],
+                references=_ref("potential_transfer_points"),
             ))
 
     def _gather_repo_facts(self, context: ClarificationContext, known: list[KnownFact]) -> None:
         repo = context.repo_summary
         if repo is None:
             return
-        ref = ArtifactReference(artifact="repo_summary.json", locator="", source_id=repo.source_id)
+
+        def _ref(field: str) -> list[ArtifactReference]:
+            return [ArtifactReference(
+                artifact="repo_summary.json",
+                locator=field,
+                source_id=repo.source_id,
+            )]
 
         if repo.baseline_methods:
             known.append(KnownFact(
                 fact_id="repo_baselines",
                 category="baseline",
                 statement=f"仓库中包含 baseline：{', '.join(repo.baseline_methods)}",
-                references=[ref],
+                references=_ref("baseline_methods"),
             ))
         if repo.protected_paths:
             known.append(KnownFact(
                 fact_id="repo_protected",
                 category="scientific_validity",
                 statement=f"受保护文件：{', '.join(repo.protected_paths)}",
-                references=[ref],
+                references=_ref("protected_paths"),
             ))
 
     # ------------------------------------------------------------------
@@ -179,11 +191,19 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
                 blocking=True,
                 question="这项任务属于哪种异常检测场景？",
                 why_needed="需要确定任务域才能选择迁移策略和数据集",
+                answer_type="free_text",
             )
 
         # baseline — non-blocking, suggest from repo
         if task.baseline is None:
             options = repo.baseline_methods if repo else []
+            refs = []
+            if repo:
+                refs = [ArtifactReference(
+                    artifact="repo_summary.json",
+                    locator="baseline_methods",
+                    source_id=repo.source_id,
+                )]
             self._add_missing(missing, questions,
                 item_id="missing_baseline",
                 category="baseline",
@@ -194,11 +214,20 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
                 why_needed="需要确定 baseline 才能设计对照实验",
                 options=options,
                 suggested_values=options,
+                references=refs,
+                answer_type="single_choice" if options else "free_text",
             )
 
         # dataset — non-blocking, suggest from paper
         if task.dataset is None:
             options = paper.datasets if paper else []
+            refs = []
+            if paper:
+                refs = [ArtifactReference(
+                    artifact="paper_summary.json",
+                    locator="datasets",
+                    source_id=paper.source_id,
+                )]
             self._add_missing(missing, questions,
                 item_id="missing_dataset",
                 category="dataset",
@@ -209,10 +238,19 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
                 why_needed="需要确定数据集才能进行实验",
                 options=options,
                 suggested_values=options,
+                references=refs,
+                answer_type="single_choice" if options else "free_text",
             )
 
-        # metrics
+        # metrics — non-blocking, multi-choice from paper
         options = paper.metrics if paper else []
+        refs = []
+        if paper:
+            refs = [ArtifactReference(
+                artifact="paper_summary.json",
+                locator="metrics",
+                source_id=paper.source_id,
+            )]
         self._add_missing(missing, questions,
             item_id="missing_metrics",
             category="metrics",
@@ -223,6 +261,8 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
             why_needed="需要确定评价指标才能判断实验结果",
             options=options,
             suggested_values=options,
+            references=refs,
+            answer_type="multiple_choice" if options else "free_text",
         )
 
         # compute_budget — non-blocking
@@ -235,6 +275,7 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
                 blocking=False,
                 question="本次验证可以使用哪些计算资源和时间预算？",
                 why_needed="需要了解资源约束才能设计实验规模",
+                answer_type="free_text",
             )
 
         # user_idea — NOT a gap (legal to be None)
@@ -251,8 +292,10 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
         blocking: bool,
         question: str,
         why_needed: str,
+        answer_type: str,
         options: list[str] | None = None,
         suggested_values: list[str] | None = None,
+        references: list[ArtifactReference] | None = None,
     ) -> None:
         missing.append(MissingInformation(
             item_id=item_id,
@@ -261,11 +304,8 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
             reason=reason,
             blocking=blocking,
             suggested_values=suggested_values or [],
+            references=references or [],
         ))
-
-        answer_type = "free_text"
-        if options:
-            answer_type = "single_choice" if len(options) <= 5 else "multiple_choice"
 
         questions.append(ClarificationQuestion(
             question_id=f"q_{item_id}",

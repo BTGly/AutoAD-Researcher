@@ -54,7 +54,7 @@ class ArtifactReference(BaseModel):
         "paper_summary.json",
         "repo_summary.json",
     ]
-    locator: str
+    locator: str = Field(min_length=1)
     source_id: str | None = None
 
 
