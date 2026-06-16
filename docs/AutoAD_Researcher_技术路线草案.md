@@ -774,16 +774,20 @@ local_model：离线或隐私任务
 已完成：
 
 ```text
-run_id 安全校验
-ArtifactStore
+run_id 安全校验（core/run_id.py）
+ArtifactStore（JSON + YAML）
 EventStore / events.jsonl
-StageResult
-AgentHarness
-SimplePipelineHarness
-DeepAgentsHarness
+StageResult + StageStatus
+AgentHarness（ABC）
+SimplePipelineHarness + DeepAgentsHarness
 artifact_written / artifact_read
 stage_started / stage_completed / stage_failed
-本地 verify gate 和 GitHub Actions
+PipelineController
+PipelineResult + PipelineStatus
+Pipeline failure handling（stage_failed 事件 + failed 结果）
+deterministic smoke CLI（uv run autoad smoke --run-id run_demo）
+Input Intake / Source Manifest（input_task.yaml + source_manifest.json）
+本地 verify gate（12 项检查 + pytest）+ GitHub Actions
 ```
 
 当前 SimplePipelineHarness 仅是 deterministic smoke-test backend。
@@ -791,12 +795,13 @@ stage_started / stage_completed / stage_failed
 近期顺序：
 
 ```text
-Step 2.8：Minimal PipelineController
-Step 2.9：Pipeline failure handling
-随后：Input Intake / Paper Reader contract / Intent Clarifier
-然后：IdeaCandidate schema + IdeaGenerationBackend
-再做：AutoGen ideation spike
-对照：CrewAI ideation spike
+Step 2.12：Paper Reader + Repository Reader contracts
+Step 2.13：Evidence-based Intent Clarifier
+Step 2.14：IdeaCandidate schema + IdeaGenerationBackend
+Step 2.15：DirectIdeaBackend
+Step 2.16：AutoGen ideation spike
+Step 2.17：CrewAI 对照 spike
+Step 2.18：根据同一 eval 决定 ideation backend
 之后：Approval / Runner / Metrics / Validity / Reflection / Report
 ```
 
