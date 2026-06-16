@@ -259,6 +259,7 @@ class TestExecutionResult:
     def _success_evidence(self):
         return dict(
             exit_code=0, timed_out=False,
+            duration_seconds=100.0,
             started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
             repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
             case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
@@ -294,15 +295,24 @@ class TestExecutionResult:
 
     def test_execution_failed_needs_exit_or_timeout(self):
         with pytest.raises(ValidationError, match="exit_code or timed_out"):
-            BenchmarkExecutionResult(**self._base(status="execution_failed"))
+            BenchmarkExecutionResult(**self._base(
+                status="execution_failed",
+                failure_code="PROCESS_FAILED", failure_message="boom",
+            ))
 
     def test_execution_failed_with_timeout_ok(self):
-        r = BenchmarkExecutionResult(**self._base(status="execution_failed", timed_out=True))
+        r = BenchmarkExecutionResult(**self._base(
+            status="execution_failed", timed_out=True,
+            failure_code="PROCESS_TIMEOUT", failure_message="timed out",
+        ))
         assert r.status == "execution_failed"
 
     def test_repo_mutation_needs_both_fingerprints(self):
         with pytest.raises(ValidationError, match="both fingerprints"):
-            BenchmarkExecutionResult(**self._base(status="invalid_repository_mutation"))
+            BenchmarkExecutionResult(**self._base(
+                status="invalid_repository_mutation",
+                failure_code="REPO_MUTATED", failure_message="dirty",
+            ))
 
     def test_extra_fields_rejected(self):
         with pytest.raises(ValidationError):
@@ -310,3 +320,144 @@ class TestExecutionResult:
             kw.update(self._success_evidence())
             kw["extra"] = "no"
             BenchmarkExecutionResult(**kw)  # type: ignore[arg-type]
+
+# --- Path safety ---
+
+class TestPathSafety:
+    def test_fingerprint_traversal_rejected(self):
+        with pytest.raises(ValidationError, match="traversal"):
+            BenchmarkFileFingerprint(path="../../escape", size_bytes=1, sha256=SHA)
+
+    def test_fingerprint_absolute_rejected(self):
+        with pytest.raises(ValidationError, match="absolute"):
+            BenchmarkFileFingerprint(path="/etc/passwd", size_bytes=1, sha256=SHA)
+
+    def test_weight_entry_traversal_rejected(self):
+        with pytest.raises(ValidationError, match="traversal"):
+            BenchmarkWeightEntry(relative_path="../x", size_bytes=1, sha256=SHA)
+
+    def test_dataset_entry_traversal_rejected(self):
+        with pytest.raises(ValidationError, match="traversal"):
+            BenchmarkDatasetFileEntry(relative_path="a/../../b", size_bytes=1)
+
+    def test_command_cwd_traversal_rejected(self):
+        with pytest.raises(ValidationError, match="traversal"):
+            BenchmarkCommandSpec(
+                schema_version=1, shell=False, argv_template=["python"], cwd="../escape",
+                timeout_seconds=1, network_guard="g", resolved_argv_sha256=SHA,
+            )
+
+    def test_metrics_source_traversal_rejected(self):
+        with pytest.raises(ValidationError, match="traversal"):
+            BenchmarkMetricsResult(
+                schema_version=1, status="success", source="../../results.csv",
+                source_sha256=SHA, dataset_row="r",
+                metrics={"a": BenchmarkMetricValue(value=0.5, unit="ratio", required=True)},
+            )
+
+
+# --- Metric parse failure ---
+
+class TestMetricParseFailure:
+    def test_parse_failure_without_source_sha_ok(self):
+        m = BenchmarkMetricsResult(
+            schema_version=1, status="metric_parse_failed", source="x.csv",
+        )
+        assert m.source_sha256 is None
+        assert not m.is_success
+
+
+# --- Failure code / message ---
+
+def _fail_kw(status, **kw):
+    base = dict(schema_version=1, case_id="c1", run_id="r1", attempt="attempt_01", status=status)
+    base.update(kw)
+    return base
+
+
+class TestFailureFields:
+    def test_preflight_failed_requires_code(self):
+        with pytest.raises(ValidationError, match="failure_code"):
+            BenchmarkExecutionResult(**_fail_kw("preflight_failed"))
+
+    def test_execution_failed_requires_code(self):
+        with pytest.raises(ValidationError, match="failure_code"):
+            BenchmarkExecutionResult(**_fail_kw("execution_failed", timed_out=True))
+
+    def test_bad_failure_code_rejected(self):
+        with pytest.raises(ValidationError, match="failure_code"):
+            BenchmarkExecutionResult(**_fail_kw("execution_failed",
+                timed_out=True, failure_code="bad", failure_message="x"))
+
+    def test_success_must_not_set_failure_fields(self):
+        kw = _fail_kw("success")
+        kw.update(dict(exit_code=0, timed_out=False,
+                       started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
+                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
+                       case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
+                       weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
+                       command_sha256=SHA, metrics_sha256=SHA, duration_seconds=100.0,
+                       failure_code="BAD", failure_message="x"))
+        with pytest.raises(ValidationError, match="failure_code"):
+            BenchmarkExecutionResult(**kw)
+
+
+# --- Timezone ---
+
+class TestTimestamps:
+    def test_success_naive_started_rejected(self):
+        from datetime import datetime as dt
+        kw = _fail_kw("success")
+        kw.update(dict(exit_code=0, timed_out=False,
+                       started_at=dt(2026, 1, 1, 10, 0),
+                       finished_at=dt(2026, 1, 1, 11, 0),
+                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
+                       case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
+                       weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
+                       command_sha256=SHA, metrics_sha256=SHA, duration_seconds=100.0))
+        with pytest.raises(ValidationError, match="timezone"):
+            BenchmarkExecutionResult(**kw)
+
+    def test_success_missing_duration_rejected(self):
+        kw = _fail_kw("success")
+        kw.update(dict(exit_code=0, timed_out=False,
+                       started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T01:00:00Z",
+                       repository_fingerprint_before=SHA, repository_fingerprint_after=SHA2,
+                       case_sha256=SHA, environment_sha256=SHA, dataset_manifest_sha256=SHA,
+                       weights_manifest_sha256=SHA, evaluation_contract_sha256=SHA,
+                       command_sha256=SHA, metrics_sha256=SHA))
+        with pytest.raises(ValidationError, match="duration_seconds"):
+            BenchmarkExecutionResult(**kw)
+
+
+# --- Metric value range ---
+
+class TestMetricValueRange:
+    def test_ratio_out_of_range(self):
+        with pytest.raises(ValidationError, match=r"\[0,1\]"):
+            BenchmarkMetricValue(value=1.5, unit="ratio", required=True)
+
+    def test_percent_out_of_range(self):
+        with pytest.raises(ValidationError, match=r"\[0,100\]"):
+            BenchmarkMetricValue(value=101, unit="percent", required=False)
+
+    def test_negative_seconds_rejected(self):
+        with pytest.raises(ValidationError, match="non-negative"):
+            BenchmarkMetricValue(value=-1, unit="seconds", required=False)
+
+    def test_count_must_be_integer(self):
+        with pytest.raises(ValidationError, match="integer"):
+            BenchmarkMetricValue(value=1.5, unit="count", required=False)
+
+
+# --- CUDA device count ---
+
+class TestCudaDeviceCount:
+    def test_cuda_with_zero_devices_rejected(self):
+        with pytest.raises(ValidationError, match="device_count >= 1"):
+            BenchmarkEnvironmentSnapshot(
+                schema_version=1, python_version="3.8", platform="linux",
+                accelerator="cuda", torch_version="1", torchvision_version="1",
+                cuda_available=True, cuda_device_count=0,
+                lockfile_sha256=SHA, environment_sha256=SHA2,
+            )

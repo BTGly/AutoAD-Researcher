@@ -1,12 +1,14 @@
 """Internal benchmark runtime evidence models.
 
 All models use extra="forbid" and str_strip_whitespace=True.
-SHA values must be 64-char lowercase hex. Commits must be 40-char lowercase hex.
-Paths must be safe relative paths. Execution success requires full fingerprint evidence.
+SHA = 64-char lowercase hex. Commits = 40-char lowercase hex.
+Paths validated via PurePosixPath (no backslash, no absolute, no traversal).
+Execution success requires timezone-aware timestamps, duration, and full fingerprints.
 """
 
 import re
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -18,12 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 GitCommitSha = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
-SafeRelativePath = Annotated[
-    str,
-    StringConstraints(pattern=r"^(?!\.\./)(?!\.\.)(?!\/)(?!\.$)[^\0]+$"),
-]
-
-_SAFE_RELATIVE_RE = re.compile(r"^(?!\.\.\/)(?!\.\.)(?!\/)(?!\.$)[^\0]+$")
 
 _ALLOWED_COMMAND_ENV_KEYS = {
     "PYTHONPATH", "TORCH_HOME", "PYTHONHASHSEED",
@@ -31,20 +27,18 @@ _ALLOWED_COMMAND_ENV_KEYS = {
     "MPLCONFIGDIR", "WANDB_MODE", "HF_HUB_OFFLINE", "CUDA_VISIBLE_DEVICES",
 }
 
+_FAILURE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
 
-def _hex_len(v: str, n: int) -> str:
-    if not re.fullmatch(rf"^[0-9a-f]{{{n}}}$", v):
-        raise ValueError(f"must be {n}-char lowercase hex")
-    return v
-
-def _safe_path(v: str) -> str:
-    if not _SAFE_RELATIVE_RE.match(v):
-        raise ValueError(f"unsafe path: {v!r}")
-    return v
+def _safe_relative_path(value: str) -> str:
+    if "\\" in value or "\x00" in value:
+        raise ValueError(f"unsafe path characters: {value!r}")
+    path = PurePosixPath(value)
+    if path.is_absolute():
+        raise ValueError(f"absolute path forbidden: {value!r}")
+    if value in {"", "."} or ".." in path.parts:
+        raise ValueError(f"path traversal forbidden: {value!r}")
+    return value
 
 
 # ------------------------------------------------------------------
@@ -78,6 +72,11 @@ class BenchmarkFileFingerprint(BaseModel):
     path: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
     sha256: Sha256Hex
+
+    @model_validator(mode="after")
+    def _validate_path_safe(self):
+        _safe_relative_path(self.path)
+        return self
 
 
 # ------------------------------------------------------------------
@@ -125,8 +124,11 @@ class BenchmarkEnvironmentSnapshot(BaseModel):
 
     @model_validator(mode="after")
     def _validate_cuda_consistency(self):
-        if self.accelerator == "cuda" and not self.cuda_available:
-            raise ValueError("cuda accelerator requires cuda_available=true")
+        if self.accelerator == "cuda":
+            if not self.cuda_available:
+                raise ValueError("cuda accelerator requires cuda_available=true")
+            if self.cuda_device_count < 1:
+                raise ValueError("cuda accelerator requires device_count >= 1")
         if not self.cuda_available and self.cuda_device_count != 0:
             raise ValueError("cuda unavailable requires device_count=0")
         return self
@@ -143,6 +145,11 @@ class BenchmarkWeightEntry(BaseModel):
     relative_path: str = Field(min_length=1)
     size_bytes: int = Field(ge=1)
     sha256: Sha256Hex
+
+    @model_validator(mode="after")
+    def _validate_path_safe(self):
+        _safe_relative_path(self.relative_path)
+        return self
 
 
 class BenchmarkWeightManifest(BaseModel):
@@ -174,6 +181,11 @@ class BenchmarkDatasetFileEntry(BaseModel):
 
     relative_path: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _validate_path_safe(self):
+        _safe_relative_path(self.relative_path)
+        return self
 
 
 class BenchmarkDatasetManifest(BaseModel):
@@ -219,6 +231,11 @@ class BenchmarkCommandSpec(BaseModel):
     resolved_argv_sha256: Sha256Hex
 
     @model_validator(mode="after")
+    def _validate_cwd_safe(self):
+        _safe_relative_path(self.cwd)
+        return self
+
+    @model_validator(mode="after")
     def _validate_env_keys(self):
         for key in self.environment:
             if key not in _ALLOWED_COMMAND_ENV_KEYS:
@@ -238,16 +255,37 @@ class BenchmarkMetricValue(BaseModel):
     unit: MetricUnit
     required: bool
 
+    @model_validator(mode="after")
+    def _validate_value_range(self):
+        v = self.value
+        if self.unit == "ratio" and not (0.0 <= v <= 1.0):
+            raise ValueError(f"ratio must be in [0,1], got {v}")
+        if self.unit == "percent" and not (0.0 <= v <= 100.0):
+            raise ValueError(f"percent must be in [0,100], got {v}")
+        if self.unit == "count" and (v < 0 or v != int(v)):
+            raise ValueError(f"count must be non-negative integer, got {v}")
+        if self.unit == "bytes" and v < 0:
+            raise ValueError(f"bytes must be non-negative, got {v}")
+        if self.unit == "seconds" and v < 0:
+            raise ValueError(f"seconds must be non-negative, got {v}")
+        return self
+
 
 class BenchmarkMetricsResult(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     schema_version: Literal[1]
     status: BenchmarkMetricsStatus
-    source: str = Field(min_length=1)
-    source_sha256: Sha256Hex
+    source: str | None = None
+    source_sha256: Sha256Hex | None = None
     dataset_row: str | None = None
     metrics: dict[str, BenchmarkMetricValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_source_safe(self):
+        if self.source is not None:
+            _safe_relative_path(self.source)
+        return self
 
     @model_validator(mode="after")
     def _validate_metrics_consistency(self):
@@ -258,6 +296,8 @@ class BenchmarkMetricsResult(BaseModel):
                 raise ValueError("success metrics must include at least one required metric")
             if self.dataset_row is None:
                 raise ValueError("success metrics requires dataset_row")
+            if self.source is None or self.source_sha256 is None:
+                raise ValueError("success requires source and source_sha256")
         elif self.status == "metric_parse_failed":
             if self.metrics:
                 raise ValueError("parse failure must have empty metrics")
@@ -316,7 +356,7 @@ class BenchmarkExecutionResult(BaseModel):
     timed_out: bool = False
     failure_code: str | None = None
     failure_message: str | None = None
-    duration_seconds: float | None = Field(default=None, ge=0.0)
+    duration_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     started_at: datetime | None = None
     finished_at: datetime | None = None
     repository_fingerprint_before: Sha256Hex | None = None
@@ -338,8 +378,14 @@ class BenchmarkExecutionResult(BaseModel):
                 raise ValueError("success requires timed_out=false")
             if self.started_at is None or self.finished_at is None:
                 raise ValueError("success requires started_at and finished_at")
+            if self.started_at.tzinfo is None or self.finished_at.tzinfo is None:
+                raise ValueError("success requires timezone-aware timestamps")
             if self.finished_at < self.started_at:
                 raise ValueError("finished_at must be >= started_at")
+            if self.duration_seconds is None:
+                raise ValueError("success requires duration_seconds")
+            if self.failure_code is not None or self.failure_message is not None:
+                raise ValueError("success must not set failure_code or failure_message")
             required_shas = [
                 "repository_fingerprint_before", "repository_fingerprint_after",
                 "case_sha256", "environment_sha256", "dataset_manifest_sha256",
@@ -349,13 +395,21 @@ class BenchmarkExecutionResult(BaseModel):
             for name in required_shas:
                 if getattr(self, name) is None:
                     raise ValueError(f"success requires {name}")
-        elif self.status == "preflight_failed":
-            if self.exit_code is not None:
-                raise ValueError("preflight_failed must not set exit_code")
-        elif self.status == "execution_failed":
-            if self.exit_code is None and not self.timed_out:
-                raise ValueError("execution_failed requires exit_code or timed_out")
-        elif self.status == "invalid_repository_mutation":
-            if self.repository_fingerprint_before is None or self.repository_fingerprint_after is None:
-                raise ValueError("repository_mutation requires both fingerprints")
+        else:
+            if self.failure_code is None:
+                raise ValueError(f"{self.status} requires failure_code")
+            if not _FAILURE_CODE_RE.match(self.failure_code):
+                raise ValueError(f"failure_code must match ^[A-Z][A-Z0-9_]{{2,63}}$: {self.failure_code!r}")
+            if self.failure_message is None or not self.failure_message.strip():
+                raise ValueError(f"{self.status} requires failure_message")
+
+            if self.status == "preflight_failed":
+                if self.exit_code is not None:
+                    raise ValueError("preflight_failed must not set exit_code")
+            elif self.status == "execution_failed":
+                if self.exit_code is None and not self.timed_out:
+                    raise ValueError("execution_failed requires exit_code or timed_out")
+            elif self.status == "invalid_repository_mutation":
+                if self.repository_fingerprint_before is None or self.repository_fingerprint_after is None:
+                    raise ValueError("repository_mutation requires both fingerprints")
         return self
