@@ -37,6 +37,33 @@ def _revalidate_result(raw_result) -> "ClarifiedTask":
     return ClarifiedTask.model_validate(payload)
 
 
+def _validate_candidate_references(
+    result: "ClarifiedTask",
+    *,
+    task: "InputTask",
+    paper_summary: "PaperSummary | None",
+    repo_summary: "RepositorySummary | None",
+) -> None:
+    """校验 candidate evidence references 与当前 context 一致。"""
+    for candidate in result.baseline_candidates:
+        for evidence in candidate.evidence:
+            for ref in evidence.references:
+                if ref.source_id is not None and ref.source_id not in task.source_ids:
+                    raise ValueError(
+                        "candidate reference source_id is not referenced by input task"
+                    )
+                if ref.artifact == "repo_summary.json":
+                    if repo_summary is None:
+                        raise ValueError("candidate references missing repo_summary.json")
+                    if ref.source_id != repo_summary.source_id:
+                        raise ValueError("candidate repo source_id mismatch")
+                if ref.artifact == "paper_summary.json":
+                    if paper_summary is None:
+                        raise ValueError("candidate references missing paper_summary.json")
+                    if ref.source_id != paper_summary.source_id:
+                        raise ValueError("candidate paper source_id mismatch")
+
+
 class IntentClarifier:
     """基于已落盘事实的意图澄清 core service。"""
 
@@ -110,6 +137,11 @@ class IntentClarifier:
                 raise ValueError("clarifier must not select baseline without user confirmation")
             if result.baseline_decision is not None:
                 raise ValueError("unconfirmed baseline cannot have a decision")
+
+        # candidate reference context validation
+        _validate_candidate_references(
+            result, task=task, paper_summary=paper_summary, repo_summary=repo_summary,
+        )
 
         # --- 写入 ---
         self._artifacts.write_json(run_id, "clarified_task.json", result)

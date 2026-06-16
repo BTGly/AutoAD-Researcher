@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ------------------------------------------------------------------
@@ -116,3 +116,11 @@ class InputTask(BaseModel):
     compute_budget: str | None = None
 
     constraints: list[str] = Field(default_factory=list)
+
+    @field_validator("baseline", "dataset", "compute_budget", "user_idea", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value: str | None) -> str | None:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else None
+        return value

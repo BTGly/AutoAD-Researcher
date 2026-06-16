@@ -165,17 +165,19 @@ class TestIntentClarifier:
         store = ArtifactStore(runs_root=tmp_path, enable_events=False)
         assert not store.exists("run_demo", "clarified_task.json")
 
-    def test_model_copy_injects_empty_evidence_candidate_rejected(self, tmp_path):
+    def test_model_construct_bypass_caught_by_revalidate(self, tmp_path):
+        """model_construct + model_copy 绕过 backend 内校验，Core 重校验拦截。"""
         _setup_full(tmp_path)
+        from autoad_researcher.schemas import DecisionCandidate, DecisionEvidence, ArtifactReference
 
         class BadBackend(RuleBasedIntentClarifierBackend):
             def clarify(self, *, context):
                 result = super().clarify(context=context)
-                from autoad_researcher.schemas import DecisionCandidate
-                result.baseline_candidates = [
-                    DecisionCandidate(value="Bad", evidence=[]),
-                ]
-                return result
+                bad_candidate = DecisionCandidate.model_construct(
+                    value="Bad",
+                    evidence=[],
+                )
+                return result.model_copy(update={"baseline_candidates": [bad_candidate]})
 
         with pytest.raises(Exception):
             IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
@@ -184,22 +186,19 @@ class TestIntentClarifier:
             "run_demo", "clarified_task.json"
         )
 
-    def test_model_copy_injects_duplicate_candidate_rejected(self, tmp_path):
+    def test_model_construct_duplicate_bypass_caught_by_revalidate(self, tmp_path):
         _setup_full(tmp_path)
         from autoad_researcher.schemas import DecisionCandidate, DecisionEvidence, ArtifactReference
 
         class BadBackend(RuleBasedIntentClarifierBackend):
             def clarify(self, *, context):
                 result = super().clarify(context=context)
-                ev = DecisionEvidence(
+                ev = DecisionEvidence.model_construct(
                     source="repo_detected", rationale="x",
                     references=[ArtifactReference(artifact="repo_summary.json", locator="baseline_methods", source_id="baseline_repo")],
                 )
-                result.baseline_candidates = [
-                    DecisionCandidate(value="Dup", evidence=[ev]),
-                    DecisionCandidate(value="dup", evidence=[ev]),
-                ]
-                return result
+                dc = DecisionCandidate.model_construct(value="Dup", evidence=[ev])
+                return result.model_copy(update={"baseline_candidates": [dc, dc]})
 
         with pytest.raises(Exception):
             IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
@@ -260,6 +259,45 @@ class TestIntentClarifier:
 
         with pytest.raises(ValueError, match="not referenced"):
             IntentClarifier(RuleBasedIntentClarifierBackend(), runs_root=tmp_path).run("run_demo")
+
+    def test_candidate_references_wrong_repo_source_id_rejected(self, tmp_path):
+        _setup_full(tmp_path)
+        from autoad_researcher.schemas import DecisionCandidate, DecisionEvidence, ArtifactReference
+
+        class BadBackend(RuleBasedIntentClarifierBackend):
+            def clarify(self, *, context):
+                result = super().clarify(context=context)
+                ev = DecisionEvidence(
+                    source="repo_detected", rationale="x",
+                    references=[ArtifactReference(artifact="repo_summary.json", locator="baseline_methods", source_id="wrong_repo")],
+                )
+                result.baseline_candidates = [DecisionCandidate(value="X", evidence=[ev])]
+                return result
+
+        with pytest.raises(ValueError, match="not referenced by input task"):
+            IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
+
+    def test_candidate_references_missing_paper_rejected(self, tmp_path):
+        _setup_full(tmp_path)
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        # Delete paper_summary so candidate referencing it fails
+        import os
+        os.remove(str(tmp_path / "run_demo" / "paper_summary.json"))
+
+        from autoad_researcher.schemas import DecisionCandidate, DecisionEvidence, ArtifactReference
+
+        class BadBackend(RuleBasedIntentClarifierBackend):
+            def clarify(self, *, context):
+                result = super().clarify(context=context)
+                ev = DecisionEvidence(
+                    source="paper_mentioned", rationale="x",
+                    references=[ArtifactReference(artifact="paper_summary.json", locator="compared_methods", source_id="paper_main")],
+                )
+                result.baseline_candidates = [DecisionCandidate(value="X", evidence=[ev])]
+                return result
+
+        with pytest.raises(ValueError, match="missing paper_summary"):
+            IntentClarifier(BadBackend(), runs_root=tmp_path).run("run_demo")
 
     def test_exact_event_order_full_input(self, tmp_path):
         _setup_full(tmp_path)
