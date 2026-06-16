@@ -20,10 +20,14 @@ def collect_repository_state(*, case, repo_path: Path, workspace_root: Path) -> 
         raise BenchmarkPreflightError(check_name="repository", code="REPO_HEAD_MISMATCH",
             message=f"expected {case.repository.commit_sha}")
 
-    symref = _git(repo_path, ["symbolic-ref", "-q", "HEAD"], allow_nonzero=True)
+    symref = subprocess.run(["git", "-C", str(repo_path), "symbolic-ref", "-q", "HEAD"],
+        shell=False, check=False, capture_output=True, text=True, timeout=10)
     if symref.returncode == 0:
         raise BenchmarkPreflightError(check_name="repository", code="REPO_NOT_DETACHED",
             message="HEAD must be detached")
+    elif symref.returncode != 1:
+        raise BenchmarkPreflightError(check_name="repository", code="REPO_GIT_COMMAND_FAILED",
+            message="git symbolic-ref failed")
 
     status = _git(repo_path, ["status", "--porcelain=v1", "--untracked-files=all"])
     if status.stdout.strip():
@@ -108,15 +112,15 @@ _CREDENTIALS_RE = re.compile(r"://[^@]+@")
 
 
 def _normalize_url(url: str) -> str:
-    if _CREDENTIALS_RE.search(url):
-        raise BenchmarkPreflightError(check_name="repository", code="REPO_REMOTE_CONTAINS_CREDENTIALS",
-            message="remote URL contains credentials")
     url = url.removesuffix(".git")
-    # Normalize git/ssh variants to https-like host/path
+    # Normalize SSH first, then check credentials on HTTP(S)
     if url.startswith("git@"):
         url = re.sub(r"^git@([^:]+):", r"https://\1/", url)
     elif url.startswith("ssh://git@"):
         url = re.sub(r"^ssh://git@([^/]+)/", r"https://\1/", url)
+    elif _CREDENTIALS_RE.search(url):
+        raise BenchmarkPreflightError(check_name="repository", code="REPO_REMOTE_CONTAINS_CREDENTIALS",
+            message="remote URL contains credentials")
     return url.removeprefix("https://")
 
 

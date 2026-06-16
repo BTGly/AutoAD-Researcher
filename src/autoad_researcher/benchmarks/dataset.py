@@ -18,7 +18,11 @@ def resolve_dataset_root(*, case, environ: Mapping[str, str], workspace_root: Pa
     if not val:
         raise BenchmarkPreflightError(check_name="dataset", code="DATASET_ROOT_ENV_EMPTY",
             message=f"environment variable {env_name} is empty")
-    root = Path(val).resolve(strict=False)
+    raw_root = Path(val)
+    if raw_root.is_symlink():
+        raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
+            message="dataset root must not be a symlink")
+    root = raw_root.resolve(strict=False)
     if not root.exists():
         raise BenchmarkPreflightError(check_name="dataset", code="DATASET_ROOT_NOT_FOUND",
             message="dataset root does not exist")
@@ -56,27 +60,43 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
             message="ground_truth directory missing")
 
     train_good_files = _scan_dir(train_good_dir, required_suffix=".png")
-    test_files = sorted(test_dir.rglob("*"))
     test_good_files = []
     test_anomaly_files: dict[str, list[Path]] = {}
-    for f in test_files:
-        if f.is_symlink() or f.parent.is_symlink():
+    # Only allow: test/good/<image>.png and test/<anomaly_type>/<image>.png
+    for entry in sorted(test_dir.iterdir()):
+        if entry.is_symlink():
             raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
                 message="dataset must not contain symlinks")
-        if not f.is_file():
-            continue
-        _validate_image_file(f)
-        suffix = f.suffix.lower()
-        if suffix != ".png":
+        if not entry.is_dir():
             raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
-                message=f"unexpected file type in test: {f.name}")
-        rel = f.relative_to(test_dir)
-        parts = rel.parts
-        if parts[0] == "good":
-            test_good_files.append(f)
+                message=f"unexpected file in test root: {entry.name}")
+        if entry.name == "good":
+            for img in sorted(entry.iterdir()):
+                if img.is_symlink():
+                    raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
+                        message="dataset must not contain symlinks")
+                if not img.is_file():
+                    raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                        message=f"unexpected non-file in test/good: {img.name}")
+                _validate_image_file(img)
+                if img.suffix != ".png":
+                    raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                        message=f"unexpected file type in test/good: {img.name}")
+                test_good_files.append(img)
         else:
-            anomaly_type = parts[0]
-            test_anomaly_files.setdefault(anomaly_type, []).append(f)
+            anomaly_type = entry.name
+            for img in sorted(entry.iterdir()):
+                if img.is_symlink():
+                    raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
+                        message="dataset must not contain symlinks")
+                if not img.is_file():
+                    raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                        message=f"unexpected non-file in test/{anomaly_type}: {img.name}")
+                _validate_image_file(img)
+                if img.suffix != ".png":
+                    raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                        message=f"unexpected file type in test/{anomaly_type}: {img.name}")
+                test_anomaly_files.setdefault(anomaly_type, []).append(img)
 
     if not train_good_files:
         raise BenchmarkPreflightError(check_name="dataset", code="DATASET_TRAIN_GOOD_EMPTY",
@@ -123,6 +143,9 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
             if mf.is_symlink():
                 raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
                     message=f"ground_truth symlink: {mf.name}")
+            if mf.is_dir():
+                raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                    message=f"unexpected nested directory in ground_truth: {mf.name}")
             if mf.is_file():
                 if mf.suffix != ".png":
                     raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
@@ -169,10 +192,13 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
 
 def _scan_dir(directory: Path, required_suffix: str) -> list[Path]:
     files = []
-    for f in sorted(directory.rglob("*")):
-        if f.is_symlink() or f.parent.is_symlink():
+    for f in sorted(directory.iterdir()):
+        if f.is_symlink():
             raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
                 message="dataset must not contain symlinks")
+        if f.is_dir():
+            raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
+                message=f"unexpected nested directory: {f.name}")
         if not f.is_file():
             continue
         _validate_image_file(f)
