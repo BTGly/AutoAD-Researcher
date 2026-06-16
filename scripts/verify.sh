@@ -79,6 +79,7 @@ from autoad_researcher.clarifiers import (
 from autoad_researcher.core import (
     ArtifactStore,
     EventStore,
+    IdeaGenerator,
     IdeaSourceRouter,
     InputIntake,
     IntentClarifier,
@@ -86,7 +87,10 @@ from autoad_researcher.core import (
     PipelineResult,
     StageResult,
 )
-from autoad_researcher.ideation import IdeaGenerationBackend
+from autoad_researcher.ideation import (
+    DirectIdeaBackend,
+    IdeaGenerationBackend,
+)
 from autoad_researcher.core import PaperReader, RepositoryReader
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
 from autoad_researcher.readers import (

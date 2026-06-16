@@ -237,7 +237,7 @@ class TestArtifactStore:
         )
         model = IdeaContext(
             run_id="run_demo",
-            route=IdeaRouteDecision(mode="idea_decomposition", reason="has idea"),
+            route=IdeaRouteDecision(mode="multi_agent_exploration", reason="no idea"),
             clarified_task=ClarifiedTask(
                 run_id="run_demo", status="ready", original_request="x",
             ),
@@ -246,7 +246,7 @@ class TestArtifactStore:
         path = store.write_json("run_demo", "idea_context.json", model)
         assert path == tmp_path / "run_demo" / "idea_context.json"
         loaded = store.read_model("run_demo", "idea_context.json", IdeaContext)
-        assert loaded.route.mode == "idea_decomposition"
+        assert loaded.route.mode == "multi_agent_exploration"
 
     def test_write_and_read_idea_candidates(self, tmp_path):
         from autoad_researcher.schemas import (

@@ -34,7 +34,7 @@ class TestIdeaContext:
     def test_minimal_valid(self):
         ctx = IdeaContext(
             run_id="run_demo",
-            route=IdeaRouteDecision(mode="idea_decomposition", reason="has idea"),
+            route=IdeaRouteDecision(mode="multi_agent_exploration", reason="no idea"),
             clarified_task=__import__("autoad_researcher.schemas", fromlist=["ClarifiedTask"]).ClarifiedTask(
                 run_id="run_demo", status="ready", original_request="x",
             ),

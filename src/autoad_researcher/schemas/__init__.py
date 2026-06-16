@@ -17,6 +17,7 @@ from autoad_researcher.schemas.clarification import (
 )
 from autoad_researcher.schemas.experiment import ExperimentPlan
 from autoad_researcher.schemas.ideas import (
+    EstimatedIdeaCost,
     IdeaCandidate,
     IdeaContext,
     IdeaGenerationResult,
@@ -44,6 +45,7 @@ __all__ = [
     "ClarificationQuestion",
     "ClarificationStatus",
     "ClarifiedTask",
+    "EstimatedIdeaCost",
     "EvidenceReference",
     "ExperimentPlan",
     "IdeaCandidate",

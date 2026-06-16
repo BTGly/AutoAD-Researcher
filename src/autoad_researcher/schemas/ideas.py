@@ -44,6 +44,13 @@ class IdeaRouteDecision(BaseModel):
 
 
 # ------------------------------------------------------------------
+# EstimatedIdeaCost
+# ------------------------------------------------------------------
+
+EstimatedIdeaCost = Literal["unknown", "low", "medium", "high"]
+
+
+# ------------------------------------------------------------------
 # IdeaContext
 # ------------------------------------------------------------------
 
@@ -65,6 +72,37 @@ class IdeaContext(BaseModel):
     clarified_task: ClarifiedTask
     paper_summary: PaperSummary | None = None
     repo_summary: RepositorySummary | None = None
+
+    @model_validator(mode="after")
+    def _validate_context_consistency(self):
+        if self.clarified_task.run_id != self.run_id:
+            raise ValueError("clarified task run_id mismatch in idea context")
+
+        if self.clarified_task.status == "needs_blocking_input":
+            raise ValueError("idea context cannot contain blocking clarification")
+
+        has_user_idea = bool(
+            self.clarified_task.user_idea
+            and self.clarified_task.user_idea.strip()
+        )
+
+        if self.route.mode in {"direct_user_idea", "idea_decomposition"} and not has_user_idea:
+            raise ValueError(f"{self.route.mode} requires user_idea")
+
+        allowed_sources = set(self.clarified_task.source_ids)
+
+        for label, summary in (
+            ("paper summary", self.paper_summary),
+            ("repo summary", self.repo_summary),
+        ):
+            if summary is None:
+                continue
+            if summary.run_id != self.run_id:
+                raise ValueError(f"{label} run_id mismatch in idea context")
+            if summary.source_id not in allowed_sources:
+                raise ValueError(f"{label} source_id not in clarified source_ids in idea context")
+
+        return self
 
 
 # ------------------------------------------------------------------
@@ -92,7 +130,7 @@ class IdeaCandidate(BaseModel):
 
     minimum_experiment: str = Field(min_length=1)
 
-    estimated_cost: Literal["low", "medium", "high"]
+    estimated_cost: EstimatedIdeaCost
     confidence: float = Field(ge=0.0, le=1.0)
 
     evidence: list[ArtifactReference] = Field(min_length=1)

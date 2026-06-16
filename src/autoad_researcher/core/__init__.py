@@ -3,6 +3,7 @@
 from autoad_researcher.core.artifacts import ArtifactStore
 from autoad_researcher.core.clarification import IntentClarifier
 from autoad_researcher.core.events import EventRecord, EventStore
+from autoad_researcher.core.idea_generation import IdeaGenerator
 from autoad_researcher.core.idea_router import IdeaSourceRouter
 from autoad_researcher.core.intake import InputIntake
 from autoad_researcher.core.pipeline import (
@@ -17,6 +18,7 @@ __all__ = [
     "ArtifactStore",
     "EventRecord",
     "EventStore",
+    "IdeaGenerator",
     "IdeaSourceRouter",
     "InputIntake",
     "IntentClarifier",
