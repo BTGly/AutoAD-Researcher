@@ -93,6 +93,7 @@ class BenchmarkRepositoryState(BaseModel):
     actual_commit: GitCommitSha
     detached_head: bool
     dirty: bool
+    remote_url: str = Field(min_length=1)
     required_files: list[BenchmarkFileFingerprint] = Field(default_factory=list)
     repository_fingerprint: Sha256Hex
 
@@ -113,6 +114,7 @@ class BenchmarkEnvironmentSnapshot(BaseModel):
     torchvision_version: str = Field(min_length=1)
     cuda_available: bool
     cuda_device_count: int = Field(ge=0)
+    gpu_index: int | None = Field(default=None, ge=0)
     cuda_runtime: str | None = None
     nvidia_driver: str | None = None
     gpu_name: str | None = None
@@ -129,6 +131,13 @@ class BenchmarkEnvironmentSnapshot(BaseModel):
                 raise ValueError("cuda accelerator requires cuda_available=true")
             if self.cuda_device_count < 1:
                 raise ValueError("cuda accelerator requires device_count >= 1")
+            if self.gpu_index is None:
+                raise ValueError("cuda accelerator requires gpu_index")
+            if self.gpu_index >= self.cuda_device_count:
+                raise ValueError("gpu_index must be < device_count")
+        else:
+            if self.gpu_index is not None:
+                raise ValueError("cpu accelerator must not set gpu_index")
         if not self.cuda_available and self.cuda_device_count != 0:
             raise ValueError("cuda unavailable requires device_count=0")
         return self

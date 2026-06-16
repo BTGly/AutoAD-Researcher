@@ -40,7 +40,7 @@ class TestRepositoryState:
         s = BenchmarkRepositoryState(
             schema_version=1, case_id="c1",
             expected_commit=COMMIT, actual_commit=COMMIT2,
-            detached_head=True, dirty=False, repository_fingerprint=SHA,
+            detached_head=True, dirty=False, remote_url="github.com/x/y", repository_fingerprint=SHA,
         )
         assert s.dirty is False
 
@@ -49,7 +49,7 @@ class TestRepositoryState:
             BenchmarkRepositoryState(
                 schema_version=1, case_id="c1",
                 expected_commit="z" * 40, actual_commit=COMMIT2,
-                detached_head=True, dirty=False, repository_fingerprint=SHA,
+                detached_head=True, dirty=False, remote_url="github.com/x/y", repository_fingerprint=SHA,
             )
 
 
@@ -58,7 +58,7 @@ class TestEnvironmentSnapshot:
         e = BenchmarkEnvironmentSnapshot(
             schema_version=1, python_version="3.8", platform="linux",
             accelerator="cuda", torch_version="1.0", torchvision_version="0.1",
-            cuda_available=True, cuda_device_count=1,
+            cuda_available=True, cuda_device_count=1, gpu_index=0,
             lockfile_sha256=SHA, environment_sha256=SHA2,
         )
         assert e.accelerator == "cuda"
