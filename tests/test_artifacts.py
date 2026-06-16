@@ -159,3 +159,13 @@ class TestArtifactStore:
             "artifact_read",
         ]
         assert events[1].payload["artifact"] == "experiment_plan.json"
+
+    def test_events_can_be_disabled(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+        plan = make_experiment_plan()
+
+        store.write_json("run_demo", "experiment_plan.json", plan)
+        store.read_json("run_demo", "experiment_plan.json")
+
+        event_path = tmp_path / "run_demo" / "events.jsonl"
+        assert not event_path.exists()
