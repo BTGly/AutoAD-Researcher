@@ -38,6 +38,55 @@ AutoAD Core and the benchmark baseline use separate Python environments.
 Benchmark dependencies (PyTorch, torchvision, CUDA) are not added to the
 main `pyproject.toml`.
 
+## Prerequisites
+
+```bash
+export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=/path/to/mvtec-ad
+```
+
+## Key parameters
+
+| Category | Value |
+|---|---|
+| entrypoint | `bin/run_patchcore.py` |
+| backbone | wideresnet50 |
+| layers | layer2, layer3 |
+| resize / imagesize | 256 / 224 |
+| embedding dim | 1024 |
+| coreset ratio | 0.1 |
+| results path | outputs |
+| GPU | 0 |
+
+## Required metrics
+
+| Metric | Tolerance |
+|---|---|
+| instance_auroc | 0.005 |
+| full_pixel_auroc | 0.005 |
+| anomaly_pixel_auroc | 0.005 |
+
+## Protected paths
+
+```
+bin/run_patchcore.py
+src/patchcore/metrics.py
+src/patchcore/utils.py
+src/patchcore/datasets/mvtec.py
+```
+
+## Expected results.csv
+
+```
+outputs/autoad_internal_benchmark/internal_patchcore_mvtec_bottle_v1/results.csv
+```
+
+## Validate
+
+```bash
+uv run python scripts/benchmark/validate_case.py \
+  configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml
+```
+
 ## ADR
 
 See `docs/adr/0001-internal-benchmark-selection.md` for the full decision record.

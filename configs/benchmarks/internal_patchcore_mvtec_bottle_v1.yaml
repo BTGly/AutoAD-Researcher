@@ -55,6 +55,15 @@ fixed_parameters:
   log_online: false
   save_patchcore_model: false
   save_segmentation_images: false
+  results_path: outputs
+  gpu: 0
+  # 以下为上游 CLI 默认值，显式锁定避免 Runner 依赖第三方源码解读
+  preprocessing: mean
+  aggregation: mean
+  patchscore: max
+  patchoverlap: 0.0
+  faiss_num_workers: 8
+  augment: false
   log_project: autoad_internal_benchmark
   log_group: internal_patchcore_mvtec_bottle_v1
 

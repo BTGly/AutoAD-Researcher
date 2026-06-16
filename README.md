@@ -16,7 +16,7 @@
 → 实验方案生成
 → 代码修改计划 / patch
 → 人工确认
-→ 实验运行 (Anomalib + MVTec AD)
+→ 实验运行（baseline 由用户确认，不由系统预设）
 → 日志与指标读取
 → baseline 对比
 → 失败原因分析
@@ -31,12 +31,28 @@
 | [技术路线草案](docs/AutoAD_Researcher_技术路线草案.md) | 完整系统设计：13个模块、MVP定义、技术栈、Demo设计 |
 | [参考资料汇总](docs/AutoAD_参考资料汇总.md) | 参考论文、开源仓库、工具对比、BibTeX汇总 |
 
-## 第一版边界
+## 真实用户任务 vs 内部 Benchmark
 
-- **方向：** 视觉异常检测 / 工业缺陷检测
-- **数据集：** MVTec AD 的 1-2 个类别 (bottle, capsule, cable)
-- **Baseline：** PatchCore / PaDiM / FastFlow
-- **目标：** 跑通最小实验闭环
+### 真实用户任务
+
+baseline、dataset、metrics 必须由用户确认，不由系统预设。
+详见 [任务参数决策与来源协议](docs/AutoAD_任务参数决策与来源协议.md)。
+
+方向：视觉异常检测 / 工业缺陷检测
+
+### 内部 Benchmark（仅供开发与回归）
+
+| 字段 | 值 |
+|---|---|
+| case_id | `internal_patchcore_mvtec_bottle_v1` |
+| baseline | PatchCore（Amazon 官方实现） |
+| 仓库 | [amazon-science/patchcore-inspection](https://github.com/amazon-science/patchcore-inspection) |
+| commit | `fcaa92f` (Apache-2.0) |
+| dataset | MVTec AD / bottle |
+| 数据许可 | CC BY-NC-SA 4.0，**非商业使用** |
+
+详细配置见 [configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml](configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml)
+和 [ADR 0001](docs/adr/0001-internal-benchmark-selection.md)。
 
 ## CLI smoke test
 
