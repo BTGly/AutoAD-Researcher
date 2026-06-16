@@ -1,0 +1,110 @@
+schema_version: 1
+
+case_id: internal_patchcore_mvtec_bottle_v1
+
+scope: internal_benchmark_only
+must_not_be_used_as_user_default: true
+
+purpose: >
+  Internal regression benchmark for repository analysis,
+  controlled execution, metric parsing, and scientific-validity checks.
+
+baseline_name: PatchCore
+implementation_name: amazon-science-patchcore-inspection
+
+repository:
+  url: https://github.com/amazon-science/patchcore-inspection
+  ref: main
+  commit_sha: fcaa92f124fb1ad74a7acf56726decd4b27cbcad
+  license: Apache-2.0
+  entrypoint_path: bin/run_patchcore.py
+  config_path: null
+  dependency_files:
+    - requirements.txt
+    - setup.py
+
+dataset:
+  name: MVTec AD
+  category: bottle
+  root_env: AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT
+  license: CC BY-NC-SA 4.0
+  required_relative_paths:
+    - bottle/train/good
+    - bottle/test
+    - bottle/ground_truth
+  manifest_strategy: relative_path_size_v1
+
+fixed_parameters:
+  seed: 0
+  backbone: wideresnet50
+  layers:
+    - layer2
+    - layer3
+  resize: 256
+  imagesize: 224
+  pretrain_embed_dimension: 1024
+  target_embed_dimension: 1024
+  anomaly_scorer_num_nn: 1
+  patchsize: 3
+  sampler: approx_greedy_coreset
+  coreset_sampling_ratio: 0.1
+  batch_size: 2
+  num_workers: 8
+  train_val_split: 1.0
+  faiss_on_gpu: false
+  log_online: false
+  save_patchcore_model: false
+  save_segmentation_images: false
+  log_project: autoad_internal_benchmark
+  log_group: internal_patchcore_mvtec_bottle_v1
+
+evaluation:
+  metrics:
+    - name: instance_auroc
+      required: true
+      direction: maximize
+      unit: ratio
+      absolute_tolerance: 0.005
+
+    - name: full_pixel_auroc
+      required: false
+      direction: maximize
+      unit: ratio
+      absolute_tolerance: 0.005
+
+    - name: anomaly_pixel_auroc
+      required: false
+      direction: maximize
+      unit: ratio
+      absolute_tolerance: 0.005
+
+  evaluator_paths:
+    - bin/run_patchcore.py
+    - src/patchcore/metrics.py
+    - src/patchcore/utils.py
+
+  protected_paths:
+    - bin/run_patchcore.py
+    - src/patchcore/metrics.py
+    - src/patchcore/utils.py
+    - src/patchcore/datasets/mvtec.py
+
+  raw_result_paths:
+    - outputs/autoad_internal_benchmark/internal_patchcore_mvtec_bottle_v1/results.csv
+
+  fingerprint_strategy: repo_commit_paths_and_config_v1
+
+reproducibility:
+  attempts: 2
+  seed: 0
+  require_same_repository_commit: true
+  require_same_case_config: true
+  require_same_dataset_manifest: true
+  require_same_evaluation_contract: true
+  require_same_environment: true
+
+safety:
+  allow_network_during_execution: false
+  require_clean_repository: true
+  overwrite_existing_attempt: false
+  allow_paths_outside_workspace: false

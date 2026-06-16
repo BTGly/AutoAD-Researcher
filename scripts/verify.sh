@@ -173,6 +173,11 @@ echo "[verify] checking benchmark config..."
 test -f src/autoad_researcher/schemas/benchmark.py
 test -f src/autoad_researcher/benchmarks/config.py
 test -f scripts/benchmark/validate_case.py
+test -f configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml
+test -f docs/adr/0001-internal-benchmark-selection.md
+test -f docs/internal_benchmark_case.md
+"$UV_BIN" run python scripts/benchmark/validate_case.py \
+  configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml >/dev/null
 echo "[verify] benchmark config ok."
 
 echo "[verify] running pytest..."
