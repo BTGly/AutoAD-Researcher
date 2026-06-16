@@ -72,15 +72,25 @@ PY
 
 echo "[verify] checking core imports..."
 "$UV_BIN" run python - <<'PY'
-from autoad_researcher.core import ArtifactStore, EventStore, StageResult
+from autoad_researcher.core import (
+    ArtifactStore,
+    EventStore,
+    PipelineResult,
+    StageResult,
+)
 
 store = ArtifactStore(runs_root="runs")
 events = EventStore(runs_root="runs")
-result = StageResult(
+stage = StageResult(
     run_id="run_demo",
     stage="experiment_planning",
     status="success",
     artifacts=["experiment_plan.json"],
+)
+pipeline = PipelineResult(
+    run_id="run_demo",
+    status="success",
+    stages=[stage],
 )
 print("[verify] core import ok.")
 PY
