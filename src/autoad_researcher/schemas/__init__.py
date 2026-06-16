@@ -11,6 +11,15 @@ from autoad_researcher.schemas.decisions import (
     DecisionConfirmationSource,
     DecisionEvidence,
 )
+from autoad_researcher.schemas.benchmark import (
+    BenchmarkDataset,
+    BenchmarkEvaluationContract,
+    BenchmarkMetric,
+    BenchmarkReproducibility,
+    BenchmarkRepository,
+    BenchmarkSafety,
+    InternalBenchmarkCase,
+)
 from autoad_researcher.schemas.clarification import (
     ArtifactReference,
     ClarificationCategory,
@@ -47,6 +56,12 @@ from autoad_researcher.schemas.readers import (
 
 __all__ = [
     "ArtifactReference",
+    "BenchmarkDataset",
+    "BenchmarkEvaluationContract",
+    "BenchmarkMetric",
+    "BenchmarkReproducibility",
+    "BenchmarkRepository",
+    "BenchmarkSafety",
     "ClarificationCategory",
     "ClarificationContext",
     "ConfirmedDecision",
@@ -66,6 +81,7 @@ __all__ = [
     "IdeaMode",
     "IdeaRouteDecision",
     "InputTask",
+    "InternalBenchmarkCase",
     "KnownFact",
     "KnowledgeState",
     "MissingInformation",

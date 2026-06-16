@@ -169,6 +169,12 @@ echo "[verify] checking CLI entrypoints..."
 "$UV_BIN" run python -m autoad_researcher --help >/dev/null
 echo "[verify] CLI entrypoints ok."
 
+echo "[verify] checking benchmark config..."
+test -f src/autoad_researcher/schemas/benchmark.py
+test -f src/autoad_researcher/benchmarks/config.py
+test -f scripts/benchmark/validate_case.py
+echo "[verify] benchmark config ok."
+
 echo "[verify] running pytest..."
 "$UV_BIN" run --extra dev pytest -q
 
