@@ -47,6 +47,7 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
     cat = case.dataset.category
     # Reject required directory symlinks
     for check_path in [dataset_root, dataset_root / cat, dataset_root / cat / "train",
+                       dataset_root / cat / "train" / "good",
                        dataset_root / cat / "test", dataset_root / cat / "ground_truth"]:
         if check_path.is_symlink():
             raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",

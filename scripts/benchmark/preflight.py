@@ -24,7 +24,9 @@ def main() -> int:
 
     def project_path(value: str) -> Path:
         path = Path(value)
-        return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+        import os as _osp
+        candidate = path if path.is_absolute() else PROJECT_ROOT / path
+        return Path(_osp.path.abspath(_osp.fspath(candidate)))
 
     out = Path(args.output_dir)
     if out.exists():

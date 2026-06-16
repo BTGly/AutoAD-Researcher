@@ -101,7 +101,7 @@ def collect_environment_snapshot(
     # Run probe
     runner = probe_runner or _default_probe_runner
     try:
-        result = runner(benchmark_python, _PROBE_SOURCE, timeout_seconds)
+        result = runner(launcher, _PROBE_SOURCE, timeout_seconds)
     except subprocess.TimeoutExpired:
         raise BenchmarkPreflightError(check_name="environment", code="ENV_PROBE_TIMEOUT",
                                       message="probe timed out")
