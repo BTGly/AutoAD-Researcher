@@ -17,6 +17,7 @@ from autoad_researcher.schemas import (
 
 def _setup_run(tmp_path):
     store = ArtifactStore(runs_root=tmp_path, enable_events=False)
+    from autoad_researcher.schemas import ConfirmedDecision
     store.write_json("run_demo", "clarified_task.json", ClarifiedTask(
         run_id="run_demo",
         status="ready",

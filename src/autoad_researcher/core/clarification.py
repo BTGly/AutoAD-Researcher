@@ -85,6 +85,20 @@ class IntentClarifier:
                 "clarifier must not select metrics before user confirmation"
             )
 
+        # baseline decision guards
+        if task.baseline is not None:
+            if result.baseline != task.baseline:
+                raise ValueError("clarifier must not rewrite explicit user baseline")
+            if result.baseline_decision is None:
+                raise ValueError("confirmed baseline requires baseline_decision")
+            if result.baseline_decision.source != "user_provided":
+                raise ValueError("explicit user baseline must be user_provided")
+        else:
+            if result.baseline is not None:
+                raise ValueError("clarifier must not select baseline without user confirmation")
+            if result.baseline_decision is not None:
+                raise ValueError("unconfirmed baseline cannot have a decision")
+
         # --- 写入 ---
         self._artifacts.write_json(run_id, "clarified_task.json", result)
 

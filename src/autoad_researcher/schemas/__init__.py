@@ -4,6 +4,13 @@
 harness、pipeline、storage 等模块不应在各自目录内重复定义 schema。
 """
 
+from autoad_researcher.schemas.decisions import (
+    ConfirmedDecision,
+    DecisionCandidate,
+    DecisionCandidateSource,
+    DecisionConfirmationSource,
+    DecisionEvidence,
+)
 from autoad_researcher.schemas.clarification import (
     ArtifactReference,
     ClarificationCategory,
@@ -42,6 +49,11 @@ __all__ = [
     "ArtifactReference",
     "ClarificationCategory",
     "ClarificationContext",
+    "ConfirmedDecision",
+    "DecisionCandidate",
+    "DecisionCandidateSource",
+    "DecisionConfirmationSource",
+    "DecisionEvidence",
     "ClarificationQuestion",
     "ClarificationStatus",
     "ClarifiedTask",
@@ -65,3 +77,6 @@ __all__ = [
     "SourceKind",
     "SourceManifest",
 ]
+
+# Resolve forward references: ClarifiedTask → DecisionCandidate, ConfirmedDecision
+ClarifiedTask.model_rebuild()

@@ -12,6 +12,9 @@ from autoad_researcher.schemas import (
     ClarificationContext,
     ClarificationQuestion,
     ClarifiedTask,
+    ConfirmedDecision,
+    DecisionCandidate,
+    DecisionEvidence,
     KnownFact,
     MissingInformation,
 )
@@ -33,12 +36,25 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
         known: list[KnownFact] = []
         missing: list[MissingInformation] = []
         questions: list[ClarificationQuestion] = []
+        candidates: list[DecisionCandidate] = []
+        decision: ConfirmedDecision | None = None
 
         self._gather_task_facts(task, known)
+
+        # baseline provenance
+        if task.baseline is not None:
+            decision = ConfirmedDecision(
+                value=task.baseline,
+                source="user_provided",
+                evidence="input_task.yaml:baseline",
+            )
+        else:
+            candidates = self._gather_baseline_candidates(context)
+
         self._gather_paper_facts(context, known)
         self._gather_repo_facts(context, known)
 
-        self._check_gaps(context, missing, questions)
+        self._check_gaps(context, missing, questions, candidates)
 
         return ClarifiedTask(
             run_id=context.run_id,
@@ -52,6 +68,8 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
             metrics=[],
             compute_budget=task.compute_budget,
             constraints=list(task.constraints),
+            baseline_candidates=candidates,
+            baseline_decision=decision,
             known_facts=known,
             missing_information=missing,
             questions=questions,
@@ -168,6 +186,59 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
             ))
 
     # ------------------------------------------------------------------
+    # Baseline candidate gathering
+    # ------------------------------------------------------------------
+
+    def _gather_baseline_candidates(
+        self,
+        context: ClarificationContext,
+    ) -> list[DecisionCandidate]:
+        """Collect baseline candidates from repo and paper, merge duplicates."""
+        paper = context.paper_summary
+        repo = context.repo_summary
+        # (casefolded_key, display_value, source, evidence)
+        entries: list[tuple[str, str, str, DecisionEvidence]] = []
+
+        if repo and repo.baseline_methods:
+            for value in repo.baseline_methods:
+                v = value.strip()
+                if not v:
+                    continue
+                entries.append((v.casefold(), v, "repo_detected", DecisionEvidence(
+                    source="repo_detected",
+                    rationale=f"仓库配置声明 {v} 模型",
+                    references=[ArtifactReference(
+                        artifact="repo_summary.json", locator="baseline_methods", source_id=repo.source_id,
+                    )],
+                )))
+
+        if paper and paper.compared_methods:
+            for value in paper.compared_methods:
+                v = value.strip()
+                if not v:
+                    continue
+                entries.append((v.casefold(), v, "paper_mentioned", DecisionEvidence(
+                    source="paper_mentioned",
+                    rationale=f"论文将 {v} 作为对比或依赖方法",
+                    references=[ArtifactReference(
+                        artifact="paper_summary.json", locator="compared_methods", source_id=paper.source_id,
+                    )],
+                )))
+
+        source_order = {"repo_detected": 0, "paper_mentioned": 1, "history_detected": 2, "system_recommended": 3}
+        by_key: dict[str, tuple[str, list[DecisionEvidence]]] = {}
+        for key, display, src, ev in entries:
+            if key not in by_key:
+                by_key[key] = (display, [])
+            by_key[key][1].append(ev)
+
+        candidates: list[DecisionCandidate] = []
+        for key, (display, ev_list) in by_key.items():
+            ev_list.sort(key=lambda e: source_order.get(e.source, 99))
+            candidates.append(DecisionCandidate(value=display, evidence=ev_list))
+        return candidates
+
+    # ------------------------------------------------------------------
     # Gap detection
     # ------------------------------------------------------------------
 
@@ -176,6 +247,7 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
         context: ClarificationContext,
         missing: list[MissingInformation],
         questions: list[ClarificationQuestion],
+        candidates: list[DecisionCandidate] | None = None,
     ) -> None:
         task = context.task
         paper = context.paper_summary
@@ -194,16 +266,15 @@ class RuleBasedIntentClarifierBackend(IntentClarifierBackend):
                 answer_type="free_text",
             )
 
-        # baseline — non-blocking, suggest from repo
+        # baseline — non-blocking, suggest from repo/paper
         if task.baseline is None:
-            options = repo.baseline_methods if repo else []
+            options: list[str] = []
+            if candidates:
+                options = [c.value for c in candidates]
             refs = []
-            if repo:
-                refs = [ArtifactReference(
-                    artifact="repo_summary.json",
-                    locator="baseline_methods",
-                    source_id=repo.source_id,
-                )]
+            for c in (candidates or []):
+                for ev in c.evidence:
+                    refs.extend(ev.references)
             self._add_missing(missing, questions,
                 item_id="missing_baseline",
                 category="baseline",

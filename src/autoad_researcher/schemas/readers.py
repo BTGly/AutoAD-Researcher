@@ -49,6 +49,7 @@ class PaperSummary(BaseModel):
     training_objectives: list[str] = Field(default_factory=list)
 
     requires_anomaly_labels: KnowledgeState = "unknown"
+    compared_methods: list[str] = Field(default_factory=list)
     datasets: list[str] = Field(default_factory=list)
     metrics: list[str] = Field(default_factory=list)
     code_available: KnowledgeState = "unknown"

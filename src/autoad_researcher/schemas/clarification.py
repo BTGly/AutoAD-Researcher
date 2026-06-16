@@ -163,9 +163,39 @@ class ClarifiedTask(BaseModel):
     compute_budget: str | None = None
     constraints: list[str] = Field(default_factory=list)
 
+    # baseline provenance
+    baseline_candidates: list["DecisionCandidate"] = Field(default_factory=list)
+    baseline_decision: "ConfirmedDecision | None" = None
+
     known_facts: list[KnownFact] = Field(default_factory=list)
     missing_information: list[MissingInformation] = Field(default_factory=list)
     questions: list[ClarificationQuestion] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_baseline_decision(self):
+        from autoad_researcher.schemas.decisions import DecisionCandidate, ConfirmedDecision  # noqa: F811
+
+        if self.baseline is None:
+            if self.baseline_decision is not None:
+                raise ValueError("baseline_decision requires baseline")
+        else:
+            if self.baseline_decision is None:
+                raise ValueError("confirmed baseline requires baseline_decision")
+            if self.baseline_decision.value.strip() != self.baseline.strip():
+                raise ValueError("baseline and baseline_decision value mismatch")
+
+        normalized = [c.value.strip().casefold() for c in self.baseline_candidates]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("duplicate baseline candidate")
+
+        if (
+            self.baseline_decision is not None
+            and self.baseline_decision.source == "user_confirmed"
+            and self.baseline.strip().casefold() not in set(normalized)
+        ):
+            raise ValueError("user_confirmed baseline must match a candidate")
+
+        return self
 
     @model_validator(mode="after")
     def _validate_consistency(self):
@@ -198,3 +228,6 @@ class ClarifiedTask(BaseModel):
             raise ValueError(f"clarification status must be {expected!r}")
 
         return self
+
+
+

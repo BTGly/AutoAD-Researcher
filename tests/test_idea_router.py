@@ -25,6 +25,13 @@ def _write_clarified(store, run_id="run_demo", **kw):
     )
     defaults.update(kw)
 
+    # Auto-provision baseline_decision when baseline is set
+    if defaults.get("baseline") and not defaults.get("baseline_decision"):
+        from autoad_researcher.schemas import ConfirmedDecision
+        defaults.setdefault("baseline_decision", ConfirmedDecision(
+            value=defaults["baseline"], source="user_provided", evidence="test",
+        ))
+
     if defaults["status"] == "needs_blocking_input":
         defaults.setdefault("missing_information", [
             MissingInformation(

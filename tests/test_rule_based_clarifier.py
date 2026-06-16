@@ -16,8 +16,11 @@ def _make_context(**overrides):
         source_ids=["paper_main", "baseline_repo"],
     )
     for k, v in overrides.items():
-        if hasattr(task, k):
+        if hasattr(task, k) and k != "baseline":
             setattr(task, k, v)
+    # baseline goes directly to input_task for user_provided flow
+    if "baseline" in overrides:
+        task.baseline = overrides["baseline"]
     paper = PaperSummary(
         run_id="run_demo", source_id="paper_main",
         research_problem="representation learning",
@@ -72,8 +75,8 @@ class TestRuleBasedClarifier:
         assert q.answer_type == "single_choice"
 
         m = next(m for m in result.missing_information if m.item_id == "missing_baseline")
-        assert len(m.references) == 1
-        assert m.references[0].locator == "baseline_methods"
+        assert len(m.references) >= 1
+        assert any(r.locator == "baseline_methods" for r in m.references)
 
     def test_dataset_missing_suggested_from_paper(self):
         ctx = _make_context(baseline="PatchCore", compute_budget="single GPU")
@@ -93,8 +96,7 @@ class TestRuleBasedClarifier:
         assert q.answer_type == "multiple_choice"
 
         m = next(m for m in result.missing_information if m.item_id == "missing_metrics")
-        assert len(m.references) == 1
-        assert m.references[0].locator == "metrics"
+        assert any(r.locator == "metrics" for r in m.references)
 
     def test_user_idea_missing_not_a_problem(self):
         ctx = _make_context(baseline="PatchCore")
