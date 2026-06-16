@@ -38,6 +38,39 @@
 - **Baseline：** PatchCore / PaDiM / FastFlow
 - **目标：** 跑通最小实验闭环
 
+## CLI smoke test
+
+运行确定性的 planning pipeline，不调用 LLM：
+
+```bash
+uv run autoad smoke --run-id run_demo
+uv run autoad smoke --run-id run_demo --json
+uv run python -m autoad_researcher smoke --run-id run_demo
+```
+
+> `smoke` 使用 `SimplePipelineHarness`，只验证 AutoAD Core 闭环（artifact 读写、事件日志、pipeline 编排），不代表真实 LLM 科研能力。
+
+产物保存在：
+
+```text
+runs/run_demo/
+├── experiment_plan.json
+├── patch_plan.json
+└── events.jsonl
+```
+
+## 输入事实层
+
+用户输入通过 `input_task.yaml` 和 `source_manifest.json` 结构化保存：
+
+```text
+runs/run_demo/
+├── input_task.yaml          ← 用户原始任务和已知约束
+├── source_manifest.json     ← 用户提供材料的结构化索引
+```
+
+baseline、dataset 等字段允许暂时为空，后续由 Intent Clarifier 补充。系统**可以推荐 baseline，但不能替用户决定 baseline**。
+
 ## 不做什么
 
 - 不做全领域 AI 科学家

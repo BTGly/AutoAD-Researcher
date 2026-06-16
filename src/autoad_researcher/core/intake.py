@@ -7,7 +7,6 @@ InputIntake 是独立 Core service，当前不接入 PipelineController。
 from pathlib import Path
 
 from autoad_researcher.core.artifacts import ArtifactStore
-from autoad_researcher.core.run_id import validate_run_id
 from autoad_researcher.core.stage_result import StageResult
 from autoad_researcher.schemas import InputTask, SourceManifest
 
@@ -30,7 +29,7 @@ class InputIntake:
         所有校验在写文件之前完成，避免部分写入。
         """
         # --- 校验 ---
-        validate_run_id(self._artifacts._runs_root, run_id)
+        self._artifacts.run_dir(run_id)  # triggers run_id validation
 
         if task.run_id != run_id:
             raise ValueError(

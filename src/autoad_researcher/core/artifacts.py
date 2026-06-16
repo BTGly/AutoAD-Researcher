@@ -128,6 +128,7 @@ class ArtifactStore:
         filename: str,
     ) -> dict[str, Any]:
         """读取 JSON artifact，返回 dict。"""
+        self._validate_json(filename)
         path = self.artifact_path(run_id, filename)
 
         if not path.exists():
@@ -191,6 +192,7 @@ class ArtifactStore:
         filename: str,
     ) -> dict[str, Any]:
         """读取 YAML artifact，返回 dict。"""
+        self._validate_yaml(filename)
         path = self.artifact_path(run_id, filename)
 
         if not path.exists():
@@ -225,13 +227,13 @@ class ArtifactStore:
     def _validate_json(self, filename: str) -> None:
         if filename not in _ALLOWED_JSON_ARTIFACTS:
             raise ValueError(
-                f"write_json requires a JSON artifact, got: {filename!r}"
+                f"JSON artifact required, got: {filename!r}"
             )
 
     def _validate_yaml(self, filename: str) -> None:
         if filename not in _ALLOWED_YAML_ARTIFACTS:
             raise ValueError(
-                f"write_yaml requires a YAML artifact, got: {filename!r}"
+                f"YAML artifact required, got: {filename!r}"
             )
 
     # ------------------------------------------------------------------

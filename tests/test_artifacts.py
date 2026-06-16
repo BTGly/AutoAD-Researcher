@@ -188,12 +188,12 @@ class TestArtifactStore:
 
     def test_write_json_rejects_yaml_file(self, tmp_path):
         store = ArtifactStore(runs_root=tmp_path)
-        with pytest.raises(ValueError, match="write_json requires a JSON artifact"):
+        with pytest.raises(ValueError, match="JSON artifact required"):
             store.write_json("run_demo", "input_task.yaml", {"x": 1})
 
     def test_write_yaml_rejects_json_file(self, tmp_path):
         store = ArtifactStore(runs_root=tmp_path)
-        with pytest.raises(ValueError, match="write_yaml requires a YAML artifact"):
+        with pytest.raises(ValueError, match="YAML artifact required"):
             store.write_yaml("run_demo", "experiment_plan.json", {"x": 1})
 
     def test_write_yaml_records_artifact_written_event(self, tmp_path):
@@ -217,3 +217,15 @@ class TestArtifactStore:
             "artifact_written",
             "artifact_read",
         ]
+
+    def test_read_json_rejects_yaml_file(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        store.write_yaml("run_demo", "input_task.yaml", {"request": "test"})
+        with pytest.raises(ValueError, match="JSON artifact required"):
+            store.read_json("run_demo", "input_task.yaml")
+
+    def test_read_yaml_rejects_json_file(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        store.write_json("run_demo", "experiment_plan.json", make_experiment_plan())
+        with pytest.raises(ValueError, match="YAML artifact required"):
+            store.read_yaml("run_demo", "experiment_plan.json")
