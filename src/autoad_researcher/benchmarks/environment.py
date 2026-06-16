@@ -66,12 +66,13 @@ def collect_environment_snapshot(
     workspace_root: Path, timeout_seconds: int = 30,
     probe_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> BenchmarkEnvironmentSnapshot:
-    # Python boundary: launcher path must be in workspace/envs
+    # Python boundary: parent dir must resolve inside envs (blocks intermediate symlink escape).
+    # Final python symlink is allowed (standard venv layout).
     import os as _os
     launcher = Path(_os.path.abspath(str(benchmark_python)))
     envs_root = (workspace_root / "envs").resolve(strict=True)
     try:
-        launcher.relative_to(envs_root)
+        launcher.parent.resolve(strict=True).relative_to(envs_root)
     except ValueError:
         raise BenchmarkPreflightError(check_name="environment", code="ENV_PYTHON_OUTSIDE_WORKSPACE",
                                       message="benchmark python must be inside workspace/envs")
