@@ -4,6 +4,8 @@
 不调用任何 LLM，直接从输入生成符合 schema 的占位输出。
 """
 
+from pathlib import Path
+
 from autoad_researcher.harness.base import AgentHarness
 from autoad_researcher.schemas import ExperimentPlan, PatchPlan
 

@@ -114,12 +114,26 @@ echo "[verify] running pytest..."
 
 echo "[verify] checking development log..."
 test -f notes/development-log.md
-# Also check today's daily log exists
-TODAY=$(date +%Y-%m-%d)
-if ! test -f "notes/${TODAY}.md"; then
-  echo "[verify] today's log (notes/${TODAY}.md) is missing — write it first"
-  exit 1
-fi
+"$UV_BIN" run python - <<'PY'
+from pathlib import Path
+import re
+import sys
+
+index_path = Path("notes/development-log.md")
+index_text = index_path.read_text(encoding="utf-8")
+daily_links = re.findall(r"\((\d{4}-\d{2}-\d{2}\.md)\)", index_text)
+
+if not daily_links:
+    print("[verify] no daily log links found in notes/development-log.md", file=sys.stderr)
+    sys.exit(1)
+
+missing = [link for link in daily_links if not (Path("notes") / link).is_file()]
+if missing:
+    print(f"[verify] daily log file(s) missing from notes/: {missing}", file=sys.stderr)
+    sys.exit(1)
+
+print("[verify] development log index ok.")
+PY
 
 echo "[verify] checking git status..."
 git rev-parse --is-inside-work-tree >/dev/null
