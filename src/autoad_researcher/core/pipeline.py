@@ -1,9 +1,9 @@
 """PipelineController — minimal AutoAD pipeline orchestration.
 
 PipelineController 负责 run 级生命周期：
-- run_created 事件
+- run_created / stage_failed 事件
 - stage 调用顺序
-- PipelineResult 聚合
+- PipelineResult 聚合（含失败字段）
 
 Harness 负责 stage 级生命周期。
 ArtifactStore 负责 artifact 级生命周期。
@@ -31,6 +31,11 @@ class PipelineResult(BaseModel):
     status: PipelineStatus
     stages: list[StageResult] = Field(default_factory=list)
 
+    # 失败时填充
+    failed_stage: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+
 
 class PipelineController:
     """最小 AutoAD pipeline 编排器。
@@ -56,7 +61,8 @@ class PipelineController:
         1. 校验 run_id，创建 run_dir
         2. 写 run_created 事件
         3. 依次执行 experiment_planning → patch_planning
-        4. 收集 StageResult，返回 PipelineResult
+        4. 任一 stage 失败则记录 stage_failed 并返回 failed result
+        5. 收集 StageResult，返回 PipelineResult
         """
         run_dir = run_dir_path(self._runs_root, run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -68,14 +74,65 @@ class PipelineController:
 
         stages: list[StageResult] = []
 
-        experiment_result = self._harness.run_experiment_planning(run_id)
-        stages.append(experiment_result)
+        try:
+            experiment_result = self._harness.run_experiment_planning(run_id)
+            stages.append(experiment_result)
+        except Exception as exc:
+            return self._handle_stage_failure(
+                run_id=run_id,
+                stage="experiment_planning",
+                stages=stages,
+                exc=exc,
+            )
 
-        patch_result = self._harness.run_patch_planning(run_id)
-        stages.append(patch_result)
+        try:
+            patch_result = self._harness.run_patch_planning(run_id)
+            stages.append(patch_result)
+        except Exception as exc:
+            return self._handle_stage_failure(
+                run_id=run_id,
+                stage="patch_planning",
+                stages=stages,
+                exc=exc,
+            )
 
         return PipelineResult(
             run_id=run_id,
             status="success",
             stages=stages,
         )
+
+    # ------------------------------------------------------------------
+    # 内部
+    # ------------------------------------------------------------------
+
+    def _handle_stage_failure(
+        self,
+        *,
+        run_id: str,
+        stage: str,
+        stages: list[StageResult],
+        exc: Exception,
+    ) -> PipelineResult:
+        error_type = type(exc).__name__
+        error_message = str(exc)
+
+        self._events.record_stage_failed(
+            run_id,
+            stage,
+            backend=self._backend_name(),
+            error_type=error_type,
+            error_message=error_message,
+        )
+
+        return PipelineResult(
+            run_id=run_id,
+            status="failed",
+            stages=stages,
+            failed_stage=stage,
+            error_type=error_type,
+            error_message=error_message,
+        )
+
+    def _backend_name(self) -> str:
+        return self._harness.__class__.__name__

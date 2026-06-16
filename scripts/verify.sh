@@ -75,9 +75,11 @@ echo "[verify] checking core imports..."
 from autoad_researcher.core import (
     ArtifactStore,
     EventStore,
+    PipelineController,
     PipelineResult,
     StageResult,
 )
+from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
 
 store = ArtifactStore(runs_root="runs")
 events = EventStore(runs_root="runs")
@@ -91,6 +93,10 @@ pipeline = PipelineResult(
     run_id="run_demo",
     status="success",
     stages=[stage],
+)
+controller = PipelineController(
+    harness=SimplePipelineHarness(runs_root="runs"),
+    runs_root="runs",
 )
 print("[verify] core import ok.")
 PY
