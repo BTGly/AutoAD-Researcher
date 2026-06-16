@@ -21,6 +21,10 @@ class TestIdeaRouteDecision:
         with pytest.raises(ValidationError):
             IdeaRouteDecision(mode="multi_agent_exploration", reason="x", extra="no")  # type: ignore[call-arg]
 
+    def test_direct_mode_requires_explicit_request(self):
+        with pytest.raises(ValidationError, match="must be explicitly requested"):
+            IdeaRouteDecision(mode="direct_user_idea", reason="x")
+
     def test_mode_must_match_requested(self):
         with pytest.raises(ValidationError, match="mode must match"):
             IdeaRouteDecision(

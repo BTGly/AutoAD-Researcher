@@ -38,6 +38,8 @@ class IdeaRouteDecision(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mode_consistency(self):
+        if self.mode == "direct_user_idea" and self.requested_mode != "direct_user_idea":
+            raise ValueError("direct_user_idea must be explicitly requested")
         if self.requested_mode is not None and self.mode != self.requested_mode:
             raise ValueError("mode must match requested_mode when both are set")
         return self

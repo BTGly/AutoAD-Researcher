@@ -61,15 +61,20 @@ runs/run_demo/
 
 ## 输入事实层
 
-用户输入通过 `input_task.yaml` 和 `source_manifest.json` 结构化保存：
+完整的确定性链路：
 
 ```text
 runs/run_demo/
 ├── input_task.yaml          ← 用户原始任务和已知约束
 ├── source_manifest.json     ← 用户提供材料的结构化索引
+├── paper_summary.json       ← 论文结构化摘要
+├── repo_summary.json        ← 仓库结构化摘要
+├── clarified_task.json      ← 已知事实、缺口、候选值和问题
+├── idea_context.json        ← 路由模式和上下文快照
+├── idea_candidates.json     ← 1–3 个统一格式的候选科研方案
 ```
 
-baseline、dataset 等字段允许暂时为空，后续由 Intent Clarifier 补充。系统**可以推荐 baseline，但不能替用户决定 baseline**。
+Intent Clarifier 识别缺口、提供候选值并生成问题；**baseline、dataset 和 metrics 只有在用户确认后才能成为正式任务字段**。系统可以推荐 baseline，但不能替用户决定 baseline、dataset 或实验资源。
 
 ## 不做什么
 

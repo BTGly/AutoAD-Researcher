@@ -13,7 +13,11 @@ from autoad_researcher.schemas import (
 def _make_context(user_idea):
     return IdeaContext(
         run_id="run_demo",
-        route=IdeaRouteDecision(mode="direct_user_idea", reason="user wants direct"),
+        route=IdeaRouteDecision(
+            mode="direct_user_idea",
+            requested_mode="direct_user_idea",
+            reason="user explicitly selected direct mode",
+        ),
         clarified_task=ClarifiedTask(
             run_id="run_demo",
             status="ready",
@@ -63,7 +67,11 @@ class TestDirectIdeaBackend:
         # Bypass IdeaContext validator to test backend's own check
         ctx = IdeaContext.model_construct(
             run_id="run_demo",
-            route=IdeaRouteDecision(mode="direct_user_idea", reason="x"),
+            route=IdeaRouteDecision(
+                mode="direct_user_idea",
+                requested_mode="direct_user_idea",
+                reason="x",
+            ),
             clarified_task=ClarifiedTask(
                 run_id="run_demo", status="ready", original_request="x",
             ),

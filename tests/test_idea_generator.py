@@ -68,7 +68,11 @@ class TestIdeaGenerator:
         (tmp_path / "run_demo" / "idea_context.json").write_text(
             json.dumps({
                 "run_id": "run_demo",
-                "route": {"mode": "direct_user_idea", "reason": "x"},
+                "route": {
+                    "mode": "direct_user_idea",
+                    "requested_mode": "direct_user_idea",
+                    "reason": "x",
+                },
                 "clarified_task": {
                     "run_id": "other", "status": "ready", "original_request": "x",
                     "user_idea": "把模块 M 放入 layer2",

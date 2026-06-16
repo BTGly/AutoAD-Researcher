@@ -771,7 +771,7 @@ local_model：离线或隐私任务
 
 ## 14. 当前实现状态与近期路线
 
-已完成：
+已完成（地基阶段）：
 
 ```text
 run_id 安全校验（core/run_id.py）
@@ -787,21 +787,23 @@ PipelineResult + PipelineStatus
 Pipeline failure handling（stage_failed 事件 + failed 结果）
 deterministic smoke CLI（uv run autoad smoke --run-id run_demo）
 Input Intake / Source Manifest（input_task.yaml + source_manifest.json）
-本地 verify gate（12 项检查 + pytest）+ GitHub Actions
+Paper Reader + Repository Reader 协议（PaperSummary, RepositorySummary, EvidenceReference）
+Evidence-based Intent Clarifier（ClarifiedTask, KnownFact, MissingInformation, ClarificationQuestion）
+Idea protocol + Idea Source Router（IdeaMode, IdeaCandidate, IdeaContext, IdeaRouteDecision）
+DirectIdeaBackend + IdeaGenerator（deterministic direct_user_idea flow）
+IdeaContext 自校验 + EstimatedIdeaCost（含 unknown）
+本地 verify gate（12 项检查 + pytest）+ GitHub Actions = 204 passed
 ```
 
-当前 SimplePipelineHarness 仅是 deterministic smoke-test backend。
+> **地基阶段结束。下一步进入真实纵向能力：固定论文、固定 PatchCore 仓库、固定 MVTec AD 类别，不再继续搭抽象层。**
 
 近期顺序：
 
 ```text
-Step 2.12：Paper Reader + Repository Reader contracts
-Step 2.13：Evidence-based Intent Clarifier
-Step 2.14：IdeaCandidate schema + IdeaGenerationBackend
-Step 2.15：DirectIdeaBackend
-Step 2.16：AutoGen ideation spike
-Step 2.17：CrewAI 对照 spike
-Step 2.18：根据同一 eval 决定 ideation backend
+Step 3.1：真实 Paper Reader（MinerU 或 MarkItDown 单篇论文解析）
+Step 3.2：真实 Repository Reader（本地 PatchCore 仓库加载与摘要）
+Step 3.3：Transferability Judge（可迁移性判断）
+Step 3.4：动态 Experiment + Patch Planning（替代 SimplePipelineHarness 占位输出）
 之后：Approval / Runner / Metrics / Validity / Reflection / Report
 ```
 
