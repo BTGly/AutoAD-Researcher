@@ -327,7 +327,7 @@ class BenchmarkPreflightCheck(BaseModel):
 
     name: str = Field(min_length=1)
     status: PreflightCheckStatus
-    code: str = Field(min_length=1)
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     message: str = Field(min_length=1)
 
 

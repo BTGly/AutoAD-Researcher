@@ -169,6 +169,15 @@ echo "[verify] checking CLI entrypoints..."
 "$UV_BIN" run python -m autoad_researcher --help >/dev/null
 echo "[verify] CLI entrypoints ok."
 
+echo "[verify] checking benchmark preflight imports..."
+"$UV_BIN" run python - <<'''PY'''
+from autoad_researcher.benchmarks.repository import collect_repository_state
+from autoad_researcher.benchmarks.dataset import build_dataset_manifest
+from autoad_researcher.benchmarks.environment import collect_environment_snapshot
+from autoad_researcher.benchmarks.preflight import run_preflight
+print("[verify] benchmark preflight imports ok.")
+PY
+
 echo "[verify] checking benchmark config..."
 test -f src/autoad_researcher/schemas/benchmark.py
 test -f src/autoad_researcher/benchmarks/config.py
@@ -179,6 +188,14 @@ test -f docs/internal_benchmark_case.md
 "$UV_BIN" run python scripts/benchmark/validate_case.py \
   configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml >/dev/null
 echo "[verify] benchmark config ok."
+
+echo "[verify] checking benchmark preflight files..."
+test -f src/autoad_researcher/benchmarks/repository.py
+test -f src/autoad_researcher/benchmarks/dataset.py
+test -f src/autoad_researcher/benchmarks/environment.py
+test -f src/autoad_researcher/benchmarks/preflight.py
+test -f scripts/benchmark/preflight.py
+echo "[verify] benchmark preflight files ok."
 
 echo "[verify] running pytest..."
 "$UV_BIN" run --extra dev pytest -q

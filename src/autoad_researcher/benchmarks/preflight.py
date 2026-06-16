@@ -35,9 +35,9 @@ def _run_one(name: str, fn, *args, **kwargs):
                                                   message=f"{name} contract satisfied")
     except BenchmarkPreflightError as exc:
         return None, BenchmarkPreflightCheck(name=name, status="failed", code=exc.code, message=exc.message)
-    except Exception as exc:
+    except Exception:
         return None, BenchmarkPreflightCheck(name=name, status="failed", code="PREFLIGHT_INTERNAL_ERROR",
-                                              message=str(exc)[:500])
+                                              message="an unexpected internal preflight error occurred")
 
 
 def run_preflight(*, case, repo_path: Path, benchmark_python: Path, lockfile_path: Path,

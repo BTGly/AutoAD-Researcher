@@ -90,13 +90,13 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
 
     # Verify mask correspondence
     gt_types = set()
-    for d in gt_dir.iterdir():
+    for d in sorted(gt_dir.iterdir()):
         if d.is_symlink():
             raise BenchmarkPreflightError(check_name="dataset", code="DATASET_SYMLINK_FORBIDDEN",
                 message="ground_truth must not contain symlinks")
         if d.is_dir():
             gt_types.add(d.name)
-        elif d.is_file():
+        else:
             raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
                 message=f"unexpected file in ground_truth root: {d.name}")
 
@@ -176,7 +176,7 @@ def _scan_dir(directory: Path, required_suffix: str) -> list[Path]:
         if not f.is_file():
             continue
         _validate_image_file(f)
-        if f.suffix.lower() != required_suffix:
+        if f.suffix != required_suffix:
             raise BenchmarkPreflightError(check_name="dataset", code="DATASET_UNEXPECTED_FILE",
                 message=f"unexpected file type: {f.name}")
         files.append(f)
