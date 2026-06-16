@@ -246,3 +246,165 @@
 
 **遗留问题**:
 - 需要推送后确认 GitHub Actions 通过
+
+**遗留问题**:
+- 推送后 GitHub Actions 确认通过
+
+---
+
+### Step 2.2: Schema 迁移 — spikes/ → src/autoad_researcher/schemas/
+
+**目标**: 正式代码不再从 spike 目录 import schema。
+
+**操作**:
+
+1. 创建 `src/autoad_researcher/schemas/`
+   - `__init__.py` — 统一导出 ExperimentPlan, PatchPlan
+   - `experiment.py` — ExperimentPlan
+   - `patch.py` — PatchPlan
+
+2. 更新 harness import
+   - `simple_pipeline.py` — 删除 `sys.path.insert(spikes/...)`，改为 `from autoad_researcher.schemas import ...`
+   - `deepagents_backend.py` — 同上
+
+3. 更新测试 import
+   - `tests/test_simple_pipeline.py` — 同上
+
+4. Spike `schema.py` 改为兼容 shim
+   - 内容替换为 `from autoad_researcher.schemas import ExperimentPlan, PatchPlan`
+   - 让 `run_spike.py` 仍然可运行，但 schema 只有一份正式来源
+
+5. verify.sh 更新
+   - Schema 检查改为 `from autoad_researcher.schemas import ...`（不再用 PYTHONPATH=spikes）
+   - 新增 forbidden spike schema import grep gate
+   - 后续 hardened：只要裸 `from schema import` 就报错，不再检查是否含 spikes 上下文
+
+6. Spike README 更新
+   - 运行方式改为 `uv sync && uv run python spikes/.../run_spike.py`
+
+**关键发现**:
+- 无。纯迁移，无功能变更。
+
+**遗留问题**:
+- 无
+
+---
+
+### Step 2.3: ArtifactStore — 统一 run artifact 读写
+
+**目标**: 把 artifact 读写从 harness 抽出来，建立统一入口。
+
+**操作**:
+
+1. 创建 `src/autoad_researcher/core/__init__.py` — 导出 ArtifactStore
+2. 创建 `src/autoad_researcher/core/artifacts.py`
+   - `ArtifactStore` — run_dir(), artifact_path(), exists(), write_json(), read_json(), read_model()
+   - `_ALLOWED_JSON_ARTIFACTS` — 白名单 3 个 .json 文件（不含 input_task.yaml）
+   - 路径安全：filename 白名单 + resolve() 防逃逸
+   - 覆盖保护：overwrite=False 时抛 FileExistsError
+   - 初始版本通过 `_RunIdValidator(AgentHarness)` 复用 run_id 校验（临时方案）
+
+3. 改造 SimplePipelineHarness
+   - 写 JSON 改用 `self._artifacts.write_json()` 而非直接 `path.write_text()`
+   - ArtifactStore 延迟导入避免 core ↔ harness 循环依赖
+
+4. 测试
+   - `tests/test_artifacts.py` — 17 tests：写读实验计划/补丁/dict、覆盖保护、非法 run_id、非法 filename、缺失 artifact
+
+**关键发现**:
+- core/__init__.py → core/artifacts.py → harness/base.py → harness/__init__.py → harness/simple_pipeline.py → core 形成循环导入
+- 解决：simple_pipeline.py 的 ArtifactStore 改为 `from autoad_researcher.core import ArtifactStore` 放在 `__init__` 内（延迟导入）
+
+**遗留问题**:
+- `_RunIdValidator(AgentHarness)` 是反向依赖 hack，需要后续抽离
+
+---
+
+### 修复: 抽离 core/run_id.py，解除 core → harness 反向依赖
+
+**目标**: 消除 ArtifactStore 对 harness 的依赖。
+
+**操作**:
+
+1. 创建 `src/autoad_researcher/core/run_id.py`
+   - `validate_run_id(runs_root, run_id)` — 纯函数
+   - `run_dir_path(runs_root, run_id)` — 纯函数
+   - 从 `harness/base.py` 中搬出全部校验逻辑
+
+2. 更新 `harness/base.py`
+   - `_validate_run_id()` 委托给 `core/run_id.validate_run_id()`
+   - `_run_dir()` 委托给 `core/run_id.run_dir_path()`
+
+3. 更新 `core/artifacts.py`
+   - 删除 `_RunIdValidator(AgentHarness)` class
+   - 直接导入 `core/run_id.py` 的函数
+   - 删除 `from __future__ import annotations`
+   - 从 `ALLOWED_ARTIFACTS` 中移除 `input_task.yaml`（它是 YAML 不是 JSON）
+
+4. 依赖关系修复后：
+   ```
+   core/run_id.py          ← 独立
+   core/artifacts.py        ← 依赖 core/run_id.py
+   core/events.py           ← 依赖 core/run_id.py
+   harness/base.py          ← 依赖 core/run_id.py
+   harness/simple_pipeline  ← 依赖 core/artifacts.py（延迟导入）
+                              ✗ 无循环
+   ```
+
+**遗留问题**:
+- 无
+
+---
+
+### Step 2.4: EventStore — JSONL 事件日志
+
+**目标**: 每次 artifact 读写自动记录到 `runs/{run_id}/events.jsonl`。
+
+**操作**:
+
+1. 创建 `src/autoad_researcher/core/events.py`
+   - `EventRecord(BaseModel)` — event_type, run_id, timestamp, payload
+   - `EventStore` — append(), read_events(), record_run_created(), record_artifact_written(), record_artifact_read()
+   - `ALLOWED_EVENT_TYPES` — 白名单 3 种：run_created, artifact_written, artifact_read
+   - 直接使用 `core/run_id.py`（无需 _RunIdValidator hack）
+
+2. 改造 ArtifactStore
+   - `__init__` 新增 `enable_events: bool = True` 参数
+   - `write_json()` 末尾调用 `_record_artifact_written()`
+   - `read_json()` 成功后调用 `_record_artifact_read()`
+   - `TYPE_CHECKING` 避免 artifacts ↔ events 循环导入
+
+3. 测试
+   - `tests/test_events.py` — 11 tests：写 run_created、读 events、空列表、非法 event_type、非法 run_id、损坏 JSONL
+   - `tests/test_artifacts.py` +2：写 artifact 后产生 artifact_written、读 artifact 后产生 artifact_read
+   - `tests/test_simple_pipeline.py` +1：harness 运行后 events.jsonl 含两条 artifact_written
+
+4. verify.sh 扩展 core import 检查为 `ArtifactStore, EventStore`
+
+**运行产物**:
+```
+runs/{run_id}/
+  experiment_plan.json
+  patch_plan.json
+  events.jsonl          ← 新增，JSONL 格式，每行一个 event
+```
+
+**关键设计**:
+- events.jsonl 不在 `_ALLOWED_JSON_ARTIFACTS` 中 — 只能通过 EventStore 追加
+- `enable_events=False` 可关闭事件（测试/只读场景）
+
+**遗留问题**:
+- 无
+
+---
+
+### 修复: typo + mutable default
+
+**目标**: 两个小瑕疵。
+
+**操作**:
+1. verify.sh: `AutAD` → `AutoAD`
+2. events.py: `payload: dict = {}` → `Field(default_factory=dict)`（Pydantic 可变默认值）
+
+**遗留问题**:
+- 无

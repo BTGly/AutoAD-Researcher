@@ -6,24 +6,27 @@ This file provides guidance to Claude Code when working on this project.
 
 ## ⚠️ MANDATORY WORKFLOW — READ FIRST
 
-### Every operation must follow this cycle:
+### Every operation must follow this cycle. NO EXCEPTIONS.
 
 ```
-make changes
-  → log to notes/development-log.md (what, why, result)
-  → bash scripts/verify.sh
-  → if pass: bash scripts/verify_and_push.sh "descriptive commit message"
-  → if fail: fix, re-verify, then push
-  → NEVER proceed to next step without pushing current step
+1. MAKE changes (code, tests, config)
+2. LOG to notes/development-log.md — BEFORE verify, BEFORE commit
+3. RUN bash scripts/verify.sh
+4. IF pass → bash scripts/verify_and_push.sh "message"
+5. IF fail → fix, back to step 2
+6. NEVER start next step before current step is pushed
 ```
+
+**The log is NOT optional.** If you haven't updated the log, you haven't finished the step. Every commit message should correspond to a log entry.
 
 ### Logging rules
 
 - **File**: `notes/development-log.md`
-- **Format**: Append new entries at the **bottom** under the current date heading
-- **Every entry must include**: what you did, why, the result, and any leftover issues
-- **Do NOT** proceed without logging — the verify.sh gate checks this file exists
-- **Goal**: every version is traceable; you can rewind to any commit and know exactly what happened
+- **When**: BEFORE running verify_and_push.sh — not after, not "I'll do it next time"
+- **Format**: Append at the **bottom** under `## YYYY-MM-DD` heading. Use `### Session N:` for each step.
+- **Every entry**: what, why, result, leftovers
+- **Self-check before every push**: "Did I write the log entry for this change?" If no — stop and write it first.
+- **Goal**: anyone can read the log and understand every decision without looking at git diff
 
 ### Push rules
 
