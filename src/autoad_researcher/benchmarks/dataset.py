@@ -114,25 +114,26 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
                     raise BenchmarkPreflightError(check_name="dataset", code="DATASET_ORPHAN_MASK",
                         message=f"orphan mask {mf.name}")
 
-    all_files: list[BenchmarkDatasetFileEntry] = []
+    entries: list[BenchmarkDatasetFileEntry] = []
     for f in sorted(train_good_files):
-        all_files.append(BenchmarkDatasetFileEntry(
+        entries.append(BenchmarkDatasetFileEntry(
             relative_path=str(f.relative_to(dataset_root).as_posix()), size_bytes=f.stat().st_size))
     for f in sorted(test_good_files):
-        all_files.append(BenchmarkDatasetFileEntry(
+        entries.append(BenchmarkDatasetFileEntry(
             relative_path=str(f.relative_to(dataset_root).as_posix()), size_bytes=f.stat().st_size))
     for atype in sorted(test_anomaly_files):
         for img in sorted(test_anomaly_files[atype]):
-            all_files.append(BenchmarkDatasetFileEntry(
+            entries.append(BenchmarkDatasetFileEntry(
                 relative_path=str(img.relative_to(dataset_root).as_posix()), size_bytes=img.stat().st_size))
             mask = gt_dir / atype / f"{img.stem}_mask.png"
-            all_files.append(BenchmarkDatasetFileEntry(
+            entries.append(BenchmarkDatasetFileEntry(
                 relative_path=str(mask.relative_to(dataset_root).as_posix()), size_bytes=mask.stat().st_size))
+    entries.sort(key=lambda e: e.relative_path)
 
     manifest_data = {
         "schema_version": 1, "dataset_name": case.dataset.name, "category": cat,
         "root_env": case.dataset.root_env, "manifest_strategy": "relative_path_size_v1",
-        "files": [{"relative_path": f.relative_path, "size_bytes": f.size_bytes} for f in all_files],
+        "files": [{"relative_path": f.relative_path, "size_bytes": f.size_bytes} for f in entries],
         "train_good_count": len(train_good_files), "test_good_count": len(test_good_files),
         "test_anomaly_count": sum(len(v) for v in test_anomaly_files.values()),
         "mask_count": mask_count,
@@ -140,7 +141,7 @@ def build_dataset_manifest(*, case, dataset_root: Path, workspace_root: Path) ->
     return BenchmarkDatasetManifest(
         schema_version=1, dataset_name=case.dataset.name, category=cat,
         root_env=case.dataset.root_env, manifest_strategy="relative_path_size_v1",
-        files=all_files, train_good_count=len(train_good_files),
+        files=entries, train_good_count=len(train_good_files),
         test_good_count=len(test_good_files),
         test_anomaly_count=sum(len(v) for v in test_anomaly_files.values()),
         mask_count=mask_count, manifest_sha256=canonical_sha256(manifest_data),
