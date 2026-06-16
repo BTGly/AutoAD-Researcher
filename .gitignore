@@ -53,3 +53,6 @@ Thumbs.db
 *.zip
 *.tar
 *.tar.gz
+workspace/envs/
+workspace/cache/
+workspace/wheelhouse/
