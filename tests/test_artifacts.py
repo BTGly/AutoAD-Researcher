@@ -218,6 +218,17 @@ class TestArtifactStore:
             "artifact_read",
         ]
 
+    def test_write_and_read_clarified_task(self, tmp_path):
+        store = ArtifactStore(runs_root=tmp_path)
+        path = store.write_json(
+            "run_demo",
+            "clarified_task.json",
+            {"run_id": "run_demo", "status": "ready", "original_request": "test"},
+        )
+        assert path == tmp_path / "run_demo" / "clarified_task.json"
+        data = store.read_json("run_demo", "clarified_task.json")
+        assert data["status"] == "ready"
+
     def test_write_and_read_repo_summary(self, tmp_path):
         store = ArtifactStore(runs_root=tmp_path)
         path = store.write_json(

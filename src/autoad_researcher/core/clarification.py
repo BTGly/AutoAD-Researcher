@@ -1,0 +1,121 @@
+"""IntentClarifier — 基于已落盘事实生成澄清结果。
+
+读取 input_task.yaml 和可选的 paper_summary / repo_summary，
+调用 backend 生成 clarified_task.json。
+"""
+
+from pathlib import Path
+
+from autoad_researcher.clarifiers.base import IntentClarifierBackend
+from autoad_researcher.core.artifacts import ArtifactStore
+from autoad_researcher.core.stage_result import StageResult
+from autoad_researcher.schemas import (
+    ClarificationContext,
+    InputTask,
+    PaperSummary,
+    RepositorySummary,
+)
+
+# 用户明确设置的字段，backend 不能改写
+_IMMUTABLE_FIELDS = (
+    "target_domain",
+    "user_idea",
+    "baseline",
+    "dataset",
+    "compute_budget",
+)
+
+
+class IntentClarifier:
+    """基于已落盘事实的意图澄清 core service。"""
+
+    def __init__(
+        self,
+        backend: IntentClarifierBackend,
+        runs_root: str | Path = "runs",
+    ) -> None:
+        self._backend = backend
+        self._artifacts = ArtifactStore(runs_root=runs_root)
+
+    def run(self, run_id: str) -> StageResult:
+        # --- 读取必需输入 ---
+        task = self._artifacts.read_yaml_model(run_id, "input_task.yaml", InputTask)
+        if task.run_id != run_id:
+            raise ValueError("input task run_id mismatch")
+
+        # --- 读取可选 Reader artifact ---
+        paper_summary = self._read_optional(
+            run_id, "paper_summary.json", PaperSummary, task
+        )
+        repo_summary = self._read_optional(
+            run_id, "repo_summary.json", RepositorySummary, task
+        )
+
+        # --- 构造 context 并调用 backend ---
+        context = ClarificationContext(
+            run_id=run_id,
+            task=task,
+            paper_summary=paper_summary,
+            repo_summary=repo_summary,
+        )
+
+        result = self._backend.clarify(context=context)
+
+        # --- 校验 backend 输出 ---
+        if result.run_id != run_id:
+            raise ValueError("clarified task run_id mismatch")
+
+        if result.original_request != task.request:
+            raise ValueError("clarifier must preserve original request")
+
+        if result.source_ids != task.source_ids:
+            raise ValueError("clarifier must preserve source_ids")
+
+        for field in _IMMUTABLE_FIELDS:
+            if getattr(result, field) != getattr(task, field):
+                raise ValueError(
+                    f"clarifier must not rewrite explicit user field: {field}"
+                )
+
+        if result.constraints != task.constraints:
+            raise ValueError("clarifier must preserve user constraints")
+
+        # --- 写入 ---
+        self._artifacts.write_json(run_id, "clarified_task.json", result)
+
+        return StageResult(
+            run_id=run_id,
+            stage="intent_clarification",
+            status="success",
+            artifacts=["clarified_task.json"],
+            metadata={
+                "backend": self._backend.__class__.__name__,
+                "clarification_status": result.status,
+                "question_count": len(result.questions),
+                "blocking_question_count": sum(
+                    1 for m in result.missing_information if m.blocking
+                ),
+                "paper_summary_present": paper_summary is not None,
+                "repo_summary_present": repo_summary is not None,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # 内部
+    # ------------------------------------------------------------------
+
+    def _read_optional(self, run_id: str, filename: str, model_cls, task: InputTask):
+        if not self._artifacts.exists(run_id, filename):
+            return None
+
+        obj = self._artifacts.read_model(run_id, filename, model_cls)
+
+        if obj.run_id != run_id:
+            raise ValueError(f"{filename} run_id mismatch")
+
+        if obj.source_id not in task.source_ids:
+            raise ValueError(
+                f"{filename} source_id is not referenced by input task"
+            )
+
+        return obj

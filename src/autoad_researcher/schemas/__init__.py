@@ -4,6 +4,17 @@
 harness、pipeline、storage 等模块不应在各自目录内重复定义 schema。
 """
 
+from autoad_researcher.schemas.clarification import (
+    ArtifactReference,
+    ClarificationCategory,
+    ClarificationContext,
+    ClarificationQuestion,
+    ClarificationStatus,
+    ClarifiedTask,
+    KnownFact,
+    MissingInformation,
+    QuestionAnswerType,
+)
 from autoad_researcher.schemas.experiment import ExperimentPlan
 from autoad_researcher.schemas.intake import (
     InputTask,
@@ -20,12 +31,21 @@ from autoad_researcher.schemas.readers import (
 )
 
 __all__ = [
+    "ArtifactReference",
+    "ClarificationCategory",
+    "ClarificationContext",
+    "ClarificationQuestion",
+    "ClarificationStatus",
+    "ClarifiedTask",
     "EvidenceReference",
     "ExperimentPlan",
     "InputTask",
+    "KnownFact",
     "KnowledgeState",
+    "MissingInformation",
     "PaperSummary",
     "PatchPlan",
+    "QuestionAnswerType",
     "RepositorySummary",
     "SourceEntry",
     "SourceKind",

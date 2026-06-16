@@ -72,10 +72,15 @@ PY
 
 echo "[verify] checking core imports..."
 "$UV_BIN" run python - <<'PY'
+from autoad_researcher.clarifiers import (
+    IntentClarifierBackend,
+    RuleBasedIntentClarifierBackend,
+)
 from autoad_researcher.core import (
     ArtifactStore,
     EventStore,
     InputIntake,
+    IntentClarifier,
     PipelineController,
     PipelineResult,
     StageResult,
@@ -87,8 +92,12 @@ from autoad_researcher.readers import (
     StaticRepositoryReaderBackend,
 )
 from autoad_researcher.schemas import (
+    ClarificationContext,
+    ClarificationQuestion,
+    ClarifiedTask,
     EvidenceReference,
     InputTask,
+    KnownFact,
     PaperSummary,
     RepositorySummary,
     SourceEntry,

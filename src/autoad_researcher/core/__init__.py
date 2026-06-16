@@ -1,6 +1,7 @@
 """AutoAD core utilities."""
 
 from autoad_researcher.core.artifacts import ArtifactStore
+from autoad_researcher.core.clarification import IntentClarifier
 from autoad_researcher.core.events import EventRecord, EventStore
 from autoad_researcher.core.intake import InputIntake
 from autoad_researcher.core.pipeline import (
@@ -16,6 +17,7 @@ __all__ = [
     "EventRecord",
     "EventStore",
     "InputIntake",
+    "IntentClarifier",
     "PaperReader",
     "PipelineController",
     "PipelineResult",
