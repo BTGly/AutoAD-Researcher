@@ -1,5 +1,13 @@
 """Step 3.2 Paper Intelligence Capability contracts."""
 
+from autoad_researcher.paper_intelligence.agent import (
+    AnalysisObservation,
+    PaperAnalysisAgent,
+    PaperAnalysisResult,
+    PaperArtifactSynthesizer,
+    SynthesizedPaperArtifacts,
+    budget_for_profile,
+)
 from autoad_researcher.paper_intelligence.attestation import (
     DEFAULT_MAX_SOURCE_BYTES,
     SOURCE_FAILURE_CODES,
@@ -68,6 +76,12 @@ from autoad_researcher.paper_intelligence.profile import (
     PAPER_PERMISSION_PROFILES,
     PAPER_STAGE_SKILLS,
     PaperModelProfile,
+)
+from autoad_researcher.paper_intelligence.repair import (
+    repair_can_proceed,
+    repair_claim,
+    repair_candidate,
+    run_paper_repair,
 )
 from autoad_researcher.paper_intelligence.validator import (
     CandidateValidationIssue,
