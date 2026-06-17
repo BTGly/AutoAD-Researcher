@@ -81,6 +81,11 @@ from autoad_researcher.repository_intelligence.model_routing import (
     append_model_routing_decision,
     load_model_config,
 )
+from autoad_researcher.repository_intelligence.validate import (
+    RepositoryValidationReport,
+    ValidationIssue,
+    validate_repository_intelligence_run,
+)
 from autoad_researcher.repository_intelligence.models import (
     RepositoryAgentBudget,
     RepositoryArtifactPaths,
@@ -149,6 +154,7 @@ __all__ = [
     "RepositorySearchQueries",
     "RepositorySearchResultRecord",
     "RepositorySource",
+    "RepositoryValidationReport",
     "LoadedSkillRecord",
     "LoadedSkillsAudit",
     "ModelProfile",
@@ -167,6 +173,7 @@ __all__ = [
     "UncertaintiesArtifact",
     "UncertaintyGroup",
     "UserInputEvidenceRef",
+    "ValidationIssue",
     "WebEvidenceRef",
     "append_evidence",
     "append_model_routing_decision",
@@ -186,6 +193,7 @@ __all__ = [
     "resume_fingerprint",
     "should_load_stage_skill",
     "synthesize_repository_artifacts",
+    "validate_repository_intelligence_run",
     "write_discovery_artifacts",
     "write_loaded_skills",
 ]
