@@ -227,6 +227,8 @@ print('[verify] benchmark environment lock ok.')
 echo "[verify] benchmark preflight files ok."
 
 echo "[verify] checking environment plan fixtures..."
+test -f src/autoad_researcher/assets/models.py
+test -f src/autoad_researcher/assets/io.py
 test -f src/autoad_researcher/environments/models.py
 test -f src/autoad_researcher/environments/policy.py
 test -f src/autoad_researcher/environments/io.py
