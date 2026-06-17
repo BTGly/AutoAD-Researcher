@@ -9,6 +9,15 @@ from autoad_researcher.repository_intelligence.evidence_models import (
     UserInputEvidenceRef,
     WebEvidenceRef,
 )
+from autoad_researcher.repository_intelligence.evidence import (
+    ActiveRepositoryContext,
+    EvidenceMiddlewareError,
+    FileEvidenceRequest,
+    append_evidence,
+    create_file_evidence,
+    create_repository_identity_evidence,
+    read_evidence_index,
+)
 from autoad_researcher.repository_intelligence.models import (
     RepositoryAgentBudget,
     RepositoryArtifactPaths,
@@ -34,8 +43,11 @@ from autoad_researcher.repository_intelligence.skills import (
 
 __all__ = [
     "AnalysisControlSignal",
+    "ActiveRepositoryContext",
     "EvidenceIndexRecord",
+    "EvidenceMiddlewareError",
     "EvidenceRef",
+    "FileEvidenceRequest",
     "FileEvidenceRef",
     "RepositoryAgentBudget",
     "RepositoryArtifactPaths",
@@ -54,8 +66,12 @@ __all__ = [
     "SubmoduleRecord",
     "UserInputEvidenceRef",
     "WebEvidenceRef",
+    "append_evidence",
+    "create_file_evidence",
+    "create_repository_identity_evidence",
     "load_required_skill",
     "load_skill_file",
+    "read_evidence_index",
     "should_load_stage_skill",
     "write_loaded_skills",
 ]
