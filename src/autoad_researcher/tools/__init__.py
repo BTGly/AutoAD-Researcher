@@ -7,15 +7,31 @@ from autoad_researcher.tools.deferred import (
     initial_tool_specs,
     load_stage_tool_specs,
 )
+from autoad_researcher.tools.permissions import (
+    PermissionDecision,
+    PermissionDecisionRecord,
+    PermissionEngine,
+    PermissionProfile,
+    PermissionRequest,
+    append_permission_decision,
+    default_repository_permission_engine,
+)
 from autoad_researcher.tools.registry import ToolRegistry
 
 __all__ = [
     "LoadedToolRecord",
+    "PermissionDecision",
+    "PermissionDecisionRecord",
+    "PermissionEngine",
+    "PermissionProfile",
+    "PermissionRequest",
     "StageToolLoad",
     "ToolContext",
     "ToolRegistry",
     "ToolResult",
     "ToolSpec",
+    "append_permission_decision",
+    "default_repository_permission_engine",
     "initial_tool_specs",
     "load_stage_tool_specs",
 ]
