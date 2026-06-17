@@ -61,10 +61,18 @@ def align_idea_to_baseline(
     for aspect in aspects:
         entry = _align_aspect(aspect, baseline_contract)
         entries.append(entry)
+
+        # Only the primary mechanism aspect triggers reanalysis;
+        # derived_hypothesis aspects with no overlap are expected.
+        is_primary = aspect.source_kind in ("paper_grounded", "user_provided")
+        is_hypothesis = aspect.source_kind == "derived_hypothesis"
+
         if entry.match_status == AlignmentStatus.INSUFFICIENT_PAPER_EVIDENCE:
             needs_paper = True
         elif entry.match_status == AlignmentStatus.INSUFFICIENT_REPOSITORY_EVIDENCE:
-            needs_repo = True
+            if is_primary:
+                needs_repo = True
+            # derived_hypothesis aspects with no repository overlap = expected, not an error
         elif entry.match_status == AlignmentStatus.INCOMPATIBLE:
             if entry.scope == AlignableScope.GLOBAL_IDEA:
                 global_incompatible = True

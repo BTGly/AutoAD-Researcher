@@ -130,7 +130,7 @@ def _make_confirmed_idea(source=None):
     )
 
 
-def _make_variant(variant_id="var_A", idea_id="idea_001", risk="medium"):
+def _make_variant(variant_id="var_A", idea_id="idea_001", risk="low"):
     return ImplementationVariant(
         variant_id=variant_id,
         variant_label=f"Variant {variant_id}",
@@ -564,7 +564,7 @@ class TestImplementationVariant:
     def test_valid_minimal(self):
         v = _make_variant()
         assert v.variant_id == "var_A"
-        assert v.risk_level == "medium"
+        assert v.risk_level == "low"
 
     def test_no_file_level_fields(self):
         v = _make_variant()
@@ -1044,3 +1044,350 @@ class TestAlignableScope:
         assert AlignableScope.SPECIFIC_HOOK
         assert AlignableScope.SPECIFIC_PHASE
         assert AlignableScope.SPECIFIC_VARIANT_ROUTE
+
+
+# ---------------------------------------------------------------------------
+# F4: Orchestrator tests
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestrator:
+    def test_missing_baseline_contract_blocks(self):
+        from autoad_researcher.transfer.orchestrator import run_idea_transfer_design
+
+        handoff = {"user_idea_label": "Cross-Scale Attention"}
+        status = run_idea_transfer_design(
+            run_id="run_001",
+            source_context_id="ctx_001",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            idea_transfer_handoff=handoff,
+            baseline_contract=None,
+            paper_idea_sources=[],
+        )
+        assert status.stage == "waiting_for_baseline_contract"
+        assert status.blocked
+        assert status.reanalysis_request is not None
+
+    def test_no_idea_source_blocks(self):
+        from autoad_researcher.transfer.orchestrator import run_idea_transfer_design
+
+        handoff: dict = {}
+        baseline = _make_baseline_contract(hooks=[_make_hook("hook_001")])
+        status = run_idea_transfer_design(
+            run_id="run_002",
+            source_context_id="ctx_002",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            idea_transfer_handoff=handoff,
+            baseline_contract=baseline,
+            paper_idea_sources=[],
+        )
+        assert status.blocked
+        assert status.stage == "waiting_for_idea_source"
+
+    def test_user_idea_routes_to_generation(self):
+        from autoad_researcher.transfer.orchestrator import run_idea_transfer_design
+
+        handoff = {"user_idea_label": "Cross-Scale Attention"}
+        baseline = _make_baseline_contract(
+            hooks=[
+                _make_hook("hook_001", path_classification="modifiable_candidate"),
+                _make_hook("hook_002", path_classification="modifiable_candidate"),
+            ],
+        )
+        # Override hook names to have semantic overlap with "cross scale attention"
+        baseline.modifiable_hooks[0].hook_name = "cross_scale_backbone_hook"
+        baseline.modifiable_hooks[0].semantic_role = "cross scale multi scale feature extraction"
+        baseline.modifiable_hooks[1].hook_name = "attention_embedding_hook"
+        baseline.modifiable_hooks[1].semantic_role = "attention query mechanism"
+        paper_sources = [
+            {"label": "Cross-Scale Attention", "source_id": "s1",
+             "mechanism_summary": "Multi-scale attention fusion",
+             "mechanism_why": "Multi-scale features improve detection",
+             "evidence_ids": ["ev1"]}
+        ]
+        status = run_idea_transfer_design(
+            run_id="run_003",
+            source_context_id="ctx_003",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            idea_transfer_handoff=handoff,
+            baseline_contract=baseline,
+            paper_idea_sources=paper_sources,
+        )
+        # Should proceed past alignment to variant generation
+        assert status.idea_contract is not None
+        assert status.variants is not None
+        assert len(status.variants) > 0
+        assert status.selection is not None
+
+    def test_pipeline_blocked_at_selection_waiting_for_user(self):
+        from autoad_researcher.transfer.orchestrator import run_idea_transfer_design
+
+        handoff = {"user_idea_label": "Cross-Scale Attention"}
+        baseline = _make_baseline_contract(
+            hooks=[_make_hook("hook_001", path_classification="modifiable_candidate")],
+        )
+        baseline.modifiable_hooks[0].hook_name = "cross_scale_backbone_hook"
+        baseline.modifiable_hooks[0].semantic_role = "cross scale feature extraction"
+        paper_sources = [
+            {"label": "Cross-Scale Attention", "source_id": "s1",
+             "mechanism_summary": "Multi-scale feature attention",
+             "mechanism_why": "Improves detection",
+             "evidence_ids": ["ev1"]}
+        ]
+        status = run_idea_transfer_design(
+            run_id="run_004",
+            source_context_id="ctx_004",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            idea_transfer_handoff=handoff,
+            baseline_contract=baseline,
+            paper_idea_sources=paper_sources,
+        )
+        assert status.blocked
+        assert status.stage == "waiting_for_variant_selection"
+
+    def test_finalize_builds_handoff(self):
+        from autoad_researcher.transfer.orchestrator import run_idea_transfer_design, finalize_transfer_design
+
+        handoff_input = {"user_idea_label": "Cross-Scale Attention"}
+        baseline = _make_baseline_contract(
+            hooks=[_make_hook("hook_001", path_classification="modifiable_candidate")],
+        )
+        baseline.modifiable_hooks[0].hook_name = "cross_scale_backbone_hook"
+        baseline.modifiable_hooks[0].semantic_role = "cross scale feature extraction"
+        paper_sources = [
+            {"label": "Cross-Scale Attention", "source_id": "s1",
+             "mechanism_summary": "Multi-scale feature attention",
+             "mechanism_why": "Improves detection",
+             "evidence_ids": ["ev1"]}
+        ]
+        status = run_idea_transfer_design(
+            run_id="run_005",
+            source_context_id="ctx_005",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            idea_transfer_handoff=handoff_input,
+            baseline_contract=baseline,
+            paper_idea_sources=paper_sources,
+        )
+        assert status.variants
+        assert status.selection
+
+        status = finalize_transfer_design(
+            status=status,
+            run_id="run_005",
+            source_context_id="ctx_005",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            baseline_contract=baseline,
+            user_evidence_id="ev_finalize_005",
+            selected_variant_ids=[status.variants[0].variant_id],
+        )
+        assert status.handoff is not None
+        assert status.stage == "ready_for_3_5"
+        assert not status.blocked
+
+
+# ---------------------------------------------------------------------------
+# F5: End-to-end fixture test
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEnd:
+    """Full end-to-end: PatchCore-like baseline → paper candidate → variant → handoff."""
+
+    def test_e2e_patchcore_with_paper_candidate(self):
+        from autoad_researcher.transfer.orchestrator import run_idea_transfer_design, finalize_transfer_design
+
+        baseline = BaselineArchitectureContract(
+            model_name="PatchCore",
+            repository_source_id="repo_patchcore",
+            repository_commit="c" * 40,
+            architecture_components=[
+                ArchitectureComponent(
+                    component_id="comp_backbone",
+                    name="TimmFeatureExtractor",
+                    role="feature_extractor",
+                    semantic_description="Pretrained CNN backbone (WideResNet50)",
+                    evidence_ids=["ev_repo_backbone"],
+                ),
+                ArchitectureComponent(
+                    component_id="comp_memory",
+                    name="MemoryBank",
+                    role="memory_bank",
+                    semantic_description="Coreset-subsampled patch feature memory bank",
+                    evidence_ids=["ev_repo_memory"],
+                ),
+            ],
+            phases=[
+                ExecutionPhaseContract(
+                    phase_id="phase_infer",
+                    phase="infer",
+                    uses_gradient=False,
+                    mutates_model_state=False,
+                    mutates_which_state=[],
+                    evidence_ids=["ev_repo_infer_phase"],
+                ),
+            ],
+            modifiable_hooks=[
+                ModificationHook(
+                    hook_id="hook_backbone_after",
+                    hook_name="backbone_after",
+                    module_path="models/patchcore/torch_model.py",
+                    symbol="forward",
+                    semantic_role="Feature extraction output",
+                    path_classification="modifiable_candidate",
+                    allowed_for_transfer_design=True,
+                    evidence_ids=["ev_repo_hook_backbone"],
+                ),
+                ModificationHook(
+                    hook_id="hook_embedding_before",
+                    hook_name="embedding_before",
+                    module_path="models/patchcore/torch_model.py",
+                    symbol="forward",
+                    semantic_role="Before memory bank lookup",
+                    path_classification="modifiable_candidate",
+                    allowed_for_transfer_design=True,
+                    evidence_ids=["ev_repo_hook_embedding"],
+                ),
+            ],
+            evidence_ids=["ev_repo_patchcore_contract"],
+        )
+
+        paper_sources = [
+            {
+                "label": "Cross-Scale Attention",
+                "source_id": "paper_method_001",
+                "mechanism_summary": "Multi-scale attention mechanism that fuses features from backbone layers at different scales for improved anomaly detection",
+                "mechanism_why": "Multi-scale feature correspondence improves detection of anomalies at varying scales",
+                "evidence_ids": ["ev_paper_001"],
+            }
+        ]
+
+        handoff_input = {"user_idea_label": "Cross-Scale Attention"}
+
+        status = run_idea_transfer_design(
+            run_id="run_e2e_001",
+            source_context_id="ctx_e2e",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            idea_transfer_handoff=handoff_input,
+            baseline_contract=baseline,
+            paper_idea_sources=paper_sources,
+        )
+        assert status.idea_contract is not None
+        assert len(status.variants) > 0
+        assert status.selection is not None
+
+        status = finalize_transfer_design(
+            status=status,
+            run_id="run_e2e_001",
+            source_context_id="ctx_e2e",
+            source_context_version=0,
+            source_context_sha256="a" * 64,
+            baseline_contract=baseline,
+            user_evidence_id="ev_user_e2e",
+            selected_variant_ids=[status.variants[0].variant_id],
+        )
+        assert status.handoff is not None
+        assert status.stage == "ready_for_3_5"
+        assert status.handoff.next_stage == "3.5_multi_variant_experiment_planner"
+        assert len(status.handoff.selected_variants) >= 1
+        assert status.handoff.confirmed_idea.idea_id == "idea_run_e2e_001"
+
+
+# ---------------------------------------------------------------------------
+# F3: Baseline contract producer test
+# ---------------------------------------------------------------------------
+
+
+class TestBaselineContractProducer:
+    def test_produces_valid_contract(self):
+        from autoad_researcher.transfer.reanalysis import build_repository_reanalysis
+        from autoad_researcher.repository_intelligence.contract_producer import produce_baseline_contract
+
+        request = build_repository_reanalysis(
+            run_id="run_prod_001",
+            reason="Need baseline contract",
+        )
+        contract = produce_baseline_contract(
+            request=request,
+            repository_source_id="repo_001",
+            repository_commit="a" * 40,
+            repository_summary={"model_name": "PatchCore"},
+            modifiable_paths=[
+                {
+                    "path": "models/patchcore/torch_model.py",
+                    "symbol": "forward",
+                    "role": "feature_extractor",
+                    "semantic_role": "backbone_output",
+                },
+            ],
+        )
+        assert contract.model_name == "PatchCore"
+        assert contract.repository_commit == "a" * 40
+        assert len(contract.modifiable_hooks) >= 1
+        assert len(contract.phases) >= 1
+        assert len(contract.architecture_components) >= 1
+
+
+# ---------------------------------------------------------------------------
+# F1 extra: Invalid axes rejected
+# ---------------------------------------------------------------------------
+
+
+class TestAliasAlignmentNoOverlap:
+    def test_no_keyword_overlap_returns_insufficient_evidence(self):
+        from autoad_researcher.transfer.aligner import align_idea_to_baseline
+
+        # Build an idea with text that has no keyword overlap with baseline
+        source = PaperGroundedIdeaContract(
+            paper_idea_source_id="src_no_match",
+            paper_mechanism_summary="cross-scale relational aggregation",
+            paper_evidence_ids=["ev_001"],
+            original_mechanism_rationale=_make_derived("complex mechanism"),
+            transfer_relevance=_make_derived("relevant"),
+        )
+        idea = IdeaContract(
+            idea_id="idea_no_match",
+            idea_source=source,
+            confirmation_status="pending",
+        )
+        baseline = BaselineArchitectureContract(
+            model_name="TestModel",
+            repository_source_id="repo_test",
+            repository_commit="b" * 40,
+            architecture_components=[
+                ArchitectureComponent(
+                    component_id="comp_001",
+                    name="feature_merger",
+                    role="feature_fusion",
+                    semantic_description="merges features from different layers",
+                    evidence_ids=["ev_001"],
+                ),
+            ],
+            modifiable_hooks=[
+                ModificationHook(
+                    hook_id="hook_001",
+                    hook_name="feature_merger_hook",
+                    module_path="model.py",
+                    symbol="forward",
+                    semantic_role="feature_fusion",
+                    path_classification="modifiable_candidate",
+                    allowed_for_transfer_design=True,
+                    evidence_ids=["ev_001"],
+                ),
+            ],
+            evidence_ids=["ev_001"],
+        )
+
+        result = align_idea_to_baseline(idea, baseline)
+        # Should NOT be global_incompatible
+        assert not result.global_incompatible
+        # Should be needs_repository_reanalysis (insufficient evidence)
+        assert result.needs_repository_reanalysis
+        assert len(result.entries) >= 1
+        assert result.entries[0].match_status == AlignmentStatus.INSUFFICIENT_REPOSITORY_EVIDENCE
