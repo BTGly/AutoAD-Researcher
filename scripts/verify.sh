@@ -196,6 +196,7 @@ test -f src/autoad_researcher/benchmarks/dataset.py
 test -f src/autoad_researcher/benchmarks/environment.py
 test -f src/autoad_researcher/benchmarks/preflight.py
 test -f scripts/benchmark/preflight.py
+test -f scripts/benchmark/run_internal_patchcore_attempt.py
 echo "[verify] checking benchmark environment lock..."
 test -f src/autoad_researcher/benchmarks/environment_lock.py
 test -f configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml

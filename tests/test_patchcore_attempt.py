@@ -27,7 +27,7 @@ def test_patchcore_command_plan_is_locked_and_offline():
 
     assert plan.cwd == "runs/run_demo/attempt_01"
     assert plan.network is False
-    assert plan.environment["TORCH_HOME"] == "assets/prepared/torch"
+    assert plan.environment["TORCH_HOME"] == "../assets/prepared/torch"
     assert plan.environment["HF_HUB_OFFLINE"] == "1"
     assert PATCHCORE_RESULT_CSV in plan.expected_outputs
     assert "wideresnet50" in plan.args

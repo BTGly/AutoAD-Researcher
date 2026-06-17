@@ -181,6 +181,32 @@ def test_repository_mutation_invalidates_attempt(tmp_path: Path):
     assert result.failure_code == "RUN_REPOSITORY_MUTATED"
 
 
+def test_repository_fingerprint_probe_runs_after_runner(tmp_path: Path):
+    plan = command_plan()
+    observed = {"runner_finished": False}
+
+    def runner(command: ResolvedCommand, attempt_dir: Path) -> CommandExecutionOutput:
+        (attempt_dir / "metrics.json").write_text("{}", encoding="utf-8")
+        observed["runner_finished"] = True
+        return CommandExecutionOutput(exit_code=0)
+
+    def after_probe() -> str:
+        assert observed["runner_finished"] is True
+        return "repo-clean"
+
+    result = execute_experiment_attempt(
+        run_id="run_demo",
+        attempt="attempt_01",
+        command_plan=plan,
+        input_refs=input_refs(plan),
+        attempt_dir=tmp_path / "attempt_01",
+        runner=runner,
+        repository_fingerprint_after=after_probe,
+    )
+
+    assert result.status == "success"
+
+
 def test_subprocess_runner_executes_shell_false_attempt(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "write_metrics.py").write_text(

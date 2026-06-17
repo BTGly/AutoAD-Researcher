@@ -17,6 +17,7 @@ from autoad_researcher.runner.models import (
 )
 
 ExperimentRunner = Callable[[ResolvedCommand, Path], CommandExecutionOutput]
+RepositoryFingerprintProbe = Callable[[], str]
 
 
 def experiment_command_sha256(plan: ExperimentCommandPlan) -> str:
@@ -31,7 +32,7 @@ def execute_experiment_attempt(
     input_refs: ExperimentInputRefs,
     attempt_dir: Path | str,
     runner: ExperimentRunner,
-    repository_fingerprint_after: str | None = None,
+    repository_fingerprint_after: str | RepositoryFingerprintProbe | None = None,
 ) -> ExperimentExecutionResult:
     """Execute one immutable experiment attempt with injected runner."""
     out_dir = Path(attempt_dir)
@@ -84,8 +85,11 @@ def execute_experiment_attempt(
             exit_code=raw.exit_code,
         )
 
-    if repository_fingerprint_after is not None and (
-        repository_fingerprint_after != input_refs.repository_fingerprint
+    actual_repository_fingerprint_after = _resolve_repository_fingerprint_after(
+        repository_fingerprint_after
+    )
+    if actual_repository_fingerprint_after is not None and (
+        actual_repository_fingerprint_after != input_refs.repository_fingerprint
     ):
         return _failed_result(
             run_id=run_id,
@@ -133,6 +137,16 @@ def execute_experiment_attempt(
     )
     _write_json(out_dir / "execution_result.json", result.model_dump(mode="json", exclude_none=True))
     return result
+
+
+def _resolve_repository_fingerprint_after(
+    value: str | RepositoryFingerprintProbe | None,
+) -> str | None:
+    if value is None:
+        return None
+    if callable(value):
+        return value()
+    return value
 
 
 def run_experiment_subprocess(

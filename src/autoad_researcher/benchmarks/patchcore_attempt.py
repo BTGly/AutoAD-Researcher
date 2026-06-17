@@ -128,7 +128,7 @@ def build_patchcore_command_plan(
             "cwd": f"runs/{run_id}/{attempt}",
             "environment": {
                 "PYTHONPATH": "../../../workspace/repos/patchcore-inspection/src",
-                "TORCH_HOME": "assets/prepared/torch",
+                "TORCH_HOME": "../assets/prepared/torch",
                 "PYTHONHASHSEED": "0",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "MPLCONFIGDIR": "matplotlib",
