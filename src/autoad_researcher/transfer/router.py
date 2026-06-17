@@ -178,7 +178,8 @@ def _fuzzy_match(a: str, b: str, threshold: float = 0.7) -> bool:
 def _make_derived_claim(value: str, evidence_ids: list[str]):
     """Create a DerivedClaim — imported lazily to avoid circular imports."""
     from autoad_researcher.schemas.transfer_design import DerivedClaim
+    safe_value = value if value and value.strip() else "(no value provided)"
     return DerivedClaim(
-        value=value,
+        value=safe_value,
         supporting_evidence_ids=evidence_ids,
     )
