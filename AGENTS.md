@@ -20,7 +20,9 @@ Do not start the next development step until the current one is pushed.
 
 ## Logging Rules
 
-- Use the local project date from `date +%Y-%m-%d`.
+- Use the current project/conversation date. If the container `date` disagrees
+  with the user or session date, use the user/session date and note the
+  discrepancy in the log if relevant.
 - Daily logs live in `notes/YYYY-MM-DD.md`.
 - `notes/development-log.md` is only an index.
 - If a new daily file is created, add it to the index in the same change.
@@ -58,4 +60,3 @@ Do not start the next development step until the current one is pushed.
   `configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml`.
 - Before new feature work, inspect the latest entries in `notes/` and the latest
   commits on `main`.
-
