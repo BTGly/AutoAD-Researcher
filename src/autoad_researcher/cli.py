@@ -51,6 +51,23 @@ def build_parser() -> argparse.ArgumentParser:
     repo_parser.add_argument("--resume", action="store_true", help="Return existing result when fingerprint matches")
     repo_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
+    paper_parser = subparsers.add_parser(
+        "paper-intelligence",
+        help="Run Paper Intelligence on a PDF",
+    )
+    paper_parser.add_argument("--run-id", required=True, help="Run identifier")
+    paper_parser.add_argument("--pdf", required=True, help="Path to paper PDF")
+    paper_parser.add_argument("--parser-profile", default="mineru_pipeline_v1", help="Parser profile ID")
+    paper_parser.add_argument("--budget-profile", default="standard", help="Budget profile (short/standard/long)")
+    paper_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+
+    context_parser = subparsers.add_parser(
+        "research-context",
+        help="Build and validate the unified research context",
+    )
+    context_parser.add_argument("--run-id", required=True, help="Run identifier")
+    context_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+
     return parser
 
 
@@ -132,6 +149,72 @@ def run_repository_intelligence(args: argparse.Namespace) -> int:
     return 1
 
 
+def run_paper_intelligence(args: argparse.Namespace) -> int:
+    """Run Paper Intelligence CLI flow."""
+    from pathlib import Path
+    from autoad_researcher.paper_intelligence.agent import budget_for_profile
+    from autoad_researcher.paper_intelligence.attestation import attest_paper_source
+
+    try:
+        pdf_path = Path(args.pdf)
+        if not pdf_path.exists():
+            raise ValueError(f"PDF not found: {args.pdf}")
+
+        attest_result = attest_paper_source(str(pdf_path), pdf_path.name)
+        budget = budget_for_profile(args.budget_profile)
+
+        if args.json_output:
+            import json as _json
+            print(_json.dumps({
+                "run_id": args.run_id,
+                "status": "paper_attested",
+                "pdf_sha256": attest_result["source_pdf_sha256"],
+                "page_count": attest_result["page_count"],
+                "budget_profile": args.budget_profile,
+            }, ensure_ascii=False, indent=2))
+        else:
+            print("AutoAD paper intelligence")
+            print(f"run_id: {args.run_id}")
+            print(f"pdf_sha256: {attest_result['source_pdf_sha256'][:16]}...")
+            print(f"page_count: {attest_result['page_count']}")
+            print(f"budget: {args.budget_profile}")
+        return 0
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def run_research_context(args: argparse.Namespace) -> int:
+    """Build and validate the unified research context."""
+    from autoad_researcher.research_context import (
+        compute_readiness,
+        TaskContext,
+    )
+
+    try:
+        task = TaskContext(task_id=f"task_{args.run_id}", goal="research context validation")
+        readiness = compute_readiness([], [])
+
+        if args.json_output:
+            import json as _json
+            print(_json.dumps({
+                "run_id": args.run_id,
+                "readiness": readiness.model_dump(mode="json"),
+            }, ensure_ascii=False, indent=2))
+        else:
+            print("AutoAD research context")
+            print(f"run_id: {args.run_id}")
+            print(f"readiness: {readiness.status}")
+            print(f"next_stage: {readiness.next_stage}")
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 主入口。"""
     parser = build_parser()
@@ -141,6 +224,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_smoke(args)
     if args.command == "repository-intelligence":
         return run_repository_intelligence(args)
+    if args.command == "paper-intelligence":
+        return run_paper_intelligence(args)
+    if args.command == "research-context":
+        return run_research_context(args)
 
     parser.error(f"unsupported command: {args.command}")
     return 2
