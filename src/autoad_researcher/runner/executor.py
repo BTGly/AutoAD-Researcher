@@ -1,6 +1,7 @@
 """Immutable experiment attempt execution."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
@@ -13,7 +14,7 @@ from autoad_researcher.runner.models import (
     OutputManifestEntry,
 )
 
-ExperimentRunner = callable
+ExperimentRunner = Callable[[ResolvedCommand, Path], CommandExecutionOutput]
 
 
 def experiment_command_sha256(plan: ExperimentCommandPlan) -> str:
@@ -27,7 +28,7 @@ def execute_experiment_attempt(
     command_plan: ExperimentCommandPlan,
     input_refs: ExperimentInputRefs,
     attempt_dir: Path | str,
-    runner,
+    runner: ExperimentRunner,
     repository_fingerprint_after: str | None = None,
 ) -> ExperimentExecutionResult:
     """Execute one immutable experiment attempt with injected runner."""

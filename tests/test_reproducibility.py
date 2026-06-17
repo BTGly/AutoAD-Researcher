@@ -52,6 +52,29 @@ def metrics(tmp_path: Path, value: float):
     )
 
 
+def metrics_with_specs(tmp_path: Path, values: dict[str, float]):
+    (tmp_path / "raw").mkdir(parents=True, exist_ok=True)
+    payload = ", ".join(f'"{name}": {value}' for name, value in values.items())
+    (tmp_path / "raw/results.json").write_text(
+        f'{{"metrics": {{{payload}}}}}',
+        encoding="utf-8",
+    )
+    return parse_metrics(
+        tmp_path,
+        [
+            MetricParseSpec(
+                metric_name=name,
+                source_path="raw/results.json",
+                json_path=["metrics", name],
+                dataset_row="mvtec/bottle",
+                unit="ratio",
+                required=True,
+            )
+            for name in sorted(values)
+        ],
+    )
+
+
 def test_reproducible_when_invariants_and_metrics_match(tmp_path: Path):
     left_metrics = metrics(tmp_path / "a1", 0.91)
     right_metrics = metrics(tmp_path / "a2", 0.9101)
@@ -112,3 +135,29 @@ def test_invalid_when_any_validity_invalid(tmp_path: Path):
     )
 
     assert report.status == "invalid"
+
+
+def test_not_reproducible_when_required_metric_only_exists_on_right(tmp_path: Path):
+    report = compare_attempts(
+        attempt_01=evidence(),
+        attempt_02=evidence(attempt_id="attempt_02"),
+        metrics_01=metrics(tmp_path / "a1", 0.91),
+        metrics_02=metrics_with_specs(
+            tmp_path / "a2",
+            {"anomaly_pixel_auroc": 0.88, "image_auroc": 0.91},
+        ),
+        validity_01=validity(),
+        validity_02=validity(),
+        metric_tolerances={"image_auroc": 0, "anomaly_pixel_auroc": 0.001},
+    )
+
+    assert report.status == "not_reproducible"
+    missing = [
+        comparison
+        for comparison in report.metric_comparisons
+        if comparison.metric_name == "anomaly_pixel_auroc"
+    ][0]
+    assert missing.required is True
+    assert missing.left_parse_status == "absent"
+    assert missing.right_parse_status == "parsed"
+    assert missing.status == "failed"

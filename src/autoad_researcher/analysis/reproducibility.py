@@ -44,8 +44,10 @@ class MetricComparison(BaseModel):
 
     metric_name: str
     required: bool
-    left_value: float = Field(allow_inf_nan=False)
-    right_value: float = Field(allow_inf_nan=False)
+    left_value: float | None = Field(default=None, allow_inf_nan=False)
+    right_value: float | None = Field(default=None, allow_inf_nan=False)
+    left_parse_status: Literal["parsed", "missing", "invalid", "absent"]
+    right_parse_status: Literal["parsed", "missing", "invalid", "absent"]
     absolute_tolerance: float = Field(ge=0, allow_inf_nan=False)
     absolute_difference: float = Field(ge=0, allow_inf_nan=False)
     status: Literal["passed", "failed"]
@@ -132,34 +134,56 @@ def _compare_metrics(
     right: MetricsReport,
     tolerances: dict[str, float],
 ) -> list[MetricComparison]:
+    left_by_name = {metric.metric_name: metric for metric in left.metrics}
     right_by_name = {metric.metric_name: metric for metric in right.metrics}
     comparisons = []
-    for left_metric in left.metrics:
-        if left_metric.parse_status != "parsed" or left_metric.value is None:
+    names = sorted(set(left_by_name) | set(right_by_name))
+    for name in names:
+        left_metric = left_by_name.get(name)
+        right_metric = right_by_name.get(name)
+        required = bool(
+            (left_metric is not None and left_metric.required)
+            or (right_metric is not None and right_metric.required)
+        )
+        if not required and name not in tolerances:
             continue
-        right_metric = right_by_name.get(left_metric.metric_name)
-        if right_metric is None or right_metric.parse_status != "parsed" or right_metric.value is None:
-            tolerance = tolerances.get(left_metric.metric_name, 0)
+        tolerance = tolerances.get(name, 0)
+        left_status = left_metric.parse_status if left_metric is not None else "absent"
+        right_status = right_metric.parse_status if right_metric is not None else "absent"
+        left_value = (
+            left_metric.value
+            if left_metric is not None and left_metric.parse_status == "parsed"
+            else None
+        )
+        right_value = (
+            right_metric.value
+            if right_metric is not None and right_metric.parse_status == "parsed"
+            else None
+        )
+        if left_value is None or right_value is None:
             comparisons.append(
                 MetricComparison(
-                    metric_name=left_metric.metric_name,
-                    required=left_metric.required,
-                    left_value=left_metric.value,
-                    right_value=left_metric.value,
+                    metric_name=name,
+                    required=required,
+                    left_value=left_value,
+                    right_value=right_value,
+                    left_parse_status=left_status,
+                    right_parse_status=right_status,
                     absolute_tolerance=tolerance,
                     absolute_difference=tolerance + 1,
                     status="failed",
                 )
             )
             continue
-        tolerance = tolerances.get(left_metric.metric_name, 0)
-        diff = abs(left_metric.value - right_metric.value)
+        diff = abs(left_value - right_value)
         comparisons.append(
             MetricComparison(
-                metric_name=left_metric.metric_name,
-                required=left_metric.required,
-                left_value=left_metric.value,
-                right_value=right_metric.value,
+                metric_name=name,
+                required=required,
+                left_value=left_value,
+                right_value=right_value,
+                left_parse_status=left_status,
+                right_parse_status=right_status,
                 absolute_tolerance=tolerance,
                 absolute_difference=diff,
                 status="passed" if diff <= tolerance else "failed",

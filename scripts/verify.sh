@@ -235,6 +235,8 @@ test -f src/autoad_researcher/runner/executor.py
 test -f src/autoad_researcher/analysis/metrics.py
 test -f src/autoad_researcher/analysis/reproducibility.py
 test -f src/autoad_researcher/supervisor/validity.py
+test -f evidence/experiments/internal_patchcore_mvtec_bottle_v1/readiness_report.json
+test -f docs/milestones/3.0D-real-attempt-readiness.md
 test -f src/autoad_researcher/environments/models.py
 test -f src/autoad_researcher/environments/policy.py
 test -f src/autoad_researcher/environments/io.py
@@ -270,6 +272,21 @@ PY
 
 echo "[verify] running pytest..."
 "$UV_BIN" run --extra dev pytest -q
+
+echo "[verify] checking 3.0D readiness evidence..."
+"$UV_BIN" run python - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("evidence/experiments/internal_patchcore_mvtec_bottle_v1/readiness_report.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+assert data["schema_version"] == 1
+assert data["case_id"] == "internal_patchcore_mvtec_bottle_v1"
+assert data["status"] in {"ready", "blocked"}
+assert isinstance(data["checks"], list) and data["checks"]
+assert not data.get("can_execute_attempt_01"), "attempt_01 must not be marked executable without real preflight evidence"
+print("[verify] 3.0D readiness evidence ok.")
+PY
 
 echo "[verify] checking development log..."
 test -f notes/development-log.md

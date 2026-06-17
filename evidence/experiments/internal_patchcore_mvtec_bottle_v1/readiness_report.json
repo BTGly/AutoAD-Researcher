@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "case_id": "internal_patchcore_mvtec_bottle_v1",
+  "project_date": "2026-06-17",
+  "status": "blocked",
+  "target_stage": "3.0D-3 real attempt_01",
+  "checks": [
+    {
+      "check_id": "gpu_available",
+      "status": "passed",
+      "evidence": "nvidia-smi detected NVIDIA GeForce RTX 4090 with driver 550.107.02"
+    },
+    {
+      "check_id": "benchmark_repo_source_available",
+      "status": "passed",
+      "evidence": "patchcore-inspection source repository exists outside the project workspace and is at commit fcaa92f124fb1ad74a7acf56726decd4b27cbcad"
+    },
+    {
+      "check_id": "benchmark_repo_workspace_boundary",
+      "status": "failed",
+      "evidence": "preflight requires the benchmark repository under workspace/repos, but workspace/repos is absent"
+    },
+    {
+      "check_id": "benchmark_repo_detached_head",
+      "status": "failed",
+      "evidence": "the discovered source repository is on refs/heads/main; preflight requires detached HEAD at the locked commit"
+    },
+    {
+      "check_id": "dataset_root_env",
+      "status": "failed",
+      "evidence": "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT is not set"
+    },
+    {
+      "check_id": "dataset_workspace_boundary",
+      "status": "failed",
+      "evidence": "preflight requires MVTec AD under workspace/datasets, but workspace/datasets is absent"
+    },
+    {
+      "check_id": "benchmark_environment",
+      "status": "failed",
+      "evidence": "preflight requires benchmark Python under workspace/envs, but workspace/envs is absent"
+    }
+  ],
+  "can_execute_attempt_01": false,
+  "can_execute_attempt_02": false,
+  "next_required_actions": [
+    "Create workspace/repos, workspace/datasets, and workspace/envs locally; these paths are ignored by Git",
+    "Place a clean detached checkout of amazon-science/patchcore-inspection at fcaa92f124fb1ad74a7acf56726decd4b27cbcad under workspace/repos",
+    "Place MVTec AD bottle data under workspace/datasets and set AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT to that dataset root",
+    "Build or install the locked benchmark Python environment under workspace/envs using configs/benchmarks/environments/patchcore_linux_gpu/requirements.lock.txt",
+    "Run scripts/benchmark/preflight.py for attempt_01 and only then execute the real controlled attempt"
+  ]
+}
