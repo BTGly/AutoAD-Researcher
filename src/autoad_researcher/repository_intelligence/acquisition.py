@@ -299,19 +299,22 @@ class RepositoryAcquisitionRunner:
             decisions_path,
             calls_path,
         )
-        self._run_git(
-            target,
-            target_label,
-            ["git", "fetch", "--no-tags", "origin", request.resolved_commit],
-            "tool_git_fetch_exact",
-            tool_calls,
-            decisions_path,
-            calls_path,
-        )
+        try:
+            self._run_git(
+                target,
+                target_label,
+                ["git", "fetch", "--no-tags", "origin", request.resolved_commit],
+                "tool_git_fetch_exact",
+                tool_calls,
+                decisions_path,
+                calls_path,
+            )
+        except AcquisitionError as exc:
+            raise AcquisitionError("SOURCE_COMMIT_MISMATCH: remote did not provide resolved_commit") from exc
         self._run_git(target, target_label, ["git", "checkout", "--detach", request.resolved_commit], "tool_git_checkout", tool_calls, decisions_path, calls_path)
         head = self._run_git_stdout(target, target_label, ["git", "rev-parse", "HEAD"], "tool_git_rev_parse_head", tool_calls, decisions_path, calls_path)
         if head != request.resolved_commit:
-            raise AcquisitionError("HEAD does not match resolved_commit after checkout")
+            raise AcquisitionError("SOURCE_COMMIT_MISMATCH: HEAD does not match resolved_commit after checkout")
         return attest_repository(
             source_id=request.source_id,
             repository_root=target,

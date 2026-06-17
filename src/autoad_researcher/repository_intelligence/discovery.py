@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -225,7 +226,23 @@ class RepositoryDiscoveryService:
                         )
                     )
                 elif self.web_fetch is not None and _looks_fetchable_project_page(result.url):
-                    fetched_pages.append(self._fetch_page(result.url, len(fetched_pages) + 1))
+                    fetched_page = self._fetch_page(result.url, len(fetched_pages) + 1)
+                    fetched_pages.append(fetched_page)
+                    for locator in _github_repository_locators_from_page(fetched_page.fetch.content):
+                        if (locator.owner, locator.repository) in seen_repos:
+                            continue
+                        seen_repos.add((locator.owner, locator.repository))
+                        metadata_index = len(candidates) + 1
+                        candidates.append(
+                            self._candidate_from_locator(
+                                locator,
+                                requested_ref=request.requested_ref,
+                                candidate_id=f"cand_{metadata_index:03d}",
+                                evidence_ids=[fetched_page.evidence.evidence_id, f"ev_github_metadata_{metadata_index:03d}"],
+                                selection_rationale=f"GitHub repository linked from fetched page: {result.url}",
+                                request=request,
+                            )
+                        )
 
         resolution = resolve_candidates(candidates, request=request)
         return RepositoryDiscoveryResult(
@@ -475,6 +492,21 @@ def _author_or_org_match(request: RepositoryIntelligenceRequest | None, owner: s
 def _looks_fetchable_project_page(url: str) -> bool:
     parsed = urlsplit(url)
     return parsed.scheme in {"http", "https"} and parsed.netloc.lower() != "github.com"
+
+
+_GITHUB_REPOSITORY_LINK_RE = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
+
+
+def _github_repository_locators_from_page(content: str) -> list[GitHubRepositoryLocator]:
+    locators: list[GitHubRepositoryLocator] = []
+    seen: set[tuple[str, str]] = set()
+    for match in _GITHUB_REPOSITORY_LINK_RE.finditer(content):
+        locator = parse_github_repository_url(match.group(0), strict=False)
+        if locator is None or (locator.owner, locator.repository) in seen:
+            continue
+        seen.add((locator.owner, locator.repository))
+        locators.append(locator)
+    return locators
 
 
 def _write_json_atomic(path: Path, value: BaseModel | list[dict]) -> None:
