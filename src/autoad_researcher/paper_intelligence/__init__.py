@@ -62,6 +62,13 @@ from autoad_researcher.paper_intelligence.tools import (
     PaperToolError,
     SectionInfo,
 )
+from autoad_researcher.paper_intelligence.profile import (
+    PAPER_MODEL_PROFILES,
+    PAPER_MODEL_ROUTING,
+    PAPER_PERMISSION_PROFILES,
+    PAPER_STAGE_SKILLS,
+    PaperModelProfile,
+)
 from autoad_researcher.paper_intelligence.validator import (
     CandidateValidationIssue,
     ClaimValidationIssue,
