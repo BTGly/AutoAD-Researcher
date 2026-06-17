@@ -382,3 +382,34 @@ class UnifiedResearchContextResult(BaseModel):
         "stop",
     ]
     warnings: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# IdeaTransferHandoff
+# ---------------------------------------------------------------------------
+
+
+class IdeaTransferHandoff(BaseModel):
+    """Structured handoff artifact to Step 3.4 Idea & Transfer Design.
+
+    Contains the stable research context identity, user task goal,
+    facts, gaps, conflicts, and readiness. Consumed by Step 3.4.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: Literal[1]
+    run_id: str = Field(pattern=IdentifierPattern)
+    context_id: str = Field(pattern=IdentifierPattern)
+    context_version: int = Field(ge=0)
+    context_sha256: str = Field(pattern=Sha256Pattern)
+
+    task_goal: str = Field(min_length=1)
+    facts: list[ContextFact] = Field(default_factory=list)
+    gaps: list[InformationGap] = Field(default_factory=list)
+    conflicts: list[ContextConflict] = Field(default_factory=list)
+    readiness: ContextReadiness
+
+    paper_source_id: str | None = None
+    repository_source_id: str | None = None
+    evidence_index_refs: list[str] = Field(default_factory=list)

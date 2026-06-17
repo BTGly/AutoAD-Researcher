@@ -17,6 +17,7 @@ from autoad_researcher.research_context.models import (
     ContextReadiness,
     DatasetContext,
     IdeaSourceContext,
+    IdeaTransferHandoff,
     InformationGap,
     MetricContext,
     PaperContext,

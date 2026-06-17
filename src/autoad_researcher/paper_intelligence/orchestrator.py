@@ -51,7 +51,7 @@ from autoad_researcher.research_context.assembly import (
     compute_readiness,
     build_unified_context_result,
 )
-from autoad_researcher.research_context.models import TaskContext, ResearchContext, SourceContext
+from autoad_researcher.research_context.models import TaskContext, ResearchContext, SourceContext, IdeaTransferHandoff
 
 
 class PaperIntelligenceOrchestrator:
@@ -69,9 +69,21 @@ class PaperIntelligenceOrchestrator:
         """Execute the full Paper Intelligence pipeline.
 
         Returns a dict with status, statistics, and paths.
+        Fail-closed: returns success only when post-repair validation has 0 errors.
+        Reject re-run: same run_id returns RUN_ALREADY_EXISTS if artifacts exist.
         """
         run_dir = self.runs_root / request.run_id
         paper_dir = run_dir / "paper"
+
+        # Guard: reject re-run on same run_id
+        if (paper_dir / "evidence_index.jsonl").exists():
+            return {
+                "status": "blocked",
+                "stage": "preflight",
+                "error": "RUN_ALREADY_EXISTS: run_id already has evidence artifacts",
+                "run_id": request.run_id,
+            }
+
         source_dir = paper_dir / "source"
         parse_dir = paper_dir / "parse"
         artifacts_dir = paper_dir / "artifacts"
@@ -311,22 +323,22 @@ class PaperIntelligenceOrchestrator:
             stable_path = str(context_dir / "research_context.json")
             _write_atomic_json(Path(stable_path), stable_ctx.model_dump())
 
-            handoff = {
-                "schema_version": 1,
-                "run_id": request.run_id,
-                "context_id": stable_ctx.context_id,
-                "context_version": stable_ctx.context_version,
-                "context_sha256": stable_ctx.context_sha256,
-                "task_goal": task.goal,
-                "facts": [f.model_dump() for f in facts],
-                "gaps": [g.model_dump() for g in gaps],
-                "conflicts": [c.model_dump() for c in conflicts],
-                "readiness": readiness.model_dump(),
-                "paper_source_id": source.source_id,
-                "evidence_index_path": str(evidence_writer.path) if evidence_writer else None,
-            }
+            handoff = IdeaTransferHandoff(
+                schema_version=1,
+                run_id=request.run_id,
+                context_id=stable_ctx.context_id,
+                context_version=stable_ctx.context_version,
+                context_sha256=stable_ctx.context_sha256,
+                task_goal=task.goal,
+                facts=facts,
+                gaps=gaps,
+                conflicts=conflicts,
+                readiness=readiness,
+                paper_source_id=source.source_id,
+                evidence_index_refs=[str(evidence_writer.path)] if evidence_writer else [],
+            )
             handoff_path = str(context_dir / "idea_transfer_handoff.json")
-            _write_atomic_json(Path(handoff_path), handoff)
+            _write_atomic_json(Path(handoff_path), handoff.model_dump())
 
         uc_result = build_unified_context_result(
             run_id=request.run_id,
