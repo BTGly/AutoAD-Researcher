@@ -32,6 +32,11 @@ from autoad_researcher.repository_intelligence.artifacts import (
     UncertaintyGroup,
     synthesize_repository_artifacts,
 )
+from autoad_researcher.repository_intelligence.clarification_handoff import (
+    ClarificationQuestionCandidate,
+    ClarificationQuestionCandidatesArtifact,
+    build_clarification_question_candidates,
+)
 from autoad_researcher.repository_intelligence.discovery import (
     DiscoveryError,
     GitHubRepositoryLocator,
@@ -127,6 +132,8 @@ __all__ = [
     "AcquisitionError",
     "AcquisitionToolCallRecord",
     "ArtifactClaim",
+    "ClarificationQuestionCandidate",
+    "ClarificationQuestionCandidatesArtifact",
     "DependencyEvidenceArtifact",
     "DiscoveryError",
     "EvidenceIndexRecord",
@@ -193,6 +200,7 @@ __all__ = [
     "budget_for_profile",
     "build_discovery_queries",
     "build_environment_plan_handoff",
+    "build_clarification_question_candidates",
     "create_file_evidence",
     "create_repository_identity_evidence",
     "decide_analysis_transition",
