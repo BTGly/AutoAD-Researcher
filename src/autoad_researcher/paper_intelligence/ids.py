@@ -4,6 +4,7 @@ from pathlib import PurePosixPath
 
 IdentifierPattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 Sha256Pattern = r"^[0-9a-f]{64}$"
+GitCommitPattern = r"^[0-9a-f]{40}$"
 
 
 def validate_workspace_path(value: str) -> str:

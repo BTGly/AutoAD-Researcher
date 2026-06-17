@@ -133,37 +133,56 @@ def _align_aspect(
     aspect: IdeaAspectRef,
     contract: BaselineArchitectureContract,
 ) -> AlignmentEntry:
-    """Try to match one idea aspect to baseline components/hooks/tensors."""
+    """Try to match one idea aspect to baseline components/hooks/tensors.
+
+    Key rules:
+    - No keyword overlap → INSUFFICIENT_REPOSITORY_EVIDENCE (NOT incompatible).
+    - Scope is derived from what was actually matched.
+    - SPECIFIC_HOOK requires non-empty candidate_hook_ids.
+    """
     desc_lower = aspect.description.lower()
     candidate_hooks: list[str] = []
     baseline_components: list[str] = []
     baseline_tensors: list[str] = []
 
-    # Try semantic matching against hooks
     for hook in contract.modifiable_hooks:
         hook_text = (hook.hook_name + " " + hook.semantic_role).lower()
         if _semantic_overlap(desc_lower, hook_text):
             candidate_hooks.append(hook.hook_id)
 
-    # Try semantic matching against components
     for comp in contract.architecture_components:
         comp_text = (comp.name + " " + comp.role + " " + comp.semantic_description).lower()
         if _semantic_overlap(desc_lower, comp_text):
             baseline_components.append(comp.component_id)
 
-    # Try semantic matching against tensors
     for tensor in contract.tensors:
         tensor_text = (tensor.tensor_name + " " + tensor.semantic_role).lower()
         if _semantic_overlap(desc_lower, tensor_text):
             baseline_tensors.append(tensor.tensor_name)
 
+    # No overlap at all → insufficient evidence, not incompatible
     if not candidate_hooks and not baseline_components and not baseline_tensors:
         return AlignmentEntry(
             idea_aspect=aspect,
-            match_status=AlignmentStatus.INCOMPATIBLE,
+            match_status=AlignmentStatus.INSUFFICIENT_REPOSITORY_EVIDENCE,
             scope=AlignableScope.GLOBAL_IDEA,
-            rationale="No semantic overlap found between idea aspect and baseline architecture.",
+            rationale=(
+                "No keyword-level semantic overlap between idea aspect and baseline "
+                "architecture. This does NOT prove incompatibility — it means the "
+                "repository evidence is insufficient for alignment. Re-analysis or "
+                "Agent-level semantic alignment is required."
+            ),
         )
+
+    # Derive scope from what was actually matched
+    if candidate_hooks:
+        scope = AlignableScope.SPECIFIC_HOOK
+    elif baseline_components or baseline_tensors:
+        # Components/tensors matched but no hooks → alignment exists but
+        # the specific insertion point is not yet identified
+        scope = AlignableScope.SPECIFIC_VARIANT_ROUTE
+    else:
+        scope = AlignableScope.SPECIFIC_VARIANT_ROUTE
 
     return AlignmentEntry(
         idea_aspect=aspect,
@@ -171,8 +190,12 @@ def _align_aspect(
         baseline_tensor_ids=baseline_tensors,
         candidate_hook_ids=candidate_hooks,
         match_status=AlignmentStatus.COMPATIBLE,
-        scope=AlignableScope.SPECIFIC_HOOK,
-        rationale=f"Found {len(candidate_hooks)} candidate hook(s) with semantic overlap.",
+        scope=scope,
+        rationale=(
+            f"Found {len(candidate_hooks)} candidate hook(s), "
+            f"{len(baseline_components)} component(s), "
+            f"{len(baseline_tensors)} tensor(s) with semantic overlap."
+        ),
     )
 
 

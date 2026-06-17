@@ -10,9 +10,9 @@ so both 3.1 and 3.4 import the same definitions.
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from autoad_researcher.paper_intelligence.ids import IdentifierPattern, Sha256Pattern
+from autoad_researcher.paper_intelligence.ids import GitCommitPattern, IdentifierPattern, Sha256Pattern
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +44,18 @@ class TensorSpec(BaseModel):
     semantic_role: str = Field(min_length=1)
     location_hook_id: str | None = None
     evidence_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_rank_and_axes(self):
+        if self.rank is not None:
+            if self.rank == 0 and len(self.axes) != 0:
+                raise ValueError("rank=0 requires empty axes")
+            if self.rank > 0 and len(self.axes) != self.rank:
+                raise ValueError(f"len(axes)={len(self.axes)} must equal rank={self.rank}")
+            axis_names = [a.name for a in self.axes]
+            if len(axis_names) != len(set(axis_names)):
+                raise ValueError("axis names must be unique")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +156,7 @@ class BaselineArchitectureContract(BaseModel):
 
     model_name: str = Field(min_length=1)
     repository_source_id: str = Field(min_length=1)
-    repository_commit: str = Field(pattern=Sha256Pattern)
+    repository_commit: str = Field(pattern=GitCommitPattern)
 
     architecture_components: list[ArchitectureComponent] = Field(default_factory=list)
     phases: list[ExecutionPhaseContract] = Field(default_factory=list)

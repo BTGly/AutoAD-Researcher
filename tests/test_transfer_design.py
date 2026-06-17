@@ -73,7 +73,7 @@ def _make_baseline_contract(hooks=None, components=None, phases=None, tensors=No
     return BaselineArchitectureContract(
         model_name="PatchCore",
         repository_source_id="repo_001",
-        repository_commit="a" * 64,
+        repository_commit="a" * 40,
         architecture_components=components or [],
         phases=phases or [],
         tensors=tensors or [],
@@ -260,12 +260,13 @@ class TestBaselineArchitectureContract:
         c = _make_baseline_contract(components=[comp])
         assert c.architecture_components[0].name == "Backbone"
 
-    def test_commit_is_sha256(self):
+    def test_commit_is_git_sha(self):
+        """Git commit must be 40-char hex."""
         with pytest.raises(ValidationError):
             _make_baseline_contract().__class__(
                 model_name="X",
                 repository_source_id="r",
-                repository_commit="not-sha256",
+                repository_commit="not-a-valid-commit",
             )
 
 
@@ -274,14 +275,56 @@ class TestTensorSpec:
         ts = TensorSpec(
             tensor_name="features",
             rank=4,
-            axes=[TensorAxis(name="B", semantic_role="batch", dynamic=True)],
+            axes=[
+                TensorAxis(name="B", semantic_role="batch", dynamic=True),
+                TensorAxis(name="C", semantic_role="channel", dynamic=False, typical_value=512),
+                TensorAxis(name="H", semantic_role="spatial_h", dynamic=True),
+                TensorAxis(name="W", semantic_role="spatial_w", dynamic=True),
+            ],
             semantic_role="backbone_output",
         )
         assert ts.rank == 4
+        assert len(ts.axes) == 4
 
     def test_minimal(self):
         ts = TensorSpec(tensor_name="x", semantic_role="intermediate")
         assert ts.rank is None
+        assert ts.axes == []
+
+    def test_rank_mismatch_rejected(self):
+        with pytest.raises(ValidationError, match="must equal rank"):
+            TensorSpec(
+                tensor_name="x",
+                rank=4,
+                axes=[TensorAxis(name="B", semantic_role="batch", dynamic=True)],
+                semantic_role="bad",
+            )
+
+    def test_duplicate_axis_names_rejected(self):
+        with pytest.raises(ValidationError, match="axis names must be unique"):
+            TensorSpec(
+                tensor_name="x",
+                rank=2,
+                axes=[
+                    TensorAxis(name="B", semantic_role="batch", dynamic=True),
+                    TensorAxis(name="B", semantic_role="batch", dynamic=True),
+                ],
+                semantic_role="bad",
+            )
+
+    def test_rank_zero_empty_axes(self):
+        ts = TensorSpec(tensor_name="scalar", rank=0, semantic_role="loss")
+        assert ts.rank == 0
+        assert ts.axes == []
+
+    def test_rank_zero_with_axes_rejected(self):
+        with pytest.raises(ValidationError, match="rank=0 requires empty axes"):
+            TensorSpec(
+                tensor_name="x",
+                rank=0,
+                axes=[TensorAxis(name="B", semantic_role="batch", dynamic=True)],
+                semantic_role="bad",
+            )
 
 
 class TestModificationHook:
