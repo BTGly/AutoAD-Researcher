@@ -79,6 +79,11 @@ class PermissionEngine(BaseModel):
         if tool_name in profile.deny_tools:
             return _record(request, "deny", f"profile:{profile.name}:deny", "tool denied by profile")
 
+        argv_policy_denial = _repository_process_argv_policy_denial(request)
+        if argv_policy_denial is not None:
+            matched_rule, reason = argv_policy_denial
+            return _record(request, "deny", matched_rule, reason)
+
         if tool_name in profile.allow_tools:
             return _record(request, "allow", f"profile:{profile.name}:allow", "tool allowed by profile")
 
@@ -148,3 +153,51 @@ def _record(
         cwd_label=request.cwd_label,
         reason=reason,
     )
+
+
+def _repository_process_argv_policy_denial(request: PermissionRequest) -> tuple[str, str] | None:
+    if request.tool.name != "process":
+        return None
+    if request.permission_profile not in {"repository_acquisition", "repository_analysis"}:
+        return None
+
+    argv = request.arguments_redacted.get("argv")
+    if not isinstance(argv, list) or not all(isinstance(arg, str) for arg in argv):
+        return ("argv_policy:invalid", "process argv must be an audited string list")
+    if len(argv) < 2 or argv[0] != "git":
+        return (f"argv_policy:{request.permission_profile}", "repository process calls must use git argv")
+    if "submodule" in argv or "lfs" in argv:
+        return (f"argv_policy:{request.permission_profile}", "git submodule and lfs operations are forbidden")
+
+    subcommand = argv[1]
+    if request.permission_profile == "repository_acquisition":
+        return _acquisition_git_denial(argv, subcommand)
+    return _analysis_git_denial(argv, subcommand)
+
+
+def _acquisition_git_denial(argv: list[str], subcommand: str) -> tuple[str, str] | None:
+    matched_rule = "argv_policy:repository_acquisition"
+    allowed = {"init", "clone", "remote", "fetch", "checkout", "status", "rev-parse", "symbolic-ref"}
+    if subcommand not in allowed:
+        return (matched_rule, f"git subcommand not allowed during acquisition: {subcommand}")
+    if subcommand == "remote" and (len(argv) < 3 or argv[2] not in {"add", "get-url"}):
+        return (matched_rule, "git remote is limited to add/get-url during acquisition")
+    if subcommand == "checkout" and "--detach" not in argv:
+        return (matched_rule, "git checkout must use --detach during acquisition")
+    if subcommand == "status" and "--porcelain" not in argv:
+        return (matched_rule, "git status must use --porcelain during acquisition")
+    if subcommand == "config":
+        return (matched_rule, "git config is forbidden")
+    return None
+
+
+def _analysis_git_denial(argv: list[str], subcommand: str) -> tuple[str, str] | None:
+    matched_rule = "argv_policy:repository_analysis"
+    allowed = {"status", "rev-parse", "ls-files", "grep", "show", "log", "diff"}
+    if subcommand not in allowed:
+        return (matched_rule, f"git subcommand not allowed during analysis: {subcommand}")
+    if subcommand == "status" and "--porcelain" not in argv:
+        return (matched_rule, "git status must use --porcelain during analysis")
+    if subcommand == "diff" and "--no-ext-diff" not in argv:
+        return (matched_rule, "git diff must use --no-ext-diff during analysis")
+    return None

@@ -17,8 +17,8 @@ from autoad_researcher.tools import (
 def allow_process_engine() -> PermissionEngine:
     return PermissionEngine(
         profiles={
-            "repository_analysis": PermissionProfile(
-                name="repository_analysis",
+            "process_test": PermissionProfile(
+                name="process_test",
                 allow_tools={"process"},
             )
         }
@@ -32,8 +32,8 @@ def request(tmp_path: Path, argv: list[str], *, timeout_seconds: int = 5) -> Pro
         cwd=tmp_path,
         cwd_label="workspace/repos/source_001",
         timeout_seconds=timeout_seconds,
-        stage="analysis",
-        permission_profile="repository_analysis",
+        stage="tool_test",
+        permission_profile="process_test",
         active_source_id="source_001",
     )
 
@@ -65,8 +65,8 @@ def test_process_tool_reports_nonzero_exit(tmp_path: Path):
 def test_process_tool_blocks_when_permission_denied(tmp_path: Path):
     engine = PermissionEngine(
         profiles={
-            "repository_analysis": PermissionProfile(
-                name="repository_analysis",
+            "process_test": PermissionProfile(
+                name="process_test",
                 deny_tools={"process"},
             )
         }
