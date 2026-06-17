@@ -38,6 +38,13 @@ from autoad_researcher.environments.policy import (
     validate_environment_plan_policy,
 )
 from autoad_researcher.environments.result import CommandStepResult, EnvironmentBuildResult
+from autoad_researcher.environments.revision import (
+    EnvironmentAttemptOutcome,
+    EnvironmentRevisionContext,
+    EnvironmentRevisionLoopResult,
+    build_revision_context,
+    run_bounded_revision_loop,
+)
 from autoad_researcher.environments.snapshot import (
     AcceleratorSnapshot,
     EnvironmentSnapshot,
@@ -66,9 +73,12 @@ __all__ = [
     "CondaAdapter",
     "AcceleratorSnapshot",
     "EnvironmentSnapshot",
+    "EnvironmentAttemptOutcome",
     "EnvironmentBuildResult",
     "EnvironmentAdapter",
     "EnvironmentAdapterError",
+    "EnvironmentRevisionContext",
+    "EnvironmentRevisionLoopResult",
     "EvidenceReference",
     "ExistingPythonAdapter",
     "InstalledPackage",
@@ -82,6 +92,7 @@ __all__ = [
     "ValidationResult",
     "ValidationStep",
     "VERIFIERS",
+    "build_revision_context",
     "environment_plan_sha256",
     "environment_snapshot_sha256",
     "execute_resolved_command",
@@ -89,6 +100,7 @@ __all__ = [
     "get_environment_adapter",
     "load_environment_plan",
     "run_environment_build_steps",
+    "run_bounded_revision_loop",
     "snapshot_from_plan",
     "validate_environment",
     "validate_environment_plan_policy",
