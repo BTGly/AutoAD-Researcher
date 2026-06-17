@@ -1,14 +1,17 @@
 """Paper tools for reading parsed paper artifacts.
 
-These tools allow agents to navigate and read parsed paper content:
-- paper_list_sections: Return the section tree
-- paper_read: Read content by section/page/block/table/figure/reference
-- paper_search: Search within canonical parsed text
+These tools allow agents to navigate and read parsed paper content.
+Every read/read_blocks/search call produces a PaperTextEvidenceRef with
+content SHA256 and a deterministic evidence_id.
 """
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from autoad_researcher.paper_intelligence.evidence_models import PaperTextEvidenceRef
 
 
 @dataclass
@@ -25,20 +28,17 @@ class SectionInfo:
 
 @dataclass
 class PaperReadResult:
-    """Result of reading a paper region."""
+    """Result of reading a paper region, including evidence."""
 
     content: str
-    evidence_id: str | None = None
-    source_id: str | None = None
-    physical_page_index: int | None = None
-    block_id: str | None = None
+    evidence: PaperTextEvidenceRef
 
 
 @dataclass
 class PaperSearchMatch:
-    """One search result in the paper."""
+    """One search result in the paper, including evidence."""
 
-    evidence_id: str
+    evidence: PaperTextEvidenceRef
     snippet: str
     section_path: list[str] = field(default_factory=list)
     physical_page_index: int | None = None
@@ -49,13 +49,94 @@ class PaperToolError(Exception):
     """Raised when a paper tool operation fails."""
 
 
+class EvidenceWriter:
+    """Append-only evidence index writer."""
+
+    def __init__(self, evidence_dir: Path):
+        self.evidence_dir = Path(evidence_dir)
+        self.evidence_dir.mkdir(parents=True, exist_ok=True)
+        self._index_path = self.evidence_dir / "evidence_index.jsonl"
+
+    def append(self, evidence: PaperTextEvidenceRef) -> None:
+        """Append a single evidence ref to the evidence index."""
+        record = {"schema_version": 1, "evidence": evidence.model_dump()}
+        with open(self._index_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    @property
+    def path(self) -> Path:
+        return self._index_path
+
+
 class CanonicalPaperStore:
-    """Read-only accessor for parsed paper artifacts."""
+    """Read-only accessor for parsed paper artifacts.
+
+    When source identity fields are set, read_blocks and search produce
+    PaperTextEvidenceRef with real content SHA256 and evidence_ids.
+    """
 
     def __init__(self, parse_dir: Path):
         self.parse_dir = Path(parse_dir)
         self._sections: list[SectionInfo] = []
         self._loaded = False
+
+        # Source identity (set after parse for evidence generation)
+        self.source_id: str = ""
+        self.source_pdf_sha256: str = ""
+        self.parse_attempt_id: str = ""
+        self.parser_profile_sha256: str = ""
+        self.canonical_output_sha256: str = ""
+
+        # Evidence writer
+        self._evidence_writer: EvidenceWriter | None = None
+        self._evidence_counter: int = 0
+
+    def set_source_identity(
+        self,
+        source_id: str,
+        source_pdf_sha256: str,
+        parse_attempt_id: str,
+        parser_profile_sha256: str,
+        canonical_output_sha256: str,
+    ) -> None:
+        self.source_id = source_id
+        self.source_pdf_sha256 = source_pdf_sha256
+        self.parse_attempt_id = parse_attempt_id
+        self.parser_profile_sha256 = parser_profile_sha256
+        self.canonical_output_sha256 = canonical_output_sha256
+
+    def set_evidence_writer(self, writer: EvidenceWriter) -> None:
+        self._evidence_writer = writer
+
+    def _next_evidence_id(self) -> str:
+        self._evidence_counter += 1
+        return f"ev_{self.source_id}_{self._evidence_counter:03d}"
+
+    def _make_evidence(
+        self,
+        content: str,
+        physical_page_index: int,
+        block_id: str | None = None,
+        tool_call_id: str = "",
+    ) -> PaperTextEvidenceRef:
+        content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        ev = PaperTextEvidenceRef(
+            source_kind="paper_text",
+            evidence_id=self._next_evidence_id(),
+            source_id=self.source_id,
+            source_pdf_sha256=self.source_pdf_sha256,
+            parse_attempt_id=self.parse_attempt_id,
+            parser_profile_sha256=self.parser_profile_sha256,
+            canonical_output_sha256=self.canonical_output_sha256,
+            physical_page_index=physical_page_index,
+            block_id=block_id or f"b_search_{self._evidence_counter}",
+            content_sha256=content_sha,
+            tool_call_id=tool_call_id or f"tc_{self._evidence_counter:03d}",
+            trust_level="paper_body_fact",
+        )
+        if self._evidence_writer:
+            self._evidence_writer.append(ev)
+        return ev
 
     def load(self) -> None:
         """Load section index from parsed output."""
@@ -63,8 +144,6 @@ class CanonicalPaperStore:
         if not sections_path.exists():
             self._loaded = True
             return
-
-        import json
 
         raw = json.loads(sections_path.read_text(encoding="utf-8"))
         for entry in raw:
@@ -80,8 +159,8 @@ class CanonicalPaperStore:
         self._ensure_loaded()
         return list(self._sections)
 
-    def read_blocks(self, block_ids: list[str], source_id: str = "") -> list[PaperReadResult]:
-        """Read text content for specific block IDs."""
+    def read_blocks(self, block_ids: list[str]) -> list[PaperReadResult]:
+        """Read text content for specific block IDs and generate evidence."""
         self._ensure_loaded()
         blocks_path = self.parse_dir / "blocks.jsonl"
         if not blocks_path.exists():
@@ -94,26 +173,23 @@ class CanonicalPaperStore:
                 line = line.strip()
                 if not line:
                     continue
-                import json
-
                 block = json.loads(line)
                 bid = block.get("block_id", "")
                 if bid in target_ids:
-                    results.append(
-                        PaperReadResult(
-                            content=block.get("text", ""),
-                            block_id=bid,
-                            source_id=source_id,
-                            physical_page_index=block.get("physical_page_index"),
-                        )
-                    )
+                    content = block.get("text", "")
+                    page_idx = block.get("physical_page_index", 0)
+                    evidence = self._make_evidence(content, page_idx, block_id=bid)
+                    results.append(PaperReadResult(
+                        content=content,
+                        evidence=evidence,
+                    ))
                     target_ids.discard(bid)
                     if not target_ids:
                         break
         return results
 
-    def search(self, query: str, max_results: int = 50, source_id: str = "") -> list[PaperSearchMatch]:
-        """Search for a literal substring in parsed pages."""
+    def search(self, query: str, max_results: int = 50) -> list[PaperSearchMatch]:
+        """Search for a literal substring in parsed pages and generate evidence."""
         self._ensure_loaded()
         pages_path = self.parse_dir / "pages.jsonl"
         if not pages_path.exists():
@@ -125,8 +201,6 @@ class CanonicalPaperStore:
                 line = line.strip()
                 if not line:
                     continue
-                import json
-
                 page = json.loads(line)
                 text = page.get("text", "")
                 idx = text.lower().find(query.lower())
@@ -134,15 +208,15 @@ class CanonicalPaperStore:
                     start = max(0, idx - 40)
                     end = min(len(text), idx + len(query) + 120)
                     snippet = text[start:end]
-                    results.append(
-                        PaperSearchMatch(
-                            evidence_id="",
-                            snippet=snippet,
-                            physical_page_index=page.get("physical_page_index", 0),
-                            block_id=page.get("block_id"),
-                            section_path=page.get("section_path", []),
-                        )
-                    )
+                    page_idx = page.get("physical_page_index", 0)
+                    evidence = self._make_evidence(snippet, page_idx)
+                    results.append(PaperSearchMatch(
+                        evidence=evidence,
+                        snippet=snippet,
+                        physical_page_index=page_idx,
+                        block_id=page.get("block_id"),
+                        section_path=page.get("section_path", []),
+                    ))
                 if len(results) >= max_results:
                     break
         return results

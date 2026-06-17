@@ -188,9 +188,11 @@ def run_paper_intelligence(args: argparse.Namespace) -> int:
             print("AutoAD paper intelligence")
             print(f"run_id: {result['run_id']}")
             print(f"status: {result['status']}")
-            print(f"evidence_count: {result.get('evidence_count', 0)}")
-            print(f"candidate_count: {result.get('candidate_count', 0)}")
-            print(f"repairs_used: {result.get('repairs_used', 0)}")
+            print(f"claims: {result.get('claim_count', 0)} (validated: {result.get('validated_claim_count', 0)}, unsupported: {result.get('unsupported_claim_count', 0)})")
+            print(f"evidence_refs: {result.get('evidence_ref_count', 0)}")
+            print(f"candidates: {result.get('candidate_count', 0)}")
+            print(f"repairs: {result.get('repairs_used', 0)}")
+            print(f"post_validation_errors: {result.get('post_validation_errors', 0)}")
             if result.get("warnings"):
                 for w in result["warnings"]:
                     print(f"  warning: {w}")

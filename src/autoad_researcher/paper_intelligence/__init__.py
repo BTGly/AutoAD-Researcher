@@ -65,6 +65,7 @@ from autoad_researcher.paper_intelligence.parser_models import (
 )
 from autoad_researcher.paper_intelligence.tools import (
     CanonicalPaperStore,
+    EvidenceWriter,
     PaperReadResult,
     PaperSearchMatch,
     PaperToolError,

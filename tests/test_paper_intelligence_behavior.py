@@ -447,6 +447,7 @@ class TestOrchestratorBehavior:
         from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
         from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
         from autoad_researcher.paper_intelligence.agent import budget_for_profile
+        import json
 
         def work():
             pdf = Path("test.pdf")
@@ -464,7 +465,41 @@ class TestOrchestratorBehavior:
             orch = PaperIntelligenceOrchestrator(Path("runs"))
             result = orch.run(req)
             assert result["status"] in ("success", "partial_success")
-            assert result["evidence_count"] >= 0
+
+            # Hard assertions per review
+            assert result["evidence_ref_count"] > 0, "evidence_ref_count must be > 0"
+            assert result["unsupported_claim_count"] == 0, "no confirmed claim should lack evidence"
+            assert result["claim_count"] > 0
+            assert result["candidate_count"] >= 0
+
+            # evidence_index.jsonl must exist and have entries
+            ev_path = Path("runs/test_run/paper/evidence_index.jsonl")
+            assert ev_path.exists(), "evidence_index.jsonl missing"
+            lines = [l for l in ev_path.read_text().split("\n") if l.strip()]
+            assert len(lines) > 0, "evidence_index.jsonl is empty"
+            for line in lines:
+                rec = json.loads(line)
+                ev = rec["evidence"]
+                assert ev["evidence_id"].startswith("ev_")
+                assert len(ev["content_sha256"]) == 64
+                assert ev["source_pdf_sha256"]
+                assert ev["parse_attempt_id"]
+
+            # validation_report.json must exist
+            vr_path = Path("runs/test_run/paper/validation/paper_validation_report.json")
+            assert vr_path.exists(), "validation_report.json missing"
+            vr = json.loads(vr_path.read_text())
+            assert "valid" in vr
+
+            # research_context_draft.json must exist
+            ctx_path = Path("runs/test_run/context/research_context_draft.json")
+            assert ctx_path.exists(), "research_context_draft.json missing"
+            ctx = json.loads(ctx_path.read_text())
+            assert "facts" in ctx
+
+            # context_readiness_report.json must exist
+            cr_path = Path("runs/test_run/context/context_readiness_report.json")
+            assert cr_path.exists(), "context_readiness_report.json missing"
 
         _chdir_tmp(tmp_path, work)
 
