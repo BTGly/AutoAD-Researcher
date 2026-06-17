@@ -1,0 +1,46 @@
+schema_version: 1
+profiles:
+  repository_fast_v1:
+    provider: deepseek
+    model_id: deepseek-v4-flash
+    purpose: signal extraction, simple discovery, lightweight schema repair
+    required_capabilities:
+      - tool_use
+      - structured_output
+    context_window: 64000
+    availability: available
+    smoke_tests:
+      tool_use: passed
+      structured_output: passed
+      provider_availability: passed
+  repository_primary_v1:
+    provider: deepseek
+    model_id: deepseek-v4-pro
+    purpose: repository analysis, conflict resolution, synthesis, repair
+    required_capabilities:
+      - strong_code_reasoning
+      - tool_use
+      - structured_output
+      - long_context
+    minimum_context_window: 128000
+    context_window: 128000
+    availability: available
+    smoke_tests:
+      tool_use: passed
+      structured_output: passed
+      context_window: passed
+      provider_availability: passed
+  repository_fallback_v1:
+    provider: anthropic
+    model_id: anthropic:claude-sonnet-4-6
+    purpose: provider outage or one failed structured-output retry
+    required_capabilities:
+      - strong_code_reasoning
+      - tool_use
+      - structured_output
+    context_window: 200000
+    availability: available
+    smoke_tests:
+      tool_use: passed
+      structured_output: passed
+      provider_availability: passed
