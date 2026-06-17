@@ -46,6 +46,10 @@ def test_build_steps_success_writes_evidence(tmp_path: Path):
     data = json.loads((tmp_path / "build_result.json").read_text(encoding="utf-8"))
     assert data["status"] == "success"
     assert data["adapter"] == "python_uv_venv"
+    assert data["snapshot_path"] == "snapshot.json"
+    snapshot = json.loads((tmp_path / "snapshot.json").read_text(encoding="utf-8"))
+    assert snapshot["environment_kind"] == "python_uv_venv"
+    assert snapshot["environment_sha256"]
 
 
 def test_build_steps_stop_after_first_failure(tmp_path: Path):
@@ -59,6 +63,7 @@ def test_build_steps_stop_after_first_failure(tmp_path: Path):
 
     assert result.status == "failed"
     assert result.failure_code == "ENV_COMMAND_FAILED"
+    assert result.snapshot_path is None
     assert seen == ["create_env"]
     step_results = json.loads((tmp_path / "step_results.json").read_text(encoding="utf-8"))
     assert len(step_results) == 1

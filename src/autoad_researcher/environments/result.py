@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic import model_validator
 
 
 class ResolvedCommand(BaseModel):
@@ -72,3 +73,17 @@ class EnvironmentBuildResult(BaseModel):
     failure_message: str | None = None
     started_at: datetime
     finished_at: datetime
+
+    @model_validator(mode="after")
+    def _validate_status_consistency(self):
+        if self.status == "success":
+            if self.failure_code is not None or self.failure_message is not None:
+                raise ValueError("successful build result must not include failure fields")
+            if self.snapshot_path is None:
+                raise ValueError("successful build result requires snapshot_path")
+        else:
+            if self.failure_code is None or self.failure_message is None:
+                raise ValueError("failed build result requires failure fields")
+            if self.snapshot_path is not None:
+                raise ValueError("failed build result must not include snapshot_path")
+        return self

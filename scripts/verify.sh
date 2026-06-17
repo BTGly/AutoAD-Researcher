@@ -232,6 +232,7 @@ test -f src/autoad_researcher/environments/io.py
 test -f src/autoad_researcher/environments/builder.py
 test -f src/autoad_researcher/environments/executor.py
 test -f src/autoad_researcher/environments/result.py
+test -f src/autoad_researcher/environments/snapshot.py
 test -f src/autoad_researcher/environments/adapters/base.py
 test -f src/autoad_researcher/environments/adapters/uv_venv.py
 test -f src/autoad_researcher/environments/adapters/pip_venv.py
