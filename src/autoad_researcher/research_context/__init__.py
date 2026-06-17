@@ -1,5 +1,13 @@
 """Unified Research Context (Steps 3.2, 3.3 shared contracts)."""
 
+from autoad_researcher.research_context.assembly import (
+    assemble_fact_ledger,
+    build_unified_context_result,
+    classify_gaps,
+    compute_readiness,
+    detect_conflicts,
+    finalize_research_context,
+)
 from autoad_researcher.research_context.models import (
     BaselineContext,
     CandidateDecision,
