@@ -1,0 +1,74 @@
+schema_version: 1
+plan_id: python_cpu_uv_v0
+run_id: env_fixture_cpu_uv
+revision: 0
+target:
+  kind: python_uv_venv
+  environment_path: workspace/envs/python_cpu_uv
+  runtime_requirements:
+    python: "3.11"
+    platform: linux_x86_64
+    accelerator: none
+  repository_path: workspace/repos/python_cpu_project
+evidence:
+  - source_type: repository
+    path_or_id: pyproject.toml
+    claim: The fixture project declares a Python package installable with uv.
+assumptions:
+  - assumption_id: python_311_available
+    statement: Python 3.11 is available for uv environment creation.
+    risk: low
+    validation_id: validate_python_runtime
+build_steps:
+  - step_id: create_venv
+    program: uv
+    args:
+      - venv
+      - workspace/envs/python_cpu_uv
+      - --python
+      - "3.11"
+    cwd: workspace/repos/python_cpu_project
+    environment:
+      UV_LINK_MODE: copy
+    timeout_seconds: 120
+    network: false
+    modifies_repository: false
+    requires_approval: false
+  - step_id: install_project
+    program: uv
+    args:
+      - pip
+      - install
+      - -e
+      - .
+    cwd: workspace/repos/python_cpu_project
+    environment:
+      UV_LINK_MODE: copy
+    timeout_seconds: 180
+    network: true
+    modifies_repository: false
+    requires_approval: false
+validation_steps:
+  - validation_id: validate_python_runtime
+    kind: runtime_version
+    parameters:
+      python: "3.11"
+    required: true
+    timeout_seconds: 30
+    network: false
+  - validation_id: validate_project_import
+    kind: python_import
+    parameters:
+      modules:
+        - cpu_fixture_project
+    required: true
+    timeout_seconds: 30
+    network: false
+permissions:
+  network_during_build: true
+  network_during_validation: false
+  allow_system_package_install: false
+  allow_repository_modification: false
+  allow_global_environment_mutation: false
+  max_revision_count: 2
+created_by: fixture

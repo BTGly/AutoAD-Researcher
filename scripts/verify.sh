@@ -225,6 +225,29 @@ print('[verify] benchmark environment lock ok.')
 "
 echo "[verify] benchmark preflight files ok."
 
+echo "[verify] checking environment plan fixtures..."
+test -f src/autoad_researcher/environments/models.py
+test -f src/autoad_researcher/environments/policy.py
+test -f src/autoad_researcher/environments/io.py
+test -f fixtures/environment_plans/python_cpu_uv.yaml
+test -f fixtures/environment_plans/python_cuda_uv.yaml
+test -f fixtures/environment_plans/existing_python.yaml
+"$UV_BIN" run python - <<'PY'
+from pathlib import Path
+
+from autoad_researcher.environments import (
+    load_environment_plan,
+    validate_environment_plan_policy,
+)
+
+for path in sorted(Path("fixtures/environment_plans").glob("*.yaml")):
+    plan = load_environment_plan(path)
+    report = validate_environment_plan_policy(plan)
+    assert report.status == "passed", path
+
+print("[verify] environment plan fixtures ok.")
+PY
+
 echo "[verify] running pytest..."
 "$UV_BIN" run --extra dev pytest -q
 

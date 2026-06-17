@@ -1,0 +1,55 @@
+schema_version: 1
+plan_id: existing_python_v0
+run_id: env_fixture_existing_python
+revision: 0
+target:
+  kind: existing_python
+  environment_path: null
+  runtime_requirements:
+    python: "3.11"
+    platform: linux_x86_64
+  repository_path: workspace/repos/python_cpu_project
+evidence:
+  - source_type: host
+    path_or_id: host_capabilities.json
+    claim: Current Python interpreter is available for read-only validation.
+assumptions:
+  - assumption_id: current_python_has_package
+    statement: The current interpreter has the package needed for validation.
+    risk: medium
+    validation_id: validate_pydantic_import
+build_steps:
+  - step_id: inspect_python
+    program: python
+    args:
+      - --version
+    cwd: workspace/repos/python_cpu_project
+    environment: {}
+    timeout_seconds: 30
+    network: false
+    modifies_repository: false
+    requires_approval: false
+validation_steps:
+  - validation_id: validate_python_runtime
+    kind: runtime_version
+    parameters:
+      python: "3.11"
+    required: true
+    timeout_seconds: 30
+    network: false
+  - validation_id: validate_pydantic_import
+    kind: python_import
+    parameters:
+      modules:
+        - pydantic
+    required: true
+    timeout_seconds: 30
+    network: false
+permissions:
+  network_during_build: false
+  network_during_validation: false
+  allow_system_package_install: false
+  allow_repository_modification: false
+  allow_global_environment_mutation: false
+  max_revision_count: 2
+created_by: fixture

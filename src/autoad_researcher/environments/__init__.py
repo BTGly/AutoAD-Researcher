@@ -15,6 +15,13 @@ from autoad_researcher.environments.models import (
     PlanAssumption,
     ValidationStep,
 )
+from autoad_researcher.environments.policy import (
+    EnvironmentPlanPolicyError,
+    EnvironmentPlanPolicyReport,
+    PolicyViolation,
+    evaluate_environment_plan_policy,
+    validate_environment_plan_policy,
+)
 
 __all__ = [
     "CommandStep",
@@ -22,10 +29,15 @@ __all__ = [
     "EnvironmentPlan",
     "EnvironmentPlanRevision",
     "EnvironmentTarget",
+    "EnvironmentPlanPolicyError",
+    "EnvironmentPlanPolicyReport",
     "EvidenceReference",
     "PlanAssumption",
+    "PolicyViolation",
     "ValidationStep",
     "environment_plan_sha256",
+    "evaluate_environment_plan_policy",
     "load_environment_plan",
+    "validate_environment_plan_policy",
     "write_environment_plan",
 ]

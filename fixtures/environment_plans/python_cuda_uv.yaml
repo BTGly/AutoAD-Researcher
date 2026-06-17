@@ -1,0 +1,81 @@
+schema_version: 1
+plan_id: python_cuda_uv_patchcore_v0
+run_id: env_fixture_cuda_patchcore
+revision: 0
+target:
+  kind: python_uv_venv
+  environment_path: workspace/envs/patchcore_linux_gpu
+  runtime_requirements:
+    python: "3.11.15"
+    platform: linux_x86_64
+    accelerator: cuda
+  repository_path: workspace/repos/patchcore
+evidence:
+  - source_type: document
+    path_or_id: configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml
+    claim: Locked PatchCore CUDA fixture defines Python, package indexes, lockfile, and imports.
+  - source_type: host
+    path_or_id: evidence/benchmarks/patchcore_linux_gpu/host_capabilities.json
+    claim: GPU host evidence was captured for the CUDA fixture.
+assumptions:
+  - assumption_id: cuda_visible
+    statement: The target machine exposes a CUDA-capable GPU.
+    risk: high
+    validation_id: validate_cuda_compute
+build_steps:
+  - step_id: create_cuda_venv
+    program: uv
+    args:
+      - venv
+      - workspace/envs/patchcore_linux_gpu
+      - --python
+      - "3.11.15"
+    cwd: workspace/repos/patchcore
+    environment:
+      UV_LINK_MODE: copy
+    timeout_seconds: 180
+    network: false
+    modifies_repository: false
+    requires_approval: false
+  - step_id: sync_cuda_lock
+    program: uv
+    args:
+      - pip
+      - sync
+      - configs/benchmarks/environments/patchcore_linux_gpu/requirements.lock.txt
+    cwd: workspace/repos/patchcore
+    environment:
+      UV_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cu124
+      UV_LINK_MODE: copy
+    timeout_seconds: 900
+    network: true
+    modifies_repository: false
+    requires_approval: false
+validation_steps:
+  - validation_id: validate_torch_import
+    kind: python_import
+    parameters:
+      modules:
+        - torch
+        - torchvision
+        - timm
+        - faiss
+    required: true
+    timeout_seconds: 60
+    network: false
+  - validation_id: validate_cuda_compute
+    kind: gpu_compute
+    parameters:
+      framework: torch
+      device_index: 0
+    required: true
+    timeout_seconds: 60
+    network: false
+permissions:
+  network_during_build: true
+  network_during_validation: false
+  allow_system_package_install: false
+  allow_repository_modification: false
+  allow_global_environment_mutation: false
+  max_revision_count: 2
+created_by: fixture
