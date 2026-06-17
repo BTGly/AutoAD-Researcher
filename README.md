@@ -30,6 +30,7 @@
 |------|------|
 | [技术路线草案](docs/AutoAD_Researcher_技术路线草案.md) | 完整系统设计：13个模块、MVP定义、技术栈、Demo设计 |
 | [参考资料汇总](docs/AutoAD_参考资料汇总.md) | 参考论文、开源仓库、工具对比、BibTeX汇总 |
+| [Repository Intelligence](docs/repository-intelligence.md) | Step 3.1 仓库发现、固定、静态证据化分析、验证和 handoff 的当前实现边界 |
 
 ## 真实用户任务 vs 内部 Benchmark
 
