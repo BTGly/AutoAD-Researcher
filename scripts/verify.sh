@@ -233,6 +233,7 @@ test -f src/autoad_researcher/assets/builder.py
 test -f src/autoad_researcher/runner/models.py
 test -f src/autoad_researcher/runner/executor.py
 test -f src/autoad_researcher/analysis/metrics.py
+test -f src/autoad_researcher/analysis/reproducibility.py
 test -f src/autoad_researcher/supervisor/validity.py
 test -f src/autoad_researcher/environments/models.py
 test -f src/autoad_researcher/environments/policy.py
