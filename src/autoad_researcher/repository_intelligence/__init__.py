@@ -10,6 +10,13 @@ from autoad_researcher.repository_intelligence.acquisition import (
     RepositoryAttestation,
     attest_repository,
 )
+from autoad_researcher.repository_intelligence.analysis import (
+    AnalysisObservation,
+    AnalysisProgress,
+    RepositoryAnalysisAgent,
+    RepositoryAnalysisCycleResult,
+    budget_for_profile,
+)
 from autoad_researcher.repository_intelligence.discovery import (
     DiscoveryError,
     GitHubRepositoryLocator,
@@ -84,6 +91,8 @@ from autoad_researcher.repository_intelligence.skills import (
 
 __all__ = [
     "AnalysisControlSignal",
+    "AnalysisObservation",
+    "AnalysisProgress",
     "AnalysisTransitionDecision",
     "ActiveRepositoryContext",
     "AcquisitionError",
@@ -96,6 +105,8 @@ __all__ = [
     "FileEvidenceRef",
     "GitHubRepositoryLocator",
     "RepositoryAgentBudget",
+    "RepositoryAnalysisAgent",
+    "RepositoryAnalysisCycleResult",
     "RepositoryArtifactPaths",
     "RepositoryAcquisitionRequest",
     "RepositoryAcquisitionResult",
@@ -133,6 +144,7 @@ __all__ = [
     "append_evidence",
     "append_model_routing_decision",
     "attest_repository",
+    "budget_for_profile",
     "build_discovery_queries",
     "create_file_evidence",
     "create_repository_identity_evidence",
