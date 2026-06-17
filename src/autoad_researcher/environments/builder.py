@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256
+from autoad_researcher.environments.adapters import get_environment_adapter
 from autoad_researcher.environments.executor import (
     CommandRunner,
-    command_from_step,
     execute_resolved_command,
 )
 from autoad_researcher.environments.models import EnvironmentPlan
@@ -31,15 +31,17 @@ def run_environment_build_steps(
     build_dir = Path(output_dir)
     logs_dir = build_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    adapter = get_environment_adapter(plan.target.kind)
+    commands = adapter.prepare_steps(plan)
 
     started_at = datetime.now(timezone.utc)
     step_results = []
     failure_code = None
     failure_message = None
 
-    for step in plan.build_steps:
+    for command in commands:
         result = execute_resolved_command(
-            command_from_step(step),
+            command,
             logs_dir,
             runner=runner,
         )
@@ -57,7 +59,7 @@ def run_environment_build_steps(
         plan_id=plan.plan_id,
         plan_sha256=canonical_sha256(plan),
         status=status,
-        adapter=plan.target.kind,
+        adapter=adapter.kind,
         environment_path=plan.target.environment_path,
         step_results=step_results,
         snapshot_path=None,

@@ -6,6 +6,14 @@ from autoad_researcher.environments.io import (
     write_environment_plan,
 )
 from autoad_researcher.environments.builder import run_environment_build_steps
+from autoad_researcher.environments.adapters import (
+    EnvironmentAdapter,
+    EnvironmentAdapterError,
+    ExistingPythonAdapter,
+    PipVenvAdapter,
+    UvVenvAdapter,
+    get_environment_adapter,
+)
 from autoad_researcher.environments.executor import (
     CommandExecutionOutput,
     ResolvedCommand,
@@ -41,14 +49,20 @@ __all__ = [
     "CommandExecutionOutput",
     "CommandStepResult",
     "EnvironmentBuildResult",
+    "EnvironmentAdapter",
+    "EnvironmentAdapterError",
     "EvidenceReference",
+    "ExistingPythonAdapter",
+    "PipVenvAdapter",
     "PlanAssumption",
     "PolicyViolation",
     "ResolvedCommand",
+    "UvVenvAdapter",
     "ValidationStep",
     "environment_plan_sha256",
     "execute_resolved_command",
     "evaluate_environment_plan_policy",
+    "get_environment_adapter",
     "load_environment_plan",
     "run_environment_build_steps",
     "validate_environment_plan_policy",
