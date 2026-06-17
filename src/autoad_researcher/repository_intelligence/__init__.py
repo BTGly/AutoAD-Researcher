@@ -81,6 +81,11 @@ from autoad_researcher.repository_intelligence.model_routing import (
     append_model_routing_decision,
     load_model_config,
 )
+from autoad_researcher.repository_intelligence.repair import (
+    RepairAttemptRecord,
+    RepairBudgetState,
+    repair_repository_artifacts,
+)
 from autoad_researcher.repository_intelligence.validate import (
     RepositoryValidationReport,
     ValidationIssue,
@@ -155,6 +160,8 @@ __all__ = [
     "RepositorySearchResultRecord",
     "RepositorySource",
     "RepositoryValidationReport",
+    "RepairAttemptRecord",
+    "RepairBudgetState",
     "LoadedSkillRecord",
     "LoadedSkillsAudit",
     "ModelProfile",
@@ -190,6 +197,7 @@ __all__ = [
     "read_evidence_index",
     "parse_github_repository_url",
     "resolve_candidates",
+    "repair_repository_artifacts",
     "resume_fingerprint",
     "should_load_stage_skill",
     "synthesize_repository_artifacts",
