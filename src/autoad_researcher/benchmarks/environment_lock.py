@@ -10,6 +10,15 @@ Sha256Hex = r"^[0-9a-f]{64}$"
 PythonVersion = r"^\d+\.\d+\.\d+$"
 
 
+class PackageIndexSpec(BaseModel):
+    """A package index used when resolving the lockfile."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1)
+    url: str = Field(pattern=r"^https://[^\s]+$")
+    default: bool = False
+
+
 def _validate_rel_path(value: str) -> str:
     if "\\" in value:
         raise ValueError(f"backslash forbidden in path: {value!r}")
@@ -34,6 +43,8 @@ class BenchmarkEnvironmentSpec(BaseModel):
     platform: Literal["linux_x86_64"]
     python_version: str | None = Field(default=None, pattern=PythonVersion)
     package_manager: Literal["uv"]
+    package_manager_version: str | None = None
+    package_indexes: list["PackageIndexSpec"] = Field(default_factory=list)
     requirements_input_path: str = Field(min_length=1)
     lockfile_path: str = Field(min_length=1)
     lockfile_sha256: str | None = Field(default=None, pattern=Sha256Hex)

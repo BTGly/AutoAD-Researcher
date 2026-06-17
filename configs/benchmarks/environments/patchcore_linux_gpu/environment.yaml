@@ -6,10 +6,18 @@ case_id: internal_patchcore_mvtec_bottle_v1
 platform: linux_x86_64
 python_version: "3.11.15"
 package_manager: uv
+package_manager_version: "0.11.21"
+package_indexes:
+  - name: pypi
+    url: https://pypi.org/simple
+    default: true
+  - name: pytorch-cu124
+    url: https://download.pytorch.org/whl/cu124
+    default: false
 
 requirements_input_path: requirements.in
 lockfile_path: requirements.lock.txt
-lockfile_sha256: "6f5c6a15bae3be1466d950a0d382402f4ee40bb99a975c9878fdb17f4e88835b"
+lockfile_sha256: "247dde0087e635536932db0baf7f5b3441475639ba3ccdc210668d2feffe9454"
 
 required_imports:
   - torch

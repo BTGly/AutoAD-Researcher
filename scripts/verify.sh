@@ -199,14 +199,24 @@ echo "[verify] checking benchmark environment lock..."
 test -f src/autoad_researcher/benchmarks/environment_lock.py
 test -f configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml
 test -f configs/benchmarks/environments/patchcore_linux_gpu/requirements.in
+test -f configs/benchmarks/environments/patchcore_linux_gpu/requirements.lock.txt
 "$UV_BIN" run python -c "
 import yaml
-from autoad_researcher.benchmarks.environment_lock import BenchmarkEnvironmentSpec
-data = yaml.safe_load(open('configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml'))
+from pathlib import Path
+from autoad_researcher.benchmarks.environment_lock import BenchmarkEnvironmentSpec, validate_lockfile, compute_lockfile_sha256
+base = Path('configs/benchmarks/environments/patchcore_linux_gpu')
+data = yaml.safe_load(open(base / 'environment.yaml'))
 spec = BenchmarkEnvironmentSpec.model_validate(data)
-reqs = open('configs/benchmarks/environments/patchcore_linux_gpu/requirements.in').read()
-assert 'timm' in reqs
-assert 'faiss-cpu' in reqs
+lf = base / spec.lockfile_path
+errors = validate_lockfile(lf)
+assert not errors, f'lockfile invalid: {errors}'
+actual_sha = compute_lockfile_sha256(lf)
+assert actual_sha == spec.lockfile_sha256, f'SHA mismatch: {actual_sha[:16]} != {spec.lockfile_sha256[:16]}'
+content = lf.read_text()
+assert 'torch==2.5.1+cu124' in content
+assert 'torchvision==0.20.1+cu124' in content
+assert 'timm==1.0.27' in content
+assert 'faiss-cpu==1.14.3' in content
 print('[verify] benchmark environment lock ok.')
 "
 echo "[verify] benchmark preflight files ok."
