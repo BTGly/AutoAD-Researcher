@@ -5,7 +5,9 @@ import pytest
 
 from autoad_researcher.benchmarks.environment_lock import (
     BenchmarkEnvironmentSpec,
+    PackageIndexSpec,
     compute_lockfile_sha256,
+    parse_lockfile_pins,
     validate_lockfile,
 )
 
@@ -32,7 +34,6 @@ class TestSpec:
             )
 
     def test_locked_valid(self):
-        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
         s = BenchmarkEnvironmentSpec(
             schema_version=1, status="locked", environment_id="env1", case_id="c1",
             platform="linux_x86_64", python_version="3.8.0", package_manager="uv",
@@ -184,7 +185,6 @@ class TestValidateLockfile:
             )
 
     def test_locked_requires_exactly_one_default_index(self):
-        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
         with pytest.raises(ValueError, match="exactly one default"):
             BenchmarkEnvironmentSpec(
                 schema_version=1, status="locked", environment_id="env1", case_id="c1",
@@ -201,11 +201,74 @@ class TestValidateLockfile:
             )
 
     def test_index_url_credentials_rejected(self):
-        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
         with pytest.raises(Exception):
             PackageIndexSpec(name="x", url="https://user:pass@example.com/simple")
 
     def test_index_url_query_rejected(self):
-        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
         with pytest.raises(Exception):
             PackageIndexSpec(name="x", url="https://example.com/simple?token=secret")
+
+    def test_duplicate_index_name_rejected(self):
+        with pytest.raises(ValueError, match="duplicate package index name"):
+            BenchmarkEnvironmentSpec(
+                schema_version=1, status="locked", environment_id="env1", case_id="c1",
+                platform="linux_x86_64", python_version="3.8.0", package_manager="uv",
+                package_manager_version="0.5",
+                package_indexes=[
+                    PackageIndexSpec(name="pypi", url="https://pypi.org/simple", default=True),
+                    PackageIndexSpec(name="pypi", url="https://download.pytorch.org/whl/cu124"),
+                ],
+                requirements_input_path="x.in", lockfile_path="x.txt",
+                lockfile_sha256="a" * 64, required_imports=["torch"],
+                accelerator="cuda", gpu_index=0,
+                allow_network_during_build=True, allow_network_during_execution=False,
+            )
+
+    def test_duplicate_index_url_rejected(self):
+        with pytest.raises(ValueError, match="duplicate package index URL"):
+            BenchmarkEnvironmentSpec(
+                schema_version=1, status="locked", environment_id="env1", case_id="c1",
+                platform="linux_x86_64", python_version="3.8.0", package_manager="uv",
+                package_manager_version="0.5",
+                package_indexes=[
+                    PackageIndexSpec(name="primary", url="https://pypi.org/simple", default=True),
+                    PackageIndexSpec(name="mirror", url="https://pypi.org/simple"),
+                ],
+                requirements_input_path="x.in", lockfile_path="x.txt",
+                lockfile_sha256="a" * 64, required_imports=["torch"],
+                accelerator="cuda", gpu_index=0,
+                allow_network_during_build=True, allow_network_during_execution=False,
+            )
+
+    def test_index_url_fragment_rejected(self):
+        with pytest.raises(Exception):
+            PackageIndexSpec(name="x", url="https://example.com/simple#token")
+
+    def test_parse_lockfile_pins(self, tmp_path):
+        lf = tmp_path / "lock.txt"
+        lf.write_text("Torch==2.5.1+cu124\nfaiss-cpu==1.14.3\n", encoding="utf-8")
+
+        assert parse_lockfile_pins(lf) == {
+            "torch": "==2.5.1+cu124",
+            "faiss-cpu": "==1.14.3",
+        }
+
+    def test_comment_cannot_spoof_required_version(self, tmp_path):
+        lf = tmp_path / "lock.txt"
+        lf.write_text(
+            "# expected torch==2.5.1+cu124\n"
+            "torch==2.5.0+cu124\n",
+            encoding="utf-8",
+        )
+
+        pins = parse_lockfile_pins(lf)
+
+        assert pins["torch"] == "==2.5.0+cu124"
+        assert pins["torch"] != "==2.5.1+cu124"
+
+    def test_duplicate_package_pin_rejected(self, tmp_path):
+        lf = tmp_path / "lock.txt"
+        lf.write_text("torch==2.5.1+cu124\nTorch==2.5.0+cu124\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="duplicate package pin: torch"):
+            parse_lockfile_pins(lf)

@@ -4,6 +4,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Sha256Hex = r"^[0-9a-f]{64}$"
@@ -141,6 +142,30 @@ def validate_lockfile(path: Path) -> list[str]:
     if pinned_count == 0:
         errors.append("lockfile contains no pinned dependencies")
     return errors
+
+
+def parse_lockfile_pins(path: Path) -> dict[str, str]:
+    """Parse exact lockfile pins into canonical package name -> specifier."""
+    errors = validate_lockfile(path)
+    if errors:
+        raise ValueError(errors)
+
+    pins: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        req = Requirement(stripped)
+        name = canonicalize_name(req.name)
+        specifier = str(req.specifier)
+
+        if name in pins:
+            raise ValueError(f"duplicate package pin: {name}")
+
+        pins[name] = specifier
+
+    return pins
 
 
 def compute_lockfile_sha256(path: Path) -> str:
