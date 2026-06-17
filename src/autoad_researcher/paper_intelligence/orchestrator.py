@@ -281,7 +281,7 @@ class PaperIntelligenceOrchestrator:
         conflicts = detect_conflicts(facts)
         readiness = compute_readiness(gaps, conflicts)
 
-        # Write context draft artifact to disk
+        # Write context artifacts
         context_dir.mkdir(parents=True, exist_ok=True)
         draft_path = context_dir / "research_context_draft.json"
         draft_ctx = ResearchContext(
@@ -303,6 +303,31 @@ class PaperIntelligenceOrchestrator:
         report_path = context_dir / "context_readiness_report.json"
         _write_atomic_json(report_path, readiness.model_dump())
 
+        stable_path: str | None = None
+        handoff_path: str | None = None
+        if readiness.status == "ready_for_idea_transfer_design":
+            from autoad_researcher.research_context.assembly import finalize_research_context
+            stable_ctx = finalize_research_context(draft_ctx, readiness)
+            stable_path = str(context_dir / "research_context.json")
+            _write_atomic_json(Path(stable_path), stable_ctx.model_dump())
+
+            handoff = {
+                "schema_version": 1,
+                "run_id": request.run_id,
+                "context_id": stable_ctx.context_id,
+                "context_version": stable_ctx.context_version,
+                "context_sha256": stable_ctx.context_sha256,
+                "task_goal": task.goal,
+                "facts": [f.model_dump() for f in facts],
+                "gaps": [g.model_dump() for g in gaps],
+                "conflicts": [c.model_dump() for c in conflicts],
+                "readiness": readiness.model_dump(),
+                "paper_source_id": source.source_id,
+                "evidence_index_path": str(evidence_writer.path) if evidence_writer else None,
+            }
+            handoff_path = str(context_dir / "idea_transfer_handoff.json")
+            _write_atomic_json(Path(handoff_path), handoff)
+
         uc_result = build_unified_context_result(
             run_id=request.run_id,
             paper_status=final_status,
@@ -310,8 +335,8 @@ class PaperIntelligenceOrchestrator:
             readiness=readiness,
             draft_path=str(draft_path),
             report_path=str(report_path),
-            stable_path=str(context_dir / "research_context.json") if readiness.status == "ready_for_idea_transfer_design" else None,
-            handoff_path=str(context_dir / "idea_transfer_handoff.json") if readiness.status == "ready_for_idea_transfer_design" else None,
+            stable_path=stable_path,
+            handoff_path=handoff_path,
             warnings=warnings,
         )
 

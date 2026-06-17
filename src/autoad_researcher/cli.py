@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     context_parser = subparsers.add_parser(
         "research-context",
-        help="Build and validate the unified research context",
+        help="Inspect readiness of a completed paper run (read-only)",
     )
     context_parser.add_argument("--run-id", required=True, help="Run identifier")
     context_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")

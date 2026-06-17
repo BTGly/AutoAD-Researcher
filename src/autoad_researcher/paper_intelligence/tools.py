@@ -50,7 +50,13 @@ class PaperToolError(Exception):
 
 
 class EvidenceWriter:
-    """Append-only evidence index writer."""
+    """Append-only evidence index writer.
+
+    P1 limitation: evidence_id uses a counter scoped to the current
+    CanonicalPaperStore instance. Re-running the same run_id without
+    clearing the evidence directory will produce duplicate evidence_ids.
+    This is deferred to formal resume/replay support.
+    """
 
     def __init__(self, evidence_dir: Path):
         self.evidence_dir = Path(evidence_dir)
