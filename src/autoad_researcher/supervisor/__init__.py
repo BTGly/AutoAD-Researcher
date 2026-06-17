@@ -1,12 +1,13 @@
-"""
-科学有效性监督模块 (Scientific Validity Supervisor)。
+"""Scientific validity supervision."""
 
-避免"看似提升，实际无效"的实验结论。检查：
-- 数据划分一致性
-- 异常标签使用
-- 评价协议一致性
-- 类别挑选偏差
-- 数据泄漏
-- 参数量控制
-- Ablation 完整性
-"""
+from autoad_researcher.supervisor.validity import (
+    ScientificValidityReport,
+    ValidityCheck,
+    validate_scientific_contract,
+)
+
+__all__ = [
+    "ScientificValidityReport",
+    "ValidityCheck",
+    "validate_scientific_contract",
+]
