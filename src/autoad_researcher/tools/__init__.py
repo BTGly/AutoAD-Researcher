@@ -38,6 +38,17 @@ from autoad_researcher.tools.process import (
     process_tool_spec,
     run_process_tool,
 )
+from autoad_researcher.tools.providers import (
+    GitHubCommitRef,
+    GitHubFileContent,
+    GitHubReadProvider,
+    GitHubRepositoryMetadata,
+    ProviderError,
+    RecordedWebSearchProvider,
+    SecureWebFetchProvider,
+    WebFetchResult,
+    WebSearchResult,
+)
 from autoad_researcher.tools.registry import ToolRegistry
 
 __all__ = [
@@ -51,11 +62,20 @@ __all__ = [
     "ProcessToolOutput",
     "ProcessToolRequest",
     "ProcessToolResult",
+    "ProviderError",
+    "RecordedWebSearchProvider",
+    "SecureWebFetchProvider",
     "StageToolLoad",
     "ToolContext",
     "ToolRegistry",
     "ToolResult",
     "ToolSpec",
+    "GitHubCommitRef",
+    "GitHubFileContent",
+    "GitHubReadProvider",
+    "GitHubRepositoryMetadata",
+    "WebFetchResult",
+    "WebSearchResult",
     "FilesystemEntry",
     "FilesystemReadRequest",
     "FilesystemRequest",
