@@ -71,6 +71,10 @@ from autoad_researcher.repository_intelligence.harness import (
     default_repository_tool_registry,
     resume_fingerprint,
 )
+from autoad_researcher.repository_intelligence.handoff import (
+    EnvironmentPlanHandoffResult,
+    build_environment_plan_handoff,
+)
 from autoad_researcher.repository_intelligence.model_routing import (
     ModelProfile,
     ModelRoutePurpose,
@@ -131,6 +135,7 @@ __all__ = [
     "EntrypointCandidate",
     "EntrypointsArtifact",
     "EnvironmentContextArtifact",
+    "EnvironmentPlanHandoffResult",
     "EvaluationContractDraftArtifact",
     "FileEvidenceRequest",
     "FileEvidenceRef",
@@ -187,6 +192,7 @@ __all__ = [
     "attest_repository",
     "budget_for_profile",
     "build_discovery_queries",
+    "build_environment_plan_handoff",
     "create_file_evidence",
     "create_repository_identity_evidence",
     "decide_analysis_transition",
