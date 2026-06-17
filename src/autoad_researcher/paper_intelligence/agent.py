@@ -294,9 +294,12 @@ class PaperArtifactSynthesizer:
         )
 
     def _write_json(self, data: Any, filename: str) -> None:
-        import json
+        import json, os
         path = self.artifacts_dir / filename
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        tmp.chmod(0o644)
+        os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------

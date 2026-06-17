@@ -150,63 +150,142 @@ def run_repository_intelligence(args: argparse.Namespace) -> int:
 
 
 def run_paper_intelligence(args: argparse.Namespace) -> int:
-    """Run Paper Intelligence CLI flow."""
+    """Run Paper Intelligence CLI flow — full end-to-end orchestration."""
     from pathlib import Path
-    from autoad_researcher.paper_intelligence.agent import budget_for_profile
-    from autoad_researcher.paper_intelligence.attestation import attest_paper_source
 
     try:
+        from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
+        from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
+        from autoad_researcher.paper_intelligence.agent import budget_for_profile
+
         pdf_path = Path(args.pdf)
         if not pdf_path.exists():
-            raise ValueError(f"PDF not found: {args.pdf}")
+            print(f"error: PDF not found: {args.pdf}", file=sys.stderr)
+            return 2
 
-        attest_result = attest_paper_source(str(pdf_path), pdf_path.name)
         budget = budget_for_profile(args.budget_profile)
+        request = PaperIntelligenceRequest(
+            schema_version=1,
+            request_id=f"req_{args.run_id}",
+            run_id=args.run_id,
+            user_goal="Paper intelligence analysis",
+            paper_pdf_path=str(pdf_path),
+            parser_profile_id=args.parser_profile,
+            web_context_allowed=False,
+            alpha_xiv_allowed=False,
+            user_confirmation_policy="never",
+            budget_profile=args.budget_profile,
+            budget=budget,
+        )
+
+        orch = PaperIntelligenceOrchestrator()
+        result = orch.run(request)
 
         if args.json_output:
             import json as _json
-            print(_json.dumps({
-                "run_id": args.run_id,
-                "status": "paper_attested",
-                "pdf_sha256": attest_result["source_pdf_sha256"],
-                "page_count": attest_result["page_count"],
-                "budget_profile": args.budget_profile,
-            }, ensure_ascii=False, indent=2))
+            print(_json.dumps(result, ensure_ascii=False, indent=2, default=str))
         else:
             print("AutoAD paper intelligence")
-            print(f"run_id: {args.run_id}")
-            print(f"pdf_sha256: {attest_result['source_pdf_sha256'][:16]}...")
-            print(f"page_count: {attest_result['page_count']}")
-            print(f"budget: {args.budget_profile}")
-        return 0
+            print(f"run_id: {result['run_id']}")
+            print(f"status: {result['status']}")
+            print(f"evidence_count: {result.get('evidence_count', 0)}")
+            print(f"candidate_count: {result.get('candidate_count', 0)}")
+            print(f"repairs_used: {result.get('repairs_used', 0)}")
+            if result.get("warnings"):
+                for w in result["warnings"]:
+                    print(f"  warning: {w}")
+
+        if result["status"] == "success":
+            return 0
+        if result["status"] == "parse_failed":
+            return 3
+        return 1
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return 7
 
 
 def run_research_context(args: argparse.Namespace) -> int:
-    """Build and validate the unified research context."""
-    from autoad_researcher.research_context import (
-        compute_readiness,
-        TaskContext,
-    )
+    """Build and validate the unified research context from a completed paper run."""
+    import json as _json
+    from pathlib import Path
 
     try:
-        task = TaskContext(task_id=f"task_{args.run_id}", goal="research context validation")
-        readiness = compute_readiness([], [])
+        from autoad_researcher.research_context import (
+            assemble_fact_ledger,
+            classify_gaps,
+            compute_readiness,
+            detect_conflicts,
+            build_unified_context_result,
+            TaskContext,
+        )
+
+        run_dir = Path("runs") / args.run_id
+        paper_result_path = run_dir / "paper" / "artifacts" / "paper_reader_result.json"
+
+        paper_facts = []
+        if paper_result_path.exists():
+            try:
+                result = _json.loads(paper_result_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            else:
+                # Extract facts from paper summary if available
+                summary_path = run_dir / "paper" / "artifacts" / "paper_summary.json"
+                if summary_path.exists():
+                    try:
+                        summary = _json.loads(summary_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                    else:
+                        for key in ("research_problem", "proposed_method", "core_components",
+                                     "training_objective", "data_assumptions"):
+                            for claim in summary.get(key, []):
+                                if isinstance(claim, dict):
+                                    paper_facts.append({
+                                        "fact_id": claim.get("claim_id", f"f_{key}"),
+                                        "subject": claim.get("subject", key),
+                                        "predicate": claim.get("predicate", ""),
+                                        "value": claim.get("value", ""),
+                                        "status": claim.get("status", "confirmed"),
+                                        "evidence_ids": claim.get("evidence_ids", []),
+                                        "producer_stage": "3.2_paper_intelligence",
+                                    })
+
+        task = TaskContext(task_id=f"task_{args.run_id}", goal="research context from paper analysis")
+        facts = assemble_fact_ledger(paper_facts=paper_facts)
+        gaps = classify_gaps(facts, task)
+        conflicts = detect_conflicts(facts)
+        readiness = compute_readiness(gaps, conflicts)
+
+        # Build unified result
+        uc_result = build_unified_context_result(
+            run_id=args.run_id,
+            paper_status="success" if paper_facts else "not_requested",
+            repository_status="not_requested",
+            readiness=readiness,
+            draft_path=str(run_dir / "context" / "research_context_draft.json"),
+            report_path=str(run_dir / "context" / "context_readiness_report.json"),
+        )
 
         if args.json_output:
-            import json as _json
             print(_json.dumps({
                 "run_id": args.run_id,
+                "fact_count": len(facts),
+                "gap_count": len(gaps),
+                "conflict_count": len(conflicts),
                 "readiness": readiness.model_dump(mode="json"),
+                "context_result": uc_result.model_dump(mode="json"),
             }, ensure_ascii=False, indent=2))
         else:
             print("AutoAD research context")
             print(f"run_id: {args.run_id}")
+            print(f"facts: {len(facts)}")
+            print(f"gaps: {len(gaps)}")
+            print(f"conflicts: {len(conflicts)}")
             print(f"readiness: {readiness.status}")
             print(f"next_stage: {readiness.next_stage}")
         return 0

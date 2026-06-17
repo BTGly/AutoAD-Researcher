@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from autoad_researcher.paper_intelligence.errors import PaperSourceError
 from autoad_researcher.paper_intelligence.ids import validate_workspace_path
 
+PDF_MAGIC_BYTES = b"%PDF-"
+
 
 def compute_pdf_sha256(path: Path) -> str:
     """Compute the SHA256 hash of a file."""
@@ -21,16 +23,21 @@ def compute_pdf_sha256(path: Path) -> str:
     return sha.hexdigest()
 
 
-def estimate_page_count(path: Path) -> int | None:
-    """Estimate page count from PDF by counting /Type /Page entries.
+def check_pdf_magic(path: Path) -> bool:
+    """Check if file starts with PDF magic bytes (%PDF-)."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(8)
+        return header.startswith(PDF_MAGIC_BYTES)
+    except OSError:
+        return False
 
-    Returns None if unable to determine (e.g., non-PDF or corrupted).
-    """
+
+def estimate_page_count(path: Path) -> int | None:
+    """Estimate page count from PDF by counting /Type /Page entries."""
     try:
         content = path.read_bytes()
-        # Count occurrences of "/Type /Page" (simplified heuristic)
         count = content.count(b"/Type /Page")
-        # Also count "/Type/Page" (no space)
         count += content.count(b"/Type/Page")
         return count if count > 0 else None
     except (OSError, UnicodeDecodeError):
@@ -41,7 +48,7 @@ SOURCE_FAILURE_CODES = {
     "PAPER_SOURCE_NOT_FOUND": "Source file does not exist",
     "PAPER_SOURCE_OUTSIDE_WORKSPACE": "Source path escapes workspace",
     "PAPER_SOURCE_SYMLINK_FORBIDDEN": "Symlink sources are not allowed",
-    "PAPER_SOURCE_NOT_PDF": "Source is not a PDF file",
+    "PAPER_SOURCE_NOT_PDF": "Source is not a valid PDF (missing magic bytes)",
     "PAPER_SOURCE_TOO_LARGE": "Source file exceeds size limit",
     "PAPER_SOURCE_EMPTY": "Source file is empty",
     "PAPER_SOURCE_HASH_FAILED": "Could not compute source hash",
@@ -57,8 +64,9 @@ def attest_paper_source(
 ) -> dict:
     """Validate and attest a paper PDF source.
 
-    Returns a dict suitable for constructing PaperSource.
-    Raises PaperSourceError with a failure code on validation failure.
+    Checks: workspace containment, no symlinks, PDF magic bytes, size,
+    non-empty, hash computation. Returns a dict suitable for constructing
+    PaperSource. Raises PaperSourceError with a failure code on failure.
     """
     try:
         validated = validate_workspace_path(source_path)
@@ -78,7 +86,8 @@ def attest_paper_source(
     except ValueError:
         raise PaperSourceError("PAPER_SOURCE_OUTSIDE_WORKSPACE: symlink resolves outside workspace")
 
-    if not path.suffix.lower() == ".pdf":
+    # Check PDF magic bytes (not just extension)
+    if not check_pdf_magic(path):
         raise PaperSourceError("PAPER_SOURCE_NOT_PDF")
 
     size_bytes = path.stat().st_size

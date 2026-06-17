@@ -70,6 +70,9 @@ from autoad_researcher.paper_intelligence.tools import (
     PaperToolError,
     SectionInfo,
 )
+from autoad_researcher.paper_intelligence.orchestrator import (
+    PaperIntelligenceOrchestrator,
+)
 from autoad_researcher.paper_intelligence.profile import (
     PAPER_MODEL_PROFILES,
     PAPER_MODEL_ROUTING,

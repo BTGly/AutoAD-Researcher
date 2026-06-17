@@ -58,7 +58,7 @@ def assemble_fact_ledger(
         for f in fact_list:
             fid = f.get("fact_id", "")
             if fid in seen_ids:
-                continue
+                raise ValueError(f"Duplicate fact_id in fact ledger: {fid!r} (fact_type={fact_type})")
             seen_ids.add(fid)
             facts.append(ContextFact(
                 fact_id=fid,
@@ -203,7 +203,7 @@ def compute_readiness(
     """
     decisions = decisions or []
 
-    blocking_gaps = [g for g in gaps if g.severity == "blocking"]
+    blocking_gaps = [g for g in gaps if g.severity in ("blocking", "high")]
     unresolved_conflicts = [c for c in conflicts if c.status == "unresolved"]
 
     # Check for blocking policy conflicts
@@ -292,16 +292,18 @@ def finalize_research_context(
     """Create a stable (final) research context from a draft.
 
     Only called when readiness is ready_for_idea_transfer_design.
+    Returns a new context object; does not mutate the input.
     """
     if readiness.status != "ready_for_idea_transfer_design":
         raise ValueError(
             f"Cannot finalize context: readiness is {readiness.status}"
         )
 
-    context.readiness = readiness
-    context.context_version += 1
-    context.context_sha256 = _compute_context_sha256(context)
-    return context
+    new_ctx = context.model_copy(deep=True)
+    new_ctx.readiness = readiness
+    new_ctx.context_version = context.context_version + 1
+    new_ctx.context_sha256 = _compute_context_sha256(new_ctx)
+    return new_ctx
 
 
 def _compute_context_sha256(context: ResearchContext) -> str:
