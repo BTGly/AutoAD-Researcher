@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from autoad_researcher.repository_intelligence.ids import IdentifierPattern, validate_relative_path
-from autoad_researcher.tools.contracts import ToolSpec
+from autoad_researcher.tools.contracts import ToolContext, ToolSpec
 from autoad_researcher.tools.permissions import PermissionDecisionRecord, PermissionEngine, PermissionRequest
 
 
@@ -27,6 +27,7 @@ class FilesystemRequest(BaseModel):
     permission_profile: str = Field(pattern=IdentifierPattern)
     skill_sha: str | None = None
     active_source_id: str | None = Field(default=None, pattern=IdentifierPattern)
+    tool_context: ToolContext | None = None
 
     @field_validator("workspace_label", "path")
     @classmethod
@@ -94,6 +95,7 @@ def filesystem_tool_spec(name: str) -> ToolSpec:
 
 
 def filesystem_list(request: FilesystemRequest, *, permission_engine: PermissionEngine) -> FilesystemToolResult:
+    _validate_active_repository_context(request)
     permission = _permission("filesystem_list", request, permission_engine)
     if permission.permission_decision != "allow":
         return FilesystemToolResult(status="blocked", permission=permission)
@@ -105,6 +107,7 @@ def filesystem_list(request: FilesystemRequest, *, permission_engine: Permission
 
 
 def filesystem_read(request: FilesystemReadRequest, *, permission_engine: PermissionEngine) -> FilesystemToolResult:
+    _validate_active_repository_context(request)
     permission = _permission("filesystem_read", request, permission_engine)
     if permission.permission_decision != "allow":
         return FilesystemToolResult(status="blocked", permission=permission)
@@ -120,6 +123,7 @@ def filesystem_read(request: FilesystemReadRequest, *, permission_engine: Permis
 
 
 def filesystem_stat(request: FilesystemRequest, *, permission_engine: PermissionEngine) -> FilesystemToolResult:
+    _validate_active_repository_context(request)
     permission = _permission("filesystem_stat", request, permission_engine)
     if permission.permission_decision != "allow":
         return FilesystemToolResult(status="blocked", permission=permission)
@@ -130,6 +134,7 @@ def filesystem_stat(request: FilesystemRequest, *, permission_engine: Permission
 
 
 def filesystem_search(request: FilesystemSearchRequest, *, permission_engine: PermissionEngine) -> FilesystemToolResult:
+    _validate_active_repository_context(request)
     permission = _permission("filesystem_search", request, permission_engine)
     if permission.permission_decision != "allow":
         return FilesystemToolResult(status="blocked", permission=permission)
@@ -169,6 +174,17 @@ def _permission(name: str, request: FilesystemRequest, engine: PermissionEngine)
             cwd_label=request.workspace_label,
         )
     )
+
+
+def _validate_active_repository_context(request: FilesystemRequest) -> None:
+    if request.stage != "analysis" or request.permission_profile != "repository_analysis":
+        return
+    if request.active_source_id is None:
+        return
+    if request.tool_context is None or request.tool_context.active_repository is None:
+        raise FilesystemToolError("repository analysis filesystem tools require active_repository context")
+    if request.tool_context.active_repository.source_id != request.active_source_id:
+        raise FilesystemToolError("active_repository source_id mismatch")
 
 
 def _resolve_workspace_path(root: Path, relative_path: str) -> Path:

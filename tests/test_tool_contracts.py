@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from autoad_researcher.tools import ToolContext, ToolRegistry, ToolResult, ToolSpec
+from autoad_researcher.tools import ActiveRepositoryContext, ToolContext, ToolRegistry, ToolResult, ToolSpec
 
 
 def tool_spec(**overrides) -> ToolSpec:
@@ -66,9 +66,26 @@ def test_tool_registry_key_must_match_spec_name():
         ToolRegistry(tools={"wrong": tool_spec(name="right")})
 
 
-def test_tool_context_and_result_preserve_unsealed_extension_fields():
-    context = ToolContext(stage="analysis", active_repository={"source_id": "source_001"})
+def test_tool_context_seals_active_repository_field():
+    context = ToolContext(
+        active_repository=ActiveRepositoryContext(
+            source_id="source_001",
+            repository_root="/tmp/repo",
+            resolved_commit="a" * 40,
+            tree_sha="b" * 64,
+        )
+    )
+
+    assert context.active_repository is not None
+    assert context.active_repository.source_id == "source_001"
+
+
+def test_tool_context_rejects_unsealed_extra_fields():
+    with pytest.raises(ValidationError):
+        ToolContext(stage="analysis")
+
+
+def test_tool_result_preserves_unsealed_extension_fields():
     result = ToolResult(status="success", payload={"path": "README.md"})
 
-    assert context.model_extra["active_repository"]["source_id"] == "source_001"
     assert result.model_extra["payload"]["path"] == "README.md"

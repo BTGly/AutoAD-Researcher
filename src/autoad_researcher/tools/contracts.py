@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from autoad_researcher.repository_intelligence.evidence import ActiveRepositoryContext
 from autoad_researcher.repository_intelligence.ids import IdentifierPattern
 
 
@@ -30,14 +31,11 @@ class ToolSpec(BaseModel):
 
 
 class ToolContext(BaseModel):
-    """Generic per-call tool context placeholder.
+    """Generic per-call tool context."""
 
-    The 3.1 plan seals `ToolContext.active_repository` later in T7. Until then,
-    this contract deliberately preserves extension fields without inventing
-    required keys.
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    model_config = ConfigDict(extra="allow")
+    active_repository: ActiveRepositoryContext | None = None
 
 
 class ToolResult(BaseModel):

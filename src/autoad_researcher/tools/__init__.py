@@ -1,6 +1,6 @@
 """Generic Tool Foundation contracts."""
 
-from autoad_researcher.tools.contracts import ToolContext, ToolResult, ToolSpec
+from autoad_researcher.tools.contracts import ActiveRepositoryContext, ToolContext, ToolResult, ToolSpec
 from autoad_researcher.tools.deferred import (
     LoadedToolRecord,
     StageToolLoad,
@@ -42,6 +42,7 @@ from autoad_researcher.tools.registry import ToolRegistry
 
 __all__ = [
     "LoadedToolRecord",
+    "ActiveRepositoryContext",
     "PermissionDecision",
     "PermissionDecisionRecord",
     "PermissionEngine",

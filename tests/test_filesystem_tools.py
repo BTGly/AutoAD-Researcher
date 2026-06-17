@@ -6,12 +6,14 @@ import pytest
 from pydantic import ValidationError
 
 from autoad_researcher.tools import (
+    ActiveRepositoryContext,
     FilesystemReadRequest,
     FilesystemRequest,
     FilesystemSearchRequest,
     FilesystemToolError,
     PermissionEngine,
     PermissionProfile,
+    ToolContext,
     filesystem_list,
     filesystem_read,
     filesystem_search,
@@ -49,6 +51,17 @@ def base_request(tmp_path: Path, path: str = ".") -> FilesystemRequest:
         path=path,
         stage="analysis",
         permission_profile="repository_analysis",
+    )
+
+
+def active_context(tmp_path: Path, source_id: str = "source_001") -> ToolContext:
+    return ToolContext(
+        active_repository=ActiveRepositoryContext(
+            source_id=source_id,
+            repository_root=tmp_path,
+            resolved_commit="a" * 40,
+            tree_sha="b" * 64,
+        )
     )
 
 
@@ -111,3 +124,43 @@ def test_filesystem_read_blocks_when_permission_denied(tmp_path: Path):
 
     assert result.status == "blocked"
     assert result.permission.permission_decision == "deny"
+
+
+def test_repository_analysis_requires_active_repository_when_source_is_active(tmp_path: Path):
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    data = base_request(tmp_path, "README.md").model_dump()
+    data["active_source_id"] = "source_001"
+
+    with pytest.raises(FilesystemToolError, match="active_repository context"):
+        filesystem_read(
+            FilesystemReadRequest(**data),
+            permission_engine=allow_fs_engine(),
+        )
+
+
+def test_repository_analysis_active_repository_source_must_match(tmp_path: Path):
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    data = base_request(tmp_path, "README.md").model_dump()
+    data["active_source_id"] = "source_001"
+    data["tool_context"] = active_context(tmp_path, source_id="other_source")
+
+    with pytest.raises(FilesystemToolError, match="source_id mismatch"):
+        filesystem_read(
+            FilesystemReadRequest(**data),
+            permission_engine=allow_fs_engine(),
+        )
+
+
+def test_repository_analysis_accepts_matching_active_repository_context(tmp_path: Path):
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    data = base_request(tmp_path, "README.md").model_dump()
+    data["active_source_id"] = "source_001"
+    data["tool_context"] = active_context(tmp_path)
+
+    result = filesystem_read(
+        FilesystemReadRequest(**data),
+        permission_engine=allow_fs_engine(),
+    )
+
+    assert result.status == "success"
+    assert result.text == "x"
