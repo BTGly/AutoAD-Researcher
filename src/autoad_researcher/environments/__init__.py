@@ -45,6 +45,13 @@ from autoad_researcher.environments.snapshot import (
     environment_snapshot_sha256,
     snapshot_from_plan,
 )
+from autoad_researcher.environments.validation import (
+    VERIFIERS,
+    ValidationContext,
+    ValidationReport,
+    ValidationResult,
+    validate_environment,
+)
 
 __all__ = [
     "CommandStep",
@@ -70,7 +77,11 @@ __all__ = [
     "PolicyViolation",
     "ResolvedCommand",
     "UvVenvAdapter",
+    "ValidationContext",
+    "ValidationReport",
+    "ValidationResult",
     "ValidationStep",
+    "VERIFIERS",
     "environment_plan_sha256",
     "environment_snapshot_sha256",
     "execute_resolved_command",
@@ -79,6 +90,7 @@ __all__ = [
     "load_environment_plan",
     "run_environment_build_steps",
     "snapshot_from_plan",
+    "validate_environment",
     "validate_environment_plan_policy",
     "write_environment_plan",
 ]
