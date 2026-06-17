@@ -28,6 +28,13 @@ dataset:
   category: bottle
   root_env: AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT
   license: CC BY-NC-SA 4.0
+  acquisition:
+    mode: user_provided
+    source_page: https://www.mvtec.com/research-teaching/datasets/mvtec-ad
+    license: CC-BY-NC-SA-4.0
+    redistribution_allowed: false
+    automatic_download: false
+    user_must_accept_license: true
   required_relative_paths:
     - bottle/train/good
     - bottle/test

@@ -73,6 +73,29 @@ class TestInternalBenchmarkCase:
         case = _valid_case()
         assert case.case_id == "internal_test_v1"
 
+    def test_dataset_acquisition_user_provided_valid(self):
+        case = _valid_case(
+            dataset=BenchmarkDataset(
+                name="MVTec AD",
+                category="bottle",
+                root_env="AUTOAD_BENCHMARK_DATASET",
+                license="CC BY-NC-SA 4.0",
+                acquisition={
+                    "mode": "user_provided",
+                    "source_page": "https://www.mvtec.com/research-teaching/datasets/mvtec-ad",
+                    "license": "CC-BY-NC-SA-4.0",
+                    "redistribution_allowed": False,
+                    "automatic_download": False,
+                    "user_must_accept_license": True,
+                },
+                required_relative_paths=["bottle/train", "bottle/test"],
+                manifest_strategy="relative_path_size_v1",
+            )
+        )
+
+        assert case.dataset.acquisition is not None
+        assert case.dataset.acquisition.mode == "user_provided"
+
     def test_scope_invalid_rejected(self):
         with pytest.raises(ValidationError):
             _valid_case(scope="user_task")

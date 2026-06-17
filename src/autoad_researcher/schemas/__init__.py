@@ -13,6 +13,7 @@ from autoad_researcher.schemas.decisions import (
 )
 from autoad_researcher.schemas.benchmark import (
     BenchmarkDataset,
+    BenchmarkDatasetAcquisition,
     BenchmarkEvaluationContract,
     BenchmarkMetric,
     BenchmarkReproducibility,
@@ -57,6 +58,7 @@ from autoad_researcher.schemas.readers import (
 __all__ = [
     "ArtifactReference",
     "BenchmarkDataset",
+    "BenchmarkDatasetAcquisition",
     "BenchmarkEvaluationContract",
     "BenchmarkMetric",
     "BenchmarkReproducibility",

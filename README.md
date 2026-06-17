@@ -50,6 +50,7 @@ baseline、dataset、metrics 必须由用户确认，不由系统预设。
 | commit | `fcaa92f` (Apache-2.0) |
 | dataset | MVTec AD / bottle |
 | 数据许可 | CC BY-NC-SA 4.0，**非商业使用** |
+| 获取方式 | 用户自行从官方页面获取；项目不自动下载、不提交、不再分发 |
 
 详细配置见 [configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml](configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml)
 和 [ADR 0001](docs/adr/0001-internal-benchmark-selection.md)。

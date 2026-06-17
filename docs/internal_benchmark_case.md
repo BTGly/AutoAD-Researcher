@@ -2,8 +2,10 @@
 
 ## Status
 
-locked_not_executed — config and ADR are in place; real execution, environment
-locking, weight fingerprinting, and dual-run results belong to Step 3.0C/3.0D.
+engineering_ready_dataset_user_provided — config, ADR, environment locking,
+weight fingerprinting, controlled attempt orchestration, and offline validation
+contracts are in place. Real dual-run MVTec evidence requires the user-provided
+licensed dataset and is tracked separately from the 3.0 engineering seal.
 
 ## Case
 
@@ -15,6 +17,7 @@ locking, weight fingerprinting, and dual-run results belong to Step 3.0C/3.0D.
 | commit | fcaa92f124fb1ad74a7acf56726decd4b27cbcad |
 | dataset | MVTec AD / bottle |
 | license | Apache-2.0 (repo), CC BY-NC-SA 4.0 (dataset) |
+| dataset acquisition | user_provided; no automatic download, redistribution, or committed dataset files |
 
 ## Config
 
@@ -39,6 +42,11 @@ Benchmark dependencies (PyTorch, torchvision, CUDA) are not added to the
 main `pyproject.toml`.
 
 ## Prerequisites
+
+MVTec AD bottle data must be obtained by the user from the official MVTec page
+after accepting its license terms. AutoAD records the dataset manifest once the
+local dataset is present, but it must not download, vendor, or redistribute the
+dataset.
 
 ```bash
 export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=/path/to/mvtec-ad

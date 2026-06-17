@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from autoad_researcher.analysis.metrics import parse_metrics  # noqa: E402
 from autoad_researcher.assets import prepare_assets, write_asset_plan  # noqa: E402
 from autoad_researcher.benchmarks.config import load_internal_benchmark_case  # noqa: E402
+from autoad_researcher.benchmarks.dataset import resolve_dataset_root  # noqa: E402
 from autoad_researcher.benchmarks.io import write_json_atomic  # noqa: E402
 from autoad_researcher.benchmarks.patchcore_attempt import (  # noqa: E402
     build_patchcore_backbone_asset_plan,
@@ -21,6 +22,7 @@ from autoad_researcher.benchmarks.patchcore_attempt import (  # noqa: E402
 )
 from autoad_researcher.benchmarks.preflight import run_preflight  # noqa: E402
 from autoad_researcher.benchmarks.repository import collect_repository_state  # noqa: E402
+from autoad_researcher.core.run_id import run_dir_path  # noqa: E402
 from autoad_researcher.runner import (  # noqa: E402
     ExperimentInputRefs,
     execute_experiment_attempt,
@@ -51,6 +53,11 @@ def main() -> int:
         "--weight-source",
         default="cache/torch_probe/hub/checkpoints/wide_resnet50_2-95faca4d.pth",
     )
+    parser.add_argument(
+        "--dataset-root",
+        default=None,
+        help="Optional dataset root; also sets the case root_env for preflight.",
+    )
     parser.add_argument("--json", action="store_true", dest="json_output")
     args = parser.parse_args()
 
@@ -71,7 +78,8 @@ def main() -> int:
 
 def _run(args) -> dict[str, str]:
     workspace_root = PROJECT_ROOT / "workspace"
-    run_root = PROJECT_ROOT / "runs" / args.run_id
+    runs_root = PROJECT_ROOT / "runs"
+    run_root = run_dir_path(runs_root, args.run_id)
     attempt_dir = run_root / args.attempt
     preflight_dir = run_root / f"preflight_{args.attempt}"
 
@@ -84,6 +92,9 @@ def _run(args) -> dict[str, str]:
     repo_path = _project_path(args.repo)
     benchmark_python = _project_path(args.benchmark_python)
     lockfile_path = _project_path(args.lockfile)
+    environ = dict(os.environ)
+    if args.dataset_root is not None:
+        environ[case.dataset.root_env] = str(_project_path(args.dataset_root))
 
     bundle = run_preflight(
         case=case,
@@ -92,7 +103,7 @@ def _run(args) -> dict[str, str]:
         lockfile_path=lockfile_path,
         workspace_root=workspace_root,
         attempt=args.attempt,
-        environ=dict(os.environ),
+        environ=environ,
     )
     preflight_dir.mkdir(parents=True)
     if bundle.repository_state:
@@ -113,6 +124,11 @@ def _run(args) -> dict[str, str]:
     if bundle.repository_state is None or bundle.dataset_manifest is None or bundle.environment_snapshot is None:
         raise RuntimeError("preflight passed without complete evidence")
 
+    dataset_root = resolve_dataset_root(
+        case=case,
+        environ=environ,
+        workspace_root=workspace_root,
+    )
     asset_plan = build_patchcore_backbone_asset_plan(
         run_id=args.run_id,
         source_uri=args.weight_source,
@@ -135,6 +151,7 @@ def _run(args) -> dict[str, str]:
     command_plan = build_patchcore_command_plan(
         run_id=args.run_id,
         attempt=args.attempt,
+        dataset_path=_relative_path(dataset_root, start=attempt_dir),
     )
     input_refs = ExperimentInputRefs(
         repository_fingerprint=bundle.repository_state.repository_fingerprint,
@@ -144,12 +161,16 @@ def _run(args) -> dict[str, str]:
         command_sha256=experiment_command_sha256(command_plan),
     )
 
+    repository_fingerprint_after: dict[str, str | None] = {"value": None}
+
     def after_repository_fingerprint() -> str:
-        return collect_repository_state(
+        fingerprint = collect_repository_state(
             case=case,
             repo_path=repo_path,
             workspace_root=workspace_root,
         ).repository_fingerprint
+        repository_fingerprint_after["value"] = fingerprint
+        return fingerprint
 
     execution_result = execute_experiment_attempt(
         run_id=args.run_id,
@@ -160,25 +181,27 @@ def _run(args) -> dict[str, str]:
         runner=run_experiment_subprocess,
         repository_fingerprint_after=after_repository_fingerprint,
     )
-    _write_json(attempt_dir / "input_refs.json", input_refs)
-    _write_json(attempt_dir / "command.json", command_plan)
+    write_json_atomic(attempt_dir / "input_refs.json", input_refs)
+    write_json_atomic(attempt_dir / "command.json", command_plan)
 
     metrics_report = parse_metrics(attempt_dir, patchcore_metric_specs())
-    _write_json(attempt_dir / "metrics.json", metrics_report)
+    write_json_atomic(attempt_dir / "metrics.json", metrics_report)
+    actual_category = _extract_arg_value(command_plan.args, "-d")
+    actual_baseline = "PatchCore" if "patch_core" in command_plan.args else None
     validity = validate_scientific_contract(
         execution_result=execution_result,
         input_refs=input_refs,
         metrics_report=metrics_report,
         expected_repository_fingerprint=bundle.repository_state.repository_fingerprint,
-        actual_repository_fingerprint=after_repository_fingerprint(),
+        actual_repository_fingerprint=repository_fingerprint_after["value"],
         expected_category=case.dataset.category,
-        actual_category="bottle",
+        actual_category=actual_category,
         expected_baseline=case.baseline_name,
-        actual_baseline="PatchCore",
+        actual_baseline=actual_baseline,
         seed_fixed=case.fixed_parameters.get("seed") == 0,
-        data_path_leak_detected=False,
+        data_path_leak_detected=None,
     )
-    _write_json(attempt_dir / "validity_report.json", validity)
+    write_json_atomic(attempt_dir / "validity_report.json", validity)
     return {
         "run_id": args.run_id,
         "attempt": args.attempt,
@@ -194,11 +217,19 @@ def _project_path(value: str) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
-def _write_json(path: Path, model) -> None:
-    path.write_text(
-        json.dumps(model.model_dump(mode="json", exclude_none=True), ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+def _relative_path(path: Path, *, start: Path) -> str:
+    return os.path.relpath(path.resolve(), start=start.resolve())
+
+
+def _extract_arg_value(args: list[str], flag: str) -> str | None:
+    try:
+        index = args.index(flag)
+    except ValueError:
+        return None
+    value_index = index + 1
+    if value_index >= len(args):
+        return None
+    return args[value_index]
 
 
 def _rel(path: Path) -> str:

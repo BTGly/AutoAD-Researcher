@@ -84,6 +84,23 @@ class BenchmarkRepository(BaseModel):
 # ------------------------------------------------------------------
 
 
+class BenchmarkDatasetAcquisition(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    mode: Literal["user_provided"]
+    source_page: str = Field(min_length=1)
+    license: str = Field(min_length=1)
+    redistribution_allowed: Literal[False]
+    automatic_download: Literal[False]
+    user_must_accept_license: Literal[True]
+
+    @model_validator(mode="after")
+    def _validate_acquisition(self):
+        _reject_placeholders(self.source_page, "dataset.acquisition.source_page")
+        _reject_placeholders(self.license, "dataset.acquisition.license")
+        return self
+
+
 class BenchmarkDataset(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -91,6 +108,7 @@ class BenchmarkDataset(BaseModel):
     category: str = Field(min_length=1)
     root_env: str = Field(pattern=r"^[A-Z][A-Z0-9_]*$")
     license: str = Field(min_length=1)
+    acquisition: BenchmarkDatasetAcquisition | None = None
     required_relative_paths: list[str] = Field(min_length=1)
     manifest_strategy: Literal["relative_path_size_v1"]
 

@@ -40,7 +40,7 @@ def validate_scientific_contract(
     expected_baseline: str | None,
     actual_baseline: str | None,
     seed_fixed: bool,
-    data_path_leak_detected: bool,
+    data_path_leak_detected: bool | None,
 ) -> ScientificValidityReport:
     """Validate that a successful attempt has enough evidence to be trusted."""
     checks = [
@@ -83,7 +83,12 @@ def validate_scientific_contract(
             insufficient=expected_baseline is None or actual_baseline is None,
         ),
         _check("seed", seed_fixed, "seed must be fixed"),
-        _check("data_leakage", not data_path_leak_detected, "data path leakage must not be detected"),
+        _check(
+            "data_leakage",
+            data_path_leak_detected is False,
+            "data path leakage must not be detected",
+            insufficient=data_path_leak_detected is None,
+        ),
         _check("execution_network", True, "execution network is disabled by command schema"),
     ]
     if any(check.status == "failed" for check in checks):

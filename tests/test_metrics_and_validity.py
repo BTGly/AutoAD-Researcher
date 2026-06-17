@@ -278,3 +278,39 @@ def test_scientific_validity_insufficient_when_category_missing(tmp_path: Path):
     )
 
     assert report.status == "insufficient_evidence"
+
+
+def test_scientific_validity_insufficient_when_data_leakage_unchecked(tmp_path: Path):
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw/results.json").write_text('{"metrics": {"image_auroc": 0.91}}', encoding="utf-8")
+    metrics = parse_metrics(
+        tmp_path,
+        [
+            MetricParseSpec(
+                metric_name="image_auroc",
+                source_path="raw/results.json",
+                json_path=["metrics", "image_auroc"],
+                dataset_row="mvtec/bottle",
+                unit="ratio",
+                required=True,
+            )
+        ],
+    )
+    refs = make_input_refs()
+
+    report = validate_scientific_contract(
+        execution_result=success_execution(refs),
+        input_refs=refs,
+        metrics_report=metrics,
+        expected_repository_fingerprint="repo-clean",
+        actual_repository_fingerprint="repo-clean",
+        expected_category="bottle",
+        actual_category="bottle",
+        expected_baseline="PatchCore",
+        actual_baseline="PatchCore",
+        seed_fixed=True,
+        data_path_leak_detected=None,
+    )
+
+    assert report.status == "insufficient_evidence"
+    assert any(c.check_id == "data_leakage" and c.status == "insufficient_evidence" for c in report.checks)
