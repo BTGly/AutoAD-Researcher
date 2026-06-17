@@ -294,61 +294,27 @@ class PaperIntelligenceOrchestrator:
         readiness = compute_readiness(gaps, conflicts)
 
         # Write context artifacts
-        context_dir.mkdir(parents=True, exist_ok=True)
-        draft_path = context_dir / "research_context_draft.json"
-        draft_ctx = ResearchContext(
-            schema_version=1,
+        paths = emit_context_artifacts(
             run_id=request.run_id,
-            context_id=f"ctx_{request.run_id}_0",
-            context_version=0,
             task=task,
-            sources=SourceContext(paper_source_id=source.source_id),
+            source_id=source.source_id,
             facts=facts,
             gaps=gaps,
             conflicts=conflicts,
             readiness=readiness,
-            evidence_index_refs=[str(evidence_writer.path)] if evidence_writer else [],
-            context_sha256="0" * 64,
+            evidence_index_path=str(evidence_writer.path) if evidence_writer else None,
+            context_dir=context_dir,
         )
-        _write_atomic_json(draft_path, draft_ctx.model_dump())
-
-        report_path = context_dir / "context_readiness_report.json"
-        _write_atomic_json(report_path, readiness.model_dump())
-
-        stable_path: str | None = None
-        handoff_path: str | None = None
-        if readiness.status == "ready_for_idea_transfer_design":
-            from autoad_researcher.research_context.assembly import finalize_research_context
-            stable_ctx = finalize_research_context(draft_ctx, readiness)
-            stable_path = str(context_dir / "research_context.json")
-            _write_atomic_json(Path(stable_path), stable_ctx.model_dump())
-
-            handoff = IdeaTransferHandoff(
-                schema_version=1,
-                run_id=request.run_id,
-                context_id=stable_ctx.context_id,
-                context_version=stable_ctx.context_version,
-                context_sha256=stable_ctx.context_sha256,
-                task_goal=task.goal,
-                facts=facts,
-                gaps=gaps,
-                conflicts=conflicts,
-                readiness=readiness,
-                paper_source_id=source.source_id,
-                evidence_index_refs=[str(evidence_writer.path)] if evidence_writer else [],
-            )
-            handoff_path = str(context_dir / "idea_transfer_handoff.json")
-            _write_atomic_json(Path(handoff_path), handoff.model_dump())
 
         uc_result = build_unified_context_result(
             run_id=request.run_id,
             paper_status=final_status,
             repository_status="not_requested",
             readiness=readiness,
-            draft_path=str(draft_path),
-            report_path=str(report_path),
-            stable_path=stable_path,
-            handoff_path=handoff_path,
+            draft_path=paths["draft_path"],
+            report_path=paths["report_path"],
+            stable_path=paths["stable_path"],
+            handoff_path=paths["handoff_path"],
             warnings=warnings,
         )
 
@@ -366,6 +332,83 @@ class PaperIntelligenceOrchestrator:
             "context_result": uc_result.model_dump(),
             "warnings": warnings,
         }
+
+
+def emit_context_artifacts(
+    run_id: str,
+    task: TaskContext,
+    source_id: str,
+    facts: list,
+    gaps: list,
+    conflicts: list,
+    readiness,
+    evidence_index_path: str | None,
+    context_dir: Path,
+) -> dict:
+    """Write all context artifacts to disk and return their paths.
+
+    Writes research_context_draft.json and context_readiness_report.json
+    unconditionally. When readiness is ready_for_idea_transfer_design,
+    also writes research_context.json and idea_transfer_handoff.json.
+
+    Returns a dict with keys: draft_path, report_path, stable_path, handoff_path.
+    stable_path and handoff_path are None when not ready.
+    """
+    context_dir.mkdir(parents=True, exist_ok=True)
+    evidence_refs = [evidence_index_path] if evidence_index_path else []
+
+    draft_path = context_dir / "research_context_draft.json"
+    draft_ctx = ResearchContext(
+        schema_version=1,
+        run_id=run_id,
+        context_id=f"ctx_{run_id}_0",
+        context_version=0,
+        task=task,
+        sources=SourceContext(paper_source_id=source_id),
+        facts=facts,
+        gaps=gaps,
+        conflicts=conflicts,
+        readiness=readiness,
+        evidence_index_refs=evidence_refs,
+        context_sha256="0" * 64,
+    )
+    _write_atomic_json(draft_path, draft_ctx.model_dump())
+
+    report_path = context_dir / "context_readiness_report.json"
+    _write_atomic_json(report_path, readiness.model_dump())
+
+    stable_path: str | None = None
+    handoff_path: str | None = None
+
+    if readiness.status == "ready_for_idea_transfer_design":
+        from autoad_researcher.research_context.assembly import finalize_research_context
+        stable_ctx = finalize_research_context(draft_ctx, readiness)
+        stable_path = str(context_dir / "research_context.json")
+        _write_atomic_json(Path(stable_path), stable_ctx.model_dump())
+
+        handoff = IdeaTransferHandoff(
+            schema_version=1,
+            run_id=run_id,
+            context_id=stable_ctx.context_id,
+            context_version=stable_ctx.context_version,
+            context_sha256=stable_ctx.context_sha256,
+            task_goal=task.goal,
+            facts=facts,
+            gaps=gaps,
+            conflicts=conflicts,
+            readiness=readiness,
+            paper_source_id=source_id,
+            evidence_index_refs=evidence_refs,
+        )
+        handoff_path = str(context_dir / "idea_transfer_handoff.json")
+        _write_atomic_json(Path(handoff_path), handoff.model_dump())
+
+    return {
+        "draft_path": str(draft_path),
+        "report_path": str(report_path),
+        "stable_path": stable_path,
+        "handoff_path": handoff_path,
+    }
 
 
 def _analyze_paper_content(

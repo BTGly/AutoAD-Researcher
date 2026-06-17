@@ -560,113 +560,74 @@ class TestOrchestratorBehavior:
         _chdir_tmp(tmp_path, work)
 
     def test_ready_branch_writes_stable_context_and_handoff(self, tmp_path):
-        """When readiness is ready_for_idea_transfer_design, stable context
-        and handoff artifacts must be written to disk with non-None paths."""
-        from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
-        from autoad_researcher.research_context.assembly import (
-            compute_readiness, build_unified_context_result,
-        )
+        """emit_context_artifacts must write stable context and handoff
+        when readiness is ready_for_idea_transfer_design."""
+        from autoad_researcher.paper_intelligence.orchestrator import emit_context_artifacts
         from autoad_researcher.research_context.models import (
-            ContextReadiness, ResearchContext, TaskContext, SourceContext,
-            ContextFact, IdeaTransferHandoff,
+            ContextReadiness, TaskContext, ContextFact,
         )
         import json
 
         def work():
-            pdf = Path("test.pdf")
-            _make_valid_pdf(pdf)
-
-            # Simulate a ready context directly (unit-level test of the artifact path)
-            run_dir = Path("runs/test_ready")
-            ctx_dir = run_dir / "context"
-            ctx_dir.mkdir(parents=True, exist_ok=True)
-
+            ctx_dir = Path("runs/test_ready/context")
             readiness = ContextReadiness(
                 status="ready_for_idea_transfer_design",
                 next_stage="3.4_idea_transfer_design",
             )
-
-            # Write draft
             task = TaskContext(task_id="t_ready", goal="test")
             facts = [ContextFact(
                 fact_id="f1", fact_type="paper_fact",
                 subject="baseline", predicate="is", value="PatchCore",
                 status="confirmed", producer_stage="3.2",
             )]
-            ctx = ResearchContext(
-                schema_version=1, run_id="test_ready",
-                context_id="ctx_ready_0", context_version=0,
-                task=task, sources=SourceContext(), facts=facts,
-                readiness=readiness, context_sha256="0" * 64,
+
+            paths = emit_context_artifacts(
+                run_id="test_ready", task=task, source_id="src_t",
+                facts=facts, gaps=[], conflicts=[],
+                readiness=readiness, evidence_index_path="ev.jsonl",
+                context_dir=ctx_dir,
             )
 
-            from autoad_researcher.research_context.assembly import finalize_research_context
-            stable = finalize_research_context(ctx, readiness)
-            _write_atomic_json_local(ctx_dir / "research_context.json", stable.model_dump())
+            assert paths["stable_path"] is not None
+            assert paths["handoff_path"] is not None
+            assert Path(paths["stable_path"]).exists()
+            assert Path(paths["handoff_path"]).exists()
 
-            handoff = IdeaTransferHandoff(
-                schema_version=1, run_id="test_ready",
-                context_id=stable.context_id,
-                context_version=stable.context_version,
-                context_sha256=stable.context_sha256,
-                task_goal=task.goal, facts=facts, readiness=readiness,
-                paper_source_id="src_test_ready",
-            )
-            _write_atomic_json_local(ctx_dir / "idea_transfer_handoff.json", handoff.model_dump())
-
-            # Assert files exist
-            assert (ctx_dir / "research_context.json").exists()
-            assert (ctx_dir / "idea_transfer_handoff.json").exists()
-
-            # Validate handoff content
-            ho = json.loads((ctx_dir / "idea_transfer_handoff.json").read_text())
-            assert ho["context_id"] == stable.context_id
-            assert ho["context_sha256"] == stable.context_sha256
-            assert len(ho["facts"]) == 1
+            ho = json.loads(Path(paths["handoff_path"]).read_text())
+            assert ho["schema_version"] == 1
+            assert ho["context_id"].startswith("ctx_")
+            assert ho["readiness"]["status"] == "ready_for_idea_transfer_design"
 
         _chdir_tmp(tmp_path, work)
 
     def test_non_ready_branch_has_null_handoff_paths(self, tmp_path):
-        """When readiness is NOT ready_for_idea_transfer_design, the result
-        must not contain dangling handoff paths."""
-        from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
-        from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
-        from autoad_researcher.paper_intelligence.agent import budget_for_profile
+        """emit_context_artifacts must return None paths and not write
+        stable/handoff when readiness is NOT ready_for_idea_transfer_design."""
+        from autoad_researcher.paper_intelligence.orchestrator import emit_context_artifacts
+        from autoad_researcher.research_context.models import (
+            ContextReadiness, TaskContext,
+        )
 
         def work():
-            pdf = Path("test.pdf")
-            _make_valid_pdf(pdf)
-            budget = budget_for_profile("standard")
-            req = PaperIntelligenceRequest(
-                schema_version=1, request_id="req_t", run_id="test_nonready",
-                user_goal="Test", paper_pdf_path="test.pdf",
-                parser_profile_id="mineru_pipeline_v1",
-                web_context_allowed=False, alpha_xiv_allowed=False,
-                user_confirmation_policy="never",
-                budget_profile="standard", budget=budget,
+            ctx_dir = Path("runs/test_nonready/context")
+            readiness = ContextReadiness(
+                status="needs_clarification",
+                next_stage="3.3_context_repair",
             )
-            orch = PaperIntelligenceOrchestrator(Path("runs"))
-            result = orch.run(req)
+            task = TaskContext(task_id="t_nr", goal="test")
 
-            # The current analyzer produces enough evidence to trigger
-            # needs_clarification (blocking dataset gap), not ready.
-            uc = result["context_result"]
-            if uc["context_readiness_status"] != "ready_for_idea_transfer_design":
-                assert uc["stable_research_context_path"] is None, (
-                    "stable_research_context_path must be None when not ready"
-                )
-                assert uc["idea_transfer_handoff_path"] is None, (
-                    "idea_transfer_handoff_path must be None when not ready"
-                )
-                assert not (Path("runs/test_nonready/context/research_context.json").exists())
-                assert not (Path("runs/test_nonready/context/idea_transfer_handoff.json").exists())
+            paths = emit_context_artifacts(
+                run_id="test_nonready", task=task, source_id="src_t",
+                facts=[], gaps=[], conflicts=[],
+                readiness=readiness, evidence_index_path=None,
+                context_dir=ctx_dir,
+            )
+
+            assert paths["stable_path"] is None
+            assert paths["handoff_path"] is None
+            assert (ctx_dir / "research_context_draft.json").exists()
+            assert (ctx_dir / "context_readiness_report.json").exists()
+            assert not (ctx_dir / "research_context.json").exists()
+            assert not (ctx_dir / "idea_transfer_handoff.json").exists()
 
         _chdir_tmp(tmp_path, work)
-
-
-def _write_atomic_json_local(path: Path, data: object) -> None:
-    import os
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-    tmp.chmod(0o644)
-    os.replace(tmp, path)
