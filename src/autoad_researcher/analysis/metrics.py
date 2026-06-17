@@ -1,10 +1,11 @@
 """Structured metrics parsing from raw experiment outputs."""
 
+import csv
 import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
 
@@ -16,10 +17,28 @@ class MetricParseSpec(BaseModel):
 
     metric_name: str = Field(min_length=1)
     source_path: str = Field(min_length=1)
-    json_path: list[str | int] = Field(min_length=1)
+    source_format: Literal["json", "csv"] = "json"
+    json_path: list[str | int] | None = None
+    csv_row_key: str | None = None
+    csv_row_value: str | None = None
+    csv_metric_column: str | None = None
     dataset_row: str = Field(min_length=1)
     unit: Literal["ratio", "percent", "seconds", "bytes", "count"]
     required: bool
+
+    @model_validator(mode="after")
+    def _validate_source_fields(self):
+        if self.source_format == "json":
+            if not self.json_path:
+                raise ValueError("json metrics require json_path")
+            if any([self.csv_row_key, self.csv_row_value, self.csv_metric_column]):
+                raise ValueError("json metrics must not include CSV selectors")
+        else:
+            if self.json_path is not None:
+                raise ValueError("csv metrics must not include json_path")
+            if not self.csv_row_key or not self.csv_row_value or not self.csv_metric_column:
+                raise ValueError("csv metrics require row key, row value, and metric column")
+        return self
 
 
 class ParsedMetric(BaseModel):
@@ -78,8 +97,11 @@ def _parse_one(root: Path, spec: MetricParseSpec) -> ParsedMetric:
         return _failed(spec, "missing", "source file missing", source_sha256=None)
     source_sha = sha256_file(source)
     try:
-        data = json.loads(source.read_text(encoding="utf-8"))
-        value = _get_json_path(data, spec.json_path)
+        if spec.source_format == "json":
+            data = json.loads(source.read_text(encoding="utf-8"))
+            value = _get_json_path(data, spec.json_path or [])
+        else:
+            value = _get_csv_value(source, spec)
         if not isinstance(value, int | float) or isinstance(value, bool):
             return _failed(spec, "invalid", "metric value must be numeric", source_sha256=source_sha)
         return ParsedMetric(
@@ -120,6 +142,24 @@ def _get_json_path(data, path: list[str | int]):
     for part in path:
         current = current[part]
     return current
+
+
+def _get_csv_value(source: Path, spec: MetricParseSpec) -> float:
+    with source.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError("CSV header missing")
+        required_columns = [spec.csv_row_key, spec.csv_metric_column]
+        missing = [column for column in required_columns if column not in reader.fieldnames]
+        if missing:
+            raise ValueError(f"CSV column missing: {missing}")
+        for row in reader:
+            if row.get(spec.csv_row_key or "") == spec.csv_row_value:
+                raw = row.get(spec.csv_metric_column or "")
+                if raw is None or raw == "":
+                    raise ValueError("CSV metric value missing")
+                return float(raw)
+    raise KeyError(f"CSV row not found: {spec.csv_row_value}")
 
 
 def _resolve_inside(root: Path, relative: str) -> Path:
