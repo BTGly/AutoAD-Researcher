@@ -7,6 +7,7 @@ from autoad_researcher.environments.io import (
 )
 from autoad_researcher.environments.builder import run_environment_build_steps
 from autoad_researcher.environments.adapters import (
+    CondaAdapter,
     EnvironmentAdapter,
     EnvironmentAdapterError,
     ExistingPythonAdapter,
@@ -48,6 +49,7 @@ __all__ = [
     "EnvironmentPlanPolicyReport",
     "CommandExecutionOutput",
     "CommandStepResult",
+    "CondaAdapter",
     "EnvironmentBuildResult",
     "EnvironmentAdapter",
     "EnvironmentAdapterError",

@@ -41,6 +41,7 @@ class BaseEnvironmentAdapter:
 
 def get_environment_adapter(kind: str) -> EnvironmentAdapter:
     """Return the adapter for an EnvironmentTarget kind."""
+    from autoad_researcher.environments.adapters.conda import CondaAdapter
     from autoad_researcher.environments.adapters.existing_python import (
         ExistingPythonAdapter,
     )
@@ -51,6 +52,7 @@ def get_environment_adapter(kind: str) -> EnvironmentAdapter:
         "python_uv_venv": UvVenvAdapter(),
         "python_pip_venv": PipVenvAdapter(),
         "existing_python": ExistingPythonAdapter(),
+        "conda": CondaAdapter(),
     }
     try:
         return adapters[kind]

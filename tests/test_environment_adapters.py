@@ -3,6 +3,7 @@
 import pytest
 
 from autoad_researcher.environments import (
+    CondaAdapter,
     EnvironmentAdapterError,
     EnvironmentPlan,
     ExistingPythonAdapter,
@@ -22,11 +23,12 @@ def test_get_environment_adapter_selects_supported_kinds():
     assert isinstance(get_environment_adapter("python_uv_venv"), UvVenvAdapter)
     assert isinstance(get_environment_adapter("python_pip_venv"), PipVenvAdapter)
     assert isinstance(get_environment_adapter("existing_python"), ExistingPythonAdapter)
+    assert isinstance(get_environment_adapter("conda"), CondaAdapter)
 
 
 def test_get_environment_adapter_rejects_unsupported_kind():
     with pytest.raises(EnvironmentAdapterError, match="unsupported"):
-        get_environment_adapter("conda")
+        get_environment_adapter("docker")
 
 
 def test_uv_adapter_translates_build_steps():
@@ -114,3 +116,39 @@ def test_existing_python_adapter_rejects_install():
 
     with pytest.raises(EnvironmentAdapterError, match="must not install"):
         ExistingPythonAdapter().prepare_steps(EnvironmentPlan.model_validate(data))
+
+
+def test_conda_adapter_translates_micromamba_steps():
+    data = valid_plan()
+    data["target"]["kind"] = "conda"
+    data["target"]["environment_path"] = "workspace/envs/conda_cpu"
+    data["build_steps"] = [
+        {
+            "step_id": "create_conda_env",
+            "program": "micromamba",
+            "args": ["create", "-p", "workspace/envs/conda_cpu", "python=3.11", "-y"],
+            "cwd": "workspace/repos/cpu_project",
+            "environment": {},
+            "timeout_seconds": 300,
+            "network": True,
+            "modifies_repository": False,
+            "requires_approval": False,
+        }
+    ]
+    data["permissions"]["network_during_build"] = True
+    plan = EnvironmentPlan.model_validate(data)
+
+    commands = CondaAdapter().prepare_steps(plan)
+
+    assert commands[0].argv[:2] == ["micromamba", "create"]
+
+
+def test_conda_adapter_rejects_unsupported_action():
+    data = valid_plan()
+    data["target"]["kind"] = "conda"
+    data["target"]["environment_path"] = "workspace/envs/conda_cpu"
+    data["build_steps"][0]["program"] = "conda"
+    data["build_steps"][0]["args"] = ["remove", "-n", "base"]
+
+    with pytest.raises(EnvironmentAdapterError, match="unsupported conda action"):
+        CondaAdapter().prepare_steps(EnvironmentPlan.model_validate(data))

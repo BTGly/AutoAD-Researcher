@@ -236,6 +236,7 @@ test -f src/autoad_researcher/environments/adapters/base.py
 test -f src/autoad_researcher/environments/adapters/uv_venv.py
 test -f src/autoad_researcher/environments/adapters/pip_venv.py
 test -f src/autoad_researcher/environments/adapters/existing_python.py
+test -f src/autoad_researcher/environments/adapters/conda.py
 test -f fixtures/environment_plans/python_cpu_uv.yaml
 test -f fixtures/environment_plans/python_cuda_uv.yaml
 test -f fixtures/environment_plans/existing_python.yaml
