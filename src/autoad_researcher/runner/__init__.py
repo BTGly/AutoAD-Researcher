@@ -1,9 +1,30 @@
-"""
-实验运行模块 (Runner Agent)。
+"""Controlled experiment runner.
 
-在受控环境中运行实验。原则：
-- 只运行白名单命令
-- 不覆盖旧实验结果
-- 每次运行生成独立实验目录
-- 保存 stdout / stderr / config / metrics
+Principles:
+- use structured commands, not shell strings;
+- never overwrite an existing attempt directory;
+- save stdout, stderr, output manifest, and execution result;
+- keep experiment execution network disabled.
 """
+
+from autoad_researcher.runner.executor import (
+    execute_experiment_attempt,
+    experiment_command_sha256,
+)
+from autoad_researcher.runner.models import (
+    ExperimentCommandPlan,
+    ExperimentExecutionResult,
+    ExperimentInputRefs,
+    OutputManifest,
+    OutputManifestEntry,
+)
+
+__all__ = [
+    "ExperimentCommandPlan",
+    "ExperimentExecutionResult",
+    "ExperimentInputRefs",
+    "OutputManifest",
+    "OutputManifestEntry",
+    "execute_experiment_attempt",
+    "experiment_command_sha256",
+]
