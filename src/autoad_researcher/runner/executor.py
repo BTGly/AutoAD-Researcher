@@ -1,11 +1,13 @@
 """Immutable experiment attempt execution."""
 
 import json
+import os
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
-from autoad_researcher.environments import CommandExecutionOutput, ResolvedCommand
+from autoad_researcher.environments.result import CommandExecutionOutput, ResolvedCommand
 from autoad_researcher.runner.models import (
     ExperimentCommandPlan,
     ExperimentExecutionResult,
@@ -131,6 +133,42 @@ def execute_experiment_attempt(
     )
     _write_json(out_dir / "execution_result.json", result.model_dump(mode="json", exclude_none=True))
     return result
+
+
+def run_experiment_subprocess(
+    command: ResolvedCommand,
+    attempt_dir: Path,
+) -> CommandExecutionOutput:
+    """Run an experiment command with shell=False and captured logs."""
+    del attempt_dir
+    env = os.environ.copy()
+    env.update(command.environment)
+    try:
+        completed = subprocess.run(
+            command.argv,
+            cwd=command.cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=command.timeout_seconds,
+            shell=False,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        return CommandExecutionOutput(
+            exit_code=None,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=True,
+        )
+    return CommandExecutionOutput(
+        exit_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        timed_out=False,
+    )
 
 
 def _resolved_command(plan: ExperimentCommandPlan) -> ResolvedCommand:

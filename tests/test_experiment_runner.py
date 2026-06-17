@@ -1,5 +1,6 @@
 """Tests for generic controlled experiment runner."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from autoad_researcher.runner import (
     ExperimentInputRefs,
     execute_experiment_attempt,
     experiment_command_sha256,
+    run_experiment_subprocess,
 )
 
 
@@ -177,3 +179,28 @@ def test_repository_mutation_invalidates_attempt(tmp_path: Path):
 
     assert result.status == "invalid_repository_mutation"
     assert result.failure_code == "RUN_REPOSITORY_MUTATED"
+
+
+def test_subprocess_runner_executes_shell_false_attempt(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "write_metrics.py").write_text(
+        "from pathlib import Path\nPath('metrics.json').write_text('{}')\n",
+        encoding="utf-8",
+    )
+    plan = command_plan(
+        program=sys.executable,
+        args=["../write_metrics.py"],
+        cwd="attempt_01",
+    )
+
+    result = execute_experiment_attempt(
+        run_id="run_demo",
+        attempt="attempt_01",
+        command_plan=plan,
+        input_refs=input_refs(plan),
+        attempt_dir=tmp_path / "attempt_01",
+        runner=run_experiment_subprocess,
+    )
+
+    assert result.status == "success"
+    assert (tmp_path / "attempt_01/metrics.json").is_file()

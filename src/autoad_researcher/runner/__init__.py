@@ -10,6 +10,7 @@ Principles:
 from autoad_researcher.runner.executor import (
     execute_experiment_attempt,
     experiment_command_sha256,
+    run_experiment_subprocess,
 )
 from autoad_researcher.runner.models import (
     ExperimentCommandPlan,
@@ -27,4 +28,5 @@ __all__ = [
     "OutputManifestEntry",
     "execute_experiment_attempt",
     "experiment_command_sha256",
+    "run_experiment_subprocess",
 ]

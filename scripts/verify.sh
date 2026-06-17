@@ -235,6 +235,7 @@ test -f src/autoad_researcher/runner/executor.py
 test -f src/autoad_researcher/analysis/metrics.py
 test -f src/autoad_researcher/analysis/reproducibility.py
 test -f src/autoad_researcher/supervisor/validity.py
+test -f src/autoad_researcher/benchmarks/patchcore_attempt.py
 test -f evidence/experiments/internal_patchcore_mvtec_bottle_v1/readiness_report.json
 test -f docs/milestones/3.0D-real-attempt-readiness.md
 test -f src/autoad_researcher/environments/models.py
