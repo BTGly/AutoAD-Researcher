@@ -17,7 +17,7 @@ package_indexes:
 
 requirements_input_path: requirements.in
 lockfile_path: requirements.lock.txt
-lockfile_sha256: "247dde0087e635536932db0baf7f5b3441475639ba3ccdc210668d2feffe9454"
+lockfile_sha256: "49afe4ae8cbc0250c800939aca4874c020c3aa5c5baa820b3bc284f68b1df520"
 
 required_imports:
   - torch

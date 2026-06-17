@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "status": "success",
+  "environment_id": "patchcore_linux_gpu_v1",
+  "python_version": "3.11.15",
+  "uv_version": "0.11.21",
+  "platform": "linux_x86_64",
+  "indexes": [
+    {"name": "pypi", "url": "https://pypi.org/simple"},
+    {"name": "pytorch-cu124", "url": "https://download.pytorch.org/whl/cu124"}
+  ],
+  "lockfile_sha256": "49afe4ae8cbc0250c800939aca4874c020c3aa5c5baa820b3bc284f68b1df520",
+  "pinned_dependency_count": 66,
+  "validation_passed": true
+}

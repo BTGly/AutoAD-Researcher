@@ -10,12 +10,15 @@ Sha256Hex = r"^[0-9a-f]{64}$"
 PythonVersion = r"^\d+\.\d+\.\d+$"
 
 
+_HTTPS_URL_PATTERN = r"^https://[a-zA-Z0-9._-]+(?:\.[a-zA-Z]{2,})(?:/[^\s@?&#]*)?$"
+
+
 class PackageIndexSpec(BaseModel):
-    """A package index used when resolving the lockfile."""
+    """A package index used when resolving the lockfile. HTTPS only, no credentials/query/fragment."""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     name: str = Field(min_length=1)
-    url: str = Field(pattern=r"^https://[^\s]+$")
+    url: str = Field(pattern=_HTTPS_URL_PATTERN)
     default: bool = False
 
 
@@ -66,6 +69,19 @@ class BenchmarkEnvironmentSpec(BaseModel):
             raise ValueError("locked spec requires python_version")
         if self.lockfile_sha256 is None:
             raise ValueError("locked spec requires lockfile_sha256")
+        if not self.package_manager_version:
+            raise ValueError("locked spec requires package_manager_version")
+        if not self.package_indexes:
+            raise ValueError("locked spec requires package_indexes")
+        defaults = [i for i in self.package_indexes if i.default]
+        if len(defaults) != 1:
+            raise ValueError("locked spec requires exactly one default package index")
+        names = [i.name for i in self.package_indexes]
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate package index name")
+        urls = [i.url for i in self.package_indexes]
+        if len(urls) != len(set(urls)):
+            raise ValueError("duplicate package index URL")
         return self
 
 

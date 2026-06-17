@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "platform": "linux_x86_64",
+  "machine": "x86_64",
+  "uv_version": "0.11.21",
+  "available_python_versions": ["3.11.15"],
+  "nvidia_driver_version": "550.107.02",
+  "gpu_count": 1,
+  "gpus": [{"index": 0, "name": "NVIDIA GeForce RTX 4090", "memory_mb": 24564, "compute_capability": "8.9"}]
+}

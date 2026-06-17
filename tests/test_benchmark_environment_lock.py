@@ -32,9 +32,12 @@ class TestSpec:
             )
 
     def test_locked_valid(self):
+        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
         s = BenchmarkEnvironmentSpec(
             schema_version=1, status="locked", environment_id="env1", case_id="c1",
             platform="linux_x86_64", python_version="3.8.0", package_manager="uv",
+            package_manager_version="0.5.0",
+            package_indexes=[PackageIndexSpec(name="pypi", url="https://pypi.org/simple", default=True)],
             requirements_input_path="x.in", lockfile_path="x.txt",
             lockfile_sha256="a" * 64, required_imports=["torch"],
             accelerator="cuda", gpu_index=0,
@@ -167,3 +170,42 @@ class TestValidateLockfile:
         lf = tmp_path / "lock.txt"
         lf.write_text("torch==1.8.0\n")
         assert compute_lockfile_sha256(lf) == compute_lockfile_sha256(lf)
+
+    def test_locked_requires_indexes(self):
+        with pytest.raises(ValueError, match="package_indexes"):
+            BenchmarkEnvironmentSpec(
+                schema_version=1, status="locked", environment_id="env1", case_id="c1",
+                platform="linux_x86_64", python_version="3.8.0", package_manager="uv",
+                package_manager_version="0.5",
+                requirements_input_path="x.in", lockfile_path="x.txt",
+                lockfile_sha256="a" * 64, required_imports=["torch"],
+                accelerator="cuda", gpu_index=0,
+                allow_network_during_build=True, allow_network_during_execution=False,
+            )
+
+    def test_locked_requires_exactly_one_default_index(self):
+        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
+        with pytest.raises(ValueError, match="exactly one default"):
+            BenchmarkEnvironmentSpec(
+                schema_version=1, status="locked", environment_id="env1", case_id="c1",
+                platform="linux_x86_64", python_version="3.8.0", package_manager="uv",
+                package_manager_version="0.5",
+                package_indexes=[
+                    PackageIndexSpec(name="a", url="https://a.com", default=True),
+                    PackageIndexSpec(name="b", url="https://b.com", default=True),
+                ],
+                requirements_input_path="x.in", lockfile_path="x.txt",
+                lockfile_sha256="a" * 64, required_imports=["torch"],
+                accelerator="cuda", gpu_index=0,
+                allow_network_during_build=True, allow_network_during_execution=False,
+            )
+
+    def test_index_url_credentials_rejected(self):
+        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
+        with pytest.raises(Exception):
+            PackageIndexSpec(name="x", url="https://user:pass@example.com/simple")
+
+    def test_index_url_query_rejected(self):
+        from autoad_researcher.benchmarks.environment_lock import PackageIndexSpec
+        with pytest.raises(Exception):
+            PackageIndexSpec(name="x", url="https://example.com/simple?token=secret")
