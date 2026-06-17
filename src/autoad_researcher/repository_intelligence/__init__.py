@@ -1,6 +1,15 @@
 """Repository Intelligence contracts and deterministic helpers."""
 
 from autoad_researcher.repository_intelligence.control_models import AnalysisControlSignal
+from autoad_researcher.repository_intelligence.acquisition import (
+    AcquisitionError,
+    AcquisitionToolCallRecord,
+    RepositoryAcquisitionRequest,
+    RepositoryAcquisitionResult,
+    RepositoryAcquisitionRunner,
+    RepositoryAttestation,
+    attest_repository,
+)
 from autoad_researcher.repository_intelligence.discovery import (
     DiscoveryError,
     GitHubRepositoryLocator,
@@ -77,6 +86,8 @@ __all__ = [
     "AnalysisControlSignal",
     "AnalysisTransitionDecision",
     "ActiveRepositoryContext",
+    "AcquisitionError",
+    "AcquisitionToolCallRecord",
     "DiscoveryError",
     "EvidenceIndexRecord",
     "EvidenceMiddlewareError",
@@ -86,6 +97,10 @@ __all__ = [
     "GitHubRepositoryLocator",
     "RepositoryAgentBudget",
     "RepositoryArtifactPaths",
+    "RepositoryAcquisitionRequest",
+    "RepositoryAcquisitionResult",
+    "RepositoryAcquisitionRunner",
+    "RepositoryAttestation",
     "RepositoryCandidate",
     "RepositoryClaim",
     "RepositoryDiscoveryResult",
@@ -117,6 +132,7 @@ __all__ = [
     "WebEvidenceRef",
     "append_evidence",
     "append_model_routing_decision",
+    "attest_repository",
     "build_discovery_queries",
     "create_file_evidence",
     "create_repository_identity_evidence",
