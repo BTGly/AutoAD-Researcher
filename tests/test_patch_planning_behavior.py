@@ -119,6 +119,11 @@ def _apply(app, plan, dec, ws, repo, run_id):
                                workspace_id=ws, repository_root=repo, run_id=run_id)
 
 
+def _app():
+    """Create an applicator with a safe default allowed scope."""
+    return ControlledPatchApplicator(policy_allowed_paths={"src/"})
+
+
 def _dec_reject(sha="c" * 64):
     return RejectDecision(
         decision_id="ad",
@@ -153,7 +158,7 @@ class TestCanonicalDatetime:
 
 class TestFailClosedResult:
     def test_no_approved_returns_failed(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws_1")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_2"], sha=plan.patch_plan_sha256)
@@ -162,7 +167,7 @@ class TestFailClosedResult:
         assert r.overall_status == "patch_application_failed"
 
     def test_partial_failure(self, tmp_path):
-        app = ControlledPatchApplicator(policy_denied_paths={"denied"})
+        app = ControlledPatchApplicator(policy_denied_paths={"denied"}, policy_allowed_paths={"src/"})
         c1 = _c("chg_1", "ws", path="src/a.py")
         c2 = _c("chg_2", "ws", path="denied/b.py")
         plan = _psha(changes=[c1, c2])
@@ -172,7 +177,7 @@ class TestFailClosedResult:
         assert r.overall_status == "patch_application_partial_failure"
 
     def test_manifest_tracks(self, tmp_path):
-        app = ControlledPatchApplicator(policy_denied_paths={"denied"})
+        app = ControlledPatchApplicator(policy_denied_paths={"denied"}, policy_allowed_paths={"src/"})
         c1 = _c("chg_1", "ws", path="src/a.py")
         c2 = _c("chg_2", "ws", path="denied/b.py")
         plan = _psha(changes=[c1, c2])
@@ -186,7 +191,7 @@ class TestFailClosedResult:
         assert r.overall_status == "patch_application_partial_failure"
 
     def test_all_success(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -199,7 +204,7 @@ class TestFailClosedResult:
 
 class TestPreflight:
     def test_sha_checks(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"; repo.mkdir()
         fp = _fp(repo)
@@ -211,7 +216,7 @@ class TestPreflight:
         assert pf.plan_sha_valid and pf.decision_sha_valid and pf.request_sha_valid
 
     def test_sha_mismatch(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha(); repo = tmp_path / "repo"; repo.mkdir()
         fp = _fp(repo)
         plan = plan.model_copy(update={"repository_fingerprint": fp})
@@ -221,7 +226,7 @@ class TestPreflight:
         assert not pf.request_sha_valid
 
     def test_blocks_on_fail(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         repo = tmp_path / "repo"; repo.mkdir()
@@ -235,7 +240,7 @@ class TestPreflight:
 
 class TestBase64Blob:
     def test_blob_is_base64(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -249,7 +254,7 @@ class TestBase64Blob:
 
 class TestModifyMissingFile:
     def test_modify_missing_fails(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", operation_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/no.py", variant_ids=["v"], rationale="r")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -259,7 +264,7 @@ class TestModifyMissingFile:
         assert not (repo / "src" / "no.py").exists()
 
     def test_delete_missing_fails(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", operation_kind="delete", target_mode="existing_target", hook_id="h", repository_path="src/no.py", variant_ids=["v"], rationale="r")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -272,7 +277,7 @@ class TestModifyMissingFile:
 
 class TestCheckKind:
     def test_check_kind_routing(self):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -283,7 +288,7 @@ class TestCheckKind:
         assert rep.status in ("patch_applied_and_local_validations_passed", "patch_applied_but_local_validation_failed")
 
     def test_required_not_approved(self):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -298,7 +303,7 @@ class TestCheckKind:
 
 class TestFinalizeGuard:
     def test_failed_not_finalized(self):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         from autoad_researcher.schemas.patch_planning import PatchExecutionResult
         result = PatchExecutionResult(result_id="r", run_id="r", overall_status="patch_application_failed", next_stage="replan_required")
         r = app.finalize_with_validation(result=result, run_id="r", workspace_id="w", repository_root=Path(tempfile.mkdtemp()))
@@ -309,7 +314,7 @@ class TestFinalizeGuard:
 
 class TestAskApproval:
     def test_ask_path_allowed_when_approved(self, tmp_path):
-        app = ControlledPatchApplicator(policy_ask_paths={"src/ask.py"})
+        app = ControlledPatchApplicator(policy_ask_paths={"src/ask.py"}, policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws", path="src/ask.py")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], approved_ask_paths=["src/ask.py"], sha=plan.patch_plan_sha256)
@@ -322,7 +327,7 @@ class TestAskApproval:
 
 class TestReverseRollback:
     def test_returns_original(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c1 = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", operation_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/f.py", variant_ids=["v"], rationale="first")
         c2 = PlannedRepositoryChange(change_id="chg_2", workspace_id="ws", operation_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/f.py", variant_ids=["v"], rationale="second")
         plan = _psha(changes=[c1, c2])
@@ -337,7 +342,7 @@ class TestReverseRollback:
 
 class TestRename:
     def test_rename(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", operation_kind="rename", target_mode="existing_target", hook_id="h", repository_path="src/old.py", rename_target_path="src/new.py", variant_ids=["v"], rationale="r")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)

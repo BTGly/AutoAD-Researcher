@@ -1,219 +1,253 @@
-"""Step 3.8: Execution validators — service-layer functions.
+"""Step 3.8: Execution validators — sealed service-layer functions.
 
-Validates and derives execution state from raw schemas.
+Matches the sealed contract in docs/3.8开发计划.md v2.12.
 """
 
-from autoad_researcher.runner.models import ExperimentInputRefs
-from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from autoad_researcher.analysis.metrics import MetricsReport, ParsedMetric
+from autoad_researcher.runner.models import ExperimentExecutionResult
+from autoad_researcher.schemas.artifacts import ArtifactReferenceV2, ResolvedArtifact
 from autoad_researcher.schemas.execution import (
     AttemptIdentitySnapshot,
     AttemptOutcome,
     AttemptRecord,
     ExecutionManifest,
-    ExecutionUnitPlan,
+    ExecutionStatus,
     ExecutionUnitRecord,
     ExecutionUnitStatus,
-    ExperimentExecutionHandoff,
-    FailureClassification,
-    IntakeCheck,
-    RunnerIntakeReport,
-    RunnerIntakeRequest,
     TerminalReason,
-    WorkspaceExecutionRef,
 )
-from autoad_researcher.schemas.patch_planning import PatchRunnerHandoff
 
-_TERMINAL_REASON_TO_FINAL_STATUS: dict[str, ExecutionUnitStatus] = {
-    "max_retries_exceeded": "failed",
-    "total_wall_time_exceeded": "failed",
-    "terminal_metric_failure": "failed",
-    "terminal_environment_error": "failed",
-    "terminal_invalid_repository": "failed",
-}
+if TYPE_CHECKING:
+    from autoad_researcher.supervisor.validity import ScientificValidityReport
 
 
 def compute_identity_match(
-    snapshot: AttemptIdentitySnapshot, input_refs: ExperimentInputRefs
+    prev_identity: AttemptIdentitySnapshot,
+    next_identity: AttemptIdentitySnapshot,
 ) -> bool:
-    """Check whether an identity snapshot matches the expected input refs."""
+    """Four-field identity comparison for retry eligibility.
+
+    All four canonical fields must match for a retry to be the same
+    logical operation. This replaces the earlier 3-field comparison
+    that omitted repository fingerprint.
+    """
     return (
-        snapshot.command_sha256 == input_refs.command_sha256
-        and snapshot.environment_sha256 == input_refs.environment_sha256
-        and snapshot.dataset_sha256 == input_refs.dataset_manifest_sha256
+        prev_identity.execution_unit_plan_sha256 == next_identity.execution_unit_plan_sha256
+        and prev_identity.command_sha256 == next_identity.command_sha256
+        and prev_identity.input_refs_sha256 == next_identity.input_refs_sha256
+        and prev_identity.workspace_repository_fingerprint
+        == next_identity.workspace_repository_fingerprint
     )
-
-
-def derive_workspace_execution_refs(
-    handoff: PatchRunnerHandoff,
-) -> list[WorkspaceExecutionRef]:
-    """Derive workspace execution refs from a PatchRunnerHandoff."""
-    refs: list[WorkspaceExecutionRef] = []
-
-    baseline = WorkspaceExecutionRef(
-        workspace_id=handoff.baseline_workspace_ref.workspace_id,
-        variant_ids=[],
-    )
-    refs.append(baseline)
-
-    for ws in handoff.variant_workspaces:
-        refs.append(
-            WorkspaceExecutionRef(
-                workspace_id=ws.workspace_id,
-                variant_ids=ws.variant_ids,
-            )
-        )
-    return refs
-
-
-def validate_intake_against_patch_handoff(
-    intake: RunnerIntakeRequest,
-    handoff: PatchRunnerHandoff,
-) -> RunnerIntakeReport:
-    """Validate that the intake request is consistent with the patch handoff."""
-    checks: list[IntakeCheck] = []
-
-    run_id_match = intake.run_id == handoff.run_id
-    checks.append(
-        IntakeCheck(
-            name="run_id_match",
-            status="passed" if run_id_match else "failed",
-            details=f"intake run_id={intake.run_id}, handoff run_id={handoff.run_id}",
-        )
-    )
-
-    patch_plan_match = intake.patch_plan_sha256 == handoff.approved_patch_plan_sha256
-    checks.append(
-        IntakeCheck(
-            name="patch_plan_sha256_match",
-            status="passed" if patch_plan_match else "failed",
-        )
-    )
-
-    handoff_ws_ids = {ws.workspace_id for ws in derive_workspace_execution_refs(handoff)}
-    intake_ws_ids = {ref.workspace_id for ref in intake.workspace_execution_refs}
-    ws_match = handoff_ws_ids == intake_ws_ids
-    if not ws_match:
-        missing = handoff_ws_ids - intake_ws_ids
-        extra = intake_ws_ids - handoff_ws_ids
-        parts = []
-        if missing:
-            parts.append(f"missing workspaces: {sorted(missing)}")
-        if extra:
-            parts.append(f"unexpected workspaces: {sorted(extra)}")
-        checks.append(
-            IntakeCheck(
-                name="workspace_ids_match",
-                status="failed",
-                details="; ".join(parts),
-            )
-        )
-    else:
-        checks.append(
-            IntakeCheck(
-                name="workspace_ids_match",
-                status="passed",
-            )
-        )
-
-    all_passed = all(check.status == "passed" for check in checks)
-    return RunnerIntakeReport(
-        overall="passed" if all_passed else "failed",
-        checks=checks,
-    )
-
-
-def validate_handoff_against_manifest(
-    handoff: ExperimentExecutionHandoff,
-    original_handoff: ArtifactReferenceV2,
-) -> bool:
-    """Validate that the execution handoff references the original patch handoff."""
-    return handoff.manifest.handoff_ref == original_handoff
-
-
-def derive_overall_status(unit_records: list[ExecutionUnitRecord]) -> ExecutionUnitStatus:
-    """Derive the overall execution status from a list of unit records."""
-    if not unit_records:
-        return "pending"
-
-    statuses = [record.final_status for record in unit_records]
-    if all(s == "succeeded" for s in statuses):
-        return "succeeded"
-    if any(s == "running" for s in statuses):
-        return "running"
-    if any(s == "pending" for s in statuses):
-        return "pending"
-    return "failed"
 
 
 def validate_resolution_presence(
-    produced: list, planned: list
-) -> bool:
-    """Check that all planned artifact productions have been resolved."""
-    planned_roles = {b.role for p in planned for b in p.bindings}
-    resolved_roles = {b.role for produced_bindings in produced for b in produced_bindings.bindings}
-    return planned_roles == resolved_roles
+    ref: ArtifactReferenceV2 | None,
+    resolved: ResolvedArtifact | None,
+    name: str,
+) -> None:
+    """Artifact ref and resolved payload must appear together or both absent.
 
-
-def validate_attempt_record_against_artifacts(
-    record: AttemptRecord,
-    plan: ExecutionUnitPlan,
-) -> bool:
-    """Validate that an attempt record's artifact refs align with the plan."""
-    return True
+    Forbids: ref without resolved (dangling reference, artifact not loaded),
+             resolved without ref (payload source untraceable).
+    """
+    if (ref is None) != (resolved is None):
+        raise ValueError(
+            f"{name}: artifact ref and resolved artifact must appear together"
+        )
 
 
 def derive_execution_status(
-    attempts: list[AttemptRecord],
-) -> ExecutionUnitStatus:
-    """Derive the execution status from a list of attempt records."""
-    if not attempts:
-        return "pending"
+    result: ExperimentExecutionResult | None,
+) -> ExecutionStatus:
+    """Map 3.0 ExperimentExecutionResult.status to 3.8 AttemptOutcome.execution_status.
 
-    for attempt in attempts:
-        if attempt.identity.attempt_number == 1 and attempt.outcome is not None:
-            if attempt.outcome.execution_result_ref is not None:
-                pass
-    return "succeeded"
+    3.0 status values:
+      preflight_failed / execution_failed / metric_parse_failed /
+      invalid_repository_mutation / success
+    3.0 timed_out: bool (independent field)
+    """
+    if result is None:
+        return "not_run"
+    if result.timed_out:
+        return "timeout"
+    if result.status == "success":
+        return "succeeded"
+    return "failed"
 
 
 def derive_attempt_outcome(
-    snapshot: AttemptIdentitySnapshot,
-    execution_result_ref: ArtifactReferenceV2,
-    metrics_report_ref: ArtifactReferenceV2 | None = None,
-    validity_report_ref: ArtifactReferenceV2 | None = None,
-    repro_summary_refs: list[ArtifactReferenceV2] | None = None,
+    execution_result: ExperimentExecutionResult | None,
+    metrics_report: MetricsReport | None,
+    validity_report: ScientificValidityReport | None,
 ) -> AttemptOutcome:
-    """Derive an AttemptOutcome from execution results."""
+    """Derive AttemptOutcome from resolved artifact content.
+
+    outcome is NOT an independent writable fact — it MUST match
+    what validate_attempt_record_against_artifacts re-derives.
+    """
+    exec_status = derive_execution_status(execution_result)
+    if metrics_report is None or metrics_report.status not in ("passed", "failed"):
+        metrics_status = "not_run"
+    else:
+        metrics_status = "passed" if metrics_report.status == "passed" else "failed"
+    if validity_report is None:
+        validity_status = "not_run"
+    else:
+        validity_status = validity_report.status
     return AttemptOutcome(
-        identity=snapshot,
-        execution_result_ref=execution_result_ref,
-        metrics_report_ref=metrics_report_ref,
-        validity_report_ref=validity_report_ref,
-        repro_summary_refs=repro_summary_refs or [],
+        execution_status=exec_status,
+        metrics_status=metrics_status,
+        validity_status=validity_status,
     )
 
 
-def derive_terminal_reason(
-    failure_classification: FailureClassification,
+def validate_attempt_record_against_artifacts(
+    attempt: AttemptRecord,
+    expected_run_id: str,
+    execution_result: ResolvedArtifact[ExperimentExecutionResult] | None,
+    metrics_report: ResolvedArtifact[MetricsReport] | None,
+    validity_report: ResolvedArtifact[ScientificValidityReport] | None,
+    resource_report: ResolvedArtifact | None,
+) -> None:
+    """Full artifact identity closure for one attempt.
+
+    Dereferences the four attempt artifact refs, verifies SHA binding,
+    cross-checks run_id/attempt_id/command_sha256/unit_id, re-derives
+    outcome from artifact content, and asserts stored outcome matches.
+    """
+    validate_resolution_presence(
+        attempt.execution_result_ref, execution_result, "execution_result",
+    )
+    validate_resolution_presence(
+        attempt.metrics_report_ref, metrics_report, "metrics_report",
+    )
+    validate_resolution_presence(
+        attempt.validity_report_ref, validity_report, "validity_report",
+    )
+    validate_resolution_presence(
+        attempt.resource_usage_ref, resource_report, "resource_report",
+    )
+
+    if execution_result is not None:
+        if execution_result.ref.sha256 != attempt.execution_result_ref.sha256:
+            raise ValueError("execution_result ref.sha256 mismatch")
+        if execution_result.verified_sha256 != execution_result.ref.sha256:
+            raise ValueError("execution_result verified SHA mismatch")
+        if execution_result.payload.run_id != expected_run_id:
+            raise ValueError("execution_result.run_id != expected_run_id")
+        if execution_result.payload.attempt != attempt.attempt_id:
+            raise ValueError("execution_result.attempt != attempt.attempt_id")
+        if execution_result.payload.command_sha256 != attempt.identity.command_sha256:
+            raise ValueError("execution_result.command_sha256 != attempt.identity.command_sha256")
+
+    if metrics_report is not None:
+        if metrics_report.ref.sha256 != attempt.metrics_report_ref.sha256:
+            raise ValueError("metrics_report ref.sha256 mismatch")
+        if metrics_report.verified_sha256 != metrics_report.ref.sha256:
+            raise ValueError("metrics_report verified SHA mismatch")
+
+    if validity_report is not None:
+        if validity_report.ref.sha256 != attempt.validity_report_ref.sha256:
+            raise ValueError("validity_report ref.sha256 mismatch")
+        if validity_report.verified_sha256 != validity_report.ref.sha256:
+            raise ValueError("validity_report verified SHA mismatch")
+
+    if resource_report is not None:
+        if resource_report.ref.sha256 != attempt.resource_usage_ref.sha256:
+            raise ValueError("resource_report ref.sha256 mismatch")
+        if resource_report.verified_sha256 != resource_report.ref.sha256:
+            raise ValueError("resource_report verified SHA mismatch")
+
+    derived = derive_attempt_outcome(
+        execution_result.payload if execution_result else None,
+        metrics_report.payload if metrics_report else None,
+        validity_report.payload if validity_report else None,
+    )
+    if attempt.outcome != derived:
+        raise ValueError(
+            f"AttemptOutcome does not match referenced artifacts: "
+            f"stored={attempt.outcome}, derived={derived}"
+        )
+
+    for binding in attempt.resolved_bindings:
+        if binding.artifact_ref.sha256 != binding.artifact_sha256:
+            raise ValueError("resolved_binding SHA mismatch")
+
+    for prod in attempt.produced_artifacts:
+        for binding in prod.bindings:
+            if binding.artifact_ref.sha256 != binding.artifact_sha256:
+                raise ValueError("produced_artifact SHA mismatch")
+
+
+def derive_terminal_reason_from_outcome(
+    outcome: AttemptOutcome,
 ) -> TerminalReason:
-    """Derive a TerminalReason from a FailureClassification."""
-    mapping: dict[FailureClassification, TerminalReason] = {
-        "max_retries": "max_retries_exceeded",
-        "wall_time": "total_wall_time_exceeded",
-        "metric": "terminal_metric_failure",
-        "environment": "terminal_environment_error",
-        "repository": "terminal_invalid_repository",
-    }
-    return mapping.get(failure_classification, None)
+    """Derive terminal_reason from the final attempt's outcome."""
+    if outcome.execution_status == "succeeded":
+        if outcome.validity_status in ("valid", "insufficient_evidence"):
+            return "completed"
+        if outcome.validity_status == "invalid":
+            return "validity_failed"
+        return "insufficient_evidence"
+    if outcome.execution_status == "timeout":
+        return "execution_failed"
+    if outcome.execution_status == "not_run":
+        return "insufficient_evidence"
+    return "execution_failed"
 
 
 def derive_final_status(
-    status: ExecutionUnitStatus,
-    terminal_reason: TerminalReason,
+    terminal_reason: TerminalReason | None,
 ) -> ExecutionUnitStatus:
-    """Derive the final execution unit status."""
-    if status in ("succeeded", "failed", "skipped"):
-        return status
-    if terminal_reason is not None:
-        return _TERMINAL_REASON_TO_FINAL_STATUS.get(terminal_reason, "failed")
-    return status
+    """Derive final unit status from terminal reason."""
+    if terminal_reason == "completed":
+        return ExecutionUnitStatus.COMPLETED
+    if terminal_reason in (
+        "execution_failed",
+        "validity_failed",
+        "insufficient_evidence",
+    ):
+        return ExecutionUnitStatus.FAILED
+    if terminal_reason in (
+        "blocked_upstream_failure",
+        "intake_failed",
+        "preflight_failed",
+    ):
+        return ExecutionUnitStatus.BLOCKED
+    return ExecutionUnitStatus.FAILED
+
+
+def derive_overall_status(
+    manifest: ExecutionManifest,
+) -> str:
+    """Derive overall execution status from unit records."""
+    completed = sum(1 for r in manifest.unit_records if r.final_status == ExecutionUnitStatus.COMPLETED)
+    failed = sum(1 for r in manifest.unit_records if r.final_status == ExecutionUnitStatus.FAILED)
+    blocked = sum(1 for r in manifest.unit_records if r.final_status == ExecutionUnitStatus.BLOCKED)
+    total = len(manifest.unit_records)
+    if completed == total:
+        return "completed"
+    if blocked == total:
+        return "blocked"
+    if failed == total:
+        return "failed"
+    return "partially_completed"
+
+
+def validate_handoff_against_manifest(
+    manifest: ExecutionManifest,
+) -> None:
+    """Validate that handoff counts match manifest."""
+    derived_completed = sum(1 for r in manifest.unit_records if r.final_status == ExecutionUnitStatus.COMPLETED)
+    derived_failed = sum(1 for r in manifest.unit_records if r.final_status == ExecutionUnitStatus.FAILED)
+    derived_blocked = sum(1 for r in manifest.unit_records if r.final_status == ExecutionUnitStatus.BLOCKED)
+    if manifest.completed_unit_count != derived_completed:
+        raise ValueError("completed_unit_count mismatch")
+    if manifest.failed_unit_count != derived_failed:
+        raise ValueError("failed_unit_count mismatch")
+    if manifest.blocked_unit_count != derived_blocked:
+        raise ValueError("blocked_unit_count mismatch")

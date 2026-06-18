@@ -183,7 +183,7 @@ class PlannedRepositoryChange(BaseModel):
 
     @model_validator(mode="after")
     def _validate_collision_policy(self):
-        if self.operation_kind in {"modify", "delete"}:
+        if self.operation_kind in {"modify", "delete", "rename"}:
             if self.target_collision_policy == "replace_existing":
                 if not self.target_before_sha256:
                     raise ValueError(f"change {self.change_id}: replace_existing requires target_before_sha256")

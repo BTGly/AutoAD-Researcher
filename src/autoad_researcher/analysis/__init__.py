@@ -18,7 +18,6 @@ from autoad_researcher.analysis.crossval import (
 )
 from autoad_researcher.analysis.delta import (
     compute_deltas,
-    compute_resource_deltas,
 )
 from autoad_researcher.analysis.metrics import (
     MetricParseSpec,
@@ -47,10 +46,8 @@ __all__ = [
     # Step 3.9 analysis
     "compare_per_experiment_usage",
     "compute_deltas",
-    "compute_resource_deltas",
     "derive_idea_support",
     "derive_pair_validity",
-    "derive_per_experiment_budget_reason",
     "determine_budget_assessment",
     "determine_bundle_budget_assessment",
     "validate_aggregate_from_observations",

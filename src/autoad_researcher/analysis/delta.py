@@ -1,58 +1,31 @@
-"""Step 3.9: Delta computation between variant and baseline metrics."""
+"""Step 3.9: Delta computation — sealed implementation."""
 
-from autoad_researcher.schemas.results_analysis import (
-    PairedMetricObservation,
-    ResourceDelta,
-    VariantResourceAggregate,
-    BaselineResourceAggregate,
-)
+from typing import Literal
+
+_EPSILON = 1e-10
 
 
 def compute_deltas(
-    observations: list[PairedMetricObservation],
-) -> list[PairedMetricObservation]:
-    """Compute raw_delta and relative_delta_pct for each observation.
+    baseline: float,
+    variant: float,
+    direction: Literal["maximize", "minimize"],
+) -> tuple[float, float, float | None, float | None]:
+    """Compute raw delta, improvement delta, and relative percentages.
 
-    Returns updated observations with computed delta fields filled in.
+    Returns (raw_delta, improvement_delta, raw_relative_pct, improvement_relative_pct).
     """
-    result: list[PairedMetricObservation] = []
-    for obs in observations:
-        if obs.variant_value is not None and obs.baseline_value is not None:
-            raw_delta = obs.variant_value - obs.baseline_value
-            if abs(obs.baseline_value) > 1e-12:
-                relative_delta_pct = (raw_delta / obs.baseline_value) * 100.0
-            else:
-                relative_delta_pct = None
-        else:
-            raw_delta = None
-            relative_delta_pct = None
+    raw_delta = variant - baseline
+    if direction == "maximize":
+        improvement_delta = raw_delta
+    else:
+        improvement_delta = baseline - variant
 
-        result.append(
-            PairedMetricObservation(
-                variant_metric_name=obs.variant_metric_name,
-                variant_value=obs.variant_value,
-                variant_parse_status=obs.variant_parse_status,
-                variant_artifact_ref=obs.variant_artifact_ref,
-                baseline_metric_name=obs.baseline_metric_name,
-                baseline_value=obs.baseline_value,
-                baseline_parse_status=obs.baseline_parse_status,
-                baseline_artifact_ref=obs.baseline_artifact_ref,
-                raw_delta=raw_delta,
-                relative_delta_pct=relative_delta_pct,
-                is_statistically_significant=obs.is_statistically_significant,
-                p_value=obs.p_value,
-            )
-        )
-    return result
+    abs_baseline = abs(baseline)
+    if abs_baseline < _EPSILON:
+        raw_relative_pct = None
+        improvement_relative_pct = None
+    else:
+        raw_relative_pct = raw_delta / abs_baseline * 100.0
+        improvement_relative_pct = improvement_delta / abs_baseline * 100.0
 
-
-def compute_resource_deltas(
-    variant: VariantResourceAggregate,
-    baseline: BaselineResourceAggregate,
-) -> ResourceDelta:
-    """Compute resource deltas between a variant and the baseline."""
-    return ResourceDelta(
-        variant_id=variant.variant_id,
-        delta_gpu_hours=variant.gpu_hours - baseline.gpu_hours,
-        delta_wall_time=variant.wall_time - baseline.wall_time,
-    )
+    return raw_delta, improvement_delta, raw_relative_pct, improvement_relative_pct

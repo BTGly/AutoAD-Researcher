@@ -1,12 +1,16 @@
 """Reproducibility comparison for two experiment attempts."""
 
-from typing import Literal
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.analysis.metrics import MetricsReport
 from autoad_researcher.benchmarks.hashing import canonical_sha256
-from autoad_researcher.supervisor.validity import ScientificValidityReport
+
+if TYPE_CHECKING:
+    from autoad_researcher.supervisor.validity import ScientificValidityReport
 
 
 class AttemptEvidenceSummary(BaseModel):

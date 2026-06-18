@@ -11,7 +11,7 @@ form.  3.7+ schemas (``patch_planning.py`` v2 handoff, 3.8 execution records,
 3.9 analysis reports) use ``ArtifactReferenceV2``.
 """
 
-from typing import Generic, Literal, TypeVar
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -34,10 +34,10 @@ class ArtifactReferenceV2(BaseModel):
 
 
 class ResolvedArtifact(BaseModel, Generic[T]):
-    """A resolved artifact with its reference and typed payload."""
+    """Resolver return value: explicit binding of ref, payload, and verified SHA."""
 
     model_config = ConfigDict(extra="forbid")
 
-    artifact_id: str = Field(min_length=1)
-    artifact_ref: ArtifactReferenceV2
+    ref: ArtifactReferenceV2
+    verified_sha256: str = Field(pattern=Sha256Pattern)
     payload: T

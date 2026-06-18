@@ -1,8 +1,11 @@
-"""Tests for 3.9 results analysis schemas — model creation, validators, constraints."""
+"""Tests for 3.9 results analysis sealed schemas — model creation, validators, constraints."""
+
+import math
 
 import pytest
 
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
+from autoad_researcher.schemas.experiment_planning import ScientificConclusion
 from autoad_researcher.schemas.results_analysis import (
     AggregatedMetricComparison,
     AggregatedMetricKey,
@@ -12,6 +15,7 @@ from autoad_researcher.schemas.results_analysis import (
     CurrentRunBaselineMetricRef,
     EvidenceSufficiency,
     FailureAnalysis,
+    IdeaSupportConclusion,
     MetricObservationKey,
     NextRunProposal,
     PairedMetricObservation,
@@ -34,12 +38,26 @@ from autoad_researcher.schemas.results_analysis import (
 _SHA = "a" * 64
 
 
-def _ref(artifact_id="art"):
+def _sha() -> str:
+    return _SHA
+
+
+def _ref(artifact_id: str = "art") -> ArtifactReferenceV2:
     return ArtifactReferenceV2(
         artifact_id=artifact_id,
         artifact_type="report",
         locator=f"runs/run_test/{artifact_id}.json",
-        sha256=_SHA,
+        sha256=_sha(),
+    )
+
+
+def _baseline_source() -> CurrentRunBaselineMetricRef:
+    return CurrentRunBaselineMetricRef(
+        metric_name="auroc",
+        unit_id="u1",
+        seed=0,
+        metric_ref=_ref("base_metric"),
+        validity_ref=_ref("base_validity"),
     )
 
 
@@ -50,11 +68,12 @@ class TestCurrentRunBaselineMetricRef:
     def test_valid(self):
         ref = CurrentRunBaselineMetricRef(
             metric_name="auroc",
-            baseline_metric_artifact_ref=_ref("base_metric"),
-            current_metric_name_in_run="variant_auroc",
-            current_artifact_ref=_ref("variant_metric"),
-            aggregation_method="mean",
+            unit_id="u1",
+            seed=0,
+            metric_ref=_ref("base_metric"),
+            validity_ref=_ref("base_validity"),
         )
+        assert ref.source_type == "current_run"
         assert ref.metric_name == "auroc"
 
 
@@ -63,70 +82,12 @@ class TestReusedBaselineMetricRef:
         ref = ReusedBaselineMetricRef(
             metric_name="auroc",
             source_run_id="run_001",
-            source_artifact_ref=_ref("base_metric"),
+            seed=0,
+            metric_ref=_ref("base_metric"),
+            validity_ref=_ref("base_validity"),
         )
+        assert ref.source_type == "reused"
         assert ref.source_run_id == "run_001"
-
-
-# ── PairedMetricObservation ───────────────────────────────────────────
-
-
-class TestPairedMetricObservation:
-    def test_valid(self):
-        obs = PairedMetricObservation(
-            variant_metric_name="variant_auroc",
-            variant_value=0.95,
-            variant_parse_status="parsed",
-            variant_artifact_ref=_ref("var"),
-            baseline_metric_name="baseline_auroc",
-            baseline_value=0.90,
-            baseline_parse_status="parsed",
-            baseline_artifact_ref=_ref("base"),
-            raw_delta=0.05,
-        )
-        assert obs.raw_delta == 0.05
-
-    def test_delta_recomputed_validator(self):
-        with pytest.raises(Exception, match="raw_delta"):
-            PairedMetricObservation(
-                variant_metric_name="var",
-                variant_value=0.95,
-                variant_parse_status="parsed",
-                variant_artifact_ref=_ref("var"),
-                baseline_metric_name="base",
-                baseline_value=0.90,
-                baseline_parse_status="parsed",
-                baseline_artifact_ref=_ref("base"),
-                raw_delta=0.10,
-            )
-
-    def test_delta_matches(self):
-        obs = PairedMetricObservation(
-            variant_metric_name="var",
-            variant_value=0.95,
-            variant_parse_status="parsed",
-            variant_artifact_ref=_ref("var"),
-            baseline_metric_name="base",
-            baseline_value=0.90,
-            baseline_parse_status="parsed",
-            baseline_artifact_ref=_ref("base"),
-            raw_delta=0.05,
-        )
-        assert obs.variant_value == 0.95
-
-    def test_none_delta_skips_validation(self):
-        obs = PairedMetricObservation(
-            variant_metric_name="var",
-            variant_value=0.95,
-            variant_parse_status="parsed",
-            variant_artifact_ref=_ref("var"),
-            baseline_metric_name="base",
-            baseline_value=0.90,
-            baseline_parse_status="parsed",
-            baseline_artifact_ref=_ref("base"),
-            raw_delta=None,
-        )
-        assert obs.raw_delta is None
 
 
 # ── Metric Keys ───────────────────────────────────────────────────────
@@ -134,14 +95,191 @@ class TestPairedMetricObservation:
 
 class TestMetricObservationKey:
     def test_valid(self):
-        k = MetricObservationKey(unit_id="u1", attempt_number=1, role="variant")
+        k = MetricObservationKey(unit_id="u1", seed=0, role="variant")
         assert k.unit_id == "u1"
+        assert k.seed == 0
 
 
 class TestAggregatedMetricKey:
     def test_valid(self):
-        k = AggregatedMetricKey(metric_name="auroc", dataset_row="bottle", unit="ratio")
+        k = AggregatedMetricKey(
+            variant_id="v1", metric_name="auroc", dataset_row="bottle", direction="maximize",
+        )
         assert k.metric_name == "auroc"
+        assert k.direction == "maximize"
+
+
+# ── PairedMetricObservation ───────────────────────────────────────────
+
+
+class TestPairedMetricObservation:
+    def test_maximize_direction(self):
+        obs = PairedMetricObservation(
+            seed=0,
+            baseline_source=_baseline_source(),
+            baseline_value=0.80,
+            variant_unit_id="u1",
+            variant_id="v1",
+            variant_metric_ref=_ref("var_metric"),
+            variant_value=0.85,
+            direction="maximize",
+            raw_delta=0.05,
+            improvement_delta=0.05,
+            raw_relative_change_pct=6.25,
+            improvement_relative_change_pct=6.25,
+            pair_validity_status="valid",
+            variant_validity_ref=_ref("var_validity"),
+            baseline_validity_ref=_ref("base_validity"),
+            protocol_fingerprint="fp1",
+        )
+        assert obs.raw_delta == 0.05
+        assert obs.improvement_delta == 0.05
+        assert obs.raw_relative_change_pct == pytest.approx(6.25)
+
+    def test_minimize_direction(self):
+        obs = PairedMetricObservation(
+            seed=0,
+            baseline_source=_baseline_source(),
+            baseline_value=100.0,
+            variant_unit_id="u1",
+            variant_id="v1",
+            variant_metric_ref=_ref("var_metric"),
+            variant_value=90.0,
+            direction="minimize",
+            raw_delta=-10.0,
+            improvement_delta=10.0,
+            raw_relative_change_pct=-10.0,
+            improvement_relative_change_pct=10.0,
+            pair_validity_status="valid",
+            variant_validity_ref=_ref("var_validity"),
+            baseline_validity_ref=_ref("base_validity"),
+            protocol_fingerprint="fp1",
+        )
+        assert obs.raw_delta == -10.0
+        assert obs.improvement_delta == 10.0
+
+    def test_raw_delta_mismatch_raises(self):
+        with pytest.raises(ValueError, match="raw_delta"):
+            PairedMetricObservation(
+                seed=0,
+                baseline_source=_baseline_source(),
+                baseline_value=0.80,
+                variant_unit_id="u1",
+                variant_id="v1",
+                variant_metric_ref=_ref("var_metric"),
+                variant_value=0.85,
+                direction="maximize",
+                raw_delta=0.99,  # wrong — should be 0.05
+                improvement_delta=0.05,
+                pair_validity_status="valid",
+                variant_validity_ref=_ref("var_validity"),
+                baseline_validity_ref=_ref("base_validity"),
+                protocol_fingerprint="fp1",
+            )
+
+    def test_improvement_delta_mismatch_raises(self):
+        with pytest.raises(ValueError, match="improvement_delta"):
+            PairedMetricObservation(
+                seed=0,
+                baseline_source=_baseline_source(),
+                baseline_value=100.0,
+                variant_unit_id="u1",
+                variant_id="v1",
+                variant_metric_ref=_ref("var_metric"),
+                variant_value=90.0,
+                direction="minimize",
+                raw_delta=-10.0,
+                improvement_delta=0.0,  # wrong — should be 10.0
+                pair_validity_status="valid",
+                variant_validity_ref=_ref("var_validity"),
+                baseline_validity_ref=_ref("base_validity"),
+                protocol_fingerprint="fp1",
+            )
+
+    def test_relative_change_pct_mismatch_raises(self):
+        with pytest.raises(ValueError, match="raw_relative_change_pct"):
+            PairedMetricObservation(
+                seed=0,
+                baseline_source=_baseline_source(),
+                baseline_value=0.80,
+                variant_unit_id="u1",
+                variant_id="v1",
+                variant_metric_ref=_ref("var_metric"),
+                variant_value=0.85,
+                direction="maximize",
+                raw_delta=0.05,
+                improvement_delta=0.05,
+                raw_relative_change_pct=99.0,  # wrong — should be 6.25
+                improvement_relative_change_pct=6.25,
+                pair_validity_status="valid",
+                variant_validity_ref=_ref("var_validity"),
+                baseline_validity_ref=_ref("base_validity"),
+                protocol_fingerprint="fp1",
+            )
+
+    def test_baseline_zero_gives_none_relative_pcts(self):
+        obs = PairedMetricObservation(
+            seed=0,
+            baseline_source=_baseline_source(),
+            baseline_value=0.0,
+            variant_unit_id="u1",
+            variant_id="v1",
+            variant_metric_ref=_ref("var_metric"),
+            variant_value=0.05,
+            direction="maximize",
+            raw_delta=0.05,
+            improvement_delta=0.05,
+            raw_relative_change_pct=None,
+            improvement_relative_change_pct=None,
+            pair_validity_status="valid",
+            variant_validity_ref=_ref("var_validity"),
+            baseline_validity_ref=_ref("base_validity"),
+            protocol_fingerprint="fp1",
+        )
+        assert obs.raw_relative_change_pct is None
+        assert obs.improvement_relative_change_pct is None
+
+    def test_baseline_near_zero_gives_none_relative_pcts(self):
+        obs = PairedMetricObservation(
+            seed=0,
+            baseline_source=_baseline_source(),
+            baseline_value=1e-11,
+            variant_unit_id="u1",
+            variant_id="v1",
+            variant_metric_ref=_ref("var_metric"),
+            variant_value=0.05,
+            direction="maximize",
+            raw_delta=0.05,
+            improvement_delta=0.05,
+            raw_relative_change_pct=None,
+            improvement_relative_change_pct=None,
+            pair_validity_status="valid",
+            variant_validity_ref=_ref("var_validity"),
+            baseline_validity_ref=_ref("base_validity"),
+            protocol_fingerprint="fp1",
+        )
+        assert obs.raw_relative_change_pct is None
+
+    def test_baseline_zero_with_non_none_pcts_raises(self):
+        with pytest.raises(ValueError, match="should be None"):
+            PairedMetricObservation(
+                seed=0,
+                baseline_source=_baseline_source(),
+                baseline_value=0.0,
+                variant_unit_id="u1",
+                variant_id="v1",
+                variant_metric_ref=_ref("var_metric"),
+                variant_value=0.05,
+                direction="maximize",
+                raw_delta=0.05,
+                improvement_delta=0.05,
+                raw_relative_change_pct=5.0,
+                improvement_relative_change_pct=None,
+                pair_validity_status="valid",
+                variant_validity_ref=_ref("var_validity"),
+                baseline_validity_ref=_ref("base_validity"),
+                protocol_fingerprint="fp1",
+            )
 
 
 # ── AggregatedMetricComparison ────────────────────────────────────────
@@ -150,27 +288,78 @@ class TestAggregatedMetricKey:
 class TestAggregatedMetricComparison:
     def test_minimal(self):
         comp = AggregatedMetricComparison(
-            key=AggregatedMetricKey(
-                metric_name="auroc", dataset_row="bottle", unit="ratio"
+            aggregate_key=AggregatedMetricKey(
+                variant_id="v1", metric_name="auroc", dataset_row="bottle", direction="maximize",
             ),
+            comparison_status="missing",
+            seed_count=0,
+            completed_seed_count=0,
         )
-        assert comp.key.metric_name == "auroc"
-        assert comp.observations == []
+        assert comp.aggregate_key.metric_name == "auroc"
+        assert comp.paired_observations == []
+
+    def test_with_observations(self):
+        obs = PairedMetricObservation(
+            seed=0,
+            baseline_source=_baseline_source(),
+            baseline_value=0.80,
+            variant_unit_id="u1",
+            variant_id="v1",
+            variant_metric_ref=_ref("var_metric"),
+            variant_value=0.85,
+            direction="maximize",
+            raw_delta=0.05,
+            improvement_delta=0.05,
+            raw_relative_change_pct=6.25,
+            improvement_relative_change_pct=6.25,
+            pair_validity_status="valid",
+            variant_validity_ref=_ref("var_validity"),
+            baseline_validity_ref=_ref("base_validity"),
+            protocol_fingerprint="fp1",
+        )
+        comp = AggregatedMetricComparison(
+            aggregate_key=AggregatedMetricKey(
+                variant_id="v1", metric_name="auroc", dataset_row="bottle", direction="maximize",
+            ),
+            paired_observations=[obs],
+            comparison_status="valid",
+            seed_count=1,
+            completed_seed_count=1,
+            mean_baseline=0.80,
+            mean_variant=0.85,
+            mean_raw_delta=0.05,
+            mean_improvement_delta=0.05,
+        )
+        assert len(comp.paired_observations) == 1
+        assert comp.mean_raw_delta == 0.05
 
 
 # ── Resolved Evidence ─────────────────────────────────────────────────
 
 
 class TestResolvedMetricEvidence:
-    def test_valid(self):
-        ev = ResolvedMetricEvidence()
-        assert ev.metric_comparisons == []
+    def test_valid_with_dict_payload(self):
+        ev = ResolvedMetricEvidence(
+            metric_ref=_ref("metric"),
+            verified_sha256=_sha(),
+            source_run_id="run_001",
+            seed=0,
+            metric={"name": "auroc", "value": 0.95},
+        )
+        assert ev.metric == {"name": "auroc", "value": 0.95}
+        assert ev.source_run_id == "run_001"
 
 
 class TestResolvedValidityEvidence:
-    def test_defaults(self):
-        ev = ResolvedValidityEvidence()
-        assert ev.overall_valid is False
+    def test_valid_with_dict_payload(self):
+        ev = ResolvedValidityEvidence(
+            validity_ref=_ref("validity"),
+            verified_sha256=_sha(),
+            source_run_id="run_001",
+            seed=0,
+            report={"overall_valid": True},
+        )
+        assert ev.report == {"overall_valid": True}
 
 
 # ── Evidence Sufficiency ──────────────────────────────────────────────
@@ -178,69 +367,92 @@ class TestResolvedValidityEvidence:
 
 class TestEvidenceSufficiency:
     def test_valid(self):
-        es = EvidenceSufficiency(sufficiency_summary="incomplete")
-        assert es.sufficiency_summary == "incomplete"
-        assert es.all_metrics_accounted_for is False
+        es = EvidenceSufficiency(
+            variant_id="v1",
+            total_planned_seeds=5,
+            completed_seed_pairs=5,
+            valid_seed_pairs=5,
+            metric_count=3,
+            valid_metric_count=3,
+            protocol_fingerprint="fp1",
+        )
+        assert es.total_planned_seeds == 5
+
+    def test_valid_le_completed_le_planned_enforced(self):
+        with pytest.raises(ValueError, match="valid_seed_pairs"):
+            EvidenceSufficiency(
+                variant_id="v1",
+                total_planned_seeds=5,
+                completed_seed_pairs=3,
+                valid_seed_pairs=4,  # > completed_seed_pairs
+                metric_count=3,
+                valid_metric_count=3,
+                protocol_fingerprint="fp1",
+            )
+
+    def test_completed_le_planned_enforced(self):
+        with pytest.raises(ValueError, match="completed_seed_pairs"):
+            EvidenceSufficiency(
+                variant_id="v1",
+                total_planned_seeds=3,
+                completed_seed_pairs=5,  # > total_planned_seeds
+                valid_seed_pairs=3,
+                metric_count=3,
+                valid_metric_count=3,
+                protocol_fingerprint="fp1",
+            )
+
+    def test_valid_metric_le_metric_count_enforced(self):
+        with pytest.raises(ValueError, match="valid_metric_count"):
+            EvidenceSufficiency(
+                variant_id="v1",
+                total_planned_seeds=5,
+                completed_seed_pairs=5,
+                valid_seed_pairs=5,
+                metric_count=2,
+                valid_metric_count=3,  # > metric_count
+                protocol_fingerprint="fp1",
+            )
 
 
 # ── VariantScientificConclusion ───────────────────────────────────────
 
 
 class TestVariantScientificConclusion:
-    def test_supported(self):
-        c = VariantScientificConclusion(
-            variant_id="v1",
-            conclusion="supported",
-            confidence=0.9,
-        )
-        assert c.conclusion == "supported"
-
-    def test_inconclusive(self):
-        c = VariantScientificConclusion(
-            variant_id="v1",
-            conclusion="inconclusive",
-            confidence=0.0,
-        )
-        assert c.confidence == 0.0
-
-    def test_confidence_range(self):
-        with pytest.raises(Exception):
-            VariantScientificConclusion(
-                variant_id="v1", conclusion="supported", confidence=1.5,
+    def test_enum_values(self):
+        for val in ScientificConclusion:
+            c = VariantScientificConclusion(
+                variant_id="v1",
+                conclusion=val,
+                matched_rule_id="rule_01",
             )
-
-    def test_with_evidence(self):
-        c = VariantScientificConclusion(
-            variant_id="v1",
-            conclusion="supported",
-            confidence=0.8,
-            evidence=ResolvedMetricEvidence(
-                metric_comparisons=[
-                    AggregatedMetricComparison(
-                        key=AggregatedMetricKey(
-                            metric_name="auroc", dataset_row="bottle", unit="ratio"
-                        ),
-                    )
-                ]
-            ),
-            sufficiency=EvidenceSufficiency(sufficiency_summary="sufficient"),
-            supporting_metrics=["auroc"],
-        )
-        assert "auroc" in c.supporting_metrics
+            assert c.conclusion == val
 
 
-# ── Reproducibility ───────────────────────────────────────────────────
+# ── IdeaSupportConclusion ─────────────────────────────────────────────
+
+
+class TestIdeaSupportConclusion:
+    def test_enum_values(self):
+        values = {e.value for e in IdeaSupportConclusion}
+        assert "consistently_supported" in values
+        assert "not_supported_by_tested_variants" in values
+        assert "cannot_judge" in values
+
+
+# ── Replication ───────────────────────────────────────────────────────
 
 
 class TestReplicationPairEvidence:
     def test_valid(self):
         pair = ReplicationPairEvidence(
             pair_id="p1",
-            variant_attempt_ref=_ref("var"),
-            baseline_attempt_ref=_ref("base"),
-            status="reproducible",
+            seed=0,
+            paired_observation_ref=_ref("pair_obs"),
+            improvement_delta=0.05,
+            validity_status="valid",
         )
-        assert pair.status == "reproducible"
+        assert pair.pair_id == "p1"
 
 
 class TestReplicationGroup:
@@ -250,6 +462,7 @@ class TestReplicationGroup:
             variant_id="v1",
             overall_status="reproducible",
         )
+        assert g.group_id == "g1"
         assert g.overall_status == "reproducible"
 
 
@@ -258,7 +471,9 @@ class TestReproducibilityInterpretation:
         r = ReproducibilityInterpretation(
             groups=[
                 ReplicationGroup(
-                    group_id="g1", variant_id="v1", overall_status="reproducible",
+                    group_id="g1",
+                    variant_id="v1",
+                    overall_status="reproducible",
                 )
             ],
             overall_reproducible=True,
@@ -279,79 +494,255 @@ class TestValidityInterpretation:
         assert v.overall_valid is True
 
 
-# ── Resources / Budget ────────────────────────────────────────────────
+# ── Resource Aggregates ───────────────────────────────────────────────
 
 
 class TestVariantResourceAggregate:
     def test_valid(self):
         a = VariantResourceAggregate(
-            variant_id="v1", total_attempts=3, gpu_hours=6.0, wall_time=10800.0,
+            variant_id="v1",
+            per_unit_actual_gpu_hours={"unit_a": 3.0, "unit_b": 2.0},
+            total_wall_time_seconds=3600.0,
+            peak_gpu_memory_mb=8192.0,
+            measurement_status="measured",
         )
-        assert a.total_actual_gpu_hours == 6.0
+        assert a.variant_id == "v1"
+        assert a.total_actual_gpu_hours == 5.0
 
-    def test_gpu_hours_ge_0(self):
-        with pytest.raises(Exception):
-            VariantResourceAggregate(
-                variant_id="v1", total_attempts=1, gpu_hours=-1, wall_time=100,
-            )
-
-    def test_wall_time_ge_0(self):
-        with pytest.raises(Exception):
-            VariantResourceAggregate(
-                variant_id="v1", total_attempts=1, gpu_hours=1, wall_time=-1,
-            )
-
-    def test_total_attempts_ge_0(self):
+    def test_computed_total_summed_from_dict(self):
         a = VariantResourceAggregate(
-            variant_id="v1", total_attempts=0, gpu_hours=0, wall_time=0,
+            variant_id="v1",
+            per_unit_actual_gpu_hours={"u1": 1.5, "u2": 2.5, "u3": 3.0},
+            measurement_status="measured",
         )
-        assert a.total_attempts == 0
+        assert a.total_actual_gpu_hours == 7.0
+
+    def test_empty_dict_total_zero(self):
+        a = VariantResourceAggregate(
+            variant_id="v1",
+            per_unit_actual_gpu_hours={},
+            measurement_status="not_available",
+        )
+        assert a.total_actual_gpu_hours == 0.0
+
+    def test_rejects_negative_gpu_hours(self):
+        with pytest.raises(ValueError, match="invalid GPU-hours"):
+            VariantResourceAggregate(
+                variant_id="v1",
+                per_unit_actual_gpu_hours={"u1": -1.0},
+                measurement_status="measured",
+            )
+
+    def test_rejects_nan_gpu_hours(self):
+        with pytest.raises(ValueError, match="invalid GPU-hours"):
+            VariantResourceAggregate(
+                variant_id="v1",
+                per_unit_actual_gpu_hours={"u1": math.nan},
+                measurement_status="measured",
+            )
+
+    def test_rejects_inf_gpu_hours(self):
+        with pytest.raises(ValueError, match="invalid GPU-hours"):
+            VariantResourceAggregate(
+                variant_id="v1",
+                per_unit_actual_gpu_hours={"u1": math.inf},
+                measurement_status="measured",
+            )
 
 
 class TestBaselineResourceAggregate:
     def test_valid(self):
-        a = BaselineResourceAggregate(total_attempts=2, gpu_hours=4.0, wall_time=7200.0)
-        assert a.gpu_hours == 4.0
+        a = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"unit_a": 4.0},
+            total_wall_time_seconds=7200.0,
+            peak_gpu_memory_mb=16384.0,
+            measurement_status="measured",
+        )
+        assert a.total_actual_gpu_hours == 4.0
 
-    def test_negative_gpu_hours(self):
-        with pytest.raises(Exception):
-            BaselineResourceAggregate(total_attempts=1, gpu_hours=-1, wall_time=100)
+    def test_computed_total_summed_from_dict(self):
+        a = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 2.0, "u2": 3.0},
+            measurement_status="measured",
+        )
+        assert a.total_actual_gpu_hours == 5.0
+
+    def test_rejects_negative_gpu_hours(self):
+        with pytest.raises(ValueError, match="invalid GPU-hours"):
+            BaselineResourceAggregate(
+                per_unit_actual_gpu_hours={"u1": -2.0},
+                measurement_status="measured",
+            )
 
 
 class TestResourceDelta:
     def test_valid(self):
         d = ResourceDelta(
-            variant_id="v1", delta_gpu_hours=2.0, delta_wall_time=3600.0,
+            variant_id="v1",
+            wall_time_delta_seconds=3600.0,
+            gpu_memory_delta_mb=1024.0,
+            measurement_compatible=True,
         )
-        assert d.delta_gpu_hours == 2.0
+        assert d.variant_id == "v1"
+        assert d.measurement_compatible is True
+
+
+class TestBundleResourceAggregate:
+    def test_valid(self):
+        baseline = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 2.0},
+            measurement_status="measured",
+        )
+        variant = VariantResourceAggregate(
+            variant_id="v1",
+            per_unit_actual_gpu_hours={"u1": 3.0},
+            measurement_status="measured",
+        )
+        b = BundleResourceAggregate(
+            baseline=baseline,
+            per_variant={"v1": variant},
+        )
+        assert b.total_actual_gpu_hours == 5.0
+        assert b.max_unit_actual_gpu_hours == 3.0
+
+    def test_computed_fields(self):
+        baseline = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 1.0, "u2": 2.0},
+            measurement_status="measured",
+        )
+        v1 = VariantResourceAggregate(
+            variant_id="v1",
+            per_unit_actual_gpu_hours={"u1": 4.0, "u2": 1.0},
+            measurement_status="measured",
+        )
+        v2 = VariantResourceAggregate(
+            variant_id="v2",
+            per_unit_actual_gpu_hours={"u2": 5.0},
+            measurement_status="measured",
+        )
+        b = BundleResourceAggregate(
+            baseline=baseline,
+            per_variant={"v1": v1, "v2": v2},
+        )
+        assert b.total_actual_gpu_hours == 13.0  # 3+5+5
+        assert b.max_unit_actual_gpu_hours == 5.0
+
+
+# ── Budget Assessments ────────────────────────────────────────────────
+
+
+class TestBundleBudgetAssessment:
+    def test_within_budget_valid(self):
+        ba = BundleBudgetAssessment(
+            status="within_budget",
+            max_unit_actual_gpu_hours=5.0,
+            bundle_total_actual_gpu_hours=10.0,
+            resource_budget_ref=_ref("budget"),
+            resource_usage_refs=[_ref("usage")],
+            reason="all ok",
+        )
+        assert ba.status == "within_budget"
+
+    def test_coverage_issues_force_not_assessable(self):
+        ba = BundleBudgetAssessment(
+            status="not_assessable",
+            resource_usage_refs=[_ref("usage")],
+            missing_unit_ids=["u_missing"],
+            reason="missing unit",
+        )
+        assert ba.status == "not_assessable"
+
+    def test_coverage_issues_disallow_assessable_statuses(self):
+        with pytest.raises(ValueError, match="not_assessable"):
+            BundleBudgetAssessment(
+                status="within_budget",
+                max_unit_actual_gpu_hours=5.0,
+                bundle_total_actual_gpu_hours=10.0,
+                resource_budget_ref=_ref("budget"),
+                resource_usage_refs=[_ref("usage")],
+                missing_variant_ids=["v_missing"],
+                reason="missing variant",
+            )
+
+    def test_assessable_requires_refs(self):
+        with pytest.raises(ValueError, match="resource_budget_ref"):
+            BundleBudgetAssessment(
+                status="within_budget",
+                max_unit_actual_gpu_hours=5.0,
+                bundle_total_actual_gpu_hours=10.0,
+                resource_usage_refs=[_ref("usage")],
+                reason="missing ref",
+            )
+
+    def test_assessable_requires_max_unit_not_none(self):
+        with pytest.raises(ValueError, match="max_unit_actual_gpu_hours"):
+            BundleBudgetAssessment(
+                status="within_budget",
+                max_unit_actual_gpu_hours=None,
+                bundle_total_actual_gpu_hours=10.0,
+                resource_budget_ref=_ref("budget"),
+                resource_usage_refs=[_ref("usage")],
+                reason="missing max",
+            )
+
+    def test_assessable_requires_bundle_total_not_none(self):
+        with pytest.raises(ValueError, match="bundle_total_actual_gpu_hours"):
+            BundleBudgetAssessment(
+                status="within_budget",
+                max_unit_actual_gpu_hours=5.0,
+                bundle_total_actual_gpu_hours=None,
+                resource_budget_ref=_ref("budget"),
+                resource_usage_refs=[_ref("usage")],
+                reason="missing total",
+            )
+
+    def test_not_assessable_allows_none_refs(self):
+        ba = BundleBudgetAssessment(
+            status="not_assessable",
+            reason="no telemetry",
+        )
+        assert ba.status == "not_assessable"
+        assert ba.resource_budget_ref is None
 
 
 class TestVariantBudgetAssessment:
-    def test_within_budget(self):
-        a = VariantResourceAggregate(
-            variant_id="v1", total_attempts=1, gpu_hours=2.0, wall_time=3600,
-        )
+    def test_within_budget_valid(self):
         ba = VariantBudgetAssessment(
             variant_id="v1",
-            resource_aggregate=a,
-            budget_remaining=8.0,
-            within_budget=True,
+            status="within_budget",
             reason="within budget",
+            resource_budget_ref=_ref("budget"),
+            resource_usage_refs=[_ref("usage")],
         )
-        assert ba.within_budget is True
+        assert ba.status == "within_budget"
 
-    def test_over_budget(self):
-        a = VariantResourceAggregate(
-            variant_id="v1", total_attempts=3, gpu_hours=12.0, wall_time=21600,
-        )
+    def test_within_budget_requires_ref(self):
+        with pytest.raises(ValueError, match="resource_budget_ref"):
+            VariantBudgetAssessment(
+                variant_id="v1",
+                status="within_budget",
+                reason="missing ref",
+            )
+
+    def test_within_budget_requires_usage_refs(self):
+        with pytest.raises(ValueError, match="resource_usage_refs"):
+            VariantBudgetAssessment(
+                variant_id="v1",
+                status="within_budget",
+                reason="missing usage",
+                resource_budget_ref=_ref("budget"),
+            )
+
+    def test_not_assessable_allows_none_ref(self):
         ba = VariantBudgetAssessment(
             variant_id="v1",
-            resource_aggregate=a,
-            budget_remaining=0.0,
-            within_budget=False,
-            reason="exceeded budget",
+            status="not_assessable",
+            reason="no telemetry",
         )
-        assert ba.within_budget is False
+        assert ba.resource_budget_ref is None
+
+
+# ── Resource Comparison Report ─────────────────────────────────────────
 
 
 class TestResourceComparisonReport:
@@ -359,37 +750,30 @@ class TestResourceComparisonReport:
         r = ResourceComparisonReport()
         assert r.overall_within_budget is False
         assert r.variant_aggregates == []
+        assert r.bundle is None
 
-
-class TestBundleResourceAggregate:
-    def test_valid(self):
-        b = BundleResourceAggregate(
-            bundle_id="b1",
-            total_gpu_hours=10.0,
-            total_wall_time=36000.0,
+    def test_with_bundle_and_assessment(self):
+        baseline = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 2.0},
+            measurement_status="measured",
         )
-        assert b.total_gpu_hours == 10.0
-
-    def test_negative_total(self):
-        with pytest.raises(Exception):
-            BundleResourceAggregate(
-                bundle_id="b1", total_gpu_hours=-1, total_wall_time=0,
-            )
-
-
-class TestBundleBudgetAssessment:
-    def test_valid(self):
-        agg = BundleResourceAggregate(
-            bundle_id="b1", total_gpu_hours=5.0, total_wall_time=18000,
-        )
+        bundle = BundleResourceAggregate(baseline=baseline)
         ba = BundleBudgetAssessment(
-            bundle_id="b1",
-            bundle_aggregate=agg,
-            budget_ref=_ref("budget"),
-            within_budget=True,
-            reason="within budget",
+            status="within_budget",
+            max_unit_actual_gpu_hours=2.0,
+            bundle_total_actual_gpu_hours=2.0,
+            resource_budget_ref=_ref("budget"),
+            resource_usage_refs=[_ref("usage")],
+            reason="ok",
         )
-        assert ba.within_budget is True
+        r = ResourceComparisonReport(
+            bundle=bundle,
+            bundle_budget_assessment=ba,
+            overall_within_budget=True,
+        )
+        assert r.bundle is not None
+        assert r.bundle_budget_assessment is not None
+        assert r.overall_within_budget is True
 
 
 # ── Failure Analysis ──────────────────────────────────────────────────
@@ -427,11 +811,15 @@ class TestReportFacts:
         )
         assert f.total_gpu_hours == 10.0
 
-    def test_negative_values(self):
+    def test_negative_values_raise(self):
         with pytest.raises(Exception):
             ReportFacts(
-                run_id="run_001", num_variants=-1, num_successful=0,
-                num_failed=0, total_gpu_hours=0, total_wall_time_seconds=0,
+                run_id="run_001",
+                num_variants=-1,
+                num_successful=0,
+                num_failed=0,
+                total_gpu_hours=0,
+                total_wall_time_seconds=0,
             )
 
 

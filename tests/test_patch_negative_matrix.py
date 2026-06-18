@@ -190,7 +190,7 @@ class TestPreflightB04CreateOverwrite:
         repo = tmp_path / "repo"
         repo.mkdir()
         _write(repo, "src/existing.py")
-        r = _apply(app := ControlledPatchApplicator(), plan, dec, "ws", repo, plan.run_id)
+        r = _apply(app := ControlledPatchApplicator(policy_allowed_paths={"src/"}), plan, dec, "ws", repo, plan.run_id)
         assert r.overall_status == "patch_application_failed"
 
 
@@ -207,7 +207,7 @@ class TestPreflightB05RenameConflict:
         repo.mkdir()
         _write(repo, "src/a.py")
         _write(repo, "src/b.py")
-        r = _apply(ControlledPatchApplicator(), plan, dec, "ws", repo, plan.run_id)
+        r = _apply(ControlledPatchApplicator(policy_allowed_paths={"src/"}), plan, dec, "ws", repo, plan.run_id)
         assert r.overall_status == "patch_application_failed"
 
 
@@ -220,7 +220,7 @@ class TestPreflightB06ModifyMissingFile:
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
         repo = tmp_path / "repo"
         repo.mkdir()
-        r = _apply(ControlledPatchApplicator(), plan, dec, "ws", repo, plan.run_id)
+        r = _apply(ControlledPatchApplicator(policy_allowed_paths={"src/"}), plan, dec, "ws", repo, plan.run_id)
         assert r.overall_status == "patch_application_failed"
 
 
@@ -238,10 +238,10 @@ class TestPreflightC07ReverseRollback:
         c = _c("chg_1", "ws", kind="modify", tm="existing_target", path="src/a.py")
         plan = _psha(changes=[c])
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
-        result = _apply(ControlledPatchApplicator(), plan, dec, "ws", repo, plan.run_id)
+        result = _apply(ControlledPatchApplicator(policy_allowed_paths={"src/"}), plan, dec, "ws", repo, plan.run_id)
         assert result.overall_status == "patch_applied"
 
-        rolled = ControlledPatchApplicator().rollback(result=result, repository_root=repo)
+        rolled = ControlledPatchApplicator(policy_allowed_paths={"src/"}).rollback(result=result, repository_root=repo)
         assert rolled.overall_status == "rolled_back"
         assert _fingerprint(repo) == orig_fp
 
@@ -256,9 +256,9 @@ class TestPreflightC08RollbackFingerprint:
         c = _c("chg_1", "ws", kind="modify", tm="existing_target", path="src/a.py")
         plan = _psha(changes=[c])
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
-        result = _apply(ControlledPatchApplicator(), plan, dec, "ws", repo, plan.run_id)
+        result = _apply(ControlledPatchApplicator(policy_allowed_paths={"src/"}), plan, dec, "ws", repo, plan.run_id)
         _write(repo, "src/mess.py", "intruder\n")
-        rolled = ControlledPatchApplicator().rollback(result=result, repository_root=repo)
+        rolled = ControlledPatchApplicator(policy_allowed_paths={"src/"}).rollback(result=result, repository_root=repo)
         assert "rollback" in rolled.overall_status
 
 
@@ -286,7 +286,7 @@ class TestPreflightC10ScopeMissing:
     """10: allow scope unset → preflight blocked (default deny)."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={})  # empty = no paths match
         c = _c("chg_1", "ws", path="src/a.py")
         plan = _psha(changes=[c])
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -298,14 +298,14 @@ class TestPreflightC10ScopeMissing:
             change=c,
             planned_paths={"src/a.py"},
         )
-        assert allowed  # None policy_allowed_set means "allow all"
+        assert not allowed
 
 
 class TestPreflightC11AskPathDenied:
     """11: ask path not approved → write denied."""
 
     def test_denied(self, tmp_path):
-        app = ControlledPatchApplicator(policy_ask_paths={"src/ask/b.py"})
+        app = ControlledPatchApplicator(policy_ask_paths={"src/ask/b.py"}, policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws", path="src/ask/b.py")
         plan = _psha(changes=[c])
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -322,7 +322,7 @@ class TestPreflightC12InternalStepUnapproved:
         step = InternalValidationStep(
             step_id="ast_parse", required=True,
         )
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -402,7 +402,7 @@ class TestPreflightC17PlanSHAMismatch:
     """17: plan SHA changes → preflight blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -419,7 +419,7 @@ class TestPreflightC18StaleFingerprint:
     """18: stale repository fingerprint → preflight blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         repo = tmp_path / "repo"
         repo.mkdir()
         _write(repo, "src/a.py")
@@ -441,7 +441,7 @@ class TestPreflightD19RequestSha:
     """19: approval_request_sha256 mismatch → preflight blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -459,7 +459,7 @@ class TestPreflightD20ManifestSha:
     """20: manifest SHA mismatch with decision → preflight blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -477,7 +477,7 @@ class TestPreflightD22ValidationReportSha:
     """22: validation report SHA mismatches → preflight blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -500,7 +500,7 @@ class TestPreflightD25ValidationNotPassed:
     """25: validation_report.status != passed → preflight blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -537,7 +537,7 @@ class TestPreflightD35DiffShaVsFullDecision:
     """35: Request Diff SHA != Manifest/Full Decision Diff SHA → blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -570,7 +570,7 @@ class TestPreflightD37ApprovedPathDenied:
     """37: approved_path hits deny path → blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator(policy_denied_paths={"denied"})
+        app = ControlledPatchApplicator(policy_denied_paths={"denied"}, policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws", path="denied/x.py")
         plan = _psha(changes=[c])
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
@@ -701,7 +701,7 @@ class TestPreflightE45FingerprintMismatch:
     """45: request.repository_before_fingerprint ≠ plan/current → blocked."""
 
     def test_blocked(self, tmp_path):
-        app = ControlledPatchApplicator()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         plan = _psha()
         repo = tmp_path / "repo"
         repo.mkdir()

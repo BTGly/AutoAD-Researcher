@@ -24,7 +24,7 @@ def validate_approval_consistency(
     if request.workspace_id != _decision_ws(decision):
         errors.append(f"Decision workspace {_decision_ws(decision)} != request workspace {request.workspace_id}")
 
-    all_ids = {c.change_id for c in plan.changes}
+    all_ids = {c.change_id for c in plan.changes if c.workspace_id == request.workspace_id}
 
     if isinstance(decision, FullApprovalDecision):
         approved_set = set(decision.approved_change_ids)

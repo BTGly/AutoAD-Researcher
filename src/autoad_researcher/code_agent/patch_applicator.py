@@ -39,6 +39,8 @@ class ControlledPatchApplicator:
                        change: PlannedRepositoryChange, planned_paths: set[str]) -> tuple[bool, str]:
         if change.change_id not in approved_change_ids:
             return False, f"change_id {change.change_id} not approved"
+        if self._policy_allowed_set is None:
+            return False, "allow scope not configured (default-deny)"
         if path in self.policy_denied_paths:
             return False, f"path {path} is policy-denied"
         for ancestor in _ancestors(path):
@@ -48,7 +50,7 @@ class ControlledPatchApplicator:
             return False, f"path {path} not in planned paths"
         if self._policy_ask_set and path in self._policy_ask_set and path not in self._approved_ask_paths:
             return False, f"path {path} requires ask approval"
-        if self._policy_allowed_set is not None and not _path_in_scope(path, self._policy_allowed_set):
+        if not _path_in_scope(path, self._policy_allowed_set):
             return False, f"path {path} not in policy-allowed scope"
         return True, "allowed"
 
@@ -158,6 +160,13 @@ class ControlledPatchApplicator:
                 continue
             target_abs = None
             if change.operation_kind == "rename" and change.rename_target_path:
+                target_allowed, target_reason = self.can_write_path(
+                    path=change.rename_target_path, approved_change_ids=approved_change_ids,
+                    change=change, planned_paths=planned_paths,
+                )
+                if not target_allowed:
+                    skipped.append(change.change_id)
+                    continue
                 target_abs = self._check_and_resolve_path(repository_root, change.rename_target_path)
                 if target_abs is None:
                     skipped.append(change.change_id)
@@ -405,25 +414,6 @@ class ControlledPatchApplicator:
             next_stage=ns,
         )
 
-    def _apply_without_preflight(self, *, plan, decision, workspace_id, repository_root, run_id):
-        from autoad_researcher.schemas.patch_planning import ApprovalRequest
-        _empty_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        req = ApprovalRequest(
-            approval_request_id="internal", run_id=plan.run_id,
-            workspace_id=workspace_id,
-            patch_plan_sha256=plan.patch_plan_sha256,
-            patch_payload_manifest_sha256=_empty_sha,
-            proposed_patch_diff_sha256=_empty_sha,
-            patch_payload_validation_report_sha256=_empty_sha,
-            patch_plan_validation_report_sha256=_empty_sha,
-            repository_before_fingerprint=plan.repository_fingerprint,
-            internal_validation_steps=[], external_validation_commands=[],
-            approval_request_sha256="",
-            created_at=datetime.now(timezone.utc),
-        )
-        return self._apply_internal(plan=plan, decision=decision, request=req,
-                                    workspace_id=workspace_id, repository_root=repository_root, run_id=run_id)
-
     def _apply_internal(self, *, plan, decision, request, workspace_id, repository_root, run_id):
         approved_change_ids = _decision_approved_ids(decision)
         planned_paths = {c.repository_path for c in plan.changes}
@@ -451,6 +441,12 @@ class ControlledPatchApplicator:
                 skipped.append(change.change_id); continue
             target_abs = None
             if change.operation_kind == "rename" and change.rename_target_path:
+                target_allowed2, _ = self.can_write_path(
+                    path=change.rename_target_path, approved_change_ids=approved_change_ids,
+                    change=change, planned_paths=planned_paths,
+                )
+                if not target_allowed2:
+                    skipped.append(change.change_id); continue
                 target_abs = self._check_and_resolve_path(repository_root, change.rename_target_path)
                 if target_abs is None:
                     skipped.append(change.change_id); continue
@@ -717,11 +713,14 @@ def _path_in_scope(path: str, scope: set[str]) -> bool:
     if not scope: return False
     candidate = path
     while True:
-        if candidate in scope: return True
+        if candidate in scope:
+            return True
+        if candidate + "/" in scope:
+            return True
         parts = candidate.split("/")
         if len(parts) <= 1: break
         candidate = "/".join(parts[:-1])
-    return path in scope
+    return path in scope or path + "/" in scope
 
 
 def _fingerprint(root: Path) -> str:
