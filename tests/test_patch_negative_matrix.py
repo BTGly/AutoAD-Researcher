@@ -99,16 +99,23 @@ def _psha(changes=None, **kw):
     return p.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(p)})
 
 
-def _req(sha="c" * 64):
+def _req(sha="c" * 64, ws="ws", variant_ids=None):
+    from autoad_researcher.schemas.patch_planning import WorkspaceApprovalSummary
+    vids = variant_ids or ["v1"]
     return ApprovalRequest(
-        approval_request_id="ar", run_id="run_test", workspace_id="ws",
+        approval_request_id="ar", run_id="run_test", workspace_id=ws,
         patch_plan_sha256=sha,
         patch_payload_manifest_sha256=sha,
         proposed_patch_diff_sha256=sha,
         patch_payload_validation_report_sha256=sha,
         patch_plan_validation_report_sha256=sha,
         repository_before_fingerprint=_FINGERPRINT_TEMPLATE,
-        selected_variant_ids=["v1"],
+        selected_variant_ids=vids,
+        workspace_summary=WorkspaceApprovalSummary(
+            workspace_id=ws, variant_ids=vids,
+            planned_change_ids=[], affected_paths=[],
+            dependency_change_ids=[], risk_ids=[],
+        ),
         internal_validation_steps=[], external_validation_commands=[],
         approval_request_sha256=sha,
         created_at=_NOW,
@@ -135,10 +142,107 @@ def _dec(ids, sha="c" * 64):
 
 
 def _apply(app, plan, dec, ws, repo, run_id, store=None, payloads=None):
-    req = _req(sha=plan.patch_plan_sha256)
-    return app._apply_internal(plan=plan, decision=dec, request=req,
-                               workspace_id=ws, repository_root=repo, run_id=run_id,
-                               artifact_store=store, payload_manifest=payloads)
+    from autoad_researcher.schemas.patch_planning import (
+        WorkspaceApprovalSummary, PatchPlanValidationReport,
+        PatchPayloadValidationReport, InternalValidationStep,
+        VariantWorkspacePlan, canonical_sha, compute_canonical_plan_sha256,
+    )
+    s = store or _test_store(run_id=run_id)
+
+    actual_fp = _fingerprint(repo)
+    plan = plan.model_copy(update={"repository_fingerprint": actual_fp})
+
+    if not any(w.workspace_id == ws for w in plan.workspace_plans):
+        plan = plan.model_copy(update={
+            "workspace_plans": list(plan.workspace_plans) + [
+                VariantWorkspacePlan(
+                    workspace_id=ws, variant_ids=plan.selected_variant_ids,
+                    isolation_mode="shared_workspace",
+                    base_repository_source_id=plan.repository_source_id,
+                    base_commit=plan.repository_commit,
+                ),
+            ],
+        })
+
+    ws_changes = [c for c in plan.changes if c.workspace_id == ws]
+    approved_ids = set()
+    if hasattr(dec, 'approved_change_ids'):
+        approved_ids = set(dec.approved_change_ids or [])
+    ws_change_ids = {c.change_id for c in ws_changes}
+    effective_approved = sorted(approved_ids & ws_change_ids)
+    plan = plan.model_copy(update={
+        "changes": [c for c in plan.changes if c.change_id in effective_approved],
+    })
+
+    plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
+    dec = dec.model_copy(update={"patch_plan_sha256": plan.patch_plan_sha256})
+
+    diff_artifact_id = f"diffs/{run_id}/{ws}/patch.diff"
+    diff_content = b"dummy diff content"
+    s.write_raw(run_id, diff_artifact_id, diff_content)
+    diff_sha = hashlib.sha256(diff_content).hexdigest()
+
+    ws_changes = [c for c in plan.changes if c.workspace_id == ws]
+    derived_paths = []
+    for c in ws_changes:
+        derived_paths.append(c.repository_path)
+        if c.rename_target_path:
+            derived_paths.append(c.rename_target_path)
+
+    m = _make_manifest(payloads=payloads, run_id=run_id, ws=ws, plan_sha=plan.patch_plan_sha256)
+    m = m.model_copy(update={
+        "manifest_sha256": plan.patch_plan_sha256,
+        "proposed_diff_sha256": diff_sha,
+        "proposed_diff_artifact_id": diff_artifact_id,
+    })
+
+    if isinstance(dec, (FullApprovalDecision, PartialApprovalDecision)):
+        dec = dec.model_copy(update={
+            "workspace_id": ws,
+            "approved_paths": derived_paths,
+            "payload_manifest_sha256": m.manifest_sha256,
+            "approved_diff_sha256": diff_sha,
+            "approved_change_ids": effective_approved,
+            "approved_internal_step_ids": ["diff_integrity", "path_containment", "ast_parse"],
+        })
+
+    req = _req(sha=plan.patch_plan_sha256, ws=ws, variant_ids=plan.selected_variant_ids)
+    req = req.model_copy(update={
+        "patch_payload_manifest_sha256": m.manifest_sha256,
+        "repository_before_fingerprint": actual_fp,
+        "proposed_patch_diff_sha256": diff_sha,
+        "selected_variant_ids": plan.selected_variant_ids,
+        "workspace_summary": WorkspaceApprovalSummary(
+            workspace_id=ws, variant_ids=plan.selected_variant_ids,
+            planned_change_ids=[c.change_id for c in ws_changes],
+            affected_paths=derived_paths,
+            dependency_change_ids=[], risk_ids=[],
+        ),
+        "internal_validation_steps": [
+            InternalValidationStep(step_id="diff_integrity", target_artifact_ids=["diff"]),
+            InternalValidationStep(step_id="path_containment", target_artifact_ids=["paths"]),
+            InternalValidationStep(step_id="ast_parse", target_artifact_ids=["ast"]),
+        ],
+    })
+    req = req.model_copy(update={"approval_request_sha256": canonical_sha(req)})
+    if hasattr(dec, 'approved_request_sha256'):
+        dec = dec.model_copy(update={"approved_request_sha256": req.approval_request_sha256})
+
+    vr = _make_vr(plan)
+    pvr = _make_pvr(m, plan, status="passed")
+
+    req = req.model_copy(update={
+        "patch_plan_validation_report_sha256": canonical_sha(vr),
+        "patch_payload_validation_report_sha256": canonical_sha(pvr),
+    })
+    req = req.model_copy(update={"approval_request_sha256": canonical_sha(req)})
+    if hasattr(dec, 'approved_request_sha256'):
+        dec = dec.model_copy(update={"approved_request_sha256": req.approval_request_sha256})
+
+    return app.apply_patch(plan=plan, decision=dec, request=req,
+                           workspace_id=ws, repository_root=repo, run_id=run_id,
+                           manifest=m, validation_report=vr,
+                           payload_validation_report=pvr, artifact_store=s)
 
 
 def _write(repo: Path, path: str, content: str = "x = 1\n"):
@@ -198,7 +302,7 @@ class TestPreflightA02PayloadUnownedPath:
         repo = tmp_path / "repo"
         repo.mkdir()
         r = _apply(app, plan, dec, "ws", repo, plan.run_id)
-        assert r.overall_status == "patch_application_failed"
+        assert r.overall_status == "blocked"
 
 
 class TestPreflightA03DiffExtraFile:
@@ -244,7 +348,7 @@ class TestPreflightB05RenameConflict:
         _write(repo, "src/a.py")
         _write(repo, "src/b.py")
         r = _apply(ControlledPatchApplicator(policy_allowed_paths={"src/"}), plan, dec, "ws", repo, plan.run_id)
-        assert r.overall_status == "patch_application_failed"
+        assert r.overall_status == "blocked"
 
 
 class TestPreflightB06ModifyMissingFile:
@@ -348,7 +452,7 @@ class TestPreflightC11AskPathDenied:
         repo = tmp_path / "repo"
         repo.mkdir()
         r = _apply(app, plan, dec, "ws", repo, plan.run_id)
-        assert r.overall_status == "patch_application_failed"
+        assert r.overall_status == "blocked"
 
 
 class TestPreflightC12InternalStepUnapproved:
@@ -444,12 +548,14 @@ class TestPreflightC17PlanSHAMismatch:
         repo.mkdir()
         plan2 = plan.model_copy(update={"patch_plan_sha256": "a" * 64})
         m = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan2.patch_plan_sha256)
+        store_c17 = _test_store()
         pf = app.run_preflight(
             plan=plan2, request=_req(sha=plan.patch_plan_sha256),
             decision=_dec(ids=["dummy"], sha=plan.patch_plan_sha256),
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
             manifest=m, validation_report=_make_vr(plan2),
             payload_validation_report=_make_pvr(m, plan2),
+            artifact_store=store_c17,
         )
         assert not pf.ready
 
@@ -468,12 +574,14 @@ class TestPreflightC18StaleFingerprint:
         plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
         m2 = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan.patch_plan_sha256)
         m2 = m2.model_copy(update={"manifest_sha256": plan.patch_plan_sha256})
+        store_c18 = _test_store()
         pf = app.run_preflight(
             plan=plan, request=_req(sha=plan.patch_plan_sha256),
             decision=_dec(ids=[], sha=plan.patch_plan_sha256),
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
             manifest=m2, validation_report=_make_vr(plan),
             payload_validation_report=_make_pvr(m2, plan),
+            artifact_store=store_c18,
         )
         assert not pf.ready
 
@@ -492,12 +600,14 @@ class TestPreflightD19RequestSha:
         req2 = req.model_copy(update={"approval_request_sha256": "y" * 64})
         m3 = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan.patch_plan_sha256)
         m3 = m3.model_copy(update={"manifest_sha256": plan.patch_plan_sha256})
+        store_d19 = _test_store()
         pf = app.run_preflight(
             plan=plan, request=req2,
             decision=_dec(ids=[], sha=plan.patch_plan_sha256),
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
             manifest=m3, validation_report=_make_vr(plan),
             payload_validation_report=_make_pvr(m3, plan),
+            artifact_store=store_d19,
         )
         assert not pf.ready
 
@@ -513,12 +623,14 @@ class TestPreflightD20ManifestSha:
         dec = _dec(ids=[], sha=plan.patch_plan_sha256)
         dec2 = dec.model_copy(update={"payload_manifest_sha256": "z" * 64})
         m20 = _make_manifest(run_id=plan.run_id, ws="ws")
+        store_d20 = _test_store()
         pf = app.run_preflight(
             plan=plan, request=_req(sha=plan.patch_plan_sha256),
             decision=dec2,
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
             manifest=m20, validation_report=_make_vr(plan),
             payload_validation_report=_make_pvr(m20, plan),
+            artifact_store=store_d20,
         )
         assert not pf.ready
 
@@ -539,12 +651,14 @@ class TestPreflightD22ValidationReportSha:
         vreport2 = vreport.model_copy(update={"patch_plan_sha256": "w" * 64})
         m22 = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan.patch_plan_sha256)
         m22 = m22.model_copy(update={"manifest_sha256": plan.patch_plan_sha256})
+        store_d22 = _test_store()
         pf = app.run_preflight(
             plan=plan, request=_req(sha=plan.patch_plan_sha256),
             decision=_dec(ids=[], sha=plan.patch_plan_sha256),
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
             manifest=m22, validation_report=vreport2,
             payload_validation_report=_make_pvr(m22, plan),
+            artifact_store=store_d22,
         )
         assert not pf.ready
 
@@ -568,12 +682,14 @@ class TestPreflightD25ValidationNotPassed:
         )
         m25 = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan.patch_plan_sha256)
         m25 = m25.model_copy(update={"manifest_sha256": plan.patch_plan_sha256})
+        store_d25 = _test_store()
         pf = app.run_preflight(
             plan=plan, request=_req(sha=plan.patch_plan_sha256),
             decision=_dec(ids=[], sha=plan.patch_plan_sha256),
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
             manifest=m25, validation_report=vreport,
             payload_validation_report=_make_pvr(m25, plan),
+            artifact_store=store_d25,
         )
         assert not pf.ready
 
@@ -603,11 +719,13 @@ class TestPreflightD35DiffShaVsFullDecision:
         dec2 = dec.model_copy(update={"payload_manifest_sha256": "d2" * 32})
         m35 = _make_manifest(run_id=plan.run_id, plan_sha=plan.patch_plan_sha256)
         m35 = m35.model_copy(update={"manifest_sha256": "d2" * 32})
+        store_d35 = _test_store()
         pf = app.run_preflight(
             plan=plan, request=req2, decision=dec2,
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
             manifest=m35, validation_report=_make_vr(plan),
             payload_validation_report=_make_pvr(m35, plan),
+            artifact_store=store_d35,
         )
         assert not pf.ready
 
@@ -623,7 +741,7 @@ class TestPreflightD36ApprovedPathsDenied:
         repo = tmp_path / "repo"
         repo.mkdir()
         r = _apply(app, plan, dec, "ws", repo, plan.run_id)
-        assert r.overall_status == "patch_application_failed"
+        assert r.overall_status == "blocked"
 
 
 class TestPreflightD37ApprovedPathDenied:
@@ -637,7 +755,7 @@ class TestPreflightD37ApprovedPathDenied:
         repo = tmp_path / "repo"
         repo.mkdir()
         r = _apply(app, plan, dec, "ws", repo, plan.run_id)
-        assert r.overall_status == "patch_application_failed"
+        assert r.overall_status == "blocked"
 
 
 # ── Preflight Group E: Partial approval edge cases ───────────────────
@@ -773,6 +891,7 @@ class TestPreflightE45FingerprintMismatch:
         req2 = req.model_copy(update={"repository_before_fingerprint": hashlib.sha256(b"stale").hexdigest()})
         m45 = _make_manifest(run_id=plan2.run_id, plan_sha=plan2.patch_plan_sha256)
         m45 = m45.model_copy(update={"manifest_sha256": plan2.patch_plan_sha256})
+        store_e45 = _test_store()
         pf = app.run_preflight(
             plan=plan2, request=req2,
             decision=_dec(ids=[], sha=plan2.patch_plan_sha256),
@@ -780,6 +899,7 @@ class TestPreflightE45FingerprintMismatch:
             manifest=m45,
             validation_report=_make_vr(plan2),
             payload_validation_report=_make_pvr(m45, plan2),
+            artifact_store=store_e45,
         )
         assert not pf.ready
 

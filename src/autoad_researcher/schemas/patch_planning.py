@@ -424,7 +424,7 @@ class ApprovalRequest(BaseModel):
     repository_before_fingerprint: str = Field(min_length=1)
     selected_variant_ids: list[str] = Field(default_factory=list)
     overall_risk_level: Literal["low", "medium", "high"] = "medium"
-    workspace_summary: WorkspaceApprovalSummary | None = None
+    workspace_summary: WorkspaceApprovalSummary
     internal_validation_steps: list[InternalValidationStep] = Field(default_factory=list)
     external_validation_commands: list[ExternalValidationCommand] = Field(default_factory=list)
     approval_request_sha256: str = Field(pattern=Sha256Pattern)
