@@ -22,8 +22,6 @@ from autoad_researcher.schemas.execution import (
     ExecutionManifest,
     ExecutionUnitRecord,
     ExecutionUnitStatus,
-    RunnerIntakeReport,
-    IntakeCheck,
 )
 from autoad_researcher.schemas.experiment_planning import (
     BudgetDecision,
@@ -57,6 +55,7 @@ from autoad_researcher.supervisor.validity import (
 )
 
 _SHA = "a" * 64
+_FP = "fp_v1"
 
 
 def _ref(artifact_id="art"):
@@ -166,6 +165,7 @@ def _paired_obs(
     var_sha=_SHA,
     bl_validity_sha=_SHA,
     var_validity_sha=_SHA,
+    protocol_fingerprint=_FP,
 ):
     raw = variant_value - baseline_value
     if direction == "maximize":
@@ -206,7 +206,7 @@ def _paired_obs(
         pair_validity_status="valid",
         variant_validity_ref=var_val_ref,
         baseline_validity_ref=bl_val_ref,
-        protocol_fingerprint="fp_v1",
+        protocol_fingerprint=protocol_fingerprint,
     )
 
 
@@ -231,7 +231,7 @@ def _make_budget(
         available_gpu_count=4,
         available_gpu_type="A100",
     )
-    bundle = ExperimentBundleResourceBudget(
+    bundle_est = ExperimentBundleResourceBudget(
         total_gpu_hours=80.0,
         total_wall_clock_hours=200.0,
         max_single_experiment_gpu_hours=8.0,
@@ -239,17 +239,17 @@ def _make_budget(
     decision = BudgetDecision(
         status="within_budget",
         original_limits=limits,
-        estimated_consumption=bundle,
+        estimated_consumption=bundle_est,
         utilization_pct=80.0,
     )
     return ResourceBudget(
         budget_id=budget_id,
         schema_version=1,
-        protocol_fingerprint="fp_v1",
+        protocol_fingerprint=_FP,
         protocol_version=1,
         limits=limits,
         per_variant={},
-        total_estimate=bundle,
+        total_estimate=bundle_est,
         budget_decision=decision,
     )
 
@@ -299,7 +299,7 @@ def _exec_manifest(run_id="run_test", *, unit_records=None):
     return ExecutionManifest(
         run_id=run_id,
         experiment_matrix_sha256=_SHA,
-        protocol_fingerprint="fp_v1",
+        protocol_fingerprint=_FP,
         workspace_refs_sha256=_SHA,
         operational_guard_policy_sha256=_SHA,
         runner_intake_report_ref=_ref("intake"),
@@ -377,7 +377,6 @@ class TestComputeDeltas:
 
     def test_baseline_negative_abs_handles_relative(self):
         _raw, _imp, raw_pct, imp_pct = compute_deltas(-0.50, 0.00, "maximize")
-        # abs(-0.50) = 0.50; raw=0.50; raw_pct = 0.50/0.50*100 = 100
         assert raw_pct == pytest.approx(100.0)
         assert imp_pct == pytest.approx(100.0)
 
@@ -446,8 +445,17 @@ class TestValidateObservationAgainstMetricArtifacts:
         var_me = _metric_evidence(sha=_SHA, source_run_id=self.RUN_ID, unit_id="unit_001", seed=42, value=0.95)
         bl_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, unit_id="unit_001", seed=42, status="valid")
         var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, unit_id="unit_001", seed=42, status="valid")
-        # Should not raise
-        validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, bl_me, var_me, bl_ve, var_ve)
+        validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
+
+    def test_protocol_fingerprint_mismatch_raises(self):
+        obs = _paired_obs(42, baseline_value=0.90, variant_value=0.95, protocol_fingerprint="fp_wrong")
+        key = _agg_key()
+        bl_me = _metric_evidence(sha=_SHA, source_run_id=self.RUN_ID, unit_id="unit_001", seed=42, value=0.90)
+        var_me = _metric_evidence(sha=_SHA, source_run_id=self.RUN_ID, unit_id="unit_001", seed=42, value=0.95)
+        bl_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, unit_id="unit_001", seed=42, status="valid")
+        var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, unit_id="unit_001", seed=42, status="valid")
+        with pytest.raises(ValueError, match="protocol_fingerprint"):
+            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
 
     def test_baseline_metric_sha_mismatch_raises(self):
         bad_sha = "b" * 64
@@ -458,7 +466,7 @@ class TestValidateObservationAgainstMetricArtifacts:
         bl_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         with pytest.raises(ValueError, match="sha256 mismatch"):
-            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, bl_me, var_me, bl_ve, var_ve)
+            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
 
     def test_variant_metric_sha_mismatch_raises(self):
         bad_sha = "b" * 64
@@ -469,7 +477,7 @@ class TestValidateObservationAgainstMetricArtifacts:
         bl_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         with pytest.raises(ValueError, match="sha256 mismatch"):
-            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, bl_me, var_me, bl_ve, var_ve)
+            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
 
     def test_seed_mismatch_raises(self):
         obs = _paired_obs(42, baseline_value=0.90, variant_value=0.95)
@@ -479,7 +487,7 @@ class TestValidateObservationAgainstMetricArtifacts:
         bl_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         with pytest.raises(ValueError, match="seed"):
-            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, bl_me, var_me, bl_ve, var_ve)
+            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
 
     def test_run_id_mismatch_raises(self):
         obs = _paired_obs(42, baseline_value=0.90, variant_value=0.95)
@@ -489,7 +497,7 @@ class TestValidateObservationAgainstMetricArtifacts:
         bl_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         with pytest.raises(ValueError, match="source_run_id"):
-            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, bl_me, var_me, bl_ve, var_ve)
+            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
 
     def test_metric_value_mismatch_raises(self):
         obs = _paired_obs(42, baseline_value=0.90, variant_value=0.95)
@@ -499,7 +507,7 @@ class TestValidateObservationAgainstMetricArtifacts:
         bl_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         with pytest.raises(ValueError, match="mismatch"):
-            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, bl_me, var_me, bl_ve, var_ve)
+            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
 
     def test_validity_ref_sha_mismatch_raises(self):
         bad_sha = "b" * 64
@@ -510,7 +518,7 @@ class TestValidateObservationAgainstMetricArtifacts:
         bl_ve = _validity_evidence(sha=bad_sha, source_run_id=self.RUN_ID, seed=42, status="valid")
         var_ve = _validity_evidence(sha=_SHA, source_run_id=self.RUN_ID, seed=42, status="valid")
         with pytest.raises(ValueError, match="sha256 mismatch"):
-            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, bl_me, var_me, bl_ve, var_ve)
+            validate_observation_against_metric_artifacts(obs, key, self.RUN_ID, _FP, bl_me, var_me, bl_ve, var_ve)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -545,7 +553,7 @@ class TestValidateAggregateFromObservations:
             comparison_status="valid",
             seed_count=1,
             completed_seed_count=1,
-            mean_baseline=0.99,  # wrong
+            mean_baseline=0.99,
             mean_variant=0.95,
             mean_raw_delta=0.05,
             mean_improvement_delta=0.05,
@@ -644,13 +652,30 @@ class TestValidateAggregateFromObservations:
             paired_observations=[obs],
             comparison_status="valid",
             seed_count=1,
-            completed_seed_count=2,  # wrong
+            completed_seed_count=2,
             mean_baseline=0.90,
             mean_variant=0.95,
             mean_raw_delta=0.05,
             mean_improvement_delta=0.05,
         )
         with pytest.raises(ValueError, match="completed_seed_count"):
+            validate_aggregate_from_observations(agg)
+
+    def test_direction_mismatch_raises(self):
+        key = _agg_key(direction="minimize")
+        obs = _paired_obs(1, baseline_value=0.90, variant_value=0.95, direction="maximize")
+        agg = AggregatedMetricComparison(
+            aggregate_key=key,
+            paired_observations=[obs],
+            comparison_status="valid",
+            seed_count=1,
+            completed_seed_count=1,
+            mean_baseline=0.90,
+            mean_variant=0.95,
+            mean_raw_delta=0.05,
+            mean_improvement_delta=0.05,
+        )
+        with pytest.raises(ValueError, match="direction"):
             validate_aggregate_from_observations(agg)
 
 
@@ -897,6 +922,19 @@ class TestDetermineBundleBudgetAssessment:
         assert result.status == "not_assessable"
         assert "unit_extra" in result.unexpected_unit_ids
 
+    def test_missing_per_variant_unit_not_assessable(self):
+        budget = _make_budget(max_total=100.0)
+        bl_agg = _baseline_agg(per_unit={"unit_baseline": 4.0})
+        var_agg = _variant_agg("v1", per_unit={"unit_001": 5.0})
+        bundle = _bundle_agg(baseline=bl_agg, per_variant={"v1": var_agg})
+        result = determine_bundle_budget_assessment(
+            bundle, budget, _ref("budget"),
+            expected_baseline_unit_ids={"unit_baseline"},
+            expected_variant_unit_ids={"v1": {"unit_001", "unit_002"}},
+        )
+        assert result.status == "not_assessable"
+        assert "unit_002" in result.missing_unit_ids
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 9. validate_resource_comparison_report
@@ -924,13 +962,12 @@ class TestValidateResourceComparisonReport:
             expected_variant_unit_ids={"v1": {"unit_001"}},
         )
         report = ResourceComparisonReport(
-            variant_aggregates=[var_agg],
-            baseline_aggregate=bl_agg,
-            deltas=[delta],
-            per_variant_assessments=[ba],
+            baseline=bl_agg,
+            per_variant={"v1": var_agg},
+            per_variant_deltas={"v1": delta},
+            per_variant_budget_assessments={"v1": ba},
             bundle=bundle,
             bundle_budget_assessment=bba,
-            overall_within_budget=True,
         )
         resolved_budget = ResolvedArtifact(
             ref=_ref("budget"),
@@ -945,12 +982,12 @@ class TestValidateResourceComparisonReport:
 
     def test_mismatch_raises(self):
         budget = _make_budget(max_total=100.0, max_per_experiment=10.0)
-        var_agg = _variant_agg("v1", per_unit={"unit_001": 50.0})  # exceeded
+        var_agg = _variant_agg("v1", per_unit={"unit_001": 50.0})
         bundle = _bundle_agg(per_variant={"v1": var_agg})
         delta = ResourceDelta(variant_id="v1", measurement_compatible=True)
         ba = VariantBudgetAssessment(
             variant_id="v1",
-            status="within_budget",  # inconsistent — exceeded budget
+            status="within_budget",
             reason="ok",
             resource_budget_ref=_ref("budget"),
             resource_usage_refs=[_ref("usage")],
@@ -964,13 +1001,12 @@ class TestValidateResourceComparisonReport:
             reason="test",
         )
         report = ResourceComparisonReport(
-            variant_aggregates=[var_agg],
-            baseline_aggregate=_baseline_agg(),
-            deltas=[delta],
-            per_variant_assessments=[ba],
+            baseline=_baseline_agg(),
+            per_variant={"v1": var_agg},
+            per_variant_deltas={"v1": delta},
+            per_variant_budget_assessments={"v1": ba},
             bundle=bundle,
             bundle_budget_assessment=wrong_bba,
-            overall_within_budget=False,
         )
         resolved_budget = ResolvedArtifact(
             ref=_ref("budget"),

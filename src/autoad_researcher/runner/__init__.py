@@ -25,9 +25,11 @@ from autoad_researcher.runner.validators import (
     derive_execution_status,
     derive_final_status,
     derive_overall_status,
-    derive_terminal_reason_from_outcome,
+    derive_terminal_reason,
+    derive_workspace_execution_refs,
     validate_attempt_record_against_artifacts,
     validate_handoff_against_manifest,
+    validate_intake_against_patch_handoff,
     validate_resolution_presence,
 )
 
@@ -46,8 +48,10 @@ __all__ = [
     "derive_execution_status",
     "derive_final_status",
     "derive_overall_status",
-    "derive_terminal_reason_from_outcome",
+    "derive_terminal_reason",
+    "derive_workspace_execution_refs",
     "validate_attempt_record_against_artifacts",
     "validate_handoff_against_manifest",
+    "validate_intake_against_patch_handoff",
     "validate_resolution_presence",
 ]

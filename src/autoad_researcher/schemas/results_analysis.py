@@ -154,6 +154,15 @@ class AggregatedMetricComparison(BaseModel):
     mean_raw_delta: float | None = None
     mean_improvement_delta: float | None = None
 
+    @model_validator(mode="after")
+    def _seed_count_matches(self) -> "AggregatedMetricComparison":
+        if self.seed_count != len(self.paired_observations):
+            raise ValueError("seed_count must equal len(paired_observations)")
+        seeds = [obs.seed for obs in self.paired_observations]
+        if len(seeds) != len(set(seeds)):
+            raise ValueError("duplicate seed in paired_observations")
+        return self
+
 
 # ── Evidence ──────────────────────────────────────────────────────────────────
 
@@ -429,13 +438,22 @@ class BundleBudgetAssessment(BaseModel):
 class ResourceComparisonReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    variant_aggregates: list[VariantResourceAggregate] = Field(default_factory=list)
-    baseline_aggregate: BaselineResourceAggregate | None = None
-    deltas: list[ResourceDelta] = Field(default_factory=list)
-    per_variant_assessments: list[VariantBudgetAssessment] = Field(default_factory=list)
+    baseline: BaselineResourceAggregate | None = None
+    per_variant: dict[str, VariantResourceAggregate] = Field(default_factory=dict)
+    per_variant_deltas: dict[str, ResourceDelta] = Field(default_factory=dict)
+    per_variant_budget_assessments: dict[str, VariantBudgetAssessment] = Field(default_factory=dict)
     bundle: BundleResourceAggregate | None = None
     bundle_budget_assessment: BundleBudgetAssessment | None = None
-    overall_within_budget: bool = False
+    evidence_refs: list[ArtifactReferenceV2] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _bundle_consistency(self) -> "ResourceComparisonReport":
+        if self.bundle is not None and self.baseline is not None:
+            if self.bundle.baseline != self.baseline:
+                raise ValueError("bundle baseline mismatch with report baseline")
+            if self.bundle.per_variant != self.per_variant:
+                raise ValueError("bundle per_variant mismatch with report per_variant")
+        return self
 
 
 # ── Failure analysis ──────────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ from autoad_researcher.schemas.execution import (
     ExecutionUnitResourceLedger,
     ExecutionUnitStatus,
     ExperimentExecutionHandoff,
+    IntakeCheck,
     MatrixCoverageReport,
     PlannedArtifactBinding,
     PlannedArtifactProduction,
@@ -21,6 +22,8 @@ from autoad_researcher.schemas.execution import (
     ResourceUsageReport,
     RetryDecision,
     RetryIdentity,
+    RunnerIntakeReport,
+    RunnerIntakeRequest,
     WorkspaceExecutionRef,
 )
 
@@ -66,11 +69,21 @@ def _retry_identity(seed: str = "a") -> RetryIdentity:
     )
 
 
-def _outcome(ex_status="failed", met_status="failed", val_status="invalid") -> AttemptOutcome:
+def _outcome(
+    ex_status="failed", met_status="parse_failed", val_status="invalid"
+) -> AttemptOutcome:
     return AttemptOutcome(
         execution_status=ex_status,
         metrics_status=met_status,
         validity_status=val_status,
+    )
+
+
+def _completed_outcome() -> AttemptOutcome:
+    return AttemptOutcome(
+        execution_status="succeeded",
+        metrics_status="parsed",
+        validity_status="valid",
     )
 
 
@@ -85,21 +98,28 @@ def _unit_plan(unit_id=_ID, workspace_id=_ID_WORKSPACE) -> ExecutionUnitPlan:
     )
 
 
-def _attempt_record(unit_id=_ID, attempt_index=1, attempt_id="att_01") -> AttemptRecord:
+def _attempt_record(
+    unit_id=_ID, attempt_index=1, attempt_id="att_01", outcome=None
+) -> AttemptRecord:
     snap = _snapshot()
     return AttemptRecord(
         attempt_id=attempt_id,
         attempt_index=attempt_index,
         unit_id=unit_id,
         identity=snap,
-        outcome=_outcome(),
+        outcome=outcome or _outcome(),
         execution_result_ref=_ref("exec"),
     )
 
 
 def _unit_record(unit_id=_ID, workspace_id=_ID_WORKSPACE) -> ExecutionUnitRecord:
-    plan = _unit_plan(unit_id, workspace_id)
-    attempt = _attempt_record(unit_id=unit_id, attempt_index=1, attempt_id=f"{unit_id}_att1")
+    outcome = _completed_outcome()
+    attempt = _attempt_record(
+        unit_id=unit_id,
+        attempt_index=1,
+        attempt_id=f"{unit_id}_att1",
+        outcome=outcome,
+    )
     return ExecutionUnitRecord(
         unit_id=unit_id,
         matrix_entry_id=unit_id,
@@ -128,7 +148,7 @@ class TestAttemptIdentitySnapshot:
     def test_shas_must_be_64_hex(self):
         with pytest.raises(Exception):
             AttemptIdentitySnapshot(
-                execution_unit_plan_sha256="zzz" * 21 + "g",  # not hex
+                execution_unit_plan_sha256="zzz" * 21 + "g",
                 command_sha256=_sha(),
                 input_refs_sha256=_sha(),
                 workspace_repository_fingerprint="f",
@@ -363,13 +383,22 @@ class TestWorkspaceExecutionRefVariant:
 
 
 class TestAttemptOutcome:
-    def test_valid(self):
+    def test_valid_succeeded_parsed(self):
         out = AttemptOutcome(
             execution_status="succeeded",
-            metrics_status="passed",
+            metrics_status="parsed",
             validity_status="valid",
         )
         assert out.execution_status == "succeeded"
+        assert out.metrics_status == "parsed"
+
+    def test_failed_parse_failed_valid(self):
+        out = AttemptOutcome(
+            execution_status="failed",
+            metrics_status="parse_failed",
+            validity_status="invalid",
+        )
+        assert out.metrics_status == "parse_failed"
 
     def test_failed_with_not_run_ok(self):
         out = AttemptOutcome(
@@ -399,7 +428,7 @@ class TestAttemptOutcome:
         with pytest.raises(ValueError, match="succeeded execution requires validity_status"):
             AttemptOutcome(
                 execution_status="succeeded",
-                metrics_status="passed",
+                metrics_status="parsed",
                 validity_status="not_run",
             )
 
@@ -415,7 +444,7 @@ class TestAttemptOutcome:
         with pytest.raises(Exception):
             AttemptOutcome(
                 execution_status="unknown_status",
-                metrics_status="passed",
+                metrics_status="parsed",
                 validity_status="valid",
             )
 
@@ -435,60 +464,187 @@ class TestAttemptOutcome:
 
 
 class TestResourceUsageReport:
-    def test_baseline_valid(self):
+    # ── measured ─────────────────────────────────────────────────────────
+
+    def test_measured_valid(self):
         r = ResourceUsageReport(
             attempt_id=_ID,
             unit_id=_ID,
             subject_type="baseline",
+            measurement_kind="measured",
+            measurement_tool="nvidia-smi",
             gpu_count_used=2,
-            wall_time_seconds=7200,
+            peak_gpu_memory_mb=12345.0,
+            avg_gpu_memory_mb=10000.0,
+            peak_gpu_utilization_pct=95.0,
+            avg_gpu_utilization_pct=80.0,
+            wall_time_seconds=7200.0,
+            cpu_time_seconds=100.0,
+            peak_cpu_memory_mb=5000.0,
         )
         assert r.variant_id is None
         assert r.seed is None
         assert r.actual_gpu_hours == 4.0
 
-    def test_variant_valid(self):
+    def test_measured_variant_valid(self):
         r = ResourceUsageReport(
             attempt_id=_ID,
             unit_id=_ID,
             subject_type="variant",
             variant_id="v1",
             seed=42,
+            measurement_kind="measured",
+            measurement_tool="nvidia-smi",
             gpu_count_used=1,
-            wall_time_seconds=3600,
+            peak_gpu_memory_mb=5000.0,
+            avg_gpu_memory_mb=4500.0,
+            peak_gpu_utilization_pct=90.0,
+            avg_gpu_utilization_pct=85.0,
+            wall_time_seconds=3600.0,
+            cpu_time_seconds=50.0,
+            peak_cpu_memory_mb=2000.0,
         )
         assert r.variant_id == "v1"
         assert r.seed == 42
         assert r.actual_gpu_hours == 1.0
 
+    def test_measured_requires_measurement_tool(self):
+        with pytest.raises(ValueError, match="measured requires measurement_tool"):
+            ResourceUsageReport(
+                attempt_id=_ID,
+                unit_id=_ID,
+                subject_type="baseline",
+                measurement_kind="measured",
+                gpu_count_used=2,
+                peak_gpu_memory_mb=100.0,
+                avg_gpu_memory_mb=90.0,
+                peak_gpu_utilization_pct=80.0,
+                avg_gpu_utilization_pct=70.0,
+                wall_time_seconds=100.0,
+                cpu_time_seconds=10.0,
+                peak_cpu_memory_mb=1000.0,
+            )
+
+    def test_measured_requires_all_fields_non_none(self):
+        with pytest.raises(ValueError, match="measured requires all fields non-None"):
+            ResourceUsageReport(
+                attempt_id=_ID,
+                unit_id=_ID,
+                subject_type="baseline",
+                measurement_kind="measured",
+                measurement_tool="nvidia-smi",
+                gpu_count_used=2,
+            )
+
+    # ── not_available ─────────────────────────────────────────────────────
+
+    def test_not_available_valid(self):
+        r = ResourceUsageReport(
+            attempt_id=_ID,
+            unit_id=_ID,
+            subject_type="baseline",
+            measurement_kind="not_available",
+            evidence_refs=[_ref("ev")],
+        )
+        assert r.gpu_count_used is None
+        assert r.wall_time_seconds is None
+        assert r.actual_gpu_hours is None
+        assert len(r.evidence_refs) == 1
+
+    def test_not_available_requires_evidence_refs(self):
+        with pytest.raises(ValueError, match="not_available requires evidence_refs"):
+            ResourceUsageReport(
+                attempt_id=_ID,
+                unit_id=_ID,
+                subject_type="baseline",
+                measurement_kind="not_available",
+            )
+
+    def test_not_available_rejects_non_none_fields(self):
+        with pytest.raises(ValueError, match="not_available requires all fields None"):
+            ResourceUsageReport(
+                attempt_id=_ID,
+                unit_id=_ID,
+                subject_type="baseline",
+                measurement_kind="not_available",
+                gpu_count_used=2,
+                evidence_refs=[_ref("ev")],
+            )
+
+    # ── partially_measured ────────────────────────────────────────────────
+
+    def test_partially_measured_valid(self):
+        r = ResourceUsageReport(
+            attempt_id=_ID,
+            unit_id=_ID,
+            subject_type="baseline",
+            measurement_kind="partially_measured",
+            measurement_tool="nvidia-smi",
+            gpu_count_used=1,
+        )
+        assert r.gpu_count_used == 1
+        assert r.actual_gpu_hours is None
+
+    def test_partially_measured_requires_tool(self):
+        with pytest.raises(ValueError, match="partially_measured requires measurement_tool"):
+            ResourceUsageReport(
+                attempt_id=_ID,
+                unit_id=_ID,
+                subject_type="baseline",
+                measurement_kind="partially_measured",
+                gpu_count_used=1,
+            )
+
+    def test_partially_measured_requires_at_least_one(self):
+        with pytest.raises(ValueError, match="partially_measured requires at least one field"):
+            ResourceUsageReport(
+                attempt_id=_ID,
+                unit_id=_ID,
+                subject_type="baseline",
+                measurement_kind="partially_measured",
+                measurement_tool="nvidia-smi",
+            )
+
+    # ── subject type checks ───────────────────────────────────────────────
+
     def test_baseline_variant_id_not_none_rejected(self):
-        with pytest.raises(ValueError, match="baseline must have variant_id=None"):
+        with pytest.raises(ValueError, match="baseline resource report must have variant_id=None"):
             ResourceUsageReport(
                 attempt_id=_ID,
                 unit_id=_ID,
                 subject_type="baseline",
                 variant_id="v1",
-                gpu_count_used=1,
-                wall_time_seconds=100,
+                measurement_kind="not_available",
+                evidence_refs=[_ref("ev")],
             )
 
     def test_variant_missing_variant_id_rejected(self):
-        with pytest.raises(ValueError, match="variant must have variant_id"):
+        with pytest.raises(ValueError, match="variant resource report requires variant_id"):
             ResourceUsageReport(
                 attempt_id=_ID,
                 unit_id=_ID,
                 subject_type="variant",
-                gpu_count_used=1,
-                wall_time_seconds=100,
+                measurement_kind="not_available",
+                evidence_refs=[_ref("ev")],
             )
+
+    # ── actual_gpu_hours ──────────────────────────────────────────────────
 
     def test_actual_gpu_hours_zero_gpu(self):
         r = ResourceUsageReport(
             attempt_id=_ID,
             unit_id=_ID,
             subject_type="baseline",
+            measurement_kind="measured",
+            measurement_tool="nvidia-smi",
             gpu_count_used=0,
-            wall_time_seconds=3600,
+            peak_gpu_memory_mb=1.0,
+            avg_gpu_memory_mb=1.0,
+            peak_gpu_utilization_pct=1.0,
+            avg_gpu_utilization_pct=1.0,
+            wall_time_seconds=3600.0,
+            cpu_time_seconds=1.0,
+            peak_cpu_memory_mb=1.0,
         )
         assert r.actual_gpu_hours == 0.0
 
@@ -497,61 +653,30 @@ class TestResourceUsageReport:
             attempt_id=_ID,
             unit_id=_ID,
             subject_type="baseline",
+            measurement_kind="measured",
+            measurement_tool="nvidia-smi",
             gpu_count_used=4,
-            wall_time_seconds=0,
+            peak_gpu_memory_mb=1.0,
+            avg_gpu_memory_mb=1.0,
+            peak_gpu_utilization_pct=1.0,
+            avg_gpu_utilization_pct=1.0,
+            wall_time_seconds=0.0,
+            cpu_time_seconds=1.0,
+            peak_cpu_memory_mb=1.0,
         )
         assert r.actual_gpu_hours == 0.0
 
-    def test_gpu_count_negative_rejected(self):
-        with pytest.raises(Exception):
-            ResourceUsageReport(
-                attempt_id=_ID,
-                unit_id=_ID,
-                subject_type="baseline",
-                gpu_count_used=-1,
-                wall_time_seconds=100,
-            )
-
-    def test_wall_time_negative_rejected(self):
-        with pytest.raises(Exception):
-            ResourceUsageReport(
-                attempt_id=_ID,
-                unit_id=_ID,
-                subject_type="baseline",
-                gpu_count_used=1,
-                wall_time_seconds=-1,
-            )
-
-    def test_memory_peak_optional(self):
+    def test_actual_gpu_hours_none_when_fields_none(self):
         r = ResourceUsageReport(
             attempt_id=_ID,
             unit_id=_ID,
             subject_type="baseline",
-            gpu_count_used=1,
-            wall_time_seconds=100,
+            measurement_kind="not_available",
+            evidence_refs=[_ref("ev")],
         )
-        assert r.memory_peak_bytes is None
+        assert r.actual_gpu_hours is None
 
-    def test_memory_peak_negative_rejected(self):
-        with pytest.raises(Exception):
-            ResourceUsageReport(
-                attempt_id=_ID,
-                unit_id=_ID,
-                subject_type="baseline",
-                gpu_count_used=1,
-                wall_time_seconds=100,
-                memory_peak_bytes=-1,
-            )
-
-    def test_storage_peak_optional(self):
-        r = ResourceUsageReport(
-            attempt_id=_ID,
-            unit_id=_ID,
-            subject_type="baseline",
-            gpu_count_used=1,
-            wall_time_seconds=100,
-        )
-        assert r.storage_peak_bytes is None
+    # ── misc ──────────────────────────────────────────────────────────────
 
     def test_extra_forbidden(self):
         with pytest.raises(Exception):
@@ -559,8 +684,8 @@ class TestResourceUsageReport:
                 attempt_id=_ID,
                 unit_id=_ID,
                 subject_type="baseline",
-                gpu_count_used=1,
-                wall_time_seconds=100,
+                measurement_kind="not_available",
+                evidence_refs=[_ref("ev")],
                 extra_field="bad",
             )
 
@@ -588,7 +713,7 @@ class TestAttemptRecord:
             attempt_index=2,
             unit_id=_ID,
             identity=_snapshot(),
-            outcome=_outcome(ex_status="succeeded", met_status="passed", val_status="valid"),
+            outcome=_outcome(ex_status="succeeded", met_status="parsed", val_status="valid"),
             execution_result_ref=_ref("exec"),
             metrics_report_ref=_ref("metrics"),
             validity_report_ref=_ref("validity"),
@@ -777,6 +902,10 @@ class TestRetryDecision:
 
 def _completed_unit(unit_id=_ID) -> ExecutionUnitRecord:
     return _unit_record(unit_id)
+
+
+def _exec_failed_outcome() -> AttemptOutcome:
+    return _outcome(ex_status="failed", met_status="parse_failed", val_status="valid")
 
 
 class TestExecutionUnitRecord:
@@ -1095,7 +1224,7 @@ class TestExecutionUnitRecord:
     def test_all_attempts_must_share_plan_sha(self):
         snap_a = _snapshot("a")
         snap_b = AttemptIdentitySnapshot(
-            execution_unit_plan_sha256=_sha("de"),  # different plan sha
+            execution_unit_plan_sha256=_sha("de"),
             command_sha256=snap_a.command_sha256,
             input_refs_sha256=snap_a.input_refs_sha256,
             workspace_repository_fingerprint=snap_a.workspace_repository_fingerprint,
@@ -1276,19 +1405,20 @@ class TestExecutionUnitRecord:
             input_refs_sha256=_sha("fc"),
             workspace_repository_fingerprint="fp",
         )
+        outcome = _exec_failed_outcome()
         a1 = AttemptRecord(
             attempt_id="att_01",
             attempt_index=1,
             unit_id=_ID,
             identity=snap,
-            outcome=_outcome(),
+            outcome=outcome,
         )
         a2 = AttemptRecord(
             attempt_id="att_02",
             attempt_index=2,
             unit_id=_ID,
-            identity=snap,  # same identity, same plan sha — OK
-            outcome=_outcome(),
+            identity=snap,
+            outcome=outcome,
         )
         record = ExecutionUnitRecord(
             unit_id=_ID,
@@ -1302,6 +1432,101 @@ class TestExecutionUnitRecord:
         )
         assert record.final_status == ExecutionUnitStatus.FAILED
         assert len(record.attempts) == 2
+
+    # ── terminal_reason / final_status consistency (new v2.12) ──────────
+
+    def test_terminal_reason_must_match_derived(self):
+        outcome = _completed_outcome()
+        attempt = _attempt_record(outcome=outcome)
+        with pytest.raises(ValueError, match="terminal_reason="):
+            ExecutionUnitRecord(
+                unit_id=_ID,
+                matrix_entry_id=_ID,
+                workspace_id=_ID_WORKSPACE,
+                stage="train_and_eval",
+                final_status=ExecutionUnitStatus.COMPLETED,
+                final_attempt_id=attempt.attempt_id,
+                attempts=[attempt],
+                terminal_reason="execution_failed",
+            )
+
+    def test_final_status_must_match_derived(self):
+        outcome = _completed_outcome()
+        attempt = _attempt_record(outcome=outcome)
+        with pytest.raises(ValueError, match="final_status="):
+            ExecutionUnitRecord(
+                unit_id=_ID,
+                matrix_entry_id=_ID,
+                workspace_id=_ID_WORKSPACE,
+                stage="train_and_eval",
+                final_status=ExecutionUnitStatus.FAILED,
+                final_attempt_id=attempt.attempt_id,
+                attempts=[attempt],
+                terminal_reason="completed",
+            )
+
+    def test_completed_consistency(self):
+        outcome = _completed_outcome()
+        attempt = _attempt_record(outcome=outcome)
+        record = ExecutionUnitRecord(
+            unit_id=_ID,
+            matrix_entry_id=_ID,
+            workspace_id=_ID_WORKSPACE,
+            stage="train_and_eval",
+            final_status=ExecutionUnitStatus.COMPLETED,
+            final_attempt_id=attempt.attempt_id,
+            attempts=[attempt],
+            terminal_reason="completed",
+        )
+        assert record.final_status == ExecutionUnitStatus.COMPLETED
+        assert record.terminal_reason == "completed"
+
+    def test_insufficient_evidence_consistency(self):
+        outcome = _outcome(ex_status="failed", met_status="parse_failed", val_status="insufficient_evidence")
+        attempt = _attempt_record(outcome=outcome, attempt_id="att_ie")
+        record = ExecutionUnitRecord(
+            unit_id=_ID,
+            matrix_entry_id=_ID,
+            workspace_id=_ID_WORKSPACE,
+            stage="train_and_eval",
+            final_status=ExecutionUnitStatus.BLOCKED,
+            final_attempt_id=attempt.attempt_id,
+            attempts=[attempt],
+            terminal_reason="insufficient_evidence",
+        )
+        assert record.final_status == ExecutionUnitStatus.BLOCKED
+        assert record.terminal_reason == "insufficient_evidence"
+
+    def test_validity_failed_consistency(self):
+        outcome = _outcome(ex_status="failed", met_status="parse_failed", val_status="invalid")
+        attempt = _attempt_record(outcome=outcome, attempt_id="att_vf")
+        record = ExecutionUnitRecord(
+            unit_id=_ID,
+            matrix_entry_id=_ID,
+            workspace_id=_ID_WORKSPACE,
+            stage="train_and_eval",
+            final_status=ExecutionUnitStatus.FAILED,
+            final_attempt_id=attempt.attempt_id,
+            attempts=[attempt],
+            terminal_reason="validity_failed",
+        )
+        assert record.final_status == ExecutionUnitStatus.FAILED
+        assert record.terminal_reason == "validity_failed"
+
+    def test_execution_failed_consistency(self):
+        outcome = _exec_failed_outcome()
+        attempt = _attempt_record(outcome=outcome, attempt_id="att_ef")
+        record = ExecutionUnitRecord(
+            unit_id=_ID,
+            matrix_entry_id=_ID,
+            workspace_id=_ID_WORKSPACE,
+            stage="train_and_eval",
+            final_status=ExecutionUnitStatus.FAILED,
+            final_attempt_id=attempt.attempt_id,
+            attempts=[attempt],
+            terminal_reason="execution_failed",
+        )
+        assert record.final_status == ExecutionUnitStatus.FAILED
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1357,14 +1582,16 @@ class TestExecutionManifest:
             )
 
     def test_failed_count_must_match(self):
+        outcome = _exec_failed_outcome()
+        attempt = _attempt_record(attempt_id="att_fail", outcome=outcome)
         failed_record = ExecutionUnitRecord(
             unit_id=_ID,
             matrix_entry_id=_ID,
             workspace_id=_ID_WORKSPACE,
             stage="train_and_eval",
             final_status=ExecutionUnitStatus.FAILED,
-            final_attempt_id="att_01",
-            attempts=[_attempt_record()],
+            final_attempt_id="att_fail",
+            attempts=[attempt],
             terminal_reason="execution_failed",
         )
         with pytest.raises(ValueError, match="failed_unit_count"):
@@ -1405,6 +1632,10 @@ class TestExecutionManifest:
             )
 
     def test_mixed_records_counts_match(self):
+        fail_outcome = _exec_failed_outcome()
+        fail_attempt = _attempt_record(
+            unit_id=_ID2, attempt_index=1, attempt_id="att_fail", outcome=fail_outcome
+        )
         m = ExecutionManifest(
             run_id="run_test",
             experiment_matrix_sha256=_sha(),
@@ -1421,7 +1652,7 @@ class TestExecutionManifest:
                     stage="train_and_eval",
                     final_status=ExecutionUnitStatus.FAILED,
                     final_attempt_id="att_fail",
-                    attempts=[_attempt_record(unit_id=_ID2, attempt_index=1, attempt_id="att_fail")],
+                    attempts=[fail_attempt],
                     terminal_reason="execution_failed",
                 ),
             ],
@@ -1596,7 +1827,188 @@ class TestExperimentExecutionHandoff:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 10. ExecutionUnitPlan, MatrixCoverageReport, ExecutionUnitResourceLedger
+# 10. RunnerIntakeRequest
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _baseline_ws(ws_id="ws_01") -> WorkspaceExecutionRef:
+    return WorkspaceExecutionRef(
+        workspace_id=ws_id,
+        subject_type="baseline",
+        repository_fingerprint="fp",
+        repository_commit="abc1234",
+    )
+
+
+def _variant_ws(ws_id="ws_02", variant_ids=None) -> WorkspaceExecutionRef:
+    if variant_ids is None:
+        variant_ids = ["v1"]
+    return WorkspaceExecutionRef(
+        workspace_id=ws_id,
+        subject_type="variant",
+        variant_ids=variant_ids,
+        repository_fingerprint="fp",
+        repository_commit="abc1234",
+        patch_diff_sha256=_sha("p"),
+        local_validation_report_sha256=_sha("v"),
+        patch_application_manifest_ref=_ref("pm"),
+        post_patch_validation_report_ref=_ref("pp"),
+    )
+
+
+class TestRunnerIntakeRequest:
+    def test_valid_with_one_baseline(self):
+        req = RunnerIntakeRequest(
+            patch_runner_handoff_ref=_ref("handoff", "runner_handoff"),
+            experiment_planner_handoff_sha256=_sha("a"),
+            experiment_matrix_sha256=_sha("b"),
+            shared_protocol_fingerprint="fp",
+            statistical_analysis_plan_sha256=_sha("c"),
+            operational_guard_policy_sha256=_sha("d"),
+            workspace_refs=[
+                _baseline_ws(),
+                _variant_ws(),
+            ],
+        )
+        assert len(req.workspace_refs) == 2
+
+    def test_zero_baselines_rejected(self):
+        with pytest.raises(ValueError, match="exactly 1 baseline workspace required"):
+            RunnerIntakeRequest(
+                patch_runner_handoff_ref=_ref("handoff", "runner_handoff"),
+                experiment_planner_handoff_sha256=_sha("a"),
+                experiment_matrix_sha256=_sha("b"),
+                shared_protocol_fingerprint="fp",
+                statistical_analysis_plan_sha256=_sha("c"),
+                operational_guard_policy_sha256=_sha("d"),
+                workspace_refs=[_variant_ws()],
+            )
+
+    def test_two_baselines_rejected(self):
+        with pytest.raises(ValueError, match="exactly 1 baseline workspace required"):
+            RunnerIntakeRequest(
+                patch_runner_handoff_ref=_ref("handoff", "runner_handoff"),
+                experiment_planner_handoff_sha256=_sha("a"),
+                experiment_matrix_sha256=_sha("b"),
+                shared_protocol_fingerprint="fp",
+                statistical_analysis_plan_sha256=_sha("c"),
+                operational_guard_policy_sha256=_sha("d"),
+                workspace_refs=[
+                    _baseline_ws("ws_01"),
+                    _baseline_ws("ws_02"),
+                ],
+            )
+
+    def test_duplicate_workspace_ids_rejected(self):
+        with pytest.raises(ValueError, match="duplicate workspace_id"):
+            RunnerIntakeRequest(
+                patch_runner_handoff_ref=_ref("handoff", "runner_handoff"),
+                experiment_planner_handoff_sha256=_sha("a"),
+                experiment_matrix_sha256=_sha("b"),
+                shared_protocol_fingerprint="fp",
+                statistical_analysis_plan_sha256=_sha("c"),
+                operational_guard_policy_sha256=_sha("d"),
+                workspace_refs=[
+                    _baseline_ws("ws_01"),
+                    _variant_ws("ws_01", ["v1"]),
+                ],
+            )
+
+    def test_cross_workspace_variant_ids_rejected(self):
+        with pytest.raises(ValueError, match="variant appears in multiple workspaces"):
+            RunnerIntakeRequest(
+                patch_runner_handoff_ref=_ref("handoff", "runner_handoff"),
+                experiment_planner_handoff_sha256=_sha("a"),
+                experiment_matrix_sha256=_sha("b"),
+                shared_protocol_fingerprint="fp",
+                statistical_analysis_plan_sha256=_sha("c"),
+                operational_guard_policy_sha256=_sha("d"),
+                workspace_refs=[
+                    _baseline_ws("ws_01"),
+                    _variant_ws("ws_02", ["v1"]),
+                    _variant_ws("ws_03", ["v1"]),
+                ],
+            )
+
+    def test_extra_forbidden(self):
+        with pytest.raises(Exception):
+            RunnerIntakeRequest(
+                patch_runner_handoff_ref=_ref("handoff", "runner_handoff"),
+                experiment_planner_handoff_sha256=_sha("a"),
+                experiment_matrix_sha256=_sha("b"),
+                shared_protocol_fingerprint="fp",
+                statistical_analysis_plan_sha256=_sha("c"),
+                operational_guard_policy_sha256=_sha("d"),
+                workspace_refs=[_baseline_ws()],
+                extra_field="bad",
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 11. RunnerIntakeReport
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRunnerIntakeReport:
+    def test_eligible_valid(self):
+        r = RunnerIntakeReport(
+            status="eligible",
+            report_sha256=_sha("0e"),
+        )
+        assert r.status == "eligible"
+
+    def test_blocked_valid(self):
+        r = RunnerIntakeReport(
+            status="blocked",
+            report_sha256=_sha("0b"),
+        )
+        assert r.status == "blocked"
+
+    def test_needs_revalidation_valid(self):
+        r = RunnerIntakeReport(
+            status="needs_revalidation",
+            report_sha256=_sha("0d"),
+        )
+        assert r.status == "needs_revalidation"
+
+    def test_invalid_status_rejected(self):
+        with pytest.raises(Exception):
+            RunnerIntakeReport(
+                status="passed",
+                report_sha256=_sha("0f"),
+            )
+
+    def test_report_sha256_must_be_hex64(self):
+        with pytest.raises(Exception):
+            RunnerIntakeReport(
+                status="eligible",
+                report_sha256="not-a-sha",
+            )
+
+    def test_with_checks(self):
+        r = RunnerIntakeReport(
+            status="blocked",
+            checks=[
+                IntakeCheck(name="plan_exists", status="passed"),
+                IntakeCheck(name="budget_ok", status="failed", details="overspent"),
+            ],
+            report_sha256=_sha("0c"),
+        )
+        assert len(r.checks) == 2
+        assert r.checks[1].status == "failed"
+        assert r.checks[1].details == "overspent"
+
+    def test_extra_forbidden(self):
+        with pytest.raises(Exception):
+            RunnerIntakeReport(
+                status="eligible",
+                report_sha256=_sha("0e"),
+                extra_field="bad",
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 12. ExecutionUnitPlan, MatrixCoverageReport, ExecutionUnitResourceLedger
 # ═══════════════════════════════════════════════════════════════════════════
 
 

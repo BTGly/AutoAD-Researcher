@@ -8,8 +8,10 @@ from autoad_researcher.runner.validators import (
     derive_execution_status,
     derive_final_status,
     derive_overall_status,
-    derive_terminal_reason_from_outcome,
+    derive_terminal_reason,
+    derive_workspace_execution_refs,
     validate_attempt_record_against_artifacts,
+    validate_intake_against_patch_handoff,
     validate_resolution_presence,
 )
 from autoad_researcher.analysis.metrics import MetricsReport
@@ -23,6 +25,14 @@ from autoad_researcher.schemas.execution import (
     ExecutionUnitRecord,
     ExecutionUnitStatus,
     ResolvedArtifactBinding,
+    ResourceUsageReport,
+    RunnerIntakeRequest,
+    WorkspaceExecutionRef,
+)
+from autoad_researcher.schemas.patch_planning import (
+    BaselineWorkspaceRef,
+    PatchRunnerHandoff,
+    VariantWorkspaceHandoff,
 )
 from autoad_researcher.supervisor.validity import ScientificValidityReport, ValidityCheck
 
@@ -102,7 +112,7 @@ def _validity_report(**kw):
 def _outcome(**kw):
     defaults = dict(
         execution_status="succeeded",
-        metrics_status="passed",
+        metrics_status="parsed",
         validity_status="valid",
     )
     defaults.update(kw)
@@ -116,6 +126,28 @@ def _resolved(payload, artifact_id="art", sha256=_SHA):
         verified_sha256=sha256,
         payload=payload,
     )
+
+
+def _resource_report(**kw):
+    defaults = dict(
+        attempt_id="attempt_001",
+        unit_id="u1",
+        subject_type="variant",
+        variant_id="v1",
+        measurement_kind="measured",
+        measurement_tool="nvidia-smi",
+        gpu_count_used=1,
+        peak_gpu_memory_mb=8000.0,
+        avg_gpu_memory_mb=7000.0,
+        peak_gpu_utilization_pct=95.0,
+        avg_gpu_utilization_pct=85.0,
+        wall_time_seconds=3600.0,
+        cpu_time_seconds=1800.0,
+        peak_cpu_memory_mb=4096.0,
+        evidence_refs=[],
+    )
+    defaults.update(kw)
+    return ResourceUsageReport(**defaults)
 
 
 def _attempt_record(**kw):
@@ -199,6 +231,69 @@ def _manifest(**kw):
     )
     defaults.update(kw)
     return ExecutionManifest(**defaults)
+
+
+# ── PatchRunnerHandoff helpers ───────────────────────────────────────
+
+def _baseline_workspace_ref(workspace_id="ws_baseline"):
+    return BaselineWorkspaceRef(
+        workspace_id=workspace_id,
+        repository_fingerprint="f" * 64,
+        repository_commit="abc123",
+        repository_validation_ref=_ref("repo_val", _SHA),
+    )
+
+
+def _variant_handoff(workspace_id="ws_v1", variant_ids=None):
+    if variant_ids is None:
+        variant_ids = ["v1"]
+    return VariantWorkspaceHandoff(
+        workspace_id=workspace_id,
+        variant_ids=variant_ids,
+        repository_fingerprint="f" * 64,
+        patch_diff_sha256=_SHA,
+        local_validation_report_sha256=_SHA,
+        patch_application_manifest_ref=_ref("pam", _SHA),
+        post_patch_validation_report_ref=_ref("ppv", _SHA),
+    )
+
+
+def _handoff(**kw):
+    defaults = dict(
+        schema_version=2,
+        status="eligible_for_runner_intake",
+        run_id="run_test",
+        repository_before_commit="abc123",
+        approved_patch_plan_sha256=_SHA,
+        selected_variant_ids=["v1"],
+        experiment_bundle_ref="exp_bundle_ref",
+        baseline_workspace_ref=_baseline_workspace_ref(),
+        variant_workspaces=[_variant_handoff()],
+        next_stage="runner_intake",
+    )
+    defaults.update(kw)
+    return PatchRunnerHandoff(**defaults)
+
+
+def _runner_intake_request(workspace_refs=None):
+    if workspace_refs is None:
+        ws = WorkspaceExecutionRef(
+            workspace_id="ws_baseline",
+            subject_type="baseline",
+            variant_ids=[],
+            repository_fingerprint="f" * 64,
+            repository_commit="abc123",
+        )
+        workspace_refs = [ws]
+    return RunnerIntakeRequest(
+        patch_runner_handoff_ref=_ref("handoff_ref", _SHA),
+        experiment_planner_handoff_sha256=_SHA,
+        experiment_matrix_sha256=_SHA,
+        shared_protocol_fingerprint="pf" * 32,
+        statistical_analysis_plan_sha256=_SHA,
+        operational_guard_policy_sha256=_SHA,
+        workspace_refs=workspace_refs,
+    )
 
 
 # -------------------------------------------------------------------
@@ -300,8 +395,22 @@ class TestDeriveAttemptOutcome:
         vr = _validity_report(status="valid")
         outcome = derive_attempt_outcome(er, mr, vr)
         assert outcome.execution_status == "succeeded"
-        assert outcome.metrics_status == "passed"
+        assert outcome.metrics_status == "parsed"
         assert outcome.validity_status == "valid"
+
+    def test_metrics_passed_yields_parsed(self):
+        er = _exec_result(status="success")
+        mr = _metrics_report(status="passed")
+        vr = _validity_report(status="valid")
+        outcome = derive_attempt_outcome(er, mr, vr)
+        assert outcome.metrics_status == "parsed"
+
+    def test_metrics_failed_yields_parse_failed(self):
+        er = _exec_result(status="success")
+        mr = _metrics_report(status="failed")
+        vr = _validity_report(status="valid")
+        outcome = derive_attempt_outcome(er, mr, vr)
+        assert outcome.metrics_status == "parse_failed"
 
     def test_none_metrics_yields_not_run(self):
         er = _exec_result(status="execution_failed", exit_code=1,
@@ -333,11 +442,12 @@ class TestValidateAttemptRecordAgainstArtifacts:
                          command_sha256=_SHA)
         mr = _metrics_report()
         vr = _validity_report()
+        rr = _resource_report(attempt_id="attempt_001", unit_id="u1")
         return (
             _resolved(er, "exec"),
             _resolved(mr, "metrics"),
             _resolved(vr, "validity"),
-            _resolved("resource", "resource"),
+            _resolved(rr, "resource"),
         )
 
     def test_full_happy_path(self):
@@ -362,11 +472,12 @@ class TestValidateAttemptRecordAgainstArtifacts:
                          command_sha256=_SHA)
         mr = _metrics_report()
         vr = _validity_report()
+        rr = _resource_report(attempt_id="attempt_001", unit_id="u1")
         exec_r = _resolved(er, "exec")
         exec_r.verified_sha256 = _SHA2
         metrics_r = _resolved(mr, "metrics")
         validity_r = _resolved(vr, "validity")
-        resource_r = _resolved("resource", "resource")
+        resource_r = _resolved(rr, "resource")
         with pytest.raises(ValueError, match="execution_result verified SHA mismatch"):
             validate_attempt_record_against_artifacts(
                 attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
@@ -378,10 +489,11 @@ class TestValidateAttemptRecordAgainstArtifacts:
                          command_sha256=_SHA)
         mr = _metrics_report()
         vr = _validity_report()
+        rr = _resource_report(attempt_id="attempt_001", unit_id="u1")
         exec_r = _resolved(er, "exec")
         metrics_r = _resolved(mr, "metrics")
         validity_r = _resolved(vr, "validity")
-        resource_r = _resolved("resource", "resource")
+        resource_r = _resolved(rr, "resource")
         with pytest.raises(ValueError, match="run_id"):
             validate_attempt_record_against_artifacts(
                 attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
@@ -393,10 +505,11 @@ class TestValidateAttemptRecordAgainstArtifacts:
                          command_sha256=_SHA)
         mr = _metrics_report()
         vr = _validity_report()
+        rr = _resource_report(attempt_id="attempt_001", unit_id="u1")
         exec_r = _resolved(er, "exec")
         metrics_r = _resolved(mr, "metrics")
         validity_r = _resolved(vr, "validity")
-        resource_r = _resolved("resource", "resource")
+        resource_r = _resolved(rr, "resource")
         with pytest.raises(ValueError, match="attempt"):
             validate_attempt_record_against_artifacts(
                 attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
@@ -408,10 +521,11 @@ class TestValidateAttemptRecordAgainstArtifacts:
                          command_sha256=_SHA2)
         mr = _metrics_report()
         vr = _validity_report()
+        rr = _resource_report(attempt_id="attempt_001", unit_id="u1")
         exec_r = _resolved(er, "exec")
         metrics_r = _resolved(mr, "metrics")
         validity_r = _resolved(vr, "validity")
-        resource_r = _resolved("resource", "resource")
+        resource_r = _resolved(rr, "resource")
         with pytest.raises(ValueError, match="command_sha256"):
             validate_attempt_record_against_artifacts(
                 attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
@@ -443,42 +557,95 @@ class TestValidateAttemptRecordAgainstArtifacts:
                 attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
             )
 
+    def test_resource_report_attempt_id_mismatch(self):
+        attempt = _attempt_record()
+        er = _exec_result(run_id="run_test", attempt="attempt_001",
+                         command_sha256=_SHA)
+        mr = _metrics_report()
+        vr = _validity_report()
+        rr = _resource_report(attempt_id="wrong_attempt", unit_id="u1")
+        exec_r = _resolved(er, "exec")
+        metrics_r = _resolved(mr, "metrics")
+        validity_r = _resolved(vr, "validity")
+        resource_r = _resolved(rr, "resource")
+        with pytest.raises(ValueError, match="resource_report.attempt_id"):
+            validate_attempt_record_against_artifacts(
+                attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
+            )
+
+    def test_resource_report_unit_id_mismatch(self):
+        attempt = _attempt_record()
+        er = _exec_result(run_id="run_test", attempt="attempt_001",
+                         command_sha256=_SHA)
+        mr = _metrics_report()
+        vr = _validity_report()
+        rr = _resource_report(attempt_id="attempt_001", unit_id="wrong_unit")
+        exec_r = _resolved(er, "exec")
+        metrics_r = _resolved(mr, "metrics")
+        validity_r = _resolved(vr, "validity")
+        resource_r = _resolved(rr, "resource")
+        with pytest.raises(ValueError, match="resource_report.unit_id"):
+            validate_attempt_record_against_artifacts(
+                attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
+            )
+
+    def test_resource_report_ref_sha_mismatch(self):
+        attempt = _attempt_record()
+        attempt.resource_usage_ref = _ref("resource", sha256=_SHA2)
+        exec_r, metrics_r, validity_r, resource_r = self._happy_resolved()
+        with pytest.raises(ValueError, match="resource_report ref.sha256 mismatch"):
+            validate_attempt_record_against_artifacts(
+                attempt, "run_test", exec_r, metrics_r, validity_r, resource_r,
+            )
+
 
 # -------------------------------------------------------------------
-# 6. derive_terminal_reason_from_outcome
+# 6. derive_terminal_reason
 # -------------------------------------------------------------------
 
 
-class TestDeriveTerminalReasonFromOutcome:
-    def test_succeeded_valid_returns_completed(self):
-        o = _outcome(execution_status="succeeded", validity_status="valid")
-        assert derive_terminal_reason_from_outcome(o) == "completed"
+class TestDeriveTerminalReason:
+    def test_all_three_fields_completed(self):
+        o = _outcome(execution_status="succeeded",
+                    metrics_status="parsed",
+                    validity_status="valid")
+        assert derive_terminal_reason(o) == "completed"
 
-    def test_succeeded_insufficient_evidence_returns_completed(self):
-        o = _outcome(execution_status="succeeded", validity_status="insufficient_evidence")
-        assert derive_terminal_reason_from_outcome(o) == "completed"
+    def test_metrics_parse_failed_not_completed(self):
+        o = _outcome(execution_status="succeeded",
+                    metrics_status="parse_failed",
+                    validity_status="valid")
+        assert derive_terminal_reason(o) == "execution_failed"
 
-    def test_succeeded_invalid_returns_validity_failed(self):
-        o = _outcome(execution_status="succeeded", validity_status="invalid")
-        assert derive_terminal_reason_from_outcome(o) == "validity_failed"
+    def test_insufficient_evidence(self):
+        o = _outcome(execution_status="succeeded",
+                    metrics_status="parsed",
+                    validity_status="insufficient_evidence")
+        assert derive_terminal_reason(o) == "insufficient_evidence"
 
-    def test_timeout_returns_execution_failed(self):
+    def test_invalid_yields_validity_failed(self):
+        o = _outcome(execution_status="succeeded",
+                    metrics_status="parsed",
+                    validity_status="invalid")
+        assert derive_terminal_reason(o) == "validity_failed"
+
+    def test_timeout_yields_execution_failed(self):
         o = _outcome(execution_status="timeout",
                     metrics_status="not_run",
                     validity_status="not_run")
-        assert derive_terminal_reason_from_outcome(o) == "execution_failed"
+        assert derive_terminal_reason(o) == "execution_failed"
 
-    def test_failed_returns_execution_failed(self):
+    def test_failed_yields_execution_failed(self):
         o = _outcome(execution_status="failed",
                     metrics_status="not_run",
                     validity_status="not_run")
-        assert derive_terminal_reason_from_outcome(o) == "execution_failed"
+        assert derive_terminal_reason(o) == "execution_failed"
 
-    def test_not_run_returns_insufficient_evidence(self):
+    def test_not_run_yields_execution_failed(self):
         o = _outcome(execution_status="not_run",
                     metrics_status="not_run",
                     validity_status="not_run")
-        assert derive_terminal_reason_from_outcome(o) == "insufficient_evidence"
+        assert derive_terminal_reason(o) == "execution_failed"
 
 
 # -------------------------------------------------------------------
@@ -496,8 +663,8 @@ class TestDeriveFinalStatus:
     def test_validity_failed_yields_failed_enum(self):
         assert derive_final_status("validity_failed") == ExecutionUnitStatus.FAILED
 
-    def test_insufficient_evidence_yields_failed_enum(self):
-        assert derive_final_status("insufficient_evidence") == ExecutionUnitStatus.FAILED
+    def test_insufficient_evidence_yields_blocked_enum(self):
+        assert derive_final_status("insufficient_evidence") == ExecutionUnitStatus.BLOCKED
 
     def test_blocked_upstream_failure_yields_blocked_enum(self):
         assert derive_final_status("blocked_upstream_failure") == ExecutionUnitStatus.BLOCKED
@@ -508,12 +675,99 @@ class TestDeriveFinalStatus:
     def test_preflight_failed_yields_blocked_enum(self):
         assert derive_final_status("preflight_failed") == ExecutionUnitStatus.BLOCKED
 
-    def test_none_yields_failed_enum(self):
-        assert derive_final_status(None) == ExecutionUnitStatus.FAILED
+
+# -------------------------------------------------------------------
+# 8. derive_workspace_execution_refs
+# -------------------------------------------------------------------
+
+
+class TestDeriveWorkspaceExecutionRefs:
+    def test_baseline_only(self):
+        handoff = _handoff(
+            selected_variant_ids=[],
+            variant_workspaces=[],
+        )
+        refs = derive_workspace_execution_refs(handoff)
+        assert len(refs) == 1
+        assert refs[0].workspace_id == "ws_baseline"
+        assert refs[0].subject_type == "baseline"
+        assert refs[0].variant_ids == []
+        assert refs[0].repository_fingerprint == "f" * 64
+        assert refs[0].repository_commit == "abc123"
+        assert refs[0].patch_diff_sha256 is None
+        assert refs[0].local_validation_report_sha256 is None
+        assert refs[0].patch_application_manifest_ref is None
+        assert refs[0].post_patch_validation_report_ref is None
+
+    def test_baseline_plus_one_variant(self):
+        handoff = _handoff(
+            selected_variant_ids=["v1"],
+            variant_workspaces=[_variant_handoff("ws_v1", ["v1"])],
+        )
+        refs = derive_workspace_execution_refs(handoff)
+        assert len(refs) == 2
+        assert refs[0].subject_type == "baseline"
+        assert refs[1].subject_type == "variant"
+        assert refs[1].workspace_id == "ws_v1"
+        assert refs[1].variant_ids == ["v1"]
+        assert refs[1].repository_fingerprint == "f" * 64
+        assert refs[1].repository_commit == "abc123"
+        assert refs[1].patch_diff_sha256 == _SHA
+        assert refs[1].local_validation_report_sha256 == _SHA
+        assert refs[1].patch_application_manifest_ref == _ref("pam", _SHA)
+        assert refs[1].post_patch_validation_report_ref == _ref("ppv", _SHA)
+
+    def test_baseline_plus_multiple_variants(self):
+        handoff = _handoff(
+            selected_variant_ids=["v1", "v2"],
+            variant_workspaces=[
+                _variant_handoff("ws_v1", ["v1"]),
+                _variant_handoff("ws_v2", ["v2"]),
+            ],
+        )
+        refs = derive_workspace_execution_refs(handoff)
+        assert len(refs) == 3
+        assert refs[0].subject_type == "baseline"
+        assert refs[1].subject_type == "variant"
+        assert refs[1].workspace_id == "ws_v1"
+        assert refs[2].subject_type == "variant"
+        assert refs[2].workspace_id == "ws_v2"
 
 
 # -------------------------------------------------------------------
-# 8. derive_overall_status
+# 9. validate_intake_against_patch_handoff
+# -------------------------------------------------------------------
+
+
+class TestValidateIntakeAgainstPatchHandoff:
+    def test_matching_workspace_refs_passes(self):
+        handoff = _handoff(
+            selected_variant_ids=["v1"],
+            variant_workspaces=[_variant_handoff("ws_v1", ["v1"])],
+        )
+        expected_refs = derive_workspace_execution_refs(handoff)
+        request = _runner_intake_request(workspace_refs=expected_refs)
+        validate_intake_against_patch_handoff(request, handoff)
+
+    def test_mismatched_workspace_refs_raises(self):
+        handoff = _handoff(
+            selected_variant_ids=["v1"],
+            variant_workspaces=[_variant_handoff("ws_v1", ["v1"])],
+        )
+        ws = WorkspaceExecutionRef(
+            workspace_id="ws_baseline",
+            subject_type="baseline",
+            variant_ids=[],
+            repository_fingerprint="f" * 64,
+            repository_commit="abc123",
+        )
+        request = _runner_intake_request(workspace_refs=[ws])
+        with pytest.raises(ValueError, match="workspace_refs do not match PatchRunnerHandoff"):
+            validate_intake_against_patch_handoff(request, handoff)
+
+
+# -------------------------------------------------------------------
+# 10. derive_overall_status
 # -------------------------------------------------------------------
 
 
@@ -546,3 +800,4 @@ class TestDeriveOverallStatus:
             failed_unit_count=1,
         )
         assert derive_overall_status(m) == "partially_completed"
+

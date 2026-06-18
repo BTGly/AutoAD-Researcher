@@ -47,6 +47,7 @@ def validate_observation_against_metric_artifacts(
     observation: PairedMetricObservation,
     aggregate_key: AggregatedMetricKey,
     expected_run_id: str,
+    expected_protocol_fingerprint: str,
     baseline_metric_evidence: ResolvedMetricEvidence,
     variant_metric_evidence: ResolvedMetricEvidence,
     baseline_validity_evidence: ResolvedValidityEvidence,
@@ -58,6 +59,13 @@ def validate_observation_against_metric_artifacts(
     - current_run → unit_id + source_run_id dual binding
     - reused → source_run_id binding
     """
+    # --- Protocol fingerprint cross-validation ---
+    if observation.protocol_fingerprint != expected_protocol_fingerprint:
+        raise ValueError(
+            f"observation protocol_fingerprint mismatch: "
+            f"got={observation.protocol_fingerprint}, expected={expected_protocol_fingerprint}"
+        )
+
     # --- SHA + verified SHA checks ---
     if baseline_metric_evidence.metric_ref.sha256 != observation.baseline_source.metric_ref.sha256:
         raise ValueError("baseline metric ref sha256 mismatch")
@@ -169,6 +177,10 @@ def validate_aggregate_from_observations(
     These summary fields are not independent writable facts — they must
     match values derived from observations. Only observations with
     pair_validity_status == "valid" contribute to mean calculations.
+
+    Duplicate seeds are rejected — each seed may appear at most once in
+    a single aggregate. Direction must match the aggregate_key.direction
+    for every observation.
     """
     valid_obs = [
         o for o in aggregate.paired_observations
@@ -188,6 +200,13 @@ def validate_aggregate_from_observations(
         raise ValueError(
             "invalid observations require degraded, missing, or invalid status"
         )
+
+    for obs in aggregate.paired_observations:
+        if obs.direction != aggregate.aggregate_key.direction:
+            raise ValueError(
+                f"observation direction={obs.direction} != "
+                f"aggregate_key.direction={aggregate.aggregate_key.direction}"
+            )
 
     if valid_obs:
         recalc_mean_base = sum(o.baseline_value for o in valid_obs) / len(valid_obs)

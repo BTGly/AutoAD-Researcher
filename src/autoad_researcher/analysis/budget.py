@@ -123,9 +123,10 @@ def determine_bundle_budget_assessment(
 
     Performs exact coverage validation: all expected unit/variant IDs must
     be present in the bundle aggregate, and no unexpected IDs may appear.
+    Checks per-variant unit-level coverage, not just variant-level existence.
     """
     actual_baseline_unit_ids = set(bundle.baseline.per_unit_actual_gpu_hours.keys())
-    actual_variant_unit_ids = {
+    actual_variant_unit_ids: dict[str, set[str]] = {
         vid: set(agg.per_unit_actual_gpu_hours.keys())
         for vid, agg in bundle.per_variant.items()
     }
@@ -133,20 +134,23 @@ def determine_bundle_budget_assessment(
     missing_baseline = expected_baseline_unit_ids - actual_baseline_unit_ids
     unexpected_baseline = actual_baseline_unit_ids - expected_baseline_unit_ids
 
-    missing_variant_ids: list[str] = []
-    unexpected_variant_ids: list[str] = []
-    all_expected_baseline = set(expected_baseline_unit_ids)
-    all_actual_baseline = set(actual_baseline_unit_ids)
-    all_expected = set(expected_variant_unit_ids.keys())
-    all_actual = set(bundle.per_variant.keys())
+    expected_variant_ids = set(expected_variant_unit_ids.keys())
+    actual_variant_ids = set(bundle.per_variant.keys())
+    missing_variant_ids: list[str] = sorted(expected_variant_ids - actual_variant_ids)
+    unexpected_variant_ids: list[str] = sorted(actual_variant_ids - expected_variant_ids)
 
-    missing_var = all_expected - all_actual
-    unexpected_var = all_actual - all_expected
-    missing_variant_ids.extend(missing_var)
-    unexpected_variant_ids.extend(unexpected_var)
+    # Per-variant unit-level coverage
+    all_missing_units = sorted(missing_baseline)
+    all_unexpected_units = sorted(unexpected_baseline)
+    for vid in expected_variant_ids & actual_variant_ids:
+        expected_units = expected_variant_unit_ids[vid]
+        actual_units = actual_variant_unit_ids.get(vid, set())
+        all_missing_units.extend(sorted(expected_units - actual_units))
+        all_unexpected_units.extend(sorted(actual_units - expected_units))
 
     has_coverage_issue = bool(
-        missing_baseline or unexpected_baseline or missing_variant_ids or unexpected_variant_ids
+        all_missing_units or all_unexpected_units
+        or missing_variant_ids or unexpected_variant_ids
     )
 
     if has_coverage_issue or budget is None:
@@ -159,10 +163,10 @@ def determine_bundle_budget_assessment(
             bundle_total_actual_gpu_hours=total if has_data else None,
             resource_budget_ref=resource_budget_ref if budget else None,
             resource_usage_refs=[],
-            missing_unit_ids=sorted(missing_baseline),
-            unexpected_unit_ids=sorted(unexpected_baseline),
-            missing_variant_ids=sorted(missing_variant_ids),
-            unexpected_variant_ids=sorted(unexpected_variant_ids),
+            missing_unit_ids=sorted(all_missing_units),
+            unexpected_unit_ids=sorted(all_unexpected_units),
+            missing_variant_ids=missing_variant_ids,
+            unexpected_variant_ids=unexpected_variant_ids,
             reason="coverage mismatch" if has_coverage_issue else "no budget data",
         )
 
@@ -194,10 +198,10 @@ def determine_bundle_budget_assessment(
         bundle_total_actual_gpu_hours=bundle_total,
         resource_budget_ref=resource_budget_ref,
         resource_usage_refs=all_usage_refs,
-        missing_unit_ids=sorted(missing_baseline),
-        unexpected_unit_ids=sorted(unexpected_baseline),
-        missing_variant_ids=sorted(missing_variant_ids),
-        unexpected_variant_ids=sorted(unexpected_variant_ids),
+        missing_unit_ids=sorted(all_missing_units),
+        unexpected_unit_ids=sorted(all_unexpected_units),
+        missing_variant_ids=missing_variant_ids,
+        unexpected_variant_ids=unexpected_variant_ids,
         reason=(
             f"bundle_total={bundle_total:.6f}/"
             f"{max_total:.6f}; status={status}"

@@ -51,13 +51,43 @@ def _ref(artifact_id: str = "art") -> ArtifactReferenceV2:
     )
 
 
-def _baseline_source() -> CurrentRunBaselineMetricRef:
+def _baseline_source(seed: int = 0) -> CurrentRunBaselineMetricRef:
     return CurrentRunBaselineMetricRef(
         metric_name="auroc",
         unit_id="u1",
-        seed=0,
+        seed=seed,
         metric_ref=_ref("base_metric"),
         validity_ref=_ref("base_validity"),
+    )
+
+
+def _obs(
+    seed: int = 0,
+    baseline_value: float = 0.80,
+    variant_value: float = 0.85,
+    direction: str = "maximize",
+) -> PairedMetricObservation:
+    raw_delta = variant_value - baseline_value
+    imp_delta = raw_delta if direction == "maximize" else baseline_value - variant_value
+    rel = raw_delta / abs(baseline_value) * 100.0
+    imp_rel = imp_delta / abs(baseline_value) * 100.0
+    return PairedMetricObservation(
+        seed=seed,
+        baseline_source=_baseline_source(seed=seed),
+        baseline_value=baseline_value,
+        variant_unit_id="u1",
+        variant_id="v1",
+        variant_metric_ref=_ref("var_metric"),
+        variant_value=variant_value,
+        direction=direction,
+        raw_delta=raw_delta,
+        improvement_delta=imp_delta,
+        raw_relative_change_pct=rel,
+        improvement_relative_change_pct=imp_rel,
+        pair_validity_status="valid",
+        variant_validity_ref=_ref("var_validity"),
+        baseline_validity_ref=_ref("base_validity"),
+        protocol_fingerprint="fp1",
     )
 
 
@@ -169,7 +199,7 @@ class TestPairedMetricObservation:
                 variant_metric_ref=_ref("var_metric"),
                 variant_value=0.85,
                 direction="maximize",
-                raw_delta=0.99,  # wrong — should be 0.05
+                raw_delta=0.99,
                 improvement_delta=0.05,
                 pair_validity_status="valid",
                 variant_validity_ref=_ref("var_validity"),
@@ -189,7 +219,7 @@ class TestPairedMetricObservation:
                 variant_value=90.0,
                 direction="minimize",
                 raw_delta=-10.0,
-                improvement_delta=0.0,  # wrong — should be 10.0
+                improvement_delta=0.0,
                 pair_validity_status="valid",
                 variant_validity_ref=_ref("var_validity"),
                 baseline_validity_ref=_ref("base_validity"),
@@ -209,7 +239,7 @@ class TestPairedMetricObservation:
                 direction="maximize",
                 raw_delta=0.05,
                 improvement_delta=0.05,
-                raw_relative_change_pct=99.0,  # wrong — should be 6.25
+                raw_relative_change_pct=99.0,
                 improvement_relative_change_pct=6.25,
                 pair_validity_status="valid",
                 variant_validity_ref=_ref("var_validity"),
@@ -299,24 +329,7 @@ class TestAggregatedMetricComparison:
         assert comp.paired_observations == []
 
     def test_with_observations(self):
-        obs = PairedMetricObservation(
-            seed=0,
-            baseline_source=_baseline_source(),
-            baseline_value=0.80,
-            variant_unit_id="u1",
-            variant_id="v1",
-            variant_metric_ref=_ref("var_metric"),
-            variant_value=0.85,
-            direction="maximize",
-            raw_delta=0.05,
-            improvement_delta=0.05,
-            raw_relative_change_pct=6.25,
-            improvement_relative_change_pct=6.25,
-            pair_validity_status="valid",
-            variant_validity_ref=_ref("var_validity"),
-            baseline_validity_ref=_ref("base_validity"),
-            protocol_fingerprint="fp1",
-        )
+        obs = _obs(seed=0)
         comp = AggregatedMetricComparison(
             aggregate_key=AggregatedMetricKey(
                 variant_id="v1", metric_name="auroc", dataset_row="bottle", direction="maximize",
@@ -332,6 +345,47 @@ class TestAggregatedMetricComparison:
         )
         assert len(comp.paired_observations) == 1
         assert comp.mean_raw_delta == 0.05
+
+    def test_seed_count_must_equal_observations_length(self):
+        obs = _obs(seed=0)
+        with pytest.raises(ValueError, match="seed_count must equal len"):
+            AggregatedMetricComparison(
+                aggregate_key=AggregatedMetricKey(
+                    variant_id="v1", metric_name="auroc", dataset_row="bottle", direction="maximize",
+                ),
+                paired_observations=[obs],
+                comparison_status="valid",
+                seed_count=2,
+                completed_seed_count=1,
+            )
+
+    def test_duplicate_seed_raises(self):
+        obs_0 = _obs(seed=0)
+        obs_0_dup = _obs(seed=0, variant_value=0.86)
+        with pytest.raises(ValueError, match="duplicate seed"):
+            AggregatedMetricComparison(
+                aggregate_key=AggregatedMetricKey(
+                    variant_id="v1", metric_name="auroc", dataset_row="bottle", direction="maximize",
+                ),
+                paired_observations=[obs_0, obs_0_dup],
+                comparison_status="valid",
+                seed_count=2,
+                completed_seed_count=2,
+            )
+
+    def test_correct_seed_count_with_distinct_seeds_passes(self):
+        obs_0 = _obs(seed=0)
+        obs_1 = _obs(seed=1, baseline_value=0.82, variant_value=0.87)
+        comp = AggregatedMetricComparison(
+            aggregate_key=AggregatedMetricKey(
+                variant_id="v1", metric_name="auroc", dataset_row="bottle", direction="maximize",
+            ),
+            paired_observations=[obs_0, obs_1],
+            comparison_status="valid",
+            seed_count=2,
+            completed_seed_count=2,
+        )
+        assert len(comp.paired_observations) == 2
 
 
 # ── Resolved Evidence ─────────────────────────────────────────────────
@@ -384,7 +438,7 @@ class TestEvidenceSufficiency:
                 variant_id="v1",
                 total_planned_seeds=5,
                 completed_seed_pairs=3,
-                valid_seed_pairs=4,  # > completed_seed_pairs
+                valid_seed_pairs=4,
                 metric_count=3,
                 valid_metric_count=3,
                 protocol_fingerprint="fp1",
@@ -395,7 +449,7 @@ class TestEvidenceSufficiency:
             EvidenceSufficiency(
                 variant_id="v1",
                 total_planned_seeds=3,
-                completed_seed_pairs=5,  # > total_planned_seeds
+                completed_seed_pairs=5,
                 valid_seed_pairs=3,
                 metric_count=3,
                 valid_metric_count=3,
@@ -410,7 +464,7 @@ class TestEvidenceSufficiency:
                 completed_seed_pairs=5,
                 valid_seed_pairs=5,
                 metric_count=2,
-                valid_metric_count=3,  # > metric_count
+                valid_metric_count=3,
                 protocol_fingerprint="fp1",
             )
 
@@ -624,7 +678,7 @@ class TestBundleResourceAggregate:
             baseline=baseline,
             per_variant={"v1": v1, "v2": v2},
         )
-        assert b.total_actual_gpu_hours == 13.0  # 3+5+5
+        assert b.total_actual_gpu_hours == 13.0
         assert b.max_unit_actual_gpu_hours == 5.0
 
 
@@ -748,32 +802,124 @@ class TestVariantBudgetAssessment:
 class TestResourceComparisonReport:
     def test_minimal(self):
         r = ResourceComparisonReport()
-        assert r.overall_within_budget is False
-        assert r.variant_aggregates == []
+        assert r.baseline is None
+        assert r.per_variant == {}
+        assert r.per_variant_deltas == {}
+        assert r.per_variant_budget_assessments == {}
         assert r.bundle is None
+        assert r.bundle_budget_assessment is None
+        assert r.evidence_refs == []
 
-    def test_with_bundle_and_assessment(self):
+    def test_dict_based_structure(self):
         baseline = BaselineResourceAggregate(
             per_unit_actual_gpu_hours={"u1": 2.0},
             measurement_status="measured",
         )
-        bundle = BundleResourceAggregate(baseline=baseline)
+        v1 = VariantResourceAggregate(
+            variant_id="v1",
+            per_unit_actual_gpu_hours={"u1": 3.0},
+            measurement_status="measured",
+        )
+        delta = ResourceDelta(
+            variant_id="v1",
+            wall_time_delta_seconds=600.0,
+            measurement_compatible=True,
+        )
+        va = VariantBudgetAssessment(
+            variant_id="v1",
+            status="within_budget",
+            reason="ok",
+            resource_budget_ref=_ref("budget"),
+            resource_usage_refs=[_ref("usage")],
+        )
+        bundle = BundleResourceAggregate(
+            baseline=baseline,
+            per_variant={"v1": v1},
+        )
         ba = BundleBudgetAssessment(
             status="within_budget",
-            max_unit_actual_gpu_hours=2.0,
-            bundle_total_actual_gpu_hours=2.0,
+            max_unit_actual_gpu_hours=3.0,
+            bundle_total_actual_gpu_hours=5.0,
             resource_budget_ref=_ref("budget"),
             resource_usage_refs=[_ref("usage")],
             reason="ok",
         )
         r = ResourceComparisonReport(
+            baseline=baseline,
+            per_variant={"v1": v1},
+            per_variant_deltas={"v1": delta},
+            per_variant_budget_assessments={"v1": va},
             bundle=bundle,
             bundle_budget_assessment=ba,
-            overall_within_budget=True,
+            evidence_refs=[_ref("ev")],
+        )
+        assert r.baseline is baseline
+        assert r.per_variant["v1"] is v1
+        assert r.per_variant_deltas["v1"] is delta
+        assert r.per_variant_budget_assessments["v1"] is va
+        assert r.bundle is bundle
+        assert r.bundle_budget_assessment is ba
+        assert len(r.evidence_refs) == 1
+
+    def test_bundle_consistency_matching_passes(self):
+        baseline = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 2.0},
+            measurement_status="measured",
+        )
+        v1 = VariantResourceAggregate(
+            variant_id="v1",
+            per_unit_actual_gpu_hours={"u1": 3.0},
+            measurement_status="measured",
+        )
+        bundle = BundleResourceAggregate(
+            baseline=baseline,
+            per_variant={"v1": v1},
+        )
+        r = ResourceComparisonReport(
+            baseline=baseline,
+            per_variant={"v1": v1},
+            bundle=bundle,
         )
         assert r.bundle is not None
-        assert r.bundle_budget_assessment is not None
-        assert r.overall_within_budget is True
+
+    def test_bundle_consistency_mismatched_baseline_raises(self):
+        baseline_report = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 2.0},
+            measurement_status="measured",
+        )
+        baseline_bundle = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 5.0},
+            measurement_status="measured",
+        )
+        bundle = BundleResourceAggregate(
+            baseline=baseline_bundle,
+        )
+        with pytest.raises(ValueError, match="bundle baseline mismatch"):
+            ResourceComparisonReport(
+                baseline=baseline_report,
+                bundle=bundle,
+            )
+
+    def test_bundle_consistency_mismatched_per_variant_raises(self):
+        baseline = BaselineResourceAggregate(
+            per_unit_actual_gpu_hours={"u1": 2.0},
+            measurement_status="measured",
+        )
+        v1 = VariantResourceAggregate(
+            variant_id="v1",
+            per_unit_actual_gpu_hours={"u1": 3.0},
+            measurement_status="measured",
+        )
+        bundle = BundleResourceAggregate(
+            baseline=baseline,
+            per_variant={"v1": v1},
+        )
+        with pytest.raises(ValueError, match="bundle per_variant mismatch"):
+            ResourceComparisonReport(
+                baseline=baseline,
+                per_variant={},
+                bundle=bundle,
+            )
 
 
 # ── Failure Analysis ──────────────────────────────────────────────────

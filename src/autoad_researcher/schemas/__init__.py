@@ -28,6 +28,7 @@ from autoad_researcher.schemas.execution import (
     RetryDecision,
     RetryIdentity,
     RunnerIntakeReport,
+    RunnerIntakeRequest,
     TerminalReason,
     WorkspaceExecutionRef,
 )
@@ -516,6 +517,7 @@ __all__ = [
     "RetryDecision",
     "RetryIdentity",
     "RunnerIntakeReport",
+    "RunnerIntakeRequest",
     "TerminalReason",
     "WorkspaceExecutionRef",
     # Results analysis — 3.9 schemas

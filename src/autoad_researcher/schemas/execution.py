@@ -39,6 +39,16 @@ FailureClassification = Literal[
 
 OverallExecutionStatus = Literal["completed", "partially_completed", "failed", "blocked"]
 
+_TERMINAL_REASON_TO_FINAL_STATUS: dict[TerminalReason, ExecutionUnitStatus] = {
+    "completed": ExecutionUnitStatus.COMPLETED,
+    "execution_failed": ExecutionUnitStatus.FAILED,
+    "validity_failed": ExecutionUnitStatus.FAILED,
+    "insufficient_evidence": ExecutionUnitStatus.BLOCKED,
+    "blocked_upstream_failure": ExecutionUnitStatus.BLOCKED,
+    "intake_failed": ExecutionUnitStatus.BLOCKED,
+    "preflight_failed": ExecutionUnitStatus.BLOCKED,
+}
+
 # ── Identity ──────────────────────────────────────────────────────────────────
 
 
@@ -127,10 +137,46 @@ class IntakeCheck(BaseModel):
     details: str | None = None
 
 
+class RunnerIntakeRequest(BaseModel):
+    """Structured request from PatchRunnerHandoff v2 → Runner Intake.
+
+    Carries workspace_refs validated against the handoff source by
+    validate_intake_against_patch_handoff. Exactly 1 baseline workspace
+    required; no duplicate workspace_ids or cross-workspace variant_ids.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    patch_runner_handoff_ref: ArtifactReferenceV2
+    experiment_planner_handoff_sha256: str = Field(pattern=Sha256Pattern)
+    experiment_matrix_sha256: str = Field(pattern=Sha256Pattern)
+    shared_protocol_fingerprint: str = Field(min_length=1)
+    statistical_analysis_plan_sha256: str = Field(pattern=Sha256Pattern)
+    operational_guard_policy_sha256: str = Field(pattern=Sha256Pattern)
+    workspace_refs: list[WorkspaceExecutionRef] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_workspaces(self) -> "RunnerIntakeRequest":
+        baseline_count = sum(1 for ws in self.workspace_refs if ws.subject_type == "baseline")
+        if baseline_count != 1:
+            raise ValueError("exactly 1 baseline workspace required")
+        workspace_ids = [ws.workspace_id for ws in self.workspace_refs]
+        if len(workspace_ids) != len(set(workspace_ids)):
+            raise ValueError("duplicate workspace_id in workspace_refs")
+        all_variant_ids = [
+            vid for ws in self.workspace_refs if ws.subject_type == "variant"
+            for vid in ws.variant_ids
+        ]
+        if len(all_variant_ids) != len(set(all_variant_ids)):
+            raise ValueError("variant appears in multiple workspaces")
+        return self
+
+
 class RunnerIntakeReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    overall: Literal["passed", "failed"]
+    status: Literal["eligible", "blocked", "needs_revalidation"]
     checks: list[IntakeCheck] = Field(default_factory=list)
+    report_sha256: str = Field(pattern=Sha256Pattern)
 
 
 # ── Artifact bindings ─────────────────────────────────────────────────────────
@@ -191,16 +237,16 @@ class AttemptOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     execution_status: ExecutionStatus
-    metrics_status: Literal["passed", "failed", "not_run"]
+    metrics_status: Literal["parsed", "parse_failed", "not_run"]
     validity_status: Literal["valid", "invalid", "insufficient_evidence", "not_run"]
 
     @model_validator(mode="after")
     def _validate(self) -> "AttemptOutcome":
         if self.execution_status == "succeeded":
             if self.metrics_status == "not_run":
-                raise ValueError("succeeded execution requires metrics_status")
+                raise ValueError("succeeded execution requires metrics_status not 'not_run'")
             if self.validity_status == "not_run":
-                raise ValueError("succeeded execution requires validity_status")
+                raise ValueError("succeeded execution requires validity_status not 'not_run'")
         return self
 
 
@@ -208,6 +254,14 @@ class AttemptOutcome(BaseModel):
 
 
 class ResourceUsageReport(BaseModel):
+    """Per-attempt resource telemetry — granularity = one attempt, not one variant.
+
+    variant_id is None for baseline, required for variant.
+    seed may be None for baseline/fit stage, required for full stage.
+    measurement_kind controls field-level validation: not_available must have
+    all measured fields None and non-empty evidence_refs.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     attempt_id: str = Field(pattern=IdentifierPattern)
@@ -215,24 +269,59 @@ class ResourceUsageReport(BaseModel):
     subject_type: Literal["baseline", "variant"]
     variant_id: str | None = None
     seed: int | None = None
-    gpu_count_used: int = Field(ge=0)
-    wall_time_seconds: float = Field(ge=0)
-    memory_peak_bytes: int | None = Field(default=None, ge=0)
-    storage_peak_bytes: int | None = Field(default=None, ge=0)
+
+    measurement_kind: Literal["measured", "partially_measured", "not_available"]
+    measurement_tool: str | None = None
+
+    gpu_count_used: int | None = Field(default=None, ge=0)
+    peak_gpu_memory_mb: float | None = None
+    avg_gpu_memory_mb: float | None = None
+    peak_gpu_utilization_pct: float | None = None
+    avg_gpu_utilization_pct: float | None = None
+    wall_time_seconds: float | None = Field(default=None, ge=0)
+    cpu_time_seconds: float | None = None
+    peak_cpu_memory_mb: float | None = None
+
+    evidence_refs: list[ArtifactReferenceV2] = Field(default_factory=list)
 
     @computed_field
     @property
-    def actual_gpu_hours(self) -> float:
+    def actual_gpu_hours(self) -> float | None:
+        if self.gpu_count_used is None or self.wall_time_seconds is None:
+            return None
         return self.gpu_count_used * self.wall_time_seconds / 3600.0
 
     @model_validator(mode="after")
-    def _validate_subject_fields(self) -> "ResourceUsageReport":
+    def _validate(self) -> "ResourceUsageReport":
         if self.subject_type == "baseline":
             if self.variant_id is not None:
-                raise ValueError("baseline must have variant_id=None")
+                raise ValueError("baseline resource report must have variant_id=None")
         else:
             if self.variant_id is None:
-                raise ValueError("variant must have variant_id")
+                raise ValueError("variant resource report requires variant_id")
+
+        fields = [
+            self.gpu_count_used, self.peak_gpu_memory_mb, self.avg_gpu_memory_mb,
+            self.peak_gpu_utilization_pct, self.avg_gpu_utilization_pct,
+            self.wall_time_seconds, self.cpu_time_seconds,
+            self.peak_cpu_memory_mb,
+        ]
+        filled = [f for f in fields if f is not None]
+        if self.measurement_kind == "measured":
+            if not self.measurement_tool:
+                raise ValueError("measured requires measurement_tool")
+            if len(filled) != len(fields):
+                raise ValueError("measured requires all fields non-None")
+        elif self.measurement_kind == "partially_measured":
+            if not self.measurement_tool:
+                raise ValueError("partially_measured requires measurement_tool")
+            if len(filled) < 1:
+                raise ValueError("partially_measured requires at least one field")
+        elif self.measurement_kind == "not_available":
+            if filled:
+                raise ValueError("not_available requires all fields None")
+            if not self.evidence_refs:
+                raise ValueError("not_available requires evidence_refs")
         return self
 
 
@@ -336,6 +425,34 @@ class ExecutionUnitRecord(BaseModel):
                 raise ValueError("attemptful terminal_reason must have empty blocking_unit_ids")
             if self.preflight_report_ref is not None:
                 raise ValueError("attemptful terminal_reason must have preflight_report_ref=None")
+            outcome = last.outcome
+            if outcome.execution_status == "not_run":
+                expected_reason = "execution_failed"
+            elif outcome.execution_status == "timeout":
+                expected_reason = "execution_failed"
+            elif outcome.validity_status == "invalid":
+                expected_reason = "validity_failed"
+            elif outcome.validity_status == "insufficient_evidence":
+                expected_reason = "insufficient_evidence"
+            elif (
+                outcome.execution_status == "succeeded"
+                and outcome.metrics_status == "parsed"
+                and outcome.validity_status == "valid"
+            ):
+                expected_reason = "completed"
+            else:
+                expected_reason = "execution_failed"
+            if self.terminal_reason != expected_reason:
+                raise ValueError(
+                    f"terminal_reason={self.terminal_reason} != "
+                    f"derived={expected_reason} from last attempt outcome"
+                )
+            expected_status = _TERMINAL_REASON_TO_FINAL_STATUS[expected_reason]
+            if self.final_status != expected_status:
+                raise ValueError(
+                    f"final_status={self.final_status} != "
+                    f"derived={expected_status} from terminal_reason={expected_reason}"
+                )
         elif self.terminal_reason == "blocked_upstream_failure":
             if self.attempts:
                 raise ValueError("blocked_upstream_failure requires zero attempts")
