@@ -2,16 +2,18 @@
 
 import base64
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from autoad_researcher.schemas.baseline_architecture import ModificationHook
 from autoad_researcher.schemas.patch_planning import (
     ApprovalDecision, ApprovalRequest, CheckResult, PatchPlanValidationIssue,
     PatchPlanValidationReport, PlannedRepositoryChange, RepositoryChangePlan,
     ValidationCommand, compute_canonical_plan_sha256,
+    _serializable,
 )
 from autoad_researcher.code_agent.approval import (
     compute_approval_effective_write_paths,
@@ -23,6 +25,10 @@ from autoad_researcher.code_agent.patch_applicator import ControlledPatchApplica
 from autoad_researcher.code_agent.planner_validator import validate_repository_change_plan
 
 _NOW = datetime.now(timezone.utc)
+
+
+class _DatetimeProbe(BaseModel):
+    observed_at: datetime
 
 
 def _plan(*, run_id="run_test", changes=None, deps=None, **kw):
@@ -76,6 +82,25 @@ def _c(cid, ws, kind="create", tm="new_target", path="src/x.py", ps=None):
 def _apply(app, plan, dec, ws, repo, run_id):
     return app._apply_internal(plan=plan, decision=dec, request=_req(sha=plan.plan_sha256),
                                workspace_id=ws, repository_root=repo, run_id=run_id)
+
+
+class TestCanonicalDatetime:
+    def test_equivalent_timezone_offsets_normalize_to_utc_z(self):
+        plus_eight = _DatetimeProbe(
+            observed_at=datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+        )
+        utc = _DatetimeProbe(
+            observed_at=datetime(2026, 6, 18, 4, 0, 0, tzinfo=timezone.utc)
+        )
+
+        assert _serializable(plus_eight) == _serializable(utc)
+        assert _serializable(plus_eight)["observed_at"] == "2026-06-18T04:00:00Z"
+
+    def test_naive_datetime_is_rejected(self):
+        probe = _DatetimeProbe(observed_at=datetime(2026, 6, 18, 4, 0, 0))
+
+        with pytest.raises(ValueError, match="naive datetime is forbidden"):
+            _serializable(probe)
 
 
 # --- P0-2: fail-closed ---

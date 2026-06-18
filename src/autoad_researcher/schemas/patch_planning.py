@@ -2,7 +2,7 @@
 
 import base64
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -197,19 +197,39 @@ def compute_canonical_plan_sha256(plan: "RepositoryChangePlan") -> str:
             continue
         value = getattr(plan, field_name, None)
         data[field_name] = _serializable(value, field_name in _ORDERED_LIST_NAMES)
-    payload = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+    payload = json.dumps(
+        data,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
     import hashlib
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _serializable(value: Any, preserve_order: bool = False) -> Any:
     if isinstance(value, BaseModel):
-        obj = value.model_dump(mode="json", exclude_none=True)
+        obj = value.model_dump(mode="python", exclude_none=True)
         return {k: _serializable(v, k in _ORDERED_LIST_NAMES) for k, v in sorted(obj.items())}
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("naive datetime is forbidden in canonical SHA")
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     if isinstance(value, list):
+        items = [_serializable(v) for v in value]
         if preserve_order:
-            return [_serializable(v) for v in value]
-        return [_serializable(v) for v in sorted(value, key=lambda x: str(x))]
+            return items
+        return sorted(
+            items,
+            key=lambda x: json.dumps(
+                x,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+        )
     if isinstance(value, dict):
         return {k: _serializable(v) for k, v in sorted(value.items())}
     return value
