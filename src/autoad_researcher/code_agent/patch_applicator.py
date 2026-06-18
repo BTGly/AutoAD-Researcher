@@ -193,7 +193,7 @@ def _apply_single_change(
     elif change.symbol_delta:
         content = _render_symbol_placeholder(change)
     else:
-        content = f"# Placeholder for {change.change_id}\n".encode("utf-8")
+        content = _render_basic_placeholder(change)
 
     tmp_path = abs_path.with_suffix(abs_path.suffix + ".patch_tmp")
     try:
@@ -231,9 +231,18 @@ def _render_symbol_placeholder(change) -> bytes:
     sd = change.symbol_delta
     return (
         f"# Patch: {change.change_id}\n"
+        f"# Variant: {change.variant_ids}\n"
+        f"# Rationale: {change.rationale}\n"
         f"# Symbol: {sd.symbol_name}\n"
         f"# Before: {sd.current_responsibility}\n"
         f"# After: {sd.planned_responsibility}\n"
+    ).encode("utf-8")
+
+
+def _render_basic_placeholder(change) -> bytes:
+    return (
+        f"# Placeholder for {change.change_id}\n"
+        f"# Rationale: {change.rationale}\n"
     ).encode("utf-8")
 
 

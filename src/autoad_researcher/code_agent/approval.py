@@ -96,11 +96,16 @@ def validate_approved_paths_against_policy(
             errors.append(
                 f"Path {path} is policy-denied and cannot be approved by user"
             )
-        parent = "/".join(path.split("/")[:-1])
-        if parent and parent in policy_denied_paths:
-            errors.append(
-                f"Parent directory {parent} of {path} is policy-denied"
-            )
+            continue
+        parts = path.split("/")[:-1]
+        while parts:
+            ancestor = "/".join(parts)
+            if ancestor in policy_denied_paths:
+                errors.append(
+                    f"Ancestor directory {ancestor} of {path} is policy-denied"
+                )
+                break
+            parts = parts[:-1]
     return errors
 
 
