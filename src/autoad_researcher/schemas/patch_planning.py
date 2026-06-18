@@ -62,7 +62,7 @@ class PatchPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     payload_id: str = Field(pattern=IdentifierPattern)
     change_id: str = Field(pattern=IdentifierPattern)
-    payload_kind: Literal["unified_diff", "full_after_content", "ast_edit_script"]
+    payload_kind: Literal["unified_diff", "full_after_content"]
     before_sha256: str | None = None
     target_path: str = Field(min_length=1)
     payload_artifact_ref: str = Field(min_length=1)

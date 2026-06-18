@@ -243,9 +243,14 @@ class ControlledPatchApplicator:
             rollback_m.rollback_fingerprint = after_fp
             rollback_m.fingerprint_matches_before = (after_fp == rollback_m.repository_before_fingerprint)
             rollback_m.rollback_at = now
+        any_mismatch = any(
+            not m.fingerprint_matches_before for m in result.rollback_manifests
+            if m.fingerprint_matches_before is not None
+        )
+        final_status = "rolled_back" if not any_mismatch else "blocked"
         return PatchExecutionResult(
             result_id=result.result_id, run_id=result.run_id, preflight=result.preflight,
-            overall_status="rolled_back", manifests=result.manifests,
+            overall_status=final_status, manifests=result.manifests,
             validation_reports=result.validation_reports,
             rollback_manifests=result.rollback_manifests, next_stage="replan_required",
         )
