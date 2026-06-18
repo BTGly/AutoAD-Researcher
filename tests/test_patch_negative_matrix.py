@@ -490,7 +490,7 @@ class TestPreflightD19RequestSha:
         repo.mkdir()
         req = _req(sha=plan.patch_plan_sha256)
         req2 = req.model_copy(update={"approval_request_sha256": "y" * 64})
-        m3 = _make_manifest(run_id=plan.run_id, ws="ws")
+        m3 = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan.patch_plan_sha256)
         m3 = m3.model_copy(update={"manifest_sha256": plan.patch_plan_sha256})
         pf = app.run_preflight(
             plan=plan, request=req2,
@@ -537,7 +537,7 @@ class TestPreflightD22ValidationReportSha:
             status="passed", issues=[], validated_at=_NOW,
         )
         vreport2 = vreport.model_copy(update={"patch_plan_sha256": "w" * 64})
-        m22 = _make_manifest(run_id=plan.run_id, ws="ws")
+        m22 = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan.patch_plan_sha256)
         m22 = m22.model_copy(update={"manifest_sha256": plan.patch_plan_sha256})
         pf = app.run_preflight(
             plan=plan, request=_req(sha=plan.patch_plan_sha256),
@@ -566,7 +566,7 @@ class TestPreflightD25ValidationNotPassed:
             )],
             validated_at=_NOW,
         )
-        m25 = _make_manifest(run_id=plan.run_id, ws="ws")
+        m25 = _make_manifest(run_id=plan.run_id, ws="ws", plan_sha=plan.patch_plan_sha256)
         m25 = m25.model_copy(update={"manifest_sha256": plan.patch_plan_sha256})
         pf = app.run_preflight(
             plan=plan, request=_req(sha=plan.patch_plan_sha256),
@@ -601,7 +601,7 @@ class TestPreflightD35DiffShaVsFullDecision:
         req2 = req.model_copy(update={"proposed_patch_diff_sha256": "d1" * 32})
         dec = _dec(ids=[], sha=plan.patch_plan_sha256)
         dec2 = dec.model_copy(update={"payload_manifest_sha256": "d2" * 32})
-        m35 = _make_manifest(run_id=plan.run_id)
+        m35 = _make_manifest(run_id=plan.run_id, plan_sha=plan.patch_plan_sha256)
         m35 = m35.model_copy(update={"manifest_sha256": "d2" * 32})
         pf = app.run_preflight(
             plan=plan, request=req2, decision=dec2,
