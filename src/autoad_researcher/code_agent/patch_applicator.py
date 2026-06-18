@@ -74,11 +74,12 @@ class ControlledPatchApplicator:
     def run_preflight(self, *, plan: RepositoryChangePlan, request: ApprovalRequest,
                       decision: ApprovalDecision, workspace_id: str,
                       repository_root: Path, run_id: str,
-                      manifest: "PatchPayloadManifest | None" = None,
-                      validation_report: PatchPlanValidationReport | None = None,
-                      payload_validation_report: "PatchPayloadValidationReport | None" = None,
+                      manifest: "PatchPayloadManifest",
+                      validation_report: PatchPlanValidationReport,
+                      payload_validation_report: "PatchPayloadValidationReport",
                       bundle: "ApprovalPatchBundle | None" = None,
                       blocked_change_ids: set[str] | None = None,
+                      artifact_store=None,
                       ) -> PatchApplicationPreflightResult:
         """Execute full A1–E10 preflight per v1.5.8. Returns issues and readiness."""
         from autoad_researcher.schemas.patch_planning import (
@@ -120,20 +121,14 @@ class ControlledPatchApplicator:
             issues.append("A5: decision/request patch_plan_sha256 != plan.patch_plan_sha256")
 
         # A6: decision.payload_manifest_sha256 == manifest.manifest_sha256 == request.patch_payload_manifest_sha256
-        if manifest:
-            a6 = (decision.payload_manifest_sha256 == manifest.manifest_sha256 == request.patch_payload_manifest_sha256)
-            if not a6:
-                issues.append("A6: decision/request payload manifest SHA mismatch")
-        else:
-            a6 = True
+        a6 = (decision.payload_manifest_sha256 == manifest.manifest_sha256 == request.patch_payload_manifest_sha256)
+        if not a6:
+            issues.append("A6: decision/request payload manifest SHA mismatch")
 
         # A7: manifest.patch_plan_sha256 == plan.patch_plan_sha256
-        if manifest:
-            a7 = manifest.patch_plan_sha256 == plan.patch_plan_sha256
-            if not a7:
-                issues.append("A7: manifest.patch_plan_sha256 != plan.patch_plan_sha256")
-        else:
-            a7 = True
+        a7 = manifest.patch_plan_sha256 == plan.patch_plan_sha256
+        if not a7:
+            issues.append("A7: manifest.patch_plan_sha256 != plan.patch_plan_sha256")
 
         # A8: workspace_id consistency
         a8 = (decision.workspace_id == request.workspace_id)
@@ -164,34 +159,22 @@ class ControlledPatchApplicator:
             a11 = True
 
         # A12: Plan Validation Report
-        a12 = True
-        if validation_report:
-            a12 = (validation_report.run_id == plan.run_id
-                   and validation_report.patch_plan_sha256 == plan.patch_plan_sha256
-                   and validation_report.status == "passed"
-                   and not validation_report.issues)
-            if not a12:
-                issues.append("A12: plan validation report not valid")
-        # if request has plan_validation_report_sha256, we verify it was provided
-        if request.patch_plan_validation_report_sha256 and request.patch_plan_validation_report_sha256 != _EMPTY_SHA:
-            if validation_report is None:
-                a12 = False
-                issues.append("A12: plan validation report required but not provided")
+        a12 = (validation_report.run_id == plan.run_id
+               and validation_report.patch_plan_sha256 == plan.patch_plan_sha256
+               and validation_report.status == "passed"
+               and not validation_report.issues
+               and canonical_sha(validation_report) == request.patch_plan_validation_report_sha256)
+        if not a12:
+            issues.append("A12: plan validation report not valid or SHA mismatch with request")
 
         # A13: Payload Validation Report
-        a13 = True
-        if payload_validation_report:
-            a13 = (payload_validation_report.patch_plan_sha256 == plan.patch_plan_sha256
-                   and payload_validation_report.status == "passed"
-                   and not payload_validation_report.issues)
-            if manifest:
-                a13 = a13 and (payload_validation_report.payload_manifest_sha256 == manifest.manifest_sha256)
-            if not a13:
-                issues.append("A13: payload validation report not valid")
-        if request.patch_payload_validation_report_sha256 and request.patch_payload_validation_report_sha256 != _EMPTY_SHA:
-            if payload_validation_report is None:
-                a13 = False
-                issues.append("A13: payload validation report required but not provided")
+        a13 = (payload_validation_report.patch_plan_sha256 == plan.patch_plan_sha256
+               and payload_validation_report.payload_manifest_sha256 == manifest.manifest_sha256
+               and payload_validation_report.status == "passed"
+               and not payload_validation_report.issues
+               and canonical_sha(payload_validation_report) == request.patch_payload_validation_report_sha256)
+        if not a13:
+            issues.append("A13: payload validation report not valid or SHA mismatch with request")
 
         # A14: derive_paths(approved_change_ids) == approved_paths
         workspace_changes = [c for c in plan.changes if c.workspace_id == workspace_id]
@@ -221,12 +204,18 @@ class ControlledPatchApplicator:
         # ── B: Full approval binding ──
         b_all = True
         if isinstance(decision, FullApprovalDecision):
-            b1 = True  # diff SHA check
-            if manifest:
-                b1 = (request.proposed_patch_diff_sha256 == decision.approved_diff_sha256
-                      == manifest.proposed_diff_sha256)
+            b1 = (request.proposed_patch_diff_sha256 == decision.approved_diff_sha256
+                  == manifest.proposed_diff_sha256)
             if not b1:
                 b_all = False; issues.append("B1: full approval diff SHA mismatch")
+            # B2: artifact bytes SHA == approved diff
+            b2 = True
+            if artifact_store is not None:
+                b2 = _verify_diff_artifact(manifest.proposed_diff_artifact_id,
+                                            decision.approved_diff_sha256,
+                                            artifact_store, run_id)
+            if not b2:
+                b_all = False; issues.append("B2: diff artifact SHA mismatch")
             # B3: approved_change_ids == workspace non-blocked changes
             ws_non_blocked = {c.change_id for c in workspace_changes if c.change_id not in blocked}
             b3 = set(decision.approved_change_ids) == ws_non_blocked
@@ -258,6 +247,14 @@ class ControlledPatchApplicator:
                 c6 = set(decision.approved_change_ids) == set(bundle.approved_change_ids)
                 if not c6:
                     c_all = False; issues.append("C6: decision/bundle approved_change_ids mismatch")
+                c7 = _verify_diff_artifact(bundle.approved_diff_artifact_id,
+                                            bundle.approved_diff_sha256,
+                                            artifact_store, run_id)
+                if not c7:
+                    c_all = False; issues.append("C7: bundle diff artifact SHA mismatch")
+                c8 = _verify_bundle_payload_projection(manifest, bundle)
+                if not c8:
+                    c_all = False; issues.append("C8: bundle payload projection invalid")
             ws_reviewable = {c.change_id for c in workspace_changes if c.change_id not in blocked}
             c10 = set(decision.approved_change_ids).issubset(ws_reviewable)
             if not c10:
@@ -294,6 +291,29 @@ class ControlledPatchApplicator:
             if step.required and not step.target_artifact_ids:
                 d_all = False
                 issues.append(f"D4: required step {step.step_id} has empty target_artifact_ids")
+        # D8: approved commands argv match request commands
+        for cmd_id in decision.approved_external_command_ids:
+            req_cmd = next((c for c in request.external_validation_commands if c.command_id == cmd_id), None)
+            if req_cmd:
+                from autoad_researcher.code_agent.validation_commands import validate_command_argv
+                err = validate_command_argv(req_cmd)
+                if err:
+                    d_all = False
+                    issues.append(f"D8/D10: command {cmd_id} template validation failed: {err}")
+            else:
+                d_all = False
+                issues.append(f"D8: approved command {cmd_id} not in request")
+        # D9: working_directory containment
+        for cmd in request.external_validation_commands:
+            if cmd.command_id in decision.approved_external_command_ids:
+                wd = Path(cmd.working_directory).resolve()
+                try:
+                    if not wd.is_relative_to(repository_root.resolve()):
+                        d_all = False
+                        issues.append(f"D9: command {cmd.command_id} working directory outside repository_root")
+                except (ValueError, OSError):
+                    d_all = False
+                    issues.append(f"D9: command {cmd.command_id} working directory invalid")
 
         # ── E: Collision and path policy ──
         e_all = True
@@ -322,6 +342,30 @@ class ControlledPatchApplicator:
             if not e4:
                 e_all = False; issues.append("E4: allow scope must be non-empty")
 
+        # E5: approved_paths ⊆ allowed scope
+        if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)) and decision.approved_paths:
+            for p in decision.approved_paths:
+                if not _path_in_scope(p, self._policy_allowed_set or set()):
+                    e_all = False; issues.append(f"E5: approved path {p} not in allowed scope")
+        # E6: approved_paths ∩ denied = ∅
+        if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)) and decision.approved_paths:
+            for p in decision.approved_paths:
+                if p in self.policy_denied_paths:
+                    e_all = False; issues.append(f"E6: approved path {p} is policy-denied")
+                for ancestor in _ancestors(p):
+                    if ancestor in self.policy_denied_paths:
+                        e_all = False; issues.append(f"E6: ancestor {ancestor} of {p} is policy-denied")
+        # E7: ask-required approved paths must be in ask list
+        if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)) and self._policy_ask_set:
+            for p in decision.approved_ask_paths:
+                if p not in self._policy_ask_set:
+                    e_all = False; issues.append(f"E7: approved ask path {p} not in ask-list")
+        # E8: approved_ask_paths ⊆ approved_paths ∩ ask-list
+        if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)):
+            for p in decision.approved_ask_paths:
+                if p not in decision.approved_paths:
+                    e_all = False; issues.append(f"E8: approved ask path {p} not in approved_paths")
+
         # E10: symlink escape
         for c in plan.changes:
             if c.workspace_id == workspace_id and c.change_id in decision.approved_change_ids:
@@ -348,17 +392,22 @@ class ControlledPatchApplicator:
     def apply_patch(self, *, plan: RepositoryChangePlan, decision: ApprovalDecision,
                     request: ApprovalRequest, workspace_id: str,
                     repository_root: Path, run_id: str,
-                    manifest: "PatchPayloadManifest | None" = None,
-                    validation_report: PatchPlanValidationReport | None = None,
-                    payload_validation_report: "PatchPayloadValidationReport | None" = None,
+                    manifest: "PatchPayloadManifest",
+                    validation_report: PatchPlanValidationReport,
+                    payload_validation_report: "PatchPayloadValidationReport",
                     bundle: "ApprovalPatchBundle | None" = None,
-                    payload_manifest: list[PatchPayload] | None = None,
                     artifact_store=None) -> PatchExecutionResult:
+        # require bundle for partial approval
+        if isinstance(decision, PartialApprovalDecision) and bundle is None:
+            return PatchExecutionResult(result_id=f"result_{run_id}", run_id=run_id,
+                                        overall_status="blocked", next_stage="replan_required")
+
         preflight = self.run_preflight(
             plan=plan, request=request, decision=decision, workspace_id=workspace_id,
             repository_root=repository_root, run_id=run_id,
             manifest=manifest, validation_report=validation_report,
             payload_validation_report=payload_validation_report, bundle=bundle,
+            artifact_store=artifact_store,
         )
         if not preflight.ready:
             return PatchExecutionResult(result_id=f"result_{run_id}", run_id=run_id,
@@ -371,7 +420,8 @@ class ControlledPatchApplicator:
             if c.rename_target_path:
                 planned_paths.add(c.rename_target_path)
 
-        payload_map: dict[str, PatchPayload] = {p.change_id: p for p in (payload_manifest or [])}
+        payload_map: dict[str, PatchPayload] = {p.change_id: p for p in manifest.payloads}
+        _verify_payload_manifest_identity(manifest, payload_map, approved_change_ids)
         self._set_approved_ask_paths(_decision_ask_paths(decision))
 
         now = datetime.now(timezone.utc)
@@ -752,6 +802,47 @@ def _decision_request_id(d):
 _EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
+def _verify_diff_artifact(artifact_id: str, expected_sha: str,
+                           artifact_store=None, run_id: str | None = None) -> bool:
+    """Verify that artifact bytes SHA matches expected SHA."""
+    if artifact_store is None or run_id is None:
+        return False
+    try:
+        content = artifact_store.read_raw(run_id, artifact_id)
+        actual = hashlib.sha256(content).hexdigest()
+        return actual == expected_sha
+    except (FileNotFoundError, ValueError, OSError):
+        return False
+
+
+def _verify_bundle_payload_projection(
+    manifest: "PatchPayloadManifest",
+    bundle: "ApprovalPatchBundle",
+) -> bool:
+    """Verify bundle approved_payload_ids is an exact projection from manifest."""
+    from autoad_researcher.schemas.patch_planning import ApprovalPatchBundle, PatchPayloadManifest
+    manifest_payloads = {p.change_id: p.payload_id for p in manifest.payloads}
+    expected_ids = {manifest_payloads[cid] for cid in bundle.approved_change_ids
+                    if cid in manifest_payloads}
+    return set(bundle.approved_payload_ids) == expected_ids
+
+
+def _verify_payload_manifest_identity(
+    manifest: "PatchPayloadManifest",
+    payload_map: dict[str, "PatchPayload"],
+    approved_change_ids: set[str],
+) -> None:
+    """Verify payload_map is identical to manifest.payloads for approved changes."""
+    manifest_payloads = {p.change_id: p for p in manifest.payloads}
+    for cid in approved_change_ids:
+        mp = manifest_payloads.get(cid)
+        ap = payload_map.get(cid)
+        if mp is None:
+            raise ValueError(f"change_id {cid} not in manifest.payloads")
+        if ap is None or ap.payload_id != mp.payload_id or ap.payload_sha256 != mp.payload_sha256:
+            raise ValueError(f"payload for {cid} in apply differs from manifest")
+
+
 def _decision_approved_ids(d):
     if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
         return set(d.approved_change_ids)
@@ -781,6 +872,9 @@ def _apply_single_change(change, abs_path: Path, now: datetime,
     if change.operation_kind == "create" and path_exists:
         if policy == "must_not_exist":
             return None
+        if policy == "replace_existing" and change.target_before_sha256:
+            if before_sha != change.target_before_sha256:
+                return None
     elif change.operation_kind in {"modify", "delete"}:
         if not path_exists:
             return None

@@ -91,6 +91,49 @@ def _obs(
     )
 
 
+def _baseline_agg(*, per_unit=None, measurement_status="measured"):
+    _per_unit = per_unit if per_unit is not None else {"unit_baseline": 4.0}
+    return BaselineResourceAggregate(
+        attempt_report_refs=[_ref("usage_base")],
+        per_unit_actual_gpu_hours=_per_unit,
+        total_wall_time_seconds=3600.0,
+        peak_gpu_memory_mb=1024.0,
+        measurement_status=measurement_status,
+    )
+
+
+def _variant_agg(variant_id="v1", *, per_unit=None, measurement_status="measured"):
+    _per_unit = per_unit if per_unit is not None else {"unit_001": 5.0}
+    return VariantResourceAggregate(
+        variant_id=variant_id,
+        attempt_report_refs=[_ref("usage")],
+        per_unit_actual_gpu_hours=_per_unit,
+        total_wall_time_seconds=3600.0,
+        peak_gpu_memory_mb=1024.0,
+        measurement_status=measurement_status,
+    )
+
+
+def _bundle_agg(baseline=None, per_variant=None):
+    return BundleResourceAggregate(
+        baseline=baseline if baseline is not None else _baseline_agg(),
+        per_variant=per_variant if per_variant is not None else {"v1": _variant_agg("v1")},
+    )
+
+
+def _budget_ba(status="within_budget", *, max_unit=5.0, bundle_total=10.0):
+    if status == "not_assessable":
+        return BundleBudgetAssessment(status="not_assessable", reason="not assessable")
+    return BundleBudgetAssessment(
+        status=status,
+        max_unit_actual_gpu_hours=max_unit,
+        bundle_total_actual_gpu_hours=bundle_total,
+        resource_budget_ref=_ref("budget"),
+        resource_usage_refs=[_ref("usage")],
+        reason="ok",
+    )
+
+
 # ── Baseline Metric Refs ──────────────────────────────────────────────
 
 
@@ -801,13 +844,20 @@ class TestVariantBudgetAssessment:
 
 class TestResourceComparisonReport:
     def test_minimal(self):
-        r = ResourceComparisonReport()
-        assert r.baseline is None
+        baseline = _baseline_agg()
+        bundle = _bundle_agg(baseline=baseline, per_variant={})
+        budget_ba = _budget_ba()
+        r = ResourceComparisonReport(
+            baseline=baseline,
+            bundle=bundle,
+            bundle_budget_assessment=budget_ba,
+        )
+        assert r.baseline is baseline
         assert r.per_variant == {}
         assert r.per_variant_deltas == {}
         assert r.per_variant_budget_assessments == {}
-        assert r.bundle is None
-        assert r.bundle_budget_assessment is None
+        assert r.bundle is bundle
+        assert r.bundle_budget_assessment is budget_ba
         assert r.evidence_refs == []
 
     def test_dict_based_structure(self):
@@ -862,63 +912,102 @@ class TestResourceComparisonReport:
         assert len(r.evidence_refs) == 1
 
     def test_bundle_consistency_matching_passes(self):
-        baseline = BaselineResourceAggregate(
-            per_unit_actual_gpu_hours={"u1": 2.0},
-            measurement_status="measured",
-        )
-        v1 = VariantResourceAggregate(
-            variant_id="v1",
-            per_unit_actual_gpu_hours={"u1": 3.0},
-            measurement_status="measured",
-        )
-        bundle = BundleResourceAggregate(
-            baseline=baseline,
-            per_variant={"v1": v1},
+        baseline = _baseline_agg()
+        v1 = _variant_agg("v1")
+        bundle = _bundle_agg(baseline=baseline, per_variant={"v1": v1})
+        budget_ba = _budget_ba()
+        delta = ResourceDelta(variant_id="v1", measurement_compatible=True)
+        va = VariantBudgetAssessment(
+            variant_id="v1", status="not_assessable", reason="no data",
         )
         r = ResourceComparisonReport(
             baseline=baseline,
             per_variant={"v1": v1},
+            per_variant_deltas={"v1": delta},
+            per_variant_budget_assessments={"v1": va},
             bundle=bundle,
+            bundle_budget_assessment=budget_ba,
         )
         assert r.bundle is not None
 
     def test_bundle_consistency_mismatched_baseline_raises(self):
-        baseline_report = BaselineResourceAggregate(
-            per_unit_actual_gpu_hours={"u1": 2.0},
-            measurement_status="measured",
-        )
-        baseline_bundle = BaselineResourceAggregate(
-            per_unit_actual_gpu_hours={"u1": 5.0},
-            measurement_status="measured",
-        )
-        bundle = BundleResourceAggregate(
-            baseline=baseline_bundle,
-        )
+        baseline_report = _baseline_agg(per_unit={"u1": 2.0})
+        baseline_bundle = _baseline_agg(per_unit={"u1": 5.0})
+        bundle = BundleResourceAggregate(baseline=baseline_bundle)
+        budget_ba = _budget_ba()
         with pytest.raises(ValueError, match="bundle baseline mismatch"):
             ResourceComparisonReport(
                 baseline=baseline_report,
                 bundle=bundle,
+                bundle_budget_assessment=budget_ba,
             )
 
     def test_bundle_consistency_mismatched_per_variant_raises(self):
-        baseline = BaselineResourceAggregate(
-            per_unit_actual_gpu_hours={"u1": 2.0},
-            measurement_status="measured",
-        )
-        v1 = VariantResourceAggregate(
-            variant_id="v1",
-            per_unit_actual_gpu_hours={"u1": 3.0},
-            measurement_status="measured",
-        )
+        baseline = _baseline_agg()
+        v1 = _variant_agg("v1")
         bundle = BundleResourceAggregate(
             baseline=baseline,
             per_variant={"v1": v1},
         )
+        budget_ba = _budget_ba()
         with pytest.raises(ValueError, match="bundle per_variant mismatch"):
             ResourceComparisonReport(
                 baseline=baseline,
                 per_variant={},
                 bundle=bundle,
+                bundle_budget_assessment=budget_ba,
+            )
+
+
+    def test_per_variant_keys_must_match_deltas(self):
+        baseline = _baseline_agg()
+        v1 = _variant_agg("v1")
+        bundle = _bundle_agg(baseline=baseline, per_variant={"v1": v1})
+        budget_ba = _budget_ba()
+        va = VariantBudgetAssessment(
+            variant_id="v1", status="not_assessable", reason="no data",
+        )
+        with pytest.raises(ValueError, match="per_variant keys != per_variant_deltas keys"):
+            ResourceComparisonReport(
+                baseline=baseline,
+                per_variant={"v1": v1},
+                per_variant_budget_assessments={"v1": va},
+                bundle=bundle,
+                bundle_budget_assessment=budget_ba,
+            )
+
+    def test_per_variant_keys_must_match_assessments(self):
+        baseline = _baseline_agg()
+        v1 = _variant_agg("v1")
+        bundle = _bundle_agg(baseline=baseline, per_variant={"v1": v1})
+        budget_ba = _budget_ba()
+        delta = ResourceDelta(variant_id="v1", measurement_compatible=True)
+        with pytest.raises(ValueError, match="per_variant keys != per_variant_budget_assessments keys"):
+            ResourceComparisonReport(
+                baseline=baseline,
+                per_variant={"v1": v1},
+                per_variant_deltas={"v1": delta},
+                bundle=bundle,
+                bundle_budget_assessment=budget_ba,
+            )
+
+    def test_variant_id_must_match_key(self):
+        baseline = _baseline_agg()
+        v2 = _variant_agg("v2")
+        bundle = _bundle_agg(baseline=baseline, per_variant={"v1": v2})
+        budget_ba = _budget_ba()
+        delta = ResourceDelta(variant_id="v1", measurement_compatible=True)
+        va = VariantBudgetAssessment(
+            variant_id="v1", status="not_assessable", reason="no data",
+        )
+        with pytest.raises(ValueError, match=r"per_variant\[v1\]\.variant_id=v2 != key v1"):
+            ResourceComparisonReport(
+                baseline=baseline,
+                per_variant={"v1": v2},
+                per_variant_deltas={"v1": delta},
+                per_variant_budget_assessments={"v1": va},
+                bundle=bundle,
+                bundle_budget_assessment=budget_ba,
             )
 
 

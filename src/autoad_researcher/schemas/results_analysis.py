@@ -438,21 +438,33 @@ class BundleBudgetAssessment(BaseModel):
 class ResourceComparisonReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    baseline: BaselineResourceAggregate | None = None
+    baseline: BaselineResourceAggregate
     per_variant: dict[str, VariantResourceAggregate] = Field(default_factory=dict)
     per_variant_deltas: dict[str, ResourceDelta] = Field(default_factory=dict)
     per_variant_budget_assessments: dict[str, VariantBudgetAssessment] = Field(default_factory=dict)
-    bundle: BundleResourceAggregate | None = None
-    bundle_budget_assessment: BundleBudgetAssessment | None = None
+    bundle: BundleResourceAggregate
+    bundle_budget_assessment: BundleBudgetAssessment
     evidence_refs: list[ArtifactReferenceV2] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _bundle_consistency(self) -> "ResourceComparisonReport":
-        if self.bundle is not None and self.baseline is not None:
-            if self.bundle.baseline != self.baseline:
-                raise ValueError("bundle baseline mismatch with report baseline")
-            if self.bundle.per_variant != self.per_variant:
-                raise ValueError("bundle per_variant mismatch with report per_variant")
+        if self.bundle.baseline != self.baseline:
+            raise ValueError("bundle baseline mismatch with report baseline")
+        if self.bundle.per_variant != self.per_variant:
+            raise ValueError("bundle per_variant mismatch with report per_variant")
+        if set(self.per_variant) != set(self.per_variant_deltas):
+            raise ValueError("per_variant keys != per_variant_deltas keys")
+        if set(self.per_variant) != set(self.per_variant_budget_assessments):
+            raise ValueError("per_variant keys != per_variant_budget_assessments keys")
+        for vid, agg in self.per_variant.items():
+            if agg.variant_id != vid:
+                raise ValueError(f"per_variant[{vid}].variant_id={agg.variant_id} != key {vid}")
+        for vid, d in self.per_variant_deltas.items():
+            if d.variant_id != vid:
+                raise ValueError(f"per_variant_deltas[{vid}].variant_id={d.variant_id} != key {vid}")
+        for vid, a in self.per_variant_budget_assessments.items():
+            if a.variant_id != vid:
+                raise ValueError(f"per_variant_budget_assessments[{vid}].variant_id={a.variant_id} != key {vid}")
         return self
 
 

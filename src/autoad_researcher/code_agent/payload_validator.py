@@ -23,8 +23,7 @@ def validate_payload_manifest(
     plan: RepositoryChangePlan,
     repository_root: Path,
     report_id: str,
-    artifact_store: Optional[ArtifactStore] = None,
-    run_id: Optional[str] = None,
+    artifact_store: ArtifactStore,
 ) -> PatchPayloadValidationReport:
     """Deterministic validation of all payloads in a PatchPayloadManifest.
 
@@ -72,8 +71,23 @@ def validate_payload_manifest(
             resolution="blocked",
         ))
 
-    # 9. Payload coverage: check for plan changes that need payloads but are missing
+    # 9. Payload coverage + duplicate detection
     manifest_payload_cids = {p.change_id for p in manifest.payloads}
+    manifest_payload_ids = {p.payload_id for p in manifest.payloads}
+    if len(manifest.payloads) != len(manifest_payload_cids):
+        issues.append(PatchPayloadValidationIssue(
+            issue_id="ppvi_duplicate_cid",
+            category="undeclared_file_creation",
+            description="duplicate change_id in manifest payloads",
+            resolution="blocked",
+        ))
+    if len(manifest.payloads) != len(manifest_payload_ids):
+        issues.append(PatchPayloadValidationIssue(
+            issue_id="ppvi_duplicate_pid",
+            category="undeclared_file_creation",
+            description="duplicate payload_id in manifest payloads",
+            resolution="blocked",
+        ))
     plan_needs_payload = {cid for cid, pid in plan_payload_ids.items() if pid is not None}
     extra_cids = manifest_payload_cids - plan_needs_payload
     missing_cids = plan_needs_payload - manifest_payload_cids
@@ -99,7 +113,7 @@ def validate_payload_manifest(
     for payload in manifest.payloads:
         issues.extend(_validate_single_payload(
             payload, plan_changes, plan_payload_ids, repository_root,
-            artifact_store, run_id,
+            artifact_store, manifest.run_id,
         ))
 
     status = "passed" if not issues else "failed"
@@ -118,8 +132,8 @@ def _validate_single_payload(
     plan_changes: dict[str, PlannedRepositoryChange],
     plan_payload_ids: dict[str, Optional[str]],
     repository_root: Path,
-    artifact_store: Optional[ArtifactStore],
-    run_id: Optional[str],
+    artifact_store: ArtifactStore,
+    run_id: str,
 ) -> list[PatchPayloadValidationIssue]:
     issues: list[PatchPayloadValidationIssue] = []
 
@@ -171,14 +185,11 @@ def _validate_single_payload(
 
 def _validate_payload_artifact_sha(
     payload: PatchPayload,
-    artifact_store: Optional[ArtifactStore],
-    run_id: Optional[str],
+    artifact_store: ArtifactStore,
+    run_id: str,
     issues: list[PatchPayloadValidationIssue],
 ) -> None:
     """Read artifact content from ArtifactStore and verify against payload_sha256."""
-    if artifact_store is None or run_id is None:
-        return
-
     try:
         actual_content = artifact_store.read_raw(run_id, payload.payload_artifact_id)
     except (FileNotFoundError, ValueError, OSError) as exc:

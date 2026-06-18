@@ -680,6 +680,30 @@ class TestValidateAggregateFromObservations:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 4b. aggregate mean None for valid obs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestAggregateMeanNoneForValidObs:
+    def test_valid_obs_mean_none_raises(self):
+        key = _agg_key()
+        obs = _paired_obs(1, baseline_value=0.90, variant_value=0.95)
+        agg = AggregatedMetricComparison(
+            aggregate_key=key,
+            paired_observations=[obs],
+            comparison_status="valid",
+            seed_count=1,
+            completed_seed_count=1,
+            mean_baseline=None,
+            mean_variant=0.95,
+            mean_raw_delta=0.05,
+            mean_improvement_delta=0.05,
+        )
+        with pytest.raises(ValueError, match="mean_baseline required when valid observations exist"):
+            validate_aggregate_from_observations(agg)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 5. derive_idea_support
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -948,14 +972,8 @@ class TestValidateResourceComparisonReport:
         bl_agg = _baseline_agg(per_unit={"unit_baseline": 4.0})
         bundle = _bundle_agg(baseline=bl_agg, per_variant={"v1": var_agg})
 
-        delta = ResourceDelta(variant_id="v1", measurement_compatible=True)
-        ba = VariantBudgetAssessment(
-            variant_id="v1",
-            status="within_budget",
-            reason="ok",
-            resource_budget_ref=_ref("budget"),
-            resource_usage_refs=[_ref("usage")],
-        )
+        delta = ResourceDelta(variant_id="v1", wall_time_delta_seconds=0.0, gpu_memory_delta_mb=0.0, measurement_compatible=True)
+        ba = determine_budget_assessment("v1", budget, _ref("budget"), var_agg)
         bba = determine_bundle_budget_assessment(
             bundle, budget, _ref("budget"),
             expected_baseline_unit_ids={"unit_baseline"},

@@ -209,11 +209,20 @@ def validate_aggregate_from_observations(
             )
 
     if valid_obs:
+        if aggregate.mean_baseline is None:
+            raise ValueError("mean_baseline required when valid observations exist")
+        if aggregate.mean_variant is None:
+            raise ValueError("mean_variant required when valid observations exist")
+        if aggregate.mean_raw_delta is None:
+            raise ValueError("mean_raw_delta required when valid observations exist")
+        if aggregate.mean_improvement_delta is None:
+            raise ValueError("mean_improvement_delta required when valid observations exist")
+
         recalc_mean_base = sum(o.baseline_value for o in valid_obs) / len(valid_obs)
         recalc_mean_var = sum(o.variant_value for o in valid_obs) / len(valid_obs)
         recalc_mean_imp = sum(o.improvement_delta for o in valid_obs) / len(valid_obs)
 
-        if aggregate.mean_baseline is not None and abs(aggregate.mean_baseline - recalc_mean_base) > 1e-9:
+        if abs(aggregate.mean_baseline - recalc_mean_base) > 1e-9:
             raise ValueError("mean_baseline mismatch")
         if aggregate.mean_variant is not None and abs(aggregate.mean_variant - recalc_mean_var) > 1e-9:
             raise ValueError("mean_variant mismatch")

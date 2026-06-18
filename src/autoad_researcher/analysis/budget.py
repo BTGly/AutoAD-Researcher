@@ -12,6 +12,7 @@ from autoad_researcher.schemas.results_analysis import (
     BundleBudgetAssessment,
     BundleResourceAggregate,
     ResourceComparisonReport,
+    ResourceDelta,
     VariantBudgetAssessment,
     VariantResourceAggregate,
 )
@@ -214,11 +215,11 @@ def validate_resource_comparison_report(
     budget: ResolvedArtifact[ResourceBudget],
     execution_manifest: ExecutionManifest,
 ) -> None:
-    """Service-level validator: re-derive bundle budget assessment and compare.
+    """Service-level validator: recompute all assessments, deltas, and bundle assessment.
 
-    Derives expected unit/variant ID sets from execution_manifest and
-    calls determine_bundle_budget_assessment to recompute, then asserts
-    the report's stored assessment matches.
+    Derives expected unit/variant sets from execution_manifest, recomputes
+    bundle budget assessment, per-variant assessments, and resource deltas,
+    and asserts the report's stored values match.
     """
     if budget.verified_sha256 != budget.ref.sha256:
         raise ValueError("resource budget verified SHA mismatch")
@@ -230,9 +231,6 @@ def validate_resource_comparison_report(
             expected_baseline_unit_ids.add(unit.unit_id)
         else:
             expected_variant_unit_ids.setdefault(unit.variant_id, set()).add(unit.unit_id)
-
-    if report.bundle is None:
-        raise ValueError("report.bundle must not be None")
 
     expected = determine_bundle_budget_assessment(
         bundle=report.bundle,
@@ -248,6 +246,44 @@ def validate_resource_comparison_report(
             f"report={report.bundle_budget_assessment}, re-derived={expected}"
         )
 
+    for vid, variant_agg in report.per_variant.items():
+        stored_ba = report.per_variant_budget_assessments.get(vid)
+        if stored_ba is None:
+            raise ValueError(f"variant {vid} missing from per_variant_budget_assessments")
+        derived_ba = determine_budget_assessment(
+            variant_id=vid,
+            budget=budget.payload,
+            resource_budget_ref=budget.ref,
+            usage_aggregate=variant_agg,
+        )
+        if stored_ba != derived_ba:
+            raise ValueError(
+                f"per_variant_budget_assessments[{vid}] does not match: "
+                f"stored={stored_ba}, derived={derived_ba}"
+            )
+
+        if report.baseline is not None:
+            derived_delta = ResourceDelta(
+                variant_id=vid,
+                wall_time_delta_seconds=(
+                    (variant_agg.total_wall_time_seconds or 0)
+                    - (report.baseline.total_wall_time_seconds or 0)
+                ) if variant_agg.total_wall_time_seconds is not None and report.baseline.total_wall_time_seconds is not None else None,
+                gpu_memory_delta_mb=(
+                    (variant_agg.peak_gpu_memory_mb or 0)
+                    - (report.baseline.peak_gpu_memory_mb or 0)
+                ) if variant_agg.peak_gpu_memory_mb is not None and report.baseline.peak_gpu_memory_mb is not None else None,
+                measurement_compatible=variant_agg.measurement_status == report.baseline.measurement_status,
+            )
+            stored_delta = report.per_variant_deltas.get(vid)
+            if stored_delta is None:
+                raise ValueError(f"variant {vid} missing from per_variant_deltas")
+            if stored_delta != derived_delta:
+                raise ValueError(
+                    f"per_variant_deltas[{vid}] does not match: "
+                    f"stored={stored_delta}, derived={derived_delta}"
+                )
+
 
 def validate_bundle_resource_coverage(
     bundle_aggregate: BundleResourceAggregate,
@@ -256,7 +292,9 @@ def validate_bundle_resource_coverage(
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Exact-set coverage validation for bundle resource aggregate.
 
-    Returns (missing_unit_ids, unexpected_unit_ids, missing_variant_ids, unexpected_variant_ids).
+    Checks baseline unit IDs, variant-level IDs, and per-variant internal
+    unit IDs. Returns (missing_unit_ids, unexpected_unit_ids, missing_variant_ids,
+    unexpected_variant_ids).
     """
     actual_baseline = set(bundle_aggregate.baseline.per_unit_actual_gpu_hours.keys())
     missing_units = sorted(expected_baseline_unit_ids - actual_baseline)
@@ -266,5 +304,11 @@ def validate_bundle_resource_coverage(
     actual_var = set(bundle_aggregate.per_variant.keys())
     missing_variant = sorted(expected_var - actual_var)
     unexpected_variant = sorted(actual_var - expected_var)
+
+    for vid in expected_var & actual_var:
+        expected_units = expected_variant_unit_ids[vid]
+        actual_units = set(bundle_aggregate.per_variant[vid].per_unit_actual_gpu_hours.keys())
+        missing_units.extend(sorted(expected_units - actual_units))
+        unexpected_units.extend(sorted(actual_units - expected_units))
 
     return missing_units, unexpected_units, missing_variant, unexpected_variant
