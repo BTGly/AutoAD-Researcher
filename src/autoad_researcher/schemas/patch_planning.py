@@ -1,0 +1,615 @@
+"""Step 3.6–3.7: Patch Planning, Approval & Controlled Application.
+
+Models cover:
+  - PlannedRepositoryChange (change_kind + target_mode)
+  - SymbolContractDelta
+  - RepositoryChangePlan
+  - VariantWorkspacePlan
+  - PatchConflictAnalysis
+  - PatchPlanValidationReport
+  - NarrowRepositoryReadRequest / RepositoryScopeExpansionRequired
+  - ApprovalRequest / ApprovalDecision / WorkspaceApprovalSummary
+  - PatchApplicationManifest / ChangedFileEntry
+  - PostPatchValidationReport
+  - PatchRunnerHandoff
+  - RollbackManifest / PatchExecutionResult
+
+Schema owner: Step 3.6 Patch Planner + Step 3.7 Approval & Controlled Application.
+Consumer: Step 3.8 Runner Intake (handoff).
+"""
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from autoad_researcher.paper_intelligence.ids import IdentifierPattern, Sha256Pattern, validate_workspace_path
+from autoad_researcher.schemas.transfer_design import InterfaceContractDelta
+
+# ---------------------------------------------------------------------------
+# Change target model — separate from ModificationHook
+# ---------------------------------------------------------------------------
+
+_CHANGE_KIND_VALUES = Literal[
+    "create",
+    "modify",
+    "delete",
+    "rename",
+    "configuration_only",
+    "test_only",
+]
+
+_TARGET_MODE_VALUES = Literal[
+    "existing_target",
+    "new_target",
+]
+
+
+class SymbolContractDelta(BaseModel):
+    """Describe how a symbol's contract changes during a planned change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    module_path: str = Field(min_length=1)
+    symbol_name: str = Field(min_length=1)
+    current_responsibility: str | None = None
+    planned_responsibility: str | None = None
+
+
+class PlannedDependencyChange(BaseModel):
+    """A planned change to a dependency declaration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dependency_change_id: str = Field(pattern=IdentifierPattern)
+    kind: Literal["add", "remove", "upgrade", "downgrade", "pin"]
+    package_name: str = Field(min_length=1)
+    before_version: str | None = None
+    after_version: str | None = None
+    reason: str = Field(min_length=1)
+    variant_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class PlannedConfigurationChange(BaseModel):
+    """A planned change to a configuration field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    config_change_id: str = Field(pattern=IdentifierPattern)
+    config_path: str = Field(min_length=1)
+    config_key: str = Field(min_length=1)
+    before_value: str | None = None
+    after_value: str | None = None
+    reason: str = Field(min_length=1)
+    variant_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class PlannedTestChange(BaseModel):
+    """A planned test addition or modification."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    test_change_id: str = Field(pattern=IdentifierPattern)
+    test_path: str = Field(min_length=1)
+    test_kind: Literal["add", "modify"]
+    target_change_ids: list[str] = Field(default_factory=list)
+    description: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# PlannedRepositoryChange — core 3.6 model
+# ---------------------------------------------------------------------------
+
+
+class PlannedRepositoryChange(BaseModel):
+    """One planned change to repository files/symbols.
+
+    Separates change_kind (what operation) from target_mode (existing vs new).
+    References ModificationHook via hook_id for existing-target changes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    change_id: str = Field(pattern=IdentifierPattern)
+    workspace_id: str = Field(pattern=IdentifierPattern)
+
+    change_kind: _CHANGE_KIND_VALUES
+    target_mode: _TARGET_MODE_VALUES
+
+    # existing_target: at least one must be set
+    hook_id: str | None = None
+    existing_symbol_id: str | None = None
+
+    # new_target: proposed_symbol is required
+    proposed_symbol: str | None = None
+
+    repository_path: str
+    variant_ids: list[str] = Field(default_factory=list)
+    rationale: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+    symbol_delta: SymbolContractDelta | None = None
+    interface_delta: InterfaceContractDelta | None = None
+
+    risk_category: Literal["low", "medium", "high"] = "medium"
+
+    rollback_strategy: Literal[
+        "git_checkout",
+        "remove_file",
+        "revert_config",
+        "remove_directory",
+        "noop",
+    ] = "git_checkout"
+    rollback_file_paths: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_target_mode_and_hook(self):
+        if self.target_mode == "existing_target":
+            if not self.hook_id and not self.existing_symbol_id:
+                raise ValueError(
+                    f"change {self.change_id}: existing_target requires hook_id or existing_symbol_id"
+                )
+            if self.proposed_symbol is not None:
+                raise ValueError(
+                    f"change {self.change_id}: existing_target must not set proposed_symbol"
+                )
+        elif self.target_mode == "new_target":
+            if self.hook_id is not None:
+                raise ValueError(
+                    f"change {self.change_id}: new_target must not set hook_id"
+                )
+            if not self.proposed_symbol:
+                raise ValueError(
+                    f"change {self.change_id}: new_target requires proposed_symbol"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_change_kind_and_target_mode(self):
+        kind = self.change_kind
+        tm = self.target_mode
+        if kind == "create" and tm != "new_target":
+            raise ValueError(f"change {self.change_id}: create requires target_mode=new_target")
+        if kind in {"delete", "rename"} and tm != "existing_target":
+            raise ValueError(f"change {self.change_id}: {kind} requires target_mode=existing_target")
+        if kind == "modify" and tm != "existing_target":
+            raise ValueError(f"change {self.change_id}: modify requires target_mode=existing_target")
+        return self
+
+
+# ---------------------------------------------------------------------------
+# VariantWorkspacePlan
+# ---------------------------------------------------------------------------
+
+_ISOLATION_MODE_VALUES = Literal[
+    "shared_workspace",
+    "configuration_switched",
+    "separate_worktree",
+]
+
+
+class VariantWorkspacePlan(BaseModel):
+    """Describes how one or more variants are laid out in a workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    variant_ids: list[str] = Field(default_factory=list)
+    isolation_mode: _ISOLATION_MODE_VALUES
+
+    base_repository_source_id: str = Field(min_length=1)
+    base_commit: str = Field(min_length=1)
+
+    branch_name: str | None = None
+    worktree_logical_name: str | None = None
+    runtime_worktree_path: str | None = None
+
+    planned_change_ids: list[str] = Field(default_factory=list)
+    conflict_group_ids: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# PatchConflictAnalysis
+# ---------------------------------------------------------------------------
+
+_CONFLICT_KIND_VALUES = Literal[
+    "no_conflict",
+    "parameterizable",
+    "mutually_exclusive",
+    "path_overlap",
+]
+
+
+class PatchConflictGroup(BaseModel):
+    """A group of competing change_ids over the same target."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conflict_group_id: str = Field(pattern=IdentifierPattern)
+    target_path: str = Field(min_length=1)
+    competing_change_ids: list[str] = Field(default_factory=list)
+    competing_variant_ids: list[str] = Field(default_factory=list)
+    kind: _CONFLICT_KIND_VALUES
+    description: str = Field(min_length=1)
+    resolution_change_id: str | None = None
+
+
+class PatchConflictAnalysis(BaseModel):
+    """Result of conflict detection across multiple variants."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_id: str = Field(pattern=IdentifierPattern)
+    run_id: str = Field(pattern=IdentifierPattern)
+    workspace_plans: list[VariantWorkspacePlan] = Field(default_factory=list)
+    conflict_groups: list[PatchConflictGroup] = Field(default_factory=list)
+    overall_status: Literal["clean", "parameterizable_conflicts", "worktree_split_required", "incompatible"]
+    recommendation: str = Field(min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# RepositoryChangePlan
+# ---------------------------------------------------------------------------
+
+
+class RepositoryChangePlan(BaseModel):
+    """The canonical file-level change plan produced by Step 3.6."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    run_id: str = Field(pattern=IdentifierPattern)
+    patch_plan_id: str = Field(pattern=IdentifierPattern)
+
+    repository_source_id: str = Field(min_length=1)
+    repository_commit: str = Field(min_length=1)
+    repository_fingerprint: str = Field(min_length=1)
+
+    selected_variant_ids: list[str] = Field(default_factory=list)
+    idea_id: str = Field(pattern=IdentifierPattern)
+
+    changes: list[PlannedRepositoryChange] = Field(default_factory=list)
+    dependency_changes: list[PlannedDependencyChange] = Field(default_factory=list)
+    configuration_changes: list[PlannedConfigurationChange] = Field(default_factory=list)
+    test_changes: list[PlannedTestChange] = Field(default_factory=list)
+
+    workspace_plans: list[VariantWorkspacePlan] = Field(default_factory=list)
+    conflict_analysis_id: str | None = None
+
+    plan_sha256: str = Field(pattern=Sha256Pattern)
+
+
+# ---------------------------------------------------------------------------
+# PatchPlanValidationReport
+# ---------------------------------------------------------------------------
+
+
+class PatchPlanValidationIssue(BaseModel):
+    """One issue found by the deterministic patch plan validator."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    issue_id: str = Field(pattern=IdentifierPattern)
+    category: Literal[
+        "schema_violation",
+        "path_classification_violation",
+        "hook_reference_broken",
+        "symbol_table_conflict",
+        "variant_reference_missing",
+        "protected_path_violation",
+        "evidence_missing",
+        "policy_violation",
+    ]
+    description: str = Field(min_length=1)
+    artifact_ids: list[str] = Field(default_factory=list)
+    resolution: Literal["repair_change", "return_to_3_1", "blocked"]
+
+
+class PatchPlanValidationReport(BaseModel):
+    """Deterministic validation of a RepositoryChangePlan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str = Field(pattern=IdentifierPattern)
+    run_id: str = Field(pattern=IdentifierPattern)
+    plan_sha256: str = Field(pattern=Sha256Pattern)
+    status: Literal["passed", "failed"]
+    issues: list[PatchPlanValidationIssue] = Field(default_factory=list)
+    validated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# NarrowRepositoryReadRequest / RepositoryScopeExpansionRequired
+# ---------------------------------------------------------------------------
+
+
+class SymbolQuery(BaseModel):
+    """Query for a symbol within the repository."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol_name: str = Field(min_length=1)
+    container_path: str = Field(min_length=1)
+    query_reason: str = Field(min_length=1)
+
+
+class NarrowRepositoryReadRequest(BaseModel):
+    """Request a narrow read of the repository for patch planning."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repository_source_id: str = Field(min_length=1)
+    repository_commit: str = Field(min_length=1)
+
+    allowed_paths: list[str] = Field(default_factory=list)
+    requested_paths: list[str] = Field(default_factory=list)
+    requested_symbols: list[SymbolQuery] = Field(default_factory=list)
+
+    max_files: int = 20
+    max_bytes: int = 524288
+    max_symbol_searches: int = 10
+
+    purpose: Literal["patch_planning"] = "patch_planning"
+    originating_variant_ids: list[str] = Field(default_factory=list)
+
+
+class RepositoryScopeExpansionRequired(BaseModel):
+    """Signal that the requested paths/symbols exceed 3.1 confirmed scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["return_to_3_1"] = "return_to_3_1"
+
+    cause_variant_ids: list[str] = Field(default_factory=list)
+    cause_change_ids: list[str] = Field(default_factory=list)
+    cause_hook_ids: list[str] = Field(default_factory=list)
+
+    missing_paths: list[str] = Field(default_factory=list)
+    missing_symbols: list[SymbolQuery] = Field(default_factory=list)
+    required_evidence_types: list[str] = Field(default_factory=list)
+
+    current_repository_source_id: str = Field(min_length=1)
+    current_repository_commit: str = Field(min_length=1)
+    current_scope_sha256: str = Field(pattern=Sha256Pattern)
+
+    reason: str = Field(min_length=1)
+    completion_criteria: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Approval protocol
+# ---------------------------------------------------------------------------
+
+
+class WorkspaceApprovalSummary(BaseModel):
+    """Per-workspace summary for approval review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    variant_ids: list[str] = Field(default_factory=list)
+    planned_change_ids: list[str] = Field(default_factory=list)
+    affected_paths: list[str] = Field(default_factory=list)
+    dependency_change_ids: list[str] = Field(default_factory=list)
+    risk_ids: list[str] = Field(default_factory=list)
+
+
+class ApprovalRequest(BaseModel):
+    """Request for human approval before any repository writes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    approval_request_id: str = Field(pattern=IdentifierPattern)
+    run_id: str = Field(pattern=IdentifierPattern)
+
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    repository_before_fingerprint: str = Field(min_length=1)
+
+    selected_variant_ids: list[str] = Field(default_factory=list)
+    overall_risk_level: Literal["low", "medium", "high"] = "medium"
+
+    workspace_summaries: list[WorkspaceApprovalSummary] = Field(default_factory=list)
+
+    dependency_changes_summary: list[PlannedDependencyChange] = Field(default_factory=list)
+    validation_commands: list[str] = Field(default_factory=list)
+    rollback_plan_sha256: str | None = None
+
+    created_at: datetime
+
+
+_APPROVAL_DECISION_VALUES = Literal[
+    "approve_all",
+    "approve_partial",
+    "revise",
+    "reject",
+]
+
+
+class ApprovalDecision(BaseModel):
+    """The user's structured approval decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision_id: str = Field(pattern=IdentifierPattern)
+    decision: _APPROVAL_DECISION_VALUES
+
+    approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+
+    approved_change_ids: list[str] = Field(default_factory=list)
+    rejected_change_ids: list[str] = Field(default_factory=list)
+
+    approved_dependency_change_ids: list[str] = Field(default_factory=list)
+    approved_validation_command_ids: list[str] = Field(default_factory=list)
+
+    approved_paths: list[str] = Field(default_factory=list)
+
+    user_evidence_id: str = Field(pattern=IdentifierPattern)
+    decided_at: datetime
+
+    @model_validator(mode="after")
+    def _approve_all_or_partial_requires_changes(self):
+        if self.decision in {"approve_all", "approve_partial"}:
+            if not self.approved_change_ids:
+                raise ValueError(
+                    f"decision={self.decision} requires approved_change_ids"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_or_revise_must_not_approve(self):
+        if self.decision in {"reject", "revise"}:
+            if self.approved_change_ids:
+                raise ValueError(
+                    f"decision={self.decision} must not have approved_change_ids"
+                )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Patch application artifacts
+# ---------------------------------------------------------------------------
+
+
+class ChangedFileEntry(BaseModel):
+    """Record of one changed file during patch application."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_entry_id: str = Field(pattern=IdentifierPattern)
+    repository_path: str
+    change_kind: _CHANGE_KIND_VALUES
+    before_sha256: str | None = None
+    after_sha256: str | None = None
+    change_ids: list[str] = Field(default_factory=list)
+    operation: Literal["written", "created", "deleted", "renamed"]
+    applied_at: datetime
+
+
+class PatchApplicationManifest(BaseModel):
+    """Record of all writes during controlled patch application."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    manifest_id: str = Field(pattern=IdentifierPattern)
+    run_id: str = Field(pattern=IdentifierPattern)
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    approved_decision_id: str = Field(min_length=1)
+
+    repository_before_fingerprint: str = Field(min_length=1)
+    repository_after_fingerprint: str = Field(min_length=1)
+
+    changed_files: list[ChangedFileEntry] = Field(default_factory=list)
+    patch_diff_sha256: str | None = None
+    applied_at: datetime
+
+
+class RollbackManifest(BaseModel):
+    """Record the state needed to roll back a patch application."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rollback_id: str = Field(pattern=IdentifierPattern)
+    manifest_id: str = Field(min_length=1)
+    workspace_id: str = Field(pattern=IdentifierPattern)
+
+    repository_before_fingerprint: str = Field(min_length=1)
+    repository_after_fingerprint: str | None = None
+
+    rollback_paths: list[str] = Field(default_factory=list)
+    rollback_strategy: str = Field(min_length=1)
+
+    rollback_applied: bool = False
+    rollback_fingerprint: str | None = None
+    rollback_at: datetime | None = None
+
+
+class PostPatchValidationReport(BaseModel):
+    """Report after local patch validation (no full experiment)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str = Field(pattern=IdentifierPattern)
+    run_id: str = Field(pattern=IdentifierPattern)
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    manifest_id: str = Field(min_length=1)
+
+    status: Literal[
+        "patch_applied_and_local_validations_passed",
+        "patch_applied_but_local_validation_failed",
+    ]
+
+    syntax_check_passed: bool = False
+    format_check_passed: bool = False
+    static_check_passed: bool = False
+    type_check_passed: bool = False
+    unit_tests_passed: bool | None = None
+    import_check_passed: bool = False
+
+    issues: list[str] = Field(default_factory=list)
+    validated_at: datetime
+
+
+class PatchExecutionResult(BaseModel):
+    """Aggregate result of patch application + validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    result_id: str = Field(pattern=IdentifierPattern)
+    run_id: str = Field(pattern=IdentifierPattern)
+
+    overall_status: Literal[
+        "patch_applied_and_local_validations_passed",
+        "patch_applied_but_local_validation_failed",
+        "patch_application_failed",
+        "rolled_back",
+        "replan_required",
+        "rejected",
+        "blocked",
+    ]
+
+    manifests: list[PatchApplicationManifest] = Field(default_factory=list)
+    validation_reports: list[PostPatchValidationReport] = Field(default_factory=list)
+    rollback_manifests: list[RollbackManifest] = Field(default_factory=list)
+
+    next_stage: Literal[
+        "eligible_for_runner_intake",
+        "repair_or_rollback_pending",
+        "replan_required",
+        "rejected",
+        "blocked",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Runner handoff
+# ---------------------------------------------------------------------------
+
+
+class PatchRunnerHandoff(BaseModel):
+    """Handoff from Step 3.7 to Runner Intake.
+
+    Declares the patch is eligible for runner intake, NOT that the
+    experiment is ready. Runner Intake resolves environment, assets,
+    dependencies, and benchmark preflight separately.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    status: Literal["eligible_for_runner_intake"] = "eligible_for_runner_intake"
+
+    run_id: str = Field(pattern=IdentifierPattern)
+
+    repository_before_commit: str = Field(min_length=1)
+    repository_after_fingerprint: str = Field(min_length=1)
+    approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    patch_diff_sha256: str = Field(pattern=Sha256Pattern)
+    local_validation_report_sha256: str = Field(pattern=Sha256Pattern)
+
+    selected_variant_ids: list[str] = Field(default_factory=list)
+    experiment_bundle_ref: str = Field(min_length=1)
+
+    next_stage: Literal["runner_intake"] = "runner_intake"

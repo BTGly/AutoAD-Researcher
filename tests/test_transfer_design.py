@@ -499,12 +499,13 @@ class TestDeriveVariantStatus:
         status = derive_variant_status(judgments, [])
         assert status == TransferStatus.NEEDS_REANALYSIS
 
-    def test_data_insufficient_evidence_design_blocking(self):
+    def test_data_insufficient_evidence_needs_reanalysis(self):
+        """DATA INSUFFICIENT_EVIDENCE → REANALYSIS (not non_viable)."""
         judgments = [_make_judgment(status=CompatibilityStatus.COMPATIBLE) for _ in range(8)]
         judgments.append(_make_judgment(dim=CompatibilityDimension.DATA, status=CompatibilityStatus.INSUFFICIENT_EVIDENCE))
         status = derive_variant_status(judgments, [])
-        # DATA has DESIGN_BLOCKING in DIMENSION_POLICY
-        assert status == TransferStatus.NON_VIABLE
+        # DATA now routes to REANALYSIS, not DESIGN_BLOCKING
+        assert status == TransferStatus.NEEDS_REANALYSIS
 
     def test_violates_constraint(self):
         constraint = TransferConstraint(
@@ -733,6 +734,10 @@ class TestCLASSIFICATION_RULES:
     def test_label_incompatible_is_design_blocking(self):
         key = (CompatibilityDimension.LABEL, CompatibilityStatus.INCOMPATIBLE)
         assert ClassificationRules[key] == ResolutionClass.DESIGN_BLOCKING
+
+    def test_data_insufficient_is_needs_reanalysis(self):
+        key = (CompatibilityDimension.DATA, CompatibilityStatus.INSUFFICIENT_EVIDENCE)
+        assert ClassificationRules[key] == ResolutionClass.NEEDS_REANALYSIS
 
 
 # ---------------------------------------------------------------------------

@@ -121,6 +121,16 @@ def default_repository_permission_engine() -> PermissionEngine:
                 allow_tools=set(),
                 deny_tools={"github_read", "web_search", "web_fetch", "process", "repository_write"},
             ),
+            "patch_planning": PermissionProfile(
+                name="patch_planning",
+                allow_tools={"filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat", "process"},
+                deny_tools={"github_read", "web_search", "web_fetch", "repository_write"},
+            ),
+            "patch_application": PermissionProfile(
+                name="patch_application",
+                allow_tools={"filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat", "filesystem_write"},
+                deny_tools={"github_read", "web_search", "web_fetch", "process"},
+            ),
         },
     )
 

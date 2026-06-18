@@ -32,7 +32,7 @@ def build_handoff(
 
     Filters out design_blocking unresolved dimensions before handoff.
     """
-    design_blocking, experiment_resolvable, nonblocking = classify_unresolved(unresolved_dimensions)
+    design_blocking, experiment_resolvable, nonblocking, _needs_reanalysis = classify_unresolved(unresolved_dimensions)
 
     if design_blocking:
         raise ValueError(

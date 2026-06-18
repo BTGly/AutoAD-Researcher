@@ -335,7 +335,7 @@ def finalize_transfer_design(
     final_sha = validator_report_sha256 or report_sha
 
     # Build handoff
-    design_blocking, experiment, warnings = classify_unresolved(resolved)
+    design_blocking, experiment, warnings, _needs_reanalysis = classify_unresolved(resolved)
     if design_blocking:
         status.stage = "design_blocking_in_handoff"
         status.blocked = True

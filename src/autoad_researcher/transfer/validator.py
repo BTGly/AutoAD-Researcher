@@ -307,18 +307,21 @@ def _check_selection_invariants(
 
 def classify_unresolved(
     unresolved: list[UnresolvedDimension],
-) -> tuple[list[UnresolvedDimension], list[UnresolvedDimension], list[UnresolvedDimension]]:
-    """Split unresolved dimensions into blocking, experiment_resolvable, warnings."""
+) -> tuple[list[UnresolvedDimension], list[UnresolvedDimension], list[UnresolvedDimension], list[UnresolvedDimension]]:
+    """Split unresolved dimensions into blocking, experiment_resolvable, warnings, needs_reanalysis."""
     design_blocking: list[UnresolvedDimension] = []
     experiment: list[UnresolvedDimension] = []
     warnings: list[UnresolvedDimension] = []
+    needs_reanalysis: list[UnresolvedDimension] = []
 
     for u in unresolved:
         if u.classification == ResolutionClass.DESIGN_BLOCKING:
             design_blocking.append(u)
         elif u.classification == ResolutionClass.EXPERIMENT_RESOLVABLE:
             experiment.append(u)
+        elif u.classification == ResolutionClass.NEEDS_REANALYSIS:
+            needs_reanalysis.append(u)
         elif u.classification == ResolutionClass.NONBLOCKING_WARNING:
             warnings.append(u)
 
-    return design_blocking, experiment, warnings
+    return design_blocking, experiment, warnings, needs_reanalysis

@@ -242,15 +242,15 @@ class EvidenceStrategy(str, Enum):
 
 
 DIMENSION_POLICY: dict[CompatibilityDimension, EvidenceStrategy] = {
+    CompatibilityDimension.SEMANTIC:    EvidenceStrategy.REANALYSIS,
     CompatibilityDimension.INPUT:       EvidenceStrategy.REANALYSIS,
     CompatibilityDimension.OUTPUT:      EvidenceStrategy.REANALYSIS,
     CompatibilityDimension.SHAPE:       EvidenceStrategy.REANALYSIS,
     CompatibilityDimension.TRAINING:    EvidenceStrategy.REANALYSIS,
-    CompatibilityDimension.DATA:        EvidenceStrategy.DESIGN_BLOCKING,
-    CompatibilityDimension.LABEL:       EvidenceStrategy.DESIGN_BLOCKING,
-    CompatibilityDimension.EVALUATION:  EvidenceStrategy.DESIGN_BLOCKING,
+    CompatibilityDimension.DATA:        EvidenceStrategy.REANALYSIS,
+    CompatibilityDimension.LABEL:       EvidenceStrategy.REANALYSIS,
+    CompatibilityDimension.EVALUATION:  EvidenceStrategy.REANALYSIS,
     CompatibilityDimension.RESOURCE:    EvidenceStrategy.EXPERIMENT_RESOLVABLE,
-    CompatibilityDimension.SEMANTIC:    EvidenceStrategy.DESIGN_BLOCKING,
 }
 
 
@@ -550,6 +550,7 @@ class ResolutionClass(str, Enum):
     DESIGN_BLOCKING = "design_blocking"
     EXPERIMENT_RESOLVABLE = "experiment_resolvable"
     NONBLOCKING_WARNING = "nonblocking_warning"
+    NEEDS_REANALYSIS = "needs_reanalysis"
 
 
 class UnresolvedDimension(BaseModel):
@@ -578,14 +579,17 @@ class UnresolvedDimension(BaseModel):
 
 
 CLASSIFICATION_RULES: dict[tuple[CompatibilityDimension, CompatibilityStatus], ResolutionClass] = {
-    (CompatibilityDimension.INPUT, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.DESIGN_BLOCKING,
-    (CompatibilityDimension.OUTPUT, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.DESIGN_BLOCKING,
-    (CompatibilityDimension.SHAPE, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.DESIGN_BLOCKING,
-    (CompatibilityDimension.TRAINING, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.DESIGN_BLOCKING,
+    (CompatibilityDimension.INPUT, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.OUTPUT, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.SHAPE, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.TRAINING, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.DATA, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.LABEL, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.EVALUATION, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.SEMANTIC, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.NEEDS_REANALYSIS,
+    (CompatibilityDimension.RESOURCE, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.EXPERIMENT_RESOLVABLE,
     (CompatibilityDimension.DATA, CompatibilityStatus.INCOMPATIBLE): ResolutionClass.DESIGN_BLOCKING,
     (CompatibilityDimension.LABEL, CompatibilityStatus.INCOMPATIBLE): ResolutionClass.DESIGN_BLOCKING,
-    (CompatibilityDimension.EVALUATION, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.DESIGN_BLOCKING,
-    (CompatibilityDimension.RESOURCE, CompatibilityStatus.INSUFFICIENT_EVIDENCE): ResolutionClass.EXPERIMENT_RESOLVABLE,
     (CompatibilityDimension.SEMANTIC, CompatibilityStatus.INCOMPATIBLE): ResolutionClass.DESIGN_BLOCKING,
 }
 
@@ -732,14 +736,21 @@ class SpawnChildRunRequest(BaseModel):
 
 
 class TransferResumeFingerprint(BaseModel):
-    """Fingerprint of upstream artifacts; change → downstream invalidation."""
+    """Fingerprint of upstream artifacts; change → downstream invalidation.
+
+    paper_idea_sources_sha256 and method_components_sha256 are required
+    only when the idea source is paper_grounded. For user_provided ideas,
+    they must be None.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     research_context_sha256: str = Field(pattern=Sha256Pattern)
     baseline_architecture_contract_sha256: str = Field(pattern=Sha256Pattern)
-    paper_idea_sources_sha256: str = Field(pattern=Sha256Pattern)
-    method_components_sha256: str = Field(pattern=Sha256Pattern)
+
+    paper_idea_sources_sha256: str | None = Field(default=None, pattern=Sha256Pattern)
+    method_components_sha256: str | None = Field(default=None, pattern=Sha256Pattern)
+
     idea_contract_sha256: str = Field(pattern=Sha256Pattern)
     skill_sha256: str = Field(pattern=Sha256Pattern)
     policy_sha256: str = Field(pattern=Sha256Pattern)
