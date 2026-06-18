@@ -64,7 +64,7 @@ def build_trial_specs(
             },
             hyperparameter_plan={
                 "mode": "fixed_from_source",
-                "source_evidence_ids": [],
+                "source_evidence_ids": _collect_hyperparameter_source_evidence(vi),
             },
             evidence_ids=[],
         ))
@@ -169,3 +169,15 @@ def _gen_id() -> str:
     import uuid
 
     return f"ts_{uuid.uuid4().hex[:8]}"
+
+
+def _collect_hyperparameter_source_evidence(vi: Stage35VariantInput) -> list[str]:
+    evidence_ids: list[str] = []
+    evidence_ids.extend(vi.variant.idea_contract_evidence_ids)
+    for judgment in vi.transfer_analysis.dimensions:
+        evidence_ids.extend(judgment.idea_contract_evidence_ids)
+        evidence_ids.extend(judgment.paper_evidence_ids)
+        evidence_ids.extend(judgment.repository_evidence_ids)
+    for record in vi.risk_report.records:
+        evidence_ids.extend(record.evidence_ids)
+    return list(dict.fromkeys(evidence_ids))

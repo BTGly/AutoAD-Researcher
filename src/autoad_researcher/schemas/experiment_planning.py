@@ -209,6 +209,43 @@ class SharedExperimentProtocol(BaseModel):
             raise ValueError("baseline_policy.seeds must equal protocol.seeds")
         source = self.baseline_policy.reuse_source
         if source is not None:
+            identity_checks = [
+                (
+                    "repository_fingerprint",
+                    source.repository_fingerprint,
+                    self.planning_input_refs.repository_fingerprint,
+                ),
+                (
+                    "baseline_config_sha256",
+                    source.baseline_config_sha256,
+                    self.baseline_config_sha256,
+                ),
+                (
+                    "dataset_manifest_sha256",
+                    source.dataset_manifest_sha256,
+                    self.planning_input_refs.dataset_manifest_sha256,
+                ),
+                (
+                    "environment_lock_sha256",
+                    source.environment_lock_sha256,
+                    self.planning_input_refs.environment_sha256,
+                ),
+                (
+                    "asset_manifest_sha256",
+                    source.asset_manifest_sha256,
+                    self.planning_input_refs.asset_manifest_sha256,
+                ),
+                (
+                    "evaluation_contract_sha256",
+                    source.evaluation_contract_sha256,
+                    self.evaluation_protocol_ref.sha256,
+                ),
+            ]
+            for field_name, actual, expected in identity_checks:
+                if actual != expected:
+                    raise ValueError(
+                        f"reused baseline {field_name} must match current protocol"
+                    )
             if source.seeds != self.seeds:
                 raise ValueError("reused baseline seeds must equal protocol seeds")
             if sorted(source.completed_seed_ids) != sorted(self.seeds):

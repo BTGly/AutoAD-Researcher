@@ -116,6 +116,13 @@ class PipelineController:
             stages=stages,
         )
 
+    def run_experiment_planner(self, request):
+        """Run the production Step 3.5 experiment planner stage."""
+        from autoad_researcher.experiment.planner import ExperimentPlanner
+
+        planner = ExperimentPlanner(runs_root=self._runs_root)
+        return planner.run(request)
+
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------

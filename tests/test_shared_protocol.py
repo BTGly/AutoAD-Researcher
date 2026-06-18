@@ -61,9 +61,9 @@ def _mock_baseline_result_ref(seeds=None, metric_name="image_auroc"):
         repository_fingerprint="repo_fp",
         baseline_config_sha256="g" * 64,
         dataset_manifest_sha256="b" * 64,
-        evaluation_contract_sha256="c" * 64,
-        environment_lock_sha256="d" * 64,
-        asset_manifest_sha256="e" * 64,
+        evaluation_contract_sha256="a" * 64,
+        environment_lock_sha256="a" * 64,
+        asset_manifest_sha256="c" * 64,
         command_sha256="f" * 64,
         seeds=seeds,
         per_seed_metrics=metrics,
@@ -156,6 +156,49 @@ def test_build_protocol_reuse_existing():
     )
     assert protocol.baseline_policy.mode == "reuse_existing"
     assert protocol.baseline_policy.reuse_source is not None
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value", "message"),
+    [
+        ("repository_fingerprint", "wrong_repo", "repository_fingerprint"),
+        ("baseline_config_sha256", "0" * 64, "baseline_config_sha256"),
+        ("dataset_manifest_sha256", "1" * 64, "dataset_manifest_sha256"),
+        ("environment_lock_sha256", "2" * 64, "environment_lock_sha256"),
+        ("asset_manifest_sha256", "3" * 64, "asset_manifest_sha256"),
+        ("evaluation_contract_sha256", "4" * 64, "evaluation_contract_sha256"),
+    ],
+)
+def test_build_protocol_reuse_existing_identity_mismatch_rejected(
+    field_name, bad_value, message
+):
+    seeds = [42, 43]
+    reuse_source = _mock_baseline_result_ref(seeds, metric_name="auroc")
+    reuse_data = reuse_source.model_dump()
+    reuse_data[field_name] = bad_value
+    reuse_source = BaselineResultRef.model_validate(reuse_data)
+    policy = BaselineExecutionPolicy(
+        mode="reuse_existing",
+        reuse_source=reuse_source,
+        seeds=seeds,
+    )
+
+    with pytest.raises(ValidationError, match=message):
+        build_shared_protocol(
+            stage35_input=_mock_stage35_input(),
+            planning_input_refs=_mock_planning_refs(),
+            supplemental_refs=_mock_supplemental(),
+            evaluation_protocol_ref=_mock_artifact_refv2("eval_proto"),
+            baseline_method="patchcore",
+            baseline_config_sha256="g" * 64,
+            seeds=seeds,
+            primary_metric="auroc",
+            metric_direction="maximize",
+            protected_paths=[],
+            must_not_change=[],
+            protocol_evidence_ids=[],
+            baseline_policy=policy,
+        )
 
 
 def test_build_protocol_duplicate_seeds_rejected():

@@ -42,23 +42,41 @@ def validate_plan(
     issues: list[ExperimentPlanValidationIssue] = []
     invariant_results: list[InvariantResult] = []
 
-    # Load artifacts
-    protocol = _load(artifacts, "shared_experiment_protocol.json", SharedExperimentProtocol)
-    stat_plan = _load_opt(artifacts, "statistical_analysis_plan.json", StatisticalAnalysisPlan)
-    specs = _load_opt(artifacts, "experiment_trial_specs.json", ExperimentTrialSpecs)
-    matrix = _load_opt(artifacts, "experiment_matrix.json", ExperimentMatrix)
-    resolution_plans = _load_opt(artifacts, "experimental_resolution_plans.json", ExperimentalResolutionPlans)
-    budget = _load_opt(artifacts, "resource_budget.json", ResourceBudget)
-    guard = _load_opt(artifacts, "operational_guard_policy.json", OperationalGuardPolicy)
-
-    all_loaded = all([protocol, stat_plan, specs, matrix, resolution_plans, budget, guard])
-
     # 1. Structure
     structural_issues = _check_structure(artifacts)
     issues.extend(structural_issues)
+
+    # Load artifacts. Invalid JSON/schema is a blocking structure issue, not a
+    # silent None that can accidentally become a passed report.
+    protocol = _load_required(
+        artifacts, "shared_experiment_protocol.json", SharedExperimentProtocol, issues
+    )
+    stat_plan = _load_required(
+        artifacts, "statistical_analysis_plan.json", StatisticalAnalysisPlan, issues
+    )
+    specs = _load_required(
+        artifacts, "experiment_trial_specs.json", ExperimentTrialSpecs, issues
+    )
+    matrix = _load_required(
+        artifacts, "experiment_matrix.json", ExperimentMatrix, issues
+    )
+    resolution_plans = _load_required(
+        artifacts, "experimental_resolution_plans.json", ExperimentalResolutionPlans, issues
+    )
+    budget = _load_required(
+        artifacts, "resource_budget.json", ResourceBudget, issues
+    )
+    guard = _load_required(
+        artifacts, "operational_guard_policy.json", OperationalGuardPolicy, issues
+    )
+
+    all_loaded = all([protocol, stat_plan, specs, matrix, resolution_plans, budget, guard])
+    structure_issue_ids = [
+        i.issue_id for i in issues if i.invariant_category == "structure"
+    ]
     invariant_results.append(InvariantResult(
-        category="structure", passed=not structural_issues,
-        issue_ids=[i.issue_id for i in structural_issues],
+        category="structure", passed=not structure_issue_ids,
+        issue_ids=structure_issue_ids,
     ))
 
     if not all_loaded:
@@ -106,7 +124,7 @@ def validate_plan(
     ))
 
     # 7. Budget
-    budget_issues = _check_budget(budget)
+    budget_issues = _check_budget(budget, matrix)
     issues.extend(budget_issues)
     invariant_results.append(InvariantResult(
         category="budget", passed=not budget_issues,
@@ -144,14 +162,9 @@ def validate_plan(
 # HandoffEmitter
 # ---------------------------------------------------------------------------
 
-_PLANNING_ARTIFACT_NAMES = [
-    "shared_experiment_protocol.json",
-    "statistical_analysis_plan.json",
-    "experiment_trial_specs.json",
-    "experiment_matrix.json",
-    "experimental_resolution_plans.json",
-    "resource_budget.json",
-    "operational_guard_policy.json",
+_PLANNING_ARTIFACT_NAMES = list(PLANNING_ARTIFACT_PATHS)
+_HANDOFF_MANIFEST_NAMES = [
+    *PLANNING_ARTIFACT_PATHS,
     "experiment_plan_validation_report.json",
 ]
 
@@ -229,10 +242,13 @@ def emit_handoff(
             f"budget status {budget.budget_decision.status} not handoff-ready"
         )
 
-    # Gate 3: manifest exactly artifacts 1-8
+    # Gate 3: manifest exactly artifacts 1-8. Gate 1b intentionally binds only
+    # the 7 planning artifacts because the validation report cannot include its
+    # own stable SHA.
+    manifest_sha = {name: _sha256_file(artifacts[name]) for name in _HANDOFF_MANIFEST_NAMES}
     manifest = ArtifactManifest(entries=[
         ManifestEntry(relative_path=name, sha256=sha, artifact_type=name)
-        for name, sha in current_sha.items()
+        for name, sha in manifest_sha.items()
     ])
 
     # Gate 4: selected_variant_ids from specs, matrix consistent
@@ -285,6 +301,50 @@ def _check_baseline_fairness(protocol) -> list[ExperimentPlanValidationIssue]:
                 invariant_category="baseline_fairness",
                 message="Reused baseline must have validity_status=valid",
             ))
+        if source is not None:
+            identity_checks = [
+                (
+                    "repository_fingerprint",
+                    source.repository_fingerprint,
+                    protocol.planning_input_refs.repository_fingerprint,
+                ),
+                (
+                    "baseline_config_sha256",
+                    source.baseline_config_sha256,
+                    protocol.baseline_config_sha256,
+                ),
+                (
+                    "dataset_manifest_sha256",
+                    source.dataset_manifest_sha256,
+                    protocol.planning_input_refs.dataset_manifest_sha256,
+                ),
+                (
+                    "environment_lock_sha256",
+                    source.environment_lock_sha256,
+                    protocol.planning_input_refs.environment_sha256,
+                ),
+                (
+                    "asset_manifest_sha256",
+                    source.asset_manifest_sha256,
+                    protocol.planning_input_refs.asset_manifest_sha256,
+                ),
+                (
+                    "evaluation_contract_sha256",
+                    source.evaluation_contract_sha256,
+                    protocol.evaluation_protocol_ref.sha256,
+                ),
+            ]
+            for field_name, actual, expected in identity_checks:
+                if actual != expected:
+                    issues.append(_issue(
+                        issue_id=f"bl_reuse_identity_{field_name}",
+                        severity="blocking",
+                        invariant_category="baseline_fairness",
+                        message=(
+                            f"Reused baseline {field_name} must match current "
+                            "protocol"
+                        ),
+                    ))
     return issues
 
 
@@ -311,6 +371,43 @@ def _check_hyperparameter(specs) -> list[ExperimentPlanValidationIssue]:
                 invariant_category="hyperparameter_safety",
                 message=f"{v.variant_id}: selection_split cannot use test partition",
             ))
+        if hp.mode == "predeclared_search":
+            missing = []
+            if not hp.selection_split:
+                missing.append("selection_split")
+            elif hp.selection_split.declared_role != "validation":
+                issues.append(_issue(
+                    issue_id=f"hp_search_split_not_validation_{v.variant_id}",
+                    severity="blocking",
+                    invariant_category="hyperparameter_safety",
+                    message=(
+                        f"{v.variant_id}: predeclared_search selection_split "
+                        "must use validation partition"
+                    ),
+                ))
+        if hp.mode == "fixed_from_source" and not hp.source_evidence_ids:
+            issues.append(_issue(
+                issue_id=f"hp_fixed_source_missing_evidence_{v.variant_id}",
+                severity="blocking",
+                invariant_category="hyperparameter_safety",
+                message=f"{v.variant_id}: fixed_from_source requires source_evidence_ids",
+            ))
+            if not hp.search_space:
+                missing.append("search_space")
+            if hp.search_budget is None:
+                missing.append("search_budget")
+            if hp.selection_metric is None:
+                missing.append("selection_metric")
+            if missing:
+                issues.append(_issue(
+                    issue_id=f"hp_search_missing_{v.variant_id}",
+                    severity="blocking",
+                    invariant_category="hyperparameter_safety",
+                    message=(
+                        f"{v.variant_id}: predeclared_search missing "
+                        f"{', '.join(missing)}"
+                    ),
+                ))
     return issues
 
 
@@ -338,7 +435,20 @@ def _check_resolution_coverage(plans, matrix) -> list[ExperimentPlanValidationIs
     if plans is None or matrix is None:
         return issues
     all_entry_ids = {e.entry_id for e in matrix.entries}
+    entry_by_id = {e.entry_id: e for e in matrix.entries}
+    seen_unresolved_ids: set[str] = set()
     for r in plans.resolutions:
+        if r.unresolved_dimension_id in seen_unresolved_ids:
+            issues.append(_issue(
+                issue_id=f"res_duplicate_{r.unresolved_dimension_id[:8]}",
+                severity="blocking",
+                invariant_category="resolution_coverage",
+                message=(
+                    f"duplicate unresolved_dimension_id: "
+                    f"{r.unresolved_dimension_id}"
+                ),
+            ))
+        seen_unresolved_ids.add(r.unresolved_dimension_id)
         missing = [eid for eid in r.target_entry_ids if eid not in all_entry_ids]
         if missing:
             issues.append(_issue(
@@ -347,10 +457,38 @@ def _check_resolution_coverage(plans, matrix) -> list[ExperimentPlanValidationIs
                 invariant_category="resolution_coverage",
                 message=f"target_entry_ids {missing} not in matrix",
             ))
+        stage_mismatch = [
+            eid for eid in r.target_entry_ids
+            if eid in entry_by_id and entry_by_id[eid].stage != r.verification_stage
+        ]
+        if stage_mismatch:
+            issues.append(_issue(
+                issue_id=f"res_stage_mismatch_{r.unresolved_dimension_id[:8]}",
+                severity="blocking",
+                invariant_category="resolution_coverage",
+                message=(
+                    f"target_entry_ids {stage_mismatch} do not match "
+                    f"verification_stage {r.verification_stage}"
+                ),
+            ))
+        variant_mismatch = [
+            eid for eid in r.target_entry_ids
+            if eid in entry_by_id and entry_by_id[eid].variant_id != r.variant_id
+        ]
+        if variant_mismatch:
+            issues.append(_issue(
+                issue_id=f"res_variant_mismatch_{r.unresolved_dimension_id[:8]}",
+                severity="blocking",
+                invariant_category="resolution_coverage",
+                message=(
+                    f"target_entry_ids {variant_mismatch} do not match "
+                    f"variant_id {r.variant_id}"
+                ),
+            ))
     return issues
 
 
-def _check_budget(budget) -> list[ExperimentPlanValidationIssue]:
+def _check_budget(budget, matrix) -> list[ExperimentPlanValidationIssue]:
     issues = []
     if budget is None:
         return issues
@@ -361,6 +499,93 @@ def _check_budget(budget) -> list[ExperimentPlanValidationIssue]:
             invariant_category="budget",
             message=f"budget status {status} must be within_budget or override_confirmed",
         ))
+    if matrix is not None:
+        matrix_entry_ids = {e.entry_id for e in matrix.entries}
+        estimates = [
+            estimate
+            for summary in budget.per_variant.values()
+            for estimate in summary.entries
+        ]
+        estimate_entry_ids = [e.entry_id for e in estimates]
+        estimate_id_set = set(estimate_entry_ids)
+        if len(estimate_entry_ids) != len(estimate_id_set):
+            issues.append(_issue(
+                issue_id="budget_duplicate_entry_estimate",
+                severity="blocking",
+                invariant_category="budget",
+                message="resource budget contains duplicate entry estimates",
+            ))
+        missing = sorted(matrix_entry_ids - estimate_id_set)
+        extra = sorted(estimate_id_set - matrix_entry_ids)
+        if missing:
+            issues.append(_issue(
+                issue_id="budget_missing_entry_estimate",
+                severity="blocking",
+                invariant_category="budget",
+                message=f"resource budget missing estimates for entries {missing}",
+            ))
+        if extra:
+            issues.append(_issue(
+                issue_id="budget_extra_entry_estimate",
+                severity="blocking",
+                invariant_category="budget",
+                message=f"resource budget has estimates for non-matrix entries {extra}",
+            ))
+        for key, summary in budget.per_variant.items():
+            entry_sum = sum(e.planning_value for e in summary.entries)
+            if not _float_eq(summary.total_gpu_hours, entry_sum):
+                issues.append(_issue(
+                    issue_id=f"budget_variant_total_mismatch_{key}",
+                    severity="blocking",
+                    invariant_category="budget",
+                    message=(
+                        f"per_variant {key} total_gpu_hours must equal entry "
+                        "planning_value sum"
+                    ),
+                ))
+        summary_total = sum(s.total_gpu_hours for s in budget.per_variant.values())
+        if not _float_eq(budget.total_estimate.total_gpu_hours, summary_total):
+            issues.append(_issue(
+                issue_id="budget_total_mismatch",
+                severity="blocking",
+                invariant_category="budget",
+                message=(
+                    "total_estimate.total_gpu_hours must equal per_variant "
+                    "total_gpu_hours sum"
+                ),
+            ))
+        max_entry = max((e.planning_value for e in estimates), default=0.0)
+        if not _float_eq(budget.total_estimate.max_single_experiment_gpu_hours, max_entry):
+            issues.append(_issue(
+                issue_id="budget_max_single_mismatch",
+                severity="blocking",
+                invariant_category="budget",
+                message=(
+                    "total_estimate.max_single_experiment_gpu_hours must equal "
+                    "max entry planning_value"
+                ),
+            ))
+    if status == "within_budget":
+        if budget.total_estimate.total_gpu_hours > budget.limits.max_total_gpu_hours:
+            issues.append(_issue(
+                issue_id="budget_total_limit_exceeded",
+                severity="blocking",
+                invariant_category="budget",
+                message="within_budget total_gpu_hours exceeds max_total_gpu_hours",
+            ))
+        if (
+            budget.total_estimate.max_single_experiment_gpu_hours
+            > budget.limits.max_per_experiment_gpu_hours
+        ):
+            issues.append(_issue(
+                issue_id="budget_entry_limit_exceeded",
+                severity="blocking",
+                invariant_category="budget",
+                message=(
+                    "within_budget max_single_experiment_gpu_hours exceeds "
+                    "max_per_experiment_gpu_hours"
+                ),
+            ))
     return issues
 
 
@@ -369,6 +594,20 @@ def _check_dependency_dag(matrix, specs) -> list[ExperimentPlanValidationIssue]:
     if matrix is None:
         return issues
     entry_ids = {e.entry_id for e in matrix.entries}
+    entry_by_id = {e.entry_id: e for e in matrix.entries}
+    variant_by_id = {
+        v.variant_id: v
+        for v in specs.variants
+    } if specs is not None else {}
+    intent_by_id = {}
+    if specs is not None:
+        if specs.baseline is not None:
+            intent_by_id[specs.baseline.intent_id] = specs.baseline
+        for v in specs.variants:
+            if v.fit is not None:
+                intent_by_id[v.fit.intent_id] = v.fit
+            intent_by_id[v.smoke.intent_id] = v.smoke
+            intent_by_id[v.full.intent_id] = v.full
     for e in matrix.entries:
         for dep in e.depends_on:
             if dep not in entry_ids:
@@ -383,19 +622,105 @@ def _check_dependency_dag(matrix, specs) -> list[ExperimentPlanValidationIssue]:
         issues.extend(_check_no_cycles(matrix))
     # Check bindings
     for b in matrix.input_bindings:
-        if b.consumer_entry_id not in entry_ids:
+        consumer = entry_by_id.get(b.consumer_entry_id)
+        producer = entry_by_id.get(b.producer_entry_id)
+        if consumer is None:
             issues.append(_issue(
                 issue_id=f"dag_binding_consumer_{b.consumer_entry_id}",
                 severity="blocking",
                 invariant_category="dependency_dag",
                 message=f"binding consumer {b.consumer_entry_id} not in matrix",
             ))
-        if b.producer_entry_id not in entry_ids:
+        if producer is None:
             issues.append(_issue(
                 issue_id=f"dag_binding_producer_{b.producer_entry_id}",
                 severity="blocking",
                 invariant_category="dependency_dag",
                 message=f"binding producer {b.producer_entry_id} not in matrix",
+            ))
+        if consumer is None or producer is None:
+            continue
+        consumer_intent = intent_by_id.get(consumer.intent_ref)
+        requirement = None
+        if consumer_intent is None:
+            issues.append(_issue(
+                issue_id=f"dag_binding_consumer_intent_{consumer.entry_id}",
+                severity="blocking",
+                invariant_category="dependency_dag",
+                message=f"consumer intent {consumer.intent_ref} not found in specs",
+            ))
+        else:
+            requirement = next(
+                (
+                    r for r in consumer_intent.required_inputs
+                    if r.requirement_id == b.consumer_requirement_id
+                ),
+                None,
+            )
+            if requirement is None:
+                issues.append(_issue(
+                    issue_id=f"dag_binding_requirement_{b.consumer_entry_id}",
+                    severity="blocking",
+                    invariant_category="dependency_dag",
+                    message=(
+                        f"binding requirement {b.consumer_requirement_id} not "
+                        f"declared by consumer {b.consumer_entry_id}"
+                    ),
+                ))
+        production = next(
+            (
+                p for p in producer.expected_outputs
+                if p.production_id == b.producer_production_id
+            ),
+            None,
+        )
+        if production is None:
+            issues.append(_issue(
+                issue_id=f"dag_binding_production_{b.producer_entry_id}",
+                severity="blocking",
+                invariant_category="dependency_dag",
+                message=(
+                    f"binding production {b.producer_production_id} not "
+                    f"declared by producer {b.producer_entry_id}"
+                ),
+            ))
+        if requirement is not None and production is not None:
+            if requirement.artifact_type != production.artifact_type:
+                issues.append(_issue(
+                    issue_id=f"dag_binding_artifact_type_{b.consumer_entry_id}",
+                    severity="blocking",
+                    invariant_category="dependency_dag",
+                    message=(
+                        f"binding artifact type mismatch: requirement "
+                        f"{requirement.artifact_type} vs production "
+                        f"{production.artifact_type}"
+                    ),
+                ))
+        if consumer.variant_id != producer.variant_id:
+            issues.append(_issue(
+                issue_id=f"dag_binding_variant_{b.consumer_entry_id}",
+                severity="blocking",
+                invariant_category="dependency_dag",
+                message=(
+                    f"binding crosses variants: consumer {consumer.variant_id} "
+                    f"producer {producer.variant_id}"
+                ),
+            ))
+        variant = variant_by_id.get(consumer.variant_id) if consumer.variant_id else None
+        if (
+            variant is not None
+            and variant.fit_seed_policy == "per_evaluation_seed"
+            and producer.stage == "fit"
+            and consumer.seed != producer.seed
+        ):
+            issues.append(_issue(
+                issue_id=f"dag_binding_seed_{b.consumer_entry_id}",
+                severity="blocking",
+                invariant_category="dependency_dag",
+                message=(
+                    "per_evaluation_seed binding must use the same producer "
+                    "and consumer seed"
+                ),
             ))
     return issues
 
@@ -450,7 +775,6 @@ def _check_uniqueness(matrix, specs) -> list[ExperimentPlanValidationIssue]:
 
 
 def _check_eval_chain(protocol) -> list[ExperimentPlanValidationIssue]:
-    # Simple structure check: evaluation_protocol_ref must be present
     issues = []
     if not protocol.evaluation_protocol_ref:
         issues.append(_issue(
@@ -458,6 +782,39 @@ def _check_eval_chain(protocol) -> list[ExperimentPlanValidationIssue]:
             invariant_category="evaluation_chain",
             message="evaluation_protocol_ref is required",
         ))
+    supplemental_checks = [
+        (
+            "evaluator",
+            protocol.supplemental_refs.evaluator_ref,
+            protocol.supplemental_refs.evaluator_coverage_evidence_ids,
+        ),
+        (
+            "metric_parser",
+            protocol.supplemental_refs.metric_parser_ref,
+            protocol.supplemental_refs.metric_parser_coverage_evidence_ids,
+        ),
+        (
+            "postprocessing",
+            protocol.supplemental_refs.postprocessing_ref,
+            protocol.supplemental_refs.postprocessing_coverage_evidence_ids,
+        ),
+        (
+            "dataset_split",
+            protocol.supplemental_refs.dataset_split_ref,
+            protocol.supplemental_refs.dataset_split_coverage_evidence_ids,
+        ),
+    ]
+    for name, ref, evidence_ids in supplemental_checks:
+        if ref is None and not evidence_ids:
+            issues.append(_issue(
+                issue_id=f"eval_missing_{name}_coverage",
+                severity="blocking",
+                invariant_category="evaluation_chain",
+                message=(
+                    f"{name} supplemental ref is absent and has no coverage "
+                    "evidence"
+                ),
+            ))
     return issues
 
 
@@ -465,7 +822,22 @@ def _check_eval_chain(protocol) -> list[ExperimentPlanValidationIssue]:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load(artifacts, name, cls):
+def _load_required(artifacts, name, cls, issues):
+    if name not in artifacts or not artifacts[name].exists():
+        return None
+    try:
+        return cls.model_validate_json(artifacts[name].read_text())
+    except Exception as exc:
+        issues.append(_issue(
+            issue_id=f"struct_invalid_{_issue_token(name)}",
+            severity="blocking",
+            invariant_category="structure",
+            message=f"Invalid planning artifact {name}: {exc}",
+        ))
+        return None
+
+
+def _load_silent(artifacts, name, cls):
     if name not in artifacts or not artifacts[name].exists():
         return None
     try:
@@ -474,13 +846,12 @@ def _load(artifacts, name, cls):
         return None
 
 
-_load_opt = _load
-
-
 def _build_report(run_id, issues, invariant_results, artifacts):
     fp = "unknown"
     try:
-        proto = _load(artifacts, "shared_experiment_protocol.json", SharedExperimentProtocol)
+        proto = _load_silent(
+            artifacts, "shared_experiment_protocol.json", SharedExperimentProtocol
+        )
         if proto:
             fp = proto.protocol_fingerprint
     except Exception:
@@ -503,7 +874,7 @@ def _build_validated_refs(artifacts):
     return [
         ValidatedArtifactRef(relative_path=p, sha256=_sha256_file(artifacts[p]))
         for p in PLANNING_ARTIFACT_PATHS
-        if p in artifacts
+        if p in artifacts and artifacts[p].is_file()
     ]
 
 
@@ -513,3 +884,11 @@ def _sha256_file(path: Path) -> str:
 
 
 _sha256 = _sha256_file
+
+
+def _issue_token(name: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in name).strip("_")
+
+
+def _float_eq(left: float, right: float, tolerance: float = 1e-9) -> bool:
+    return abs(left - right) <= tolerance

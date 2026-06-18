@@ -47,7 +47,7 @@ def build_matrix(
     # 2. Variant entries
     for variant in specs.variants:
         fit_entries: list[MatrixEntry] = []
-        fit_policy = variant.fit_seed_policy or "shared_fixed"
+        fit_policy = variant.fit_seed_policy if variant.fit is not None else None
 
         # 2a. Fit (if needed)
         if variant.fit is not None:
@@ -132,10 +132,14 @@ def build_matrix(
 
         # 2c. Full
         for seed in seeds:
-            full_deps = smoke_entry_ids[:1] if fit_policy != "per_evaluation_seed" else [f"{variant.variant_id}_smoke_s{seed}"]
-            if fit_policy == "per_evaluation_seed":
+            full_deps = (
+                smoke_entry_ids[:1]
+                if fit_policy != "per_evaluation_seed"
+                else [f"{variant.variant_id}_smoke_s{seed}"]
+            )
+            if fit_policy == "per_evaluation_seed" and fit_entries:
                 full_deps.append(f"{variant.variant_id}_fit_s{seed}")
-            elif fit_policy == "shared_fixed":
+            elif fit_policy == "shared_fixed" and fit_entries:
                 full_deps.append(f"{variant.variant_id}_fit_s{seeds[0]}")
             elif fit_policy == "deterministic_no_seed" and fit_entries:
                 full_deps.append(f"{variant.variant_id}_fit_det")

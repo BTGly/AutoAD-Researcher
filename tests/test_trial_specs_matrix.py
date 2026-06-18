@@ -178,6 +178,23 @@ def test_build_matrix_smoke_full_chain():
     assert len(entries_by_stage["full"]) == 2  # 2 seeds
 
 
+def test_build_matrix_no_fit_full_dependencies_exist():
+    adapter = Stage34InputAdapter()
+    input_ = adapter.load(_mock_handoff([_mock_variant("var_A")]))
+    specs = build_trial_specs(input_, "fp_test")
+    protocol = _mock_protocol()
+
+    matrix = build_matrix(protocol, specs)
+    entry_ids = {e.entry_id for e in matrix.entries}
+    full_entries = [e for e in matrix.entries if e.stage == "full"]
+
+    assert full_entries
+    for entry in matrix.entries:
+        assert set(entry.depends_on) <= entry_ids
+    for entry in full_entries:
+        assert all("_fit_" not in dep for dep in entry.depends_on)
+
+
 def test_build_matrix_with_fit():
     from autoad_researcher.schemas.transfer_design import (
         ExecutionPhaseContract,

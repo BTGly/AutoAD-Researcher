@@ -11,11 +11,20 @@ from autoad_researcher.experiment.adapter_34 import (
     derive_preparation_phase,
 )
 from autoad_researcher.experiment.builders import (
+    ResourceBudgetBuildError,
+    ResolutionPlanBuildError,
     build_guard_policy,
     build_resolution_plans,
     build_resource_budget,
 )
 from autoad_researcher.experiment.matrix_builder import MatrixBuildError, build_matrix
+from autoad_researcher.experiment.planner import (
+    ExperimentPlanner,
+    ExperimentPlannerRequest,
+    ExperimentPlannerResult,
+    StageResourceEstimateInput,
+    StageResourceEstimateProfile,
+)
 from autoad_researcher.experiment.shared_protocol import build_shared_protocol
 from autoad_researcher.experiment.stat_plan import (
     build_stat_plan,
@@ -32,8 +41,15 @@ from autoad_researcher.experiment.validator_emitter import (
 __all__ = [
     "HandoffBlockedError",
     "MatrixBuildError",
+    "ResourceBudgetBuildError",
+    "ResolutionPlanBuildError",
     "Stage34HandoffError",
     "Stage34InputAdapter",
+    "ExperimentPlanner",
+    "ExperimentPlannerRequest",
+    "ExperimentPlannerResult",
+    "StageResourceEstimateInput",
+    "StageResourceEstimateProfile",
     "build_guard_policy",
     "build_matrix",
     "build_resolution_plans",
