@@ -6,14 +6,19 @@
 
 ## 调研项目
 
-| 项目 | URL | 调研时 commit / 版本 | 许可证 | 语言 |
-|---|---|---|---|---|
-| MiMoCode (OpenCode fork) | 小米内部 fork | `packages/opencode/src/` | MIT (OpenCode) | TypeScript |
-| aider | https://github.com/Aider-AI/aider | `5dc9490` (Jun 2025) | Apache 2.0 | Python |
-| SWE-agent | https://github.com/SWE-agent/SWE-agent | 调研时 latest | MIT | Python |
-| OpenHands SDK | https://github.com/All-Hands-AI/OpenHands | 调研时 latest | MIT | Python |
-| mini-swe-agent | https://github.com/ethan0405/mini-swe-agent | 调研时 latest | MIT | Python |
-| anomalyco/opencode | https://github.com/anomalyco/opencode | MiMoCode 基于此 fork | MIT | TypeScript |
+| 项目 | URL | 调研时 commit | 许可证 | 语言 | 备注 |
+|---|---|---|---|---|---|
+| aider | https://github.com/Aider-AI/aider | `5dc9490` (Jun 2025) | Apache 2.0 | Python | 本地 clone 可复现 |
+| SWE-agent | https://github.com/swe-agent/swe-agent | `10e3e76` (`fix: insert after target line…`) | MIT | Python | 本地 clone 可复现 |
+| mini-swe-agent | https://github.com/SWE-agent/mini-swe-agent | `2afd0fb` (`Fix: Stop cleanly on limit breach…`) | MIT | Python | 本地 clone 可复现 |
+| MiMoCode | 小米内部 fork of OpenCode | 不可公开获取 | MIT (OpenCode) | TypeScript | 仅在 `references/coding-agents/README.md` 中有架构描述，未获得源码 |
+| OpenHands | https://github.com/All-Hands-AI/OpenHands | 调研时 latest（未 clone） | MIT | Python | 仅调研公开文档和论文 |
+
+调研文件位于：
+
+```
+references/coding-agents/README.md
+```
 
 调研文件位于：
 
@@ -103,4 +108,6 @@ git log --all --oneline -- src/autoad_researcher/code_agent/
 
 ---
 
-> 根据当前仓库、提交历史和开发记录，本项目未直接复制、翻译或修改上述参考项目的源文件或代码片段，未将其源码作为项目依赖或 vendored code 引入。参考项目仅用于理解公开的工程模式，最终数据模型、权限规则、状态机和实现代码均结合本项目需求独立设计与编写。若本文档中列出某一参考项目与本项目模块的对照关系，该关系仅表示概念启发或设计对照，不表示算法、接口或实现的一一对应。
+> 项目早期调研了 MiMoCode、aider、SWE-agent、OpenHands 和 mini-swe-agent 等公开项目，用于理解权限分层、规划与执行分离、显式变更建模、审批门禁和回滚等通用工程模式。SWE-agent 和 OpenHands 等项目本身也公开讨论了面向代码智能体的专用交互接口、代码编辑和安全执行等设计问题（SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering, arXiv:2405.15793）。
+>
+> 上述项目仅作为概念和架构设计参考，不表示本项目与其存在接口、算法或代码实现上的一一对应。根据当前仓库、提交历史和开发记录，AutoAD-Researcher 未直接复制、翻译、修改或引入上述参考项目的源文件或代码片段，未将其源码作为依赖或 vendored code 纳入项目。项目的数据模型、审批协议、权限规则、状态机及 Python 实现均根据本项目需求独立设计和编写。
