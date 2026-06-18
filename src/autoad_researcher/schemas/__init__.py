@@ -4,6 +4,7 @@
 harness、pipeline、storage 等模块不应在各自目录内重复定义 schema。
 """
 
+from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.schemas.baseline_architecture import (
     ArchitectureComponent,
     BaselineArchitectureContract,
@@ -60,6 +61,7 @@ from autoad_researcher.schemas.patch import PatchPlan
 from autoad_researcher.schemas.patch_planning import (
     ApprovalDecision,
     ApprovalRequest,
+    BaselineWorkspaceRef,
     ChangedFileEntry,
     CheckResult,
     NarrowRepositoryReadRequest,
@@ -83,6 +85,7 @@ from autoad_researcher.schemas.patch_planning import (
     SymbolContractDelta,
     SymbolQuery,
     ValidationCommand,
+    VariantWorkspaceHandoff,
     VariantWorkspacePlan,
     WorkspaceApprovalSummary,
     compute_canonical_plan_sha256,
@@ -151,6 +154,8 @@ __all__ = [
     "ModificationHook",
     "TensorAxis",
     "TensorSpec",
+    # Artifacts
+    "ArtifactReferenceV2",
     # Benchmark
     "BenchmarkDataset",
     "BenchmarkDatasetAcquisition",
@@ -194,6 +199,7 @@ __all__ = [
     # Patch planning — 3.6/3.7 schemas
     "ApprovalDecision",
     "ApprovalRequest",
+    "BaselineWorkspaceRef",
     "ChangedFileEntry",
     "CheckResult",
     "NarrowRepositoryReadRequest",
@@ -217,6 +223,7 @@ __all__ = [
     "SymbolContractDelta",
     "SymbolQuery",
     "ValidationCommand",
+    "VariantWorkspaceHandoff",
     "VariantWorkspacePlan",
     "WorkspaceApprovalSummary",
     "compute_canonical_plan_sha256",

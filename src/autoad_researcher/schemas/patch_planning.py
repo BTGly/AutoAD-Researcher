@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.paper_intelligence.ids import IdentifierPattern, Sha256Pattern, validate_workspace_path
+from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.schemas.clarification import ArtifactReference
 from autoad_researcher.schemas.transfer_design import InterfaceContractDelta
 
@@ -490,7 +491,7 @@ class BaselineWorkspaceRef(BaseModel):
     workspace_id: str = Field(pattern=IdentifierPattern)
     repository_fingerprint: str = Field(min_length=1)
     repository_commit: str = Field(min_length=1)
-    repository_validation_ref: ArtifactReference
+    repository_validation_ref: ArtifactReferenceV2
 
 
 class VariantWorkspaceHandoff(BaseModel):
@@ -501,8 +502,8 @@ class VariantWorkspaceHandoff(BaseModel):
     repository_fingerprint: str = Field(min_length=1)
     patch_diff_sha256: str = Field(pattern=Sha256Pattern)
     local_validation_report_sha256: str = Field(pattern=Sha256Pattern)
-    patch_application_manifest_ref: ArtifactReference
-    post_patch_validation_report_ref: ArtifactReference
+    patch_application_manifest_ref: ArtifactReferenceV2
+    post_patch_validation_report_ref: ArtifactReferenceV2
 
 
 class PatchRunnerHandoff(BaseModel):
