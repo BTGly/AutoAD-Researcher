@@ -247,7 +247,7 @@ class ControlledPatchApplicator:
             not m.fingerprint_matches_before for m in result.rollback_manifests
             if m.fingerprint_matches_before is not None
         )
-        final_status = "rolled_back" if not any_mismatch else "blocked"
+        final_status = "rolled_back" if not any_mismatch else "rollback_failed"
         return PatchExecutionResult(
             result_id=result.result_id, run_id=result.run_id, preflight=result.preflight,
             overall_status=final_status, manifests=result.manifests,

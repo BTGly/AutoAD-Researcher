@@ -450,6 +450,7 @@ class PatchExecutionResult(BaseModel):
         "patch_applied", "patch_application_partial_failure",
         "patch_application_failed", "patch_applied_and_local_validations_passed",
         "patch_applied_but_local_validation_failed", "rolled_back",
+        "rollback_failed",
         "replan_required", "rejected", "blocked",
     ]
     manifests: list[PatchApplicationManifest] = Field(default_factory=list)
