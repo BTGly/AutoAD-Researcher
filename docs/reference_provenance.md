@@ -34,7 +34,7 @@ references/coding-agents/README.md
 | **显式变更模型** (discriminated change types) | MiMoCode hunk (add/update/delete), aider patch format | `change_kind` enum (create/modify/delete/rename/configuration_only/test_only) + `target_mode` 解耦 | 抽象层不同：本项目是文件级计划，参考项目是 hunk 级补丁格式 |
 | **人工审批门禁** | MiMoCode plan_exit tool, aider confirm_ask() | `ApprovalDecision` + `Preflight`（多 SHA 绑定、workspace 作用域、payload 绑定） | 未复用参考项目的 CLI prompt、Y/N/A 交互、Deferred 阻塞模式 |
 | **撤销与回滚** (undo/rollback) | SWE-agent undo_edit file history stack | `before_blob` base64 逆序恢复 + `rollback_failed` 指纹校验 | 未复用参考项目的 JSON 状态文件、全局历史栈 |
-| **确定性变更** (exact/declarative edits) | SWE-agent exact-match `str_replace`, aider SEARCH/REPLACE block | `before_sha256 + full_after_content/unified_diff`，通过前态哈希和 Payload 校验保证修改对象未漂移 | 未复用 SWE-agent 的 str_replace 文件编辑器、aider 的 fuzzy matching 多级回退 |
+| **确定性变更** (exact/declarative edits) | SWE-agent exact-match `str_replace`, aider SEARCH/REPLACE block | `before_sha256 + full_after_content/unified_diff`，通过前态哈希验证文件版本后应用 Payload，拒绝模糊定位 | 未复用 SWE-agent 的 str_replace 文件编辑器、aider 的 fuzzy matching 多级回退。这是独立的确定性策略：SWE-agent 依赖字符串计数找唯一匹配，本项目依赖哈希校验 |
 
 ---
 
@@ -52,17 +52,18 @@ references/coding-agents/README.md
 
 ## 概念启发对照
 
-以下对照仅表示设计思路层面的概念对应，**不表示算法、接口或实现的直接对应**。
+> **下表仅说明概念启发关系，不表示接口、算法、数据结构或实现的一一对应。
+> 所有"→ 启发"标记表示参考项目公开了该通用工程模式，不代表本项目复用了其具体表达。**
 
 ```
 MiMoCode "allow/deny/ask" 权限分层
-  → 启发：多级权限判定顺序
-  本实现：五层路径交集（deny > ask > allowed > planned ∩ approved > default-deny）
+  → 启发：多级权限判定需要明确的优先级顺序
+  本实现：五层路径交集（deny > ask-approved > allowed > planned ∩ approved > default-deny），每层增加 change_id 审计
   差异：未使用 MiMoCode 的 wildcard 匹配、SQLite 规则表、Deferred ask 机制
 
 MiMoCode "plan exit tool" 切换门禁
   → 启发：规划→执行之间需要显式门禁
-  本实现：ApprovalDecision SHA 绑定 + Preflight 七组校验
+  本实现：ApprovalDecision SHA 绑定 + Preflight 四组校验
   差异：未使用 MiMoCode 的 plan_exit 工具消息或 agent 模式切换
 
 aider "architect/editor" 角色拆分
@@ -71,9 +72,9 @@ aider "architect/editor" 角色拆分
   差异：未使用 aider 的 Coder 子类、edit_format 矩阵或 LLM 驱动的修改循环
 
 SWE-agent "str_replace" 精确匹配
-  → 启发：避免模糊匹配导致错误修改
+  → 启发：拒绝模糊定位，只做确定性修改
   本实现：before_sha256 哈希校验 + full_after_content 或 unified_diff Payload
-  差异：这是不同的确定性策略（哈希 vs 字符串计数），未复用 SWE-agent 的 str_replace_editor
+  差异：SWE-agent 通过字符串计数找唯一匹配后替换；本项目通过前态哈希验证文件版本、再整文件或 diff 写入，是独立的确定性策略
 
 SWE-agent "undo_edit" 撤销
   → 启发：写入操作需要可撤销
