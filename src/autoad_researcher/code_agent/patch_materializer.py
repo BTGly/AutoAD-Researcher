@@ -133,12 +133,13 @@ def build_payload_manifest(
     import hashlib
     import json
 
+    placeholder_sha = hashlib.sha256(b"placeholder").hexdigest()
     manifest = PatchPayloadManifest(
         manifest_id=manifest_id or f"manifest_{run_id}_{workspace_id}",
         workspace_id=workspace_id,
         payloads=payloads,
         proposed_diff_artifact_id=proposed_diff_artifact_id,
-        manifest_sha256="",  # placeholder
+        manifest_sha256=placeholder_sha,
     )
     canonical = json.dumps(
         manifest.model_dump(mode="python", exclude={"manifest_sha256"}),

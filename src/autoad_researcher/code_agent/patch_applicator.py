@@ -461,9 +461,29 @@ def _apply_single_change(change, abs_path: Path, now: datetime,
                           payload: PatchPayload | None = None) -> ChangedFileEntry | None:
     before_content: bytes | None = None
     before_sha: str | None = None
-    if abs_path.exists():
+    path_exists = abs_path.exists()
+
+    if path_exists:
         before_content = abs_path.read_bytes()
         before_sha = hashlib.sha256(before_content).hexdigest()
+
+    policy = change.target_collision_policy
+
+    if change.operation_kind == "create" and path_exists:
+        if policy == "must_not_exist":
+            return None
+    elif change.operation_kind in {"modify", "delete"}:
+        if not path_exists:
+            return None
+        if policy == "replace_existing" and change.target_before_sha256:
+            if before_sha != change.target_before_sha256:
+                return None
+    elif change.operation_kind == "rename":
+        if not path_exists:
+            return None
+        if policy == "replace_existing" and change.target_before_sha256:
+            if before_sha != change.target_before_sha256:
+                return None
 
     if change.operation_kind == "delete":
         if not abs_path.exists():

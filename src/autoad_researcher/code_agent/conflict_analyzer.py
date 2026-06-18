@@ -53,7 +53,11 @@ def analyze_variant_conflicts(
             elif c.symbol_delta:
                 symbols.add(c.symbol_delta.symbol_name)
 
-        kind = _classify_conflict(path_changes, all_variants, known)
+        collision_policies = {c.target_collision_policy for c in path_changes if c.target_collision_policy}
+        if len(collision_policies) > 1:
+            kind = "mutually_exclusive"
+        else:
+            kind = _classify_conflict(path_changes, all_variants, known)
 
         group = PatchConflictGroup(
             conflict_group_id=f"cg_{_safe_base(path)}_{len(conflict_groups):03d}",
@@ -62,7 +66,7 @@ def analyze_variant_conflicts(
             competing_change_ids=[c.change_id for c in path_changes],
             competing_variant_ids=sorted(all_variants),
             kind=kind,
-            description=_describe_conflict(path, kind, symbols),
+            description=_describe_conflict(path, kind, symbols, collision_policies),
         )
         conflict_groups.append(group)
         if kind == "mutually_exclusive":
@@ -159,12 +163,14 @@ def _classify_conflict(
     return "parameterizable"
 
 
-def _describe_conflict(path: str, kind: str, symbols: set[str]) -> str:
+def _describe_conflict(path: str, kind: str, symbols: set[str],
+                       policies: set[str | None] | None = None) -> str:
+    policy_str = f" (policies: {policies})" if policies and len(policies) > 1 else ""
     symbol_str = ", ".join(sorted(symbols)) if symbols else "unknown"
     if kind == "mutually_exclusive":
-        return f"Variants have overlapping symbol changes in {path}: {symbol_str}"
+        return f"Variants have overlapping symbol changes in {path}: {symbol_str}{policy_str}"
     if kind == "parameterizable":
-        return f"Variants modify different symbols in {path}: {symbol_str}"
+        return f"Variants modify different symbols in {path}: {symbol_str}{policy_str}"
     return f"Path overlap in {path}"
 
 

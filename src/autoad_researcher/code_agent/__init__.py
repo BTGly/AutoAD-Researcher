@@ -15,6 +15,10 @@ code_agent/ now covers:
   - validation_steps/: InternalValidationStep functions (ast_parse, diff_integrity,
     path_containment, before_after_identity).
   - validation_commands.py: ExternalValidationCommand template registry (ruff).
+  - worktree_manager.py: WorkspaceChangeBinding, clone_shared_changes,
+    merge_workspace_manifests.
+  - narrow_repo_read.py: Read-only narrow filesystem access for
+    PatchMaterializer context gathering.
 
 Pipeline:
   3.4 Transfer Design → 3.5 Experiment Planner →
@@ -39,6 +43,13 @@ from autoad_researcher.code_agent.planner_validator import validate_repository_c
 from autoad_researcher.code_agent.validation_commands import (
     REGISTERED_TEMPLATES, execute_template_command, validate_command_argv,
 )
+from autoad_researcher.code_agent.worktree_manager import (
+    build_workspace_binding, clone_shared_changes,
+    merge_workspace_manifests,
+)
+from autoad_researcher.code_agent.narrow_repo_read import (
+    iter_source_files, list_files, read_file_safe,
+)
 
 __all__ = [
     "ControlledPatchApplicator",
@@ -47,8 +58,14 @@ __all__ = [
     "analyze_variant_conflicts",
     "apply_workspace_layout",
     "build_payload_manifest",
+    "build_workspace_binding",
+    "clone_shared_changes",
     "compute_approval_effective_write_paths",
     "execute_template_command",
+    "iter_source_files",
+    "list_files",
+    "merge_workspace_manifests",
+    "read_file_safe",
     "REGISTERED_TEMPLATES",
     "validate_approved_paths_against_policy",
     "validate_approval_consistency",
