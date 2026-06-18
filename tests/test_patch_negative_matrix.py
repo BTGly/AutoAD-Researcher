@@ -771,7 +771,7 @@ class TestPreflightE45FingerprintMismatch:
         plan2 = plan2.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan2)})
         req = _req(sha=plan2.patch_plan_sha256)
         req2 = req.model_copy(update={"repository_before_fingerprint": hashlib.sha256(b"stale").hexdigest()})
-        m45 = _make_manifest(run_id=plan2.run_id)
+        m45 = _make_manifest(run_id=plan2.run_id, plan_sha=plan2.patch_plan_sha256)
         m45 = m45.model_copy(update={"manifest_sha256": plan2.patch_plan_sha256})
         pf = app.run_preflight(
             plan=plan2, request=req2,
