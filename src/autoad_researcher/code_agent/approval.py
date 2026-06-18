@@ -27,7 +27,7 @@ def validate_approval_consistency(
     if validation_report and validation_report.issues:
         blocked = set()
         for issue in validation_report.issues:
-            for aid in issue.artifact_ids:
+            for aid in (issue.affected_change_ids or issue.artifact_ids):
                 blocked.add(aid)
         non_blocked = all_ids - blocked
     else:
