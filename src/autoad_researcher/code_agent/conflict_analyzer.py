@@ -170,3 +170,33 @@ def _describe_conflict(path: str, kind: str, symbols: set[str]) -> str:
 
 def _safe_base(path: str) -> str:
     return Path(path).stem.replace(".", "_").replace("-", "_")
+
+
+def apply_workspace_layout(
+    plan: "RepositoryChangePlan",
+    analysis: "PatchConflictAnalysis",
+) -> "RepositoryChangePlan":
+    """Rebind change.workspace_id from conflict analysis workspace_plans.
+
+    Returns a new RepositoryChangePlan with updated workspace_ids.
+    plan_sha256 is recomputed after rebinding.
+    """
+    from autoad_researcher.schemas.patch_planning import compute_canonical_plan_sha256
+
+    change_to_ws: dict[str, str] = {}
+    for ws in analysis.workspace_plans:
+        for cid in ws.planned_change_ids:
+            change_to_ws[cid] = ws.workspace_id
+
+    new_changes = []
+    for c in plan.changes:
+        ws_id = change_to_ws.get(c.change_id, c.workspace_id)
+        new_changes.append(c.model_copy(update={"workspace_id": ws_id}))
+
+    new_plan = plan.model_copy(update={
+        "changes": new_changes,
+        "workspace_plans": analysis.workspace_plans,
+        "conflict_analysis_id": analysis.analysis_id,
+    })
+    new_plan = new_plan.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(new_plan)})
+    return new_plan

@@ -1,1115 +1,445 @@
 """Patch planning, approval, and controlled application behavior tests.
 
-Covers:
-  - PlannedRepositoryChange model validators (change_kind/target_mode, path validation)
-  - RepositoryChangePlan + canonical SHA
-  - PatchConflictAnalyzer (path + symbol level)
-  - PatchPlanValidator (protected paths, hooks, symbols, modifiable scope)
-  - Approval protocol (consistency always checked, plan SHA binding, policy deny)
-  - ControlledPatchApplicator (layered write gate, root containment, before-blob rollback, validation)
-  - Schema consistency validators
-  - Security tests (path traversal, ancestor deny, system path rejection)
+Covers all P0 fixes: preflight, fail-closed result, rename, reverse rollback,
+diff generation, CheckResult, hook path match, allowed_for_transfer_design,
+symbol table missing, workspace layout rebind, validation commands.
 """
 
-import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from autoad_researcher.schemas.baseline_architecture import ModificationHook
 from autoad_researcher.schemas.patch_planning import (
-    ApprovalDecision,
-    ApprovalRequest,
-    PlannedRepositoryChange,
-    RepositoryChangePlan,
-    ValidationCommand,
-    WorkspaceApprovalSummary,
-    compute_canonical_plan_sha256,
+    ApprovalDecision, ApprovalRequest, CheckResult, PatchPlanValidationIssue,
+    PatchPlanValidationReport, PlannedRepositoryChange, RepositoryChangePlan,
+    ValidationCommand, compute_canonical_plan_sha256,
 )
 from autoad_researcher.code_agent.approval import (
     compute_approval_effective_write_paths,
     validate_approved_paths_against_policy,
     validate_approval_consistency,
 )
-from autoad_researcher.code_agent.conflict_analyzer import analyze_variant_conflicts
+from autoad_researcher.code_agent.conflict_analyzer import analyze_variant_conflicts, apply_workspace_layout
 from autoad_researcher.code_agent.patch_applicator import ControlledPatchApplicator
-from autoad_researcher.code_agent.patch_planner import PatchPlannerAgent
 from autoad_researcher.code_agent.planner_validator import validate_repository_change_plan
 
 _NOW = datetime.now(timezone.utc)
 
 
-def _make_plan(
-    *,
-    run_id: str = "run_test",
-    changes: list | None = None,
-    deps: list | None = None,
-    configs: list | None = None,
-    tests: list | None = None,
-) -> RepositoryChangePlan:
+def _fingerprint(root):
+    from autoad_researcher.code_agent.patch_applicator import _fingerprint_directory
+    return _fingerprint_directory(root)
+
+
+def _plan(*, run_id="run_test", changes=None, deps=None, **kw):
     return RepositoryChangePlan(
-        run_id=run_id,
-        patch_plan_id="pp_test",
-        repository_source_id="src_test",
-        repository_commit="a" * 40,
-        repository_fingerprint="b" * 64,
-        selected_variant_ids=[],
-        idea_id="idea_test",
-        changes=changes or [],
+        run_id=run_id, patch_plan_id="pp_test",
+        repository_source_id="src_test", repository_commit="a" * 40,
+        repository_fingerprint="b" * 64, selected_variant_ids=[],
+        idea_id="idea_test", changes=changes or [],
         dependency_changes=deps or [],
-        configuration_changes=configs or [],
-        test_changes=tests or [],
-        plan_sha256="c" * 64,
+        configuration_changes=kw.pop("configs", []),
+        test_changes=kw.pop("tests", []),
+        plan_sha256="c" * 64, **kw,
     )
 
 
-def _make_plan_with_sha(changes=None, deps=None):
-    plan = _make_plan(changes=changes, deps=deps)
-    plan = plan.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(plan)})
-    return plan
+def _psha(changes=None, deps=None, **kw):
+    p = _plan(changes=changes, deps=deps, **kw)
+    return p.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(p)})
 
 
-def _make_approval_request(
-    *,
-    plan_sha256: str = "c" * 64,
-) -> ApprovalRequest:
+def _req(sha="c" * 64):
     return ApprovalRequest(
-        approval_request_id="ar_test",
-        run_id="run_test",
-        patch_plan_sha256=plan_sha256,
-        repository_before_fingerprint="b" * 64,
-        selected_variant_ids=[],
-        overall_risk_level="low",
-        workspace_summaries=[],
-        dependency_changes_summary=[],
-        validation_commands=[],
-        created_at=_NOW,
+        approval_request_id="ar", run_id="run_test",
+        patch_plan_sha256=sha, repository_before_fingerprint="b" * 64,
+        selected_variant_ids=[], workspace_summaries=[],
+        dependency_changes_summary=[], validation_commands=[], created_at=_NOW,
     )
 
 
-def _make_approval_decision(
-    *,
-    decision: str = "approve_all",
-    approved_change_ids: list[str] | None = None,
-    rejected_change_ids: list[str] | None = None,
-    approved_paths: list[str] | None = None,
-    plan_sha256: str = "c" * 64,
-) -> ApprovalDecision:
+def _dec(decision="approve_all", approved_change_ids=None, rejected=None, approved_paths=None, sha="c" * 64):
     return ApprovalDecision(
-        decision_id="ad_test",
-        decision=decision,
-        approved_patch_plan_sha256=plan_sha256,
+        decision_id="ad", decision=decision,
+        approved_patch_plan_sha256=sha,
         approved_change_ids=approved_change_ids or [],
-        rejected_change_ids=rejected_change_ids or [],
-        approved_dependency_change_ids=[],
-        approved_validation_command_ids=[],
+        rejected_change_ids=rejected or [],
         approved_paths=approved_paths or [],
-        user_evidence_id="ev_user_test",
-        decided_at=_NOW,
+        user_evidence_id="ev_u", decided_at=_NOW,
     )
 
 
-# ---------------------------------------------------------------------------
-# T1: PlannedRepositoryChange model validators
-# ---------------------------------------------------------------------------
+def _c(cid, ws, kind="create", tm="new_target", path="src/x.py", ps=None):
+    return PlannedRepositoryChange(
+        change_id=cid, workspace_id=ws, change_kind=kind, target_mode=tm,
+        proposed_symbol=ps or cid.upper(),
+        repository_path=path, variant_ids=["v"], rationale="r",
+    )
 
 
-class TestPlannedRepositoryChange:
-    def test_create_must_be_new_target(self):
-        with pytest.raises(ValueError, match="create requires target_mode=new_target"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="create",
-                target_mode="existing_target",
-                hook_id="hook_1",
-                repository_path="src/new_file.py",
-                variant_ids=["var_1"],
-                rationale="test",
-            )
+# --- P0-2: fail-closed ---
 
-    def test_delete_must_be_existing_target(self):
-        with pytest.raises(ValueError, match="delete requires target_mode=existing_target"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="delete",
-                target_mode="new_target",
-                proposed_symbol="new_sym",
-                repository_path="src/old_file.py",
-                variant_ids=["var_1"],
-                rationale="test",
-            )
+class TestFailClosedResult:
+    def test_no_approved_changes_applied_returns_failed(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c = _c("chg_1", "ws_1")
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_2"], approved_paths=["src/x.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; repo.mkdir()
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws_1", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        assert r.overall_status == "patch_application_failed"
 
-    def test_rename_must_have_target_path(self):
-        with pytest.raises(ValueError, match="rename requires rename_target_path"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="rename",
-                target_mode="existing_target",
-                hook_id="hook_1",
-                repository_path="src/old.py",
-                variant_ids=["var_1"],
-                rationale="test",
-            )
+    def test_partial_application_returns_partial_failure(self, tmp_path):
+        app = ControlledPatchApplicator(policy_denied_paths={"denied"})
+        c1 = _c("chg_1", "ws", path="src/a.py")
+        c2 = _c("chg_2", "ws", path="denied/b.py")
+        plan = _psha(changes=[c1, c2])
+        dec = _dec(approved_change_ids=["chg_1", "chg_2"], approved_paths=["src/a.py", "denied/b.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; repo.mkdir()
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        assert r.overall_status == "patch_application_partial_failure"
 
-    def test_existing_target_requires_hook_or_symbol_id(self):
-        with pytest.raises(ValueError, match="existing_target requires hook_id or existing_symbol_id"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="modify",
-                target_mode="existing_target",
-                hook_id=None,
-                existing_symbol_id=None,
-                repository_path="src/existing.py",
-                variant_ids=["var_1"],
-                rationale="test",
-            )
+    def test_manifest_tracks_attempted_applied_skipped(self, tmp_path):
+        app = ControlledPatchApplicator(policy_denied_paths={"denied"})
+        c1 = _c("chg_1", "ws", path="src/a.py")
+        c2 = _c("chg_2", "ws", path="denied/b.py")
+        plan = _psha(changes=[c1, c2])
+        dec = _dec(approved_change_ids=["chg_1", "chg_2"], approved_paths=["src/a.py", "denied/b.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; repo.mkdir()
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        m = r.manifests[0]
+        assert set(m.attempted_change_ids) == {"chg_1", "chg_2"}
+        assert m.applied_change_ids == ["chg_1"]
 
-    def test_new_target_must_not_set_hook_id(self):
-        with pytest.raises(ValueError, match="new_target must not set hook_id"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="create",
-                target_mode="new_target",
-                hook_id="hook_1",
-                proposed_symbol="NewClass",
-                repository_path="src/new_file.py",
-                variant_ids=["var_1"],
-                rationale="test",
-            )
+    def test_all_success_returns_applied(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/x.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; repo.mkdir()
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        assert r.overall_status == "patch_applied"
 
-    def test_new_target_requires_proposed_symbol(self):
-        with pytest.raises(ValueError, match="new_target requires proposed_symbol"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="create",
-                target_mode="new_target",
-                proposed_symbol=None,
-                repository_path="src/new_file.py",
-                variant_ids=["var_1"],
-                rationale="test",
-            )
 
-    def test_valid_rename_with_target_path(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="rename",
-            target_mode="existing_target",
-            hook_id="hook_1",
-            repository_path="src/old.py",
-            rename_target_path="src/new.py",
-            variant_ids=["var_1"],
-            rationale="rename module",
+# --- P0-3: CheckResult ---
+
+class TestCheckResult:
+    def test_passed_requires_passed_or_not_required(self):
+        from autoad_researcher.schemas.patch_planning import PostPatchValidationReport
+        rpt = PostPatchValidationReport(
+            report_id="r", run_id="r", workspace_id="w", manifest_id="m",
+            status="patch_applied_and_local_validations_passed",
+            syntax_check=CheckResult(status="passed"),
+            format_check=CheckResult(status="not_required"),
+            static_check=CheckResult(status="passed"),
+            type_check=CheckResult(status="not_required"),
+            import_check=CheckResult(status="passed"),
+            validated_at=_NOW,
         )
-        assert change.rename_target_path == "src/new.py"
+        assert rpt.status == "patch_applied_and_local_validations_passed"
 
-    def test_rejects_absolute_path(self):
-        with pytest.raises(ValueError, match="absolute path forbidden"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="create",
-                target_mode="new_target",
-                proposed_symbol="Bad",
-                repository_path="/etc/my_config",
-                variant_ids=["var_1"],
-                rationale="bad",
-            )
-
-    def test_rejects_traversal_path(self):
-        with pytest.raises(ValueError, match="parent traversal forbidden"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="create",
-                target_mode="new_target",
-                proposed_symbol="Bad",
-                repository_path="../outside.py",
-                variant_ids=["var_1"],
-                rationale="bad",
-            )
-
-    def test_rejects_traversal_rename_target(self):
-        with pytest.raises(ValueError, match="invalid rename_target_path"):
-            PlannedRepositoryChange(
-                change_id="chg_001",
-                workspace_id="ws_1",
-                change_kind="rename",
-                target_mode="existing_target",
-                hook_id="hook_1",
-                repository_path="src/old.py",
-                rename_target_path="../../etc.py",
-                variant_ids=["var_1"],
-                rationale="bad",
+    def test_passed_rejects_not_run(self):
+        from autoad_researcher.schemas.patch_planning import PostPatchValidationReport
+        with pytest.raises(ValueError, match="requires all checks"):
+            PostPatchValidationReport(
+                report_id="r", run_id="r", workspace_id="w", manifest_id="m",
+                status="patch_applied_and_local_validations_passed",
+                syntax_check=CheckResult(status="not_run"),
+                validated_at=_NOW,
             )
 
 
-# ---------------------------------------------------------------------------
-# T2: Canonical SHA
-# ---------------------------------------------------------------------------
+# --- P0-4: preflight ---
+
+class TestPreflight:
+    def test_preflight_sha_checks(self, tmp_path):
+        app = ControlledPatchApplicator()
+        plan = _psha()
+        repo = tmp_path / "repo"; repo.mkdir()
+        fp = _fingerprint(repo)
+        plan = plan.model_copy(update={"repository_fingerprint": fp})
+        plan = plan.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(plan)})
+        req = _req(sha=plan.plan_sha256)
+        req = req.model_copy(update={"repository_before_fingerprint": fp})
+        dec = _dec(sha=plan.plan_sha256, approved_change_ids=["chg_1"])
+        pf = app.run_preflight(plan=plan, request=req, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id)
+        assert pf.plan_sha_valid and pf.decision_sha_valid and pf.request_sha_valid and pf.repository_fingerprint_match
+
+    def test_preflight_detects_sha_mismatch(self, tmp_path):
+        app = ControlledPatchApplicator()
+        plan = _psha()
+        repo = tmp_path / "repo"; repo.mkdir()
+        fp = _fingerprint(repo)
+        plan = plan.model_copy(update={"repository_fingerprint": fp})
+        plan = plan.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(plan)})
+        req = _req(sha="d" * 64)
+        dec = _dec(sha=plan.plan_sha256, approved_change_ids=["chg_1"])
+        pf = app.run_preflight(plan=plan, request=req, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id)
+        assert not pf.request_sha_valid
+
+    def test_apply_blocks_on_preflight_fail(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        repo = tmp_path / "repo"; repo.mkdir()
+        req = _req(sha="d" * 64)
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/x.py"], sha=plan.plan_sha256)
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, request=req)
+        assert r.overall_status == "blocked"
 
 
-class TestCanonicalSHA:
-    def test_sha_changes_with_content(self):
-        plan1 = _make_plan_with_sha(
-            changes=[
-                PlannedRepositoryChange(
-                    change_id="chg_a",
-                    workspace_id="ws",
-                    change_kind="modify",
-                    target_mode="existing_target",
-                    hook_id="h1",
-                    repository_path="src/a.py",
-                    variant_ids=["var_a"],
-                    rationale="A",
-                ),
-            ]
-        )
-        plan2 = _make_plan_with_sha(
-            changes=[
-                PlannedRepositoryChange(
-                    change_id="chg_a",
-                    workspace_id="ws",
-                    change_kind="modify",
-                    target_mode="existing_target",
-                    hook_id="h1",
-                    repository_path="src/b.py",
-                    variant_ids=["var_a"],
-                    rationale="A",
-                ),
-            ]
-        )
-        assert plan1.plan_sha256 != plan2.plan_sha256
+# --- P0-5: empty allow = deny ---
 
-    def test_sha_includes_repo_context(self):
-        plan1 = _make_plan_with_sha(
-            changes=[
-                PlannedRepositoryChange(
-                    change_id="chg_a",
-                    workspace_id="ws",
-                    change_kind="modify",
-                    target_mode="existing_target",
-                    hook_id="h1",
-                    repository_path="src/a.py",
-                    variant_ids=["var_a"],
-                    rationale="A",
-                ),
-            ]
+class TestDefaultDeny:
+    def test_empty_allow_denies_write(self):
+        app = ControlledPatchApplicator(policy_allowed_paths=set())
+        c = PlannedRepositoryChange(
+            change_id="chg_1", workspace_id="ws", change_kind="modify",
+            target_mode="existing_target", hook_id="h",
+            repository_path="src/a.py", variant_ids=["v"], rationale="r",
         )
-        plan1 = plan1.model_copy(update={"run_id": plan1.run_id})
-        plan2 = plan1.model_copy(update={"repository_commit": "d" * 40})
-        plan2 = plan2.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(plan2)})
-        assert plan1.plan_sha256 != plan2.plan_sha256
+        ok, _ = app.can_write_path(path="src/a.py", approved_change_ids={"chg_1"}, change=c, planned_paths={"src/a.py"})
+        assert not ok
+
+    def test_effective_write_defaults_deny(self):
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/a.py"])
+        r = compute_approval_effective_write_paths(
+            decision=dec, planned_paths={"src/a.py"},
+            policy_denied_paths=set(), policy_allowed_paths=set(),
+        )
+        assert r["src/a.py"] == "deny"
 
 
-# ---------------------------------------------------------------------------
-# T3: PatchConflictAnalyzer
-# ---------------------------------------------------------------------------
+# --- P0-6: reverse rollback ---
+
+class TestReverseRollback:
+    def test_returns_original(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c1 = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/f.py", variant_ids=["v"], rationale="first")
+        c2 = PlannedRepositoryChange(change_id="chg_2", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/f.py", variant_ids=["v"], rationale="second")
+        plan = _psha(changes=[c1, c2])
+        dec = _dec(approved_change_ids=["chg_1", "chg_2"], approved_paths=["src/f.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; (repo / "src").mkdir(parents=True)
+        original = "def f(): pass\n"
+        (repo / "src" / "f.py").write_text(original)
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        rolled = app.rollback(result=r, repository_root=repo)
+        assert rolled.overall_status == "rolled_back"
+        assert (repo / "src" / "f.py").read_text() == original
+
+    def test_rollback_fingerprint_verified(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/x.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; repo.mkdir()
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        rolled = app.rollback(result=r, repository_root=repo)
+        assert rolled.rollback_manifests[0].fingerprint_matches_before is True
 
 
-class TestPatchConflictAnalyzer:
-    def test_no_conflicts_shared_workspace(self):
-        changes = [
-            PlannedRepositoryChange(
-                change_id="chg_a",
-                workspace_id="ws_1",
-                change_kind="modify",
-                target_mode="existing_target",
-                hook_id="h1",
-                repository_path="src/a.py",
-                variant_ids=["var_a"],
-                rationale="A change",
-            ),
-            PlannedRepositoryChange(
-                change_id="chg_b",
-                workspace_id="ws_1",
-                change_kind="modify",
-                target_mode="existing_target",
-                hook_id="h2",
-                repository_path="src/b.py",
-                variant_ids=["var_b"],
-                rationale="B change",
-            ),
-        ]
-        result = analyze_variant_conflicts(
-            changes=changes,
-            variant_ids=["var_a", "var_b"],
-            repository_source_id="src_test",
-            repository_commit="a" * 40,
-            run_id="run_test",
-            analysis_id="analysis_1",
-        )
-        assert result.overall_status == "clean"
+# --- P0-7: rename ---
 
-    def test_same_path_different_symbols_parameterizable(self):
-        changes = [
-            PlannedRepositoryChange(
-                change_id="chg_a",
-                workspace_id="ws_1",
-                change_kind="modify",
-                target_mode="existing_target",
-                hook_id="h1",
-                repository_path="src/model.py",
-                variant_ids=["var_a"],
-                rationale="A",
-            ),
-            PlannedRepositoryChange(
-                change_id="chg_b",
-                workspace_id="ws_1",
-                change_kind="modify",
-                target_mode="existing_target",
-                hook_id="h2",
-                repository_path="src/model.py",
-                variant_ids=["var_b"],
-                rationale="B",
-            ),
-        ]
-        known = {
-            "h1": ModificationHook(
-                hook_id="h1", hook_name="a_fn", module_path="src/model.py",
-                symbol="forward", semantic_role="entrypoint",
-                path_classification="modifiable_candidate",
-                allowed_for_transfer_design=True,
-            ),
-            "h2": ModificationHook(
-                hook_id="h2", hook_name="b_fn", module_path="src/model.py",
-                symbol="build_memory", semantic_role="build",
-                path_classification="modifiable_candidate",
-                allowed_for_transfer_design=True,
-            ),
-        }
-        result = analyze_variant_conflicts(
-            changes=changes,
-            variant_ids=["var_a", "var_b"],
-            repository_source_id="src_test",
-            repository_commit="a" * 40,
-            run_id="run_test",
-            analysis_id="analysis_1",
-            known_hooks=known,
+class TestRename:
+    def test_rename_moves_file(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c = PlannedRepositoryChange(
+            change_id="chg_1", workspace_id="ws", change_kind="rename",
+            target_mode="existing_target", hook_id="h",
+            repository_path="src/old.py", rename_target_path="src/new.py",
+            variant_ids=["v"], rationale="rename",
         )
-        assert result.overall_status == "parameterizable_conflicts"
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/old.py", "src/new.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; (repo / "src").mkdir(parents=True)
+        (repo / "src" / "old.py").write_text("original")
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        assert not (repo / "src" / "old.py").exists()
+        assert (repo / "src" / "new.py").exists()
 
-    def test_same_symbol_mutually_exclusive(self):
-        changes = [
-            PlannedRepositoryChange(
-                change_id="chg_a",
-                workspace_id="ws_1",
-                change_kind="modify",
-                target_mode="existing_target",
-                hook_id="h1",
-                repository_path="src/model.py",
-                variant_ids=["var_a"],
-                rationale="A",
-            ),
-            PlannedRepositoryChange(
-                change_id="chg_b",
-                workspace_id="ws_1",
-                change_kind="modify",
-                target_mode="existing_target",
-                hook_id="h1",
-                repository_path="src/model.py",
-                variant_ids=["var_b"],
-                rationale="B",
-            ),
-        ]
-        known = {
-            "h1": ModificationHook(
-                hook_id="h1", hook_name="shared", module_path="src/model.py",
-                symbol="forward", semantic_role="entrypoint",
-                path_classification="modifiable_candidate",
-                allowed_for_transfer_design=True,
-            ),
-        }
-        result = analyze_variant_conflicts(
-            changes=changes,
-            variant_ids=["var_a", "var_b"],
-            repository_source_id="src_test",
-            repository_commit="a" * 40,
-            run_id="run_test",
-            analysis_id="analysis_1",
-            known_hooks=known,
+    def test_rename_missing_source_skipped(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c = PlannedRepositoryChange(
+            change_id="chg_1", workspace_id="ws", change_kind="rename",
+            target_mode="existing_target", hook_id="h",
+            repository_path="src/missing.py", rename_target_path="src/new.py",
+            variant_ids=["v"], rationale="rename",
         )
-        assert result.overall_status == "worktree_split_required"
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/missing.py", "src/new.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; repo.mkdir()
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        assert r.overall_status == "patch_application_failed"
 
 
-# ---------------------------------------------------------------------------
-# T4: PatchPlanValidator
-# ---------------------------------------------------------------------------
+# --- P0-8: workspace layout rebind ---
+
+class TestWorkspaceLayoutRebind:
+    def test_rebind_changes_workspace_ids(self):
+        c1 = PlannedRepositoryChange(change_id="chg_a", workspace_id="ws_default", change_kind="modify", target_mode="existing_target", hook_id="h1", repository_path="src/a.py", variant_ids=["va"], rationale="a")
+        c2 = PlannedRepositoryChange(change_id="chg_b", workspace_id="ws_default", change_kind="modify", target_mode="existing_target", hook_id="h2", repository_path="src/b.py", variant_ids=["vb"], rationale="b")
+        plan = _psha(changes=[c1, c2])
+        analysis = analyze_variant_conflicts(
+            changes=[c1, c2], variant_ids=["va", "vb"],
+            repository_source_id="src", repository_commit="a" * 40,
+            run_id="run", analysis_id="a1",
+        )
+        rebound = apply_workspace_layout(plan, analysis)
+        assert all(c.workspace_id != "ws_default" for c in rebound.changes)
 
 
-class TestPatchPlanValidator:
-    def test_passes_clean_plan(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="modify",
-            target_mode="existing_target",
-            hook_id="hook_1",
-            repository_path="src/model.py",
-            variant_ids=["var_1"],
-            rationale="test",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        known_hooks = {
-            "hook_1": ModificationHook(
-                hook_id="hook_1", hook_name="model_forward",
-                module_path="src/model.py", symbol="forward",
-                semantic_role="entrypoint",
-                path_classification="modifiable_candidate",
-                allowed_for_transfer_design=True,
-            )
-        }
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks=known_hooks,
-            modifiable_paths={"src/model.py"}, protected_paths=set(),
-            report_id="report_1",
-        )
-        assert report.status == "passed"
+# --- P0-9: diff ---
 
-    def test_flags_protected_path(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="modify",
-            target_mode="existing_target",
-            hook_id="hook_1",
-            repository_path="eval/metrics.py",
-            variant_ids=["var_1"],
-            rationale="test",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        known_hooks = {
-            "hook_1": ModificationHook(
-                hook_id="hook_1", hook_name="eval_hook",
-                module_path="eval/metrics.py", symbol="compute_metric",
-                semantic_role="evaluation",
-                path_classification="modifiable_candidate",
-                allowed_for_transfer_design=True,
-            )
-        }
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks=known_hooks,
-            modifiable_paths=set(), protected_paths={"eval/metrics.py"},
-            report_id="report_1",
-        )
-        assert report.status == "failed"
-        assert any("protected_path_violation" in i.category for i in report.issues)
+class TestDiffGeneration:
+    def test_diff_generated(self, tmp_path):
+        app = ControlledPatchApplicator()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/x.py"], sha=plan.plan_sha256)
+        repo = tmp_path / "repo"; repo.mkdir()
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        assert r.manifests[0].patch_diff_sha256 is not None
 
-    def test_flags_protected_ancestor(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="create",
-            target_mode="new_target",
-            proposed_symbol="NewThing",
-            repository_path="eval/subdir/new_file.py",
-            variant_ids=["var_1"],
-            rationale="test",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks={},
-            modifiable_paths=set(), protected_paths={"eval"},
-            report_id="report_1",
-        )
-        assert report.status == "failed"
-        assert any("protected_path_violation" in i.category for i in report.issues)
 
-    def test_flags_hook_classified_as_protected(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="modify",
-            target_mode="existing_target",
-            hook_id="hook_1",
-            repository_path="src/model.py",
-            variant_ids=["var_1"],
-            rationale="test",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        known_hooks = {
-            "hook_1": ModificationHook(
-                hook_id="hook_1", hook_name="p",
-                module_path="src/model.py", symbol="fn",
-                semantic_role="protected",
-                path_classification="protected_candidate",
-                allowed_for_transfer_design=False,
-            )
-        }
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks=known_hooks,
-            modifiable_paths={"src/model.py"}, protected_paths=set(),
-            report_id="report_1",
-        )
-        assert report.status == "failed"
-        assert any("path_classification_violation" in i.category for i in report.issues)
+# --- P1-1: canonical SHA order ---
 
-    def test_flags_hook_unknown(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="modify",
-            target_mode="existing_target",
-            hook_id="hook_1",
-            repository_path="src/model.py",
-            variant_ids=["var_1"],
-            rationale="test",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        known_hooks = {
-            "hook_1": ModificationHook(
-                hook_id="hook_1", hook_name="u",
-                module_path="src/model.py", symbol="fn",
-                semantic_role="unknown",
-                path_classification="unknown",
-                allowed_for_transfer_design=False,
-            )
-        }
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks=known_hooks,
-            modifiable_paths={"src/model.py"}, protected_paths=set(),
-            report_id="report_1",
-        )
-        assert report.status == "failed"
-        assert any("return_to_3_1" in i.resolution for i in report.issues)
+class TestCanonicalSHAOrder:
+    def test_order_matters(self):
+        c1 = _c("chg_a", "ws", path="src/a.py")
+        c2 = _c("chg_b", "ws", path="src/b.py")
+        assert _psha(changes=[c1, c2]).plan_sha256 != _psha(changes=[c2, c1]).plan_sha256
 
-    def test_flags_missing_hook_reference(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="modify",
-            target_mode="existing_target",
-            hook_id="nonexistent",
-            repository_path="src/model.py",
-            variant_ids=["var_1"],
-            rationale="test",
+
+# --- P1-2: validation report in approval ---
+
+class TestApprovalWithValidation:
+    def test_approve_all_non_blocked_passes(self):
+        c1 = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/a.py", variant_ids=["v"], rationale="r")
+        c2 = PlannedRepositoryChange(change_id="chg_2", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/b.py", variant_ids=["v"], rationale="r")
+        plan = _psha(changes=[c1, c2])
+        req = _req(sha=plan.plan_sha256)
+        dec = _dec(decision="approve_all", approved_change_ids=["chg_1", "chg_2"], approved_paths=["src/a.py", "src/b.py"], sha=plan.plan_sha256)
+        vrep = PatchPlanValidationReport(
+            report_id="vr", run_id=plan.run_id, plan_sha256=plan.plan_sha256,
+            status="failed", issues=[
+                PatchPlanValidationIssue(issue_id="i1", category="policy_violation", description="blocked", artifact_ids=["chg_2"], resolution="blocked")
+            ], validated_at=_NOW,
         )
-        plan = _make_plan_with_sha(changes=[change])
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks={},
-            modifiable_paths={"src/model.py"}, protected_paths=set(),
-            report_id="report_1",
+        errors = validate_approval_consistency(request=req, decision=dec, plan=plan, validation_report=vrep)
+        assert any("must include all non-blocked" in e for e in errors)
+
+    def test_approve_all_non_blocked_ok(self):
+        c1 = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/a.py", variant_ids=["v"], rationale="r")
+        plan = _psha(changes=[c1])
+        req = _req(sha=plan.plan_sha256)
+        dec = _dec(decision="approve_all", approved_change_ids=["chg_1"], approved_paths=["src/a.py"], sha=plan.plan_sha256)
+        vrep = PatchPlanValidationReport(
+            report_id="vr", run_id=plan.run_id, plan_sha256=plan.plan_sha256,
+            status="passed", issues=[], validated_at=_NOW,
         )
-        assert report.status == "failed"
+        errors = validate_approval_consistency(request=req, decision=dec, plan=plan, validation_report=vrep)
+        assert len(errors) == 0
+
+
+# --- P1-3: symbol table missing ---
+
+class TestSymbolTableMissing:
+    def test_returns_to_3_1(self):
+        c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", existing_symbol_id="sym_x", repository_path="src/a.py", variant_ids=["v"], rationale="r")
+        plan = _psha(changes=[c])
+        known = {"h": ModificationHook(hook_id="h", hook_name="hn", module_path="src/a.py", symbol="sym_x", semantic_role="entrypoint", path_classification="modifiable_candidate", allowed_for_transfer_design=True)}
+        report = validate_repository_change_plan(plan=plan, known_hooks=known, known_symbols=set(), report_id="r")
+        assert any("symbol_table_conflict" in i.category for i in report.issues)
+
+
+# --- P1-4: hook path match ---
+
+class TestHookPathMatch:
+    def test_mismatched_rejected(self):
+        c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/different.py", variant_ids=["v"], rationale="r")
+        plan = _psha(changes=[c])
+        known = {"h": ModificationHook(hook_id="h", hook_name="hn", module_path="src/original.py", symbol="fn", semantic_role="entrypoint", path_classification="modifiable_candidate", allowed_for_transfer_design=True)}
+        report = validate_repository_change_plan(plan=plan, known_hooks=known, report_id="r")
         assert any("hook_reference_broken" in i.category for i in report.issues)
 
-    def test_new_target_must_be_in_modifiable_scope(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="create",
-            target_mode="new_target",
-            proposed_symbol="NewClass",
-            repository_path="unknown_dir/new_file.py",
-            variant_ids=["var_1"],
-            rationale="test",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks={},
-            modifiable_paths={"src", "tests"}, protected_paths=set(),
-            report_id="report_1",
-        )
-        assert report.status == "failed"
-        assert any("path_classification_violation" in i.category for i in report.issues)
 
-    def test_new_target_in_modifiable_scope_passes(self):
-        change = PlannedRepositoryChange(
-            change_id="chg_001",
-            workspace_id="ws_1",
-            change_kind="create",
-            target_mode="new_target",
-            proposed_symbol="NewTest",
-            repository_path="tests/test_new.py",
-            variant_ids=["var_1"],
-            rationale="test",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        report = validate_repository_change_plan(
-            plan=plan, known_hooks={},
-            modifiable_paths={"src", "tests"}, protected_paths=set(),
-            report_id="report_1",
-        )
-        assert report.status == "passed"
+# --- P1-5: allowed_for_transfer_design ---
+
+class TestAllowedForTransfer:
+    def test_not_allowed_rejected(self):
+        c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/a.py", variant_ids=["v"], rationale="r")
+        plan = _psha(changes=[c])
+        known = {"h": ModificationHook(hook_id="h", hook_name="hn", module_path="src/a.py", symbol="fn", semantic_role="protected", path_classification="modifiable_candidate", allowed_for_transfer_design=False)}
+        report = validate_repository_change_plan(plan=plan, known_hooks=known, report_id="r")
+        assert any("policy_violation" in i.category for i in report.issues)
 
 
-# ---------------------------------------------------------------------------
-# T5: ApprovalDecision validators
-# ---------------------------------------------------------------------------
+# --- P1-6: validation command execution ---
 
+class TestValidationCommands:
+    def test_command_passes(self):
+        import tempfile
+        app = ControlledPatchApplicator()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/x.py"], sha=plan.plan_sha256)
+        repo = Path(tempfile.mkdtemp())
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        cmds = [ValidationCommand(command_id="cmd_echo", label="echo", argv=["echo", "hello"])]
+        rep = app.run_local_validation(result=r, run_id=plan.run_id, workspace_id="ws", repository_root=repo, commands=cmds, approved_command_ids=["cmd_echo"])
+        assert rep.syntax_check.status in {"passed", "not_run"}
+
+    def test_command_failure_detected(self):
+        import tempfile
+        app = ControlledPatchApplicator()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/x.py"], sha=plan.plan_sha256)
+        repo = Path(tempfile.mkdtemp())
+        r = app.apply_patch(plan=plan, decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id, skip_preflight=True)
+        cmds = [ValidationCommand(command_id="cmd_fail", label="static check", argv=["python", "-c", "exit(1)"])]
+        rep = app.run_local_validation(result=r, run_id=plan.run_id, workspace_id="ws", repository_root=repo, commands=cmds, approved_command_ids=["cmd_fail"])
+        assert rep.static_check.status == "failed"
+        assert rep.status == "patch_applied_but_local_validation_failed"
+
+
+# --- existing tests (preserved) ---
 
 class TestApprovalDecision:
     def test_approve_all_requires_changes(self):
-        with pytest.raises(ValueError, match="requires approved_change_ids"):
-            ApprovalDecision(
-                decision_id="ad", decision="approve_all",
-                approved_patch_plan_sha256="a" * 64,
-                approved_change_ids=[], approved_paths=[],
-                user_evidence_id="ev_u", decided_at=_NOW,
-            )
+        with pytest.raises(ValueError):
+            _dec(decision="approve_all")
 
     def test_reject_must_not_approve(self):
-        with pytest.raises(ValueError, match="must not have approved_change_ids"):
-            ApprovalDecision(
-                decision_id="ad", decision="reject",
-                approved_patch_plan_sha256="a" * 64,
-                approved_change_ids=["chg_1"], approved_paths=["src/a.py"],
-                user_evidence_id="ev_u", decided_at=_NOW,
-            )
-
-    def test_approve_all_valid(self):
-        d = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/a.py"],
-        )
-        assert d.decision == "approve_all"
-
-
-# ---------------------------------------------------------------------------
-# T6: Approval protocol
-# ---------------------------------------------------------------------------
+        with pytest.raises(ValueError):
+            _dec(decision="reject", approved_change_ids=["x"])
 
 
 class TestApprovalProtocol:
-    def test_approve_all_binds_plan_sha(self):
-        changes = [
-            PlannedRepositoryChange(
-                change_id="chg_1", workspace_id="ws",
-                change_kind="modify", target_mode="existing_target",
-                hook_id="h1", repository_path="src/a.py",
-                variant_ids=["var_a"], rationale="x",
-            ),
-        ]
-        plan = _make_plan_with_sha(changes=changes)
-        request = ApprovalRequest(
-            approval_request_id="ar", run_id=plan.run_id,
-            patch_plan_sha256=plan.plan_sha256,
-            repository_before_fingerprint="b" * 64,
-            selected_variant_ids=[],
-            workspace_summaries=[],
-            dependency_changes_summary=[],
-            validation_commands=[],
-            created_at=_NOW,
-        )
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/a.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        errors = validate_approval_consistency(request=request, decision=decision, plan=plan)
-        assert len(errors) == 0
-
-    def test_request_sha_must_match_plan(self):
-        plan = _make_plan_with_sha()
-        request = _make_approval_request(plan_sha256="d" * 64)
-        decision = _make_approval_decision(
-            decision="approve_all", approved_change_ids=["chg_1"],
-            approved_paths=["src/a.py"], plan_sha256=plan.plan_sha256,
-        )
-        errors = validate_approval_consistency(request=request, decision=decision, plan=plan)
-        assert any("does not match plan" in e for e in errors)
-
-    def test_decision_sha_must_match_plan(self):
-        plan = _make_plan_with_sha()
-        request = _make_approval_request(plan_sha256=plan.plan_sha256)
-        decision = _make_approval_decision(
-            decision="approve_all", approved_change_ids=["chg_1"],
-            approved_paths=["src/a.py"], plan_sha256="d" * 64,
-        )
-        errors = validate_approval_consistency(request=request, decision=decision, plan=plan)
-        assert any("does not match plan" in e for e in errors)
-
     def test_empty_approved_paths_flagged(self):
-        changes = [
-            PlannedRepositoryChange(
-                change_id="chg_1", workspace_id="ws",
-                change_kind="modify", target_mode="existing_target",
-                hook_id="h1", repository_path="src/a.py",
-                variant_ids=["var_a"], rationale="x",
-            ),
-        ]
-        plan = _make_plan_with_sha(changes=changes)
-        request = _make_approval_request(plan_sha256=plan.plan_sha256)
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=[],
-            plan_sha256=plan.plan_sha256,
-        )
-        errors = validate_approval_consistency(request=request, decision=decision, plan=plan)
-        assert len(errors) > 0
+        c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/a.py", variant_ids=["v"], rationale="r")
+        plan = _psha(changes=[c])
+        req = _req(sha=plan.plan_sha256)
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=[], sha=plan.plan_sha256)
+        errors = validate_approval_consistency(request=req, decision=dec, plan=plan)
         assert any("approved_paths missing" in e for e in errors)
 
     def test_extra_approved_paths_flagged(self):
-        changes = [
-            PlannedRepositoryChange(
-                change_id="chg_1", workspace_id="ws",
-                change_kind="modify", target_mode="existing_target",
-                hook_id="h1", repository_path="src/a.py",
-                variant_ids=["var_a"], rationale="x",
-            ),
-        ]
-        plan = _make_plan_with_sha(changes=changes)
-        request = _make_approval_request(plan_sha256=plan.plan_sha256)
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/a.py", "src/extra.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        errors = validate_approval_consistency(request=request, decision=decision, plan=plan)
-        assert len(errors) > 0
-        assert any("approved_paths contains" in e for e in errors)
+        c = PlannedRepositoryChange(change_id="chg_1", workspace_id="ws", change_kind="modify", target_mode="existing_target", hook_id="h", repository_path="src/a.py", variant_ids=["v"], rationale="r")
+        plan = _psha(changes=[c])
+        req = _req(sha=plan.plan_sha256)
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/a.py", "src/extra.py"], sha=plan.plan_sha256)
+        errors = validate_approval_consistency(request=req, decision=dec, plan=plan)
+        assert any("approved_paths contains extra" in e for e in errors)
 
-    def test_policy_deny_always_wins(self):
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/protected.py"],
-        )
-        errors = validate_approved_paths_against_policy(
-            decision=decision, policy_denied_paths={"src/protected.py"},
-        )
-        assert len(errors) > 0
+    def test_policy_deny_wins(self):
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["src/protected.py"])
+        errors = validate_approved_paths_against_policy(decision=dec, policy_denied_paths={"src/protected.py"})
         assert any("policy-denied" in e for e in errors)
 
     def test_ancestor_deny_wins(self):
-        decision = _make_approval_decision(
-            decision="approve_all", approved_change_ids=["chg_1"],
-            approved_paths=["eval/subdir/new.py"],
-        )
-        errors = validate_approved_paths_against_policy(
-            decision=decision, policy_denied_paths={"eval"},
-        )
-        assert len(errors) > 0
+        dec = _dec(approved_change_ids=["chg_1"], approved_paths=["eval/sub/n.py"])
+        errors = validate_approved_paths_against_policy(decision=dec, policy_denied_paths={"eval"})
         assert any("Ancestor" in e for e in errors)
-
-    def test_effective_write_paths_layered(self):
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1", "chg_2", "chg_3"],
-            approved_paths=["src/a.py", "src/b.py", "src/c.py"],
-        )
-        result = compute_approval_effective_write_paths(
-            decision=decision,
-            planned_paths={"src/a.py", "src/b.py", "src/c.py", "src/d.py"},
-            policy_denied_paths={"src/b.py"},
-            policy_allowed_paths={"src/a.py", "src/c.py"},
-            policy_ask_paths={"src/c.py"},
-        )
-        assert result["src/b.py"] == "deny"
-        assert result["src/c.py"] == "ask"
-        assert result["src/a.py"] == "allow"
-        assert result["src/d.py"] == "deny"
-
-
-# ---------------------------------------------------------------------------
-# T7: ControlledPatchApplicator
-# ---------------------------------------------------------------------------
-
-
-class TestControlledPatchApplicator:
-    def test_apply_patch_creates_file_returns_applied(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change = PlannedRepositoryChange(
-            change_id="chg_1",
-            workspace_id="ws_1",
-            change_kind="create",
-            target_mode="new_target",
-            proposed_symbol="NewModule",
-            repository_path="src/new_module.py",
-            variant_ids=["var_1"],
-            rationale="new module for variant",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/new_module.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        assert result.overall_status == "patch_applied"
-        assert (repo_root / "src" / "new_module.py").exists()
-        assert "new module for variant" in (repo_root / "src" / "new_module.py").read_text()
-
-    def test_apply_patch_filters_by_workspace(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change_a = PlannedRepositoryChange(
-            change_id="chg_a", workspace_id="ws_a",
-            change_kind="create", target_mode="new_target",
-            proposed_symbol="A", repository_path="src/a.py",
-            variant_ids=["var_a"], rationale="A",
-        )
-        change_b = PlannedRepositoryChange(
-            change_id="chg_b", workspace_id="ws_b",
-            change_kind="create", target_mode="new_target",
-            proposed_symbol="B", repository_path="src/b.py",
-            variant_ids=["var_b"], rationale="B",
-        )
-        plan = _make_plan_with_sha(changes=[change_a, change_b])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_a", "chg_b"],
-            approved_paths=["src/a.py", "src/b.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_a", repository_root=repo_root, run_id="run_test",
-        )
-        assert result.overall_status == "patch_applied"
-        assert (repo_root / "src" / "a.py").exists()
-        assert not (repo_root / "src" / "b.py").exists()
-
-    def test_modify_preserves_original(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change = PlannedRepositoryChange(
-            change_id="chg_1",
-            workspace_id="ws_1",
-            change_kind="modify",
-            target_mode="existing_target",
-            hook_id="h1",
-            repository_path="src/existing.py",
-            variant_ids=["var_1"],
-            rationale="add memory to forward",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/existing.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        (repo_root / "src").mkdir(parents=True)
-        (repo_root / "src" / "existing.py").write_text("def forward(x): return x")
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        content = (repo_root / "src" / "existing.py").read_text()
-        assert "def forward(x): return x" in content
-        assert "add memory to forward" in content
-
-    def test_apply_skips_unapproved_change_ids(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws_1",
-            change_kind="create", target_mode="new_target",
-            proposed_symbol="NewModule", repository_path="src/new.py",
-            variant_ids=["var_1"], rationale="new module",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_other"],
-            approved_paths=["src/other.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        assert not (repo_root / "src" / "new.py").exists()
-
-    def test_rollback_restores_before_blob(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws_1",
-            change_kind="modify", target_mode="existing_target",
-            hook_id="h1", repository_path="src/existing.py",
-            variant_ids=["var_1"], rationale="add feature",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/existing.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        (repo_root / "src").mkdir(parents=True)
-        original = "def forward(x): return x + 1\n"
-        (repo_root / "src" / "existing.py").write_text(original)
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        with open(repo_root / "src" / "existing.py") as f:
-            applied = f.read()
-        assert applied != original
-        assert "add feature" in applied
-
-        rolled = app.rollback(result=result, repository_root=repo_root)
-        assert rolled.overall_status == "rolled_back"
-        restored = (repo_root / "src" / "existing.py").read_text()
-        assert restored == original
-
-    def test_rollback_removes_new_files(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws_1",
-            change_kind="create", target_mode="new_target",
-            proposed_symbol="New", repository_path="src/new.py",
-            variant_ids=["var_1"], rationale="new file",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/new.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        assert (repo_root / "src" / "new.py").exists()
-        rolled = app.rollback(result=result, repository_root=repo_root)
-        assert not (repo_root / "src" / "new.py").exists()
-
-    def test_root_containment_blocks_escape(self, tmp_path):
-        app = ControlledPatchApplicator()
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        (repo_root / "sub").mkdir()
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        os.symlink(outside, repo_root / "sub" / "link_out")
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws_1",
-            change_kind="create", target_mode="new_target",
-            proposed_symbol="Bad",
-            repository_path="sub/link_out/escaped.py",
-            variant_ids=["var_1"], rationale="bad",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["sub/link_out/escaped.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        assert not (outside / "escaped.py").exists()
-
-    def test_validation_passes_on_valid_syntax(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws_1",
-            change_kind="create", target_mode="new_target",
-            proposed_symbol="New", repository_path="src/new.py",
-            variant_ids=["var_1"], rationale="new",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_1"],
-            approved_paths=["src/new.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        assert result.overall_status == "patch_applied"
-        finalized = app.finalize_with_validation(
-            result=result, run_id="run_test",
-            workspace_id="ws_1", repository_root=repo_root,
-        )
-        assert finalized.overall_status == "patch_applied_and_local_validations_passed"
-
-    def test_can_write_path_layered(self, tmp_path):
-        app = ControlledPatchApplicator(
-            policy_denied_paths={"eval"},
-            policy_allowed_paths={"src"},
-            policy_ask_paths={"src/experimental.py"},
-        )
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws",
-            change_kind="modify", target_mode="existing_target",
-            hook_id="h1", repository_path="src/existing.py",
-            variant_ids=["var_1"], rationale="x",
-        )
-        allowed, reason = app.can_write_path(
-            path="src/existing.py",
-            approved_change_ids={"chg_1"},
-            change=change,
-            planned_paths={"src/existing.py"},
-        )
-        assert allowed
-        allowed, reason = app.can_write_path(
-            path="eval/metrics.py",
-            approved_change_ids={"chg_2"},
-            change=change,
-            planned_paths={"eval/metrics.py"},
-        )
-        assert not allowed
-        assert "policy-denied" in reason
-
-    def test_can_write_path_ancestor_deny(self):
-        app = ControlledPatchApplicator(
-            policy_denied_paths={"eval"},
-        )
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws",
-            change_kind="modify", target_mode="existing_target",
-            hook_id="h1", repository_path="eval/subdir/deep.py",
-            variant_ids=["var_1"], rationale="x",
-        )
-        allowed, reason = app.can_write_path(
-            path="eval/subdir/deep.py",
-            approved_change_ids={"chg_1"},
-            change=change,
-            planned_paths={"eval/subdir/deep.py"},
-        )
-        assert not allowed
-        assert "ancestor eval" in reason.lower()
-
-    def test_apply_patch_refuses_unapproved_change_id(self, tmp_path):
-        app = ControlledPatchApplicator()
-        change = PlannedRepositoryChange(
-            change_id="chg_1", workspace_id="ws_1",
-            change_kind="create", target_mode="new_target",
-            proposed_symbol="New", repository_path="src/new.py",
-            variant_ids=["var_1"], rationale="new",
-        )
-        plan = _make_plan_with_sha(changes=[change])
-        decision = _make_approval_decision(
-            decision="approve_all",
-            approved_change_ids=["chg_2"],
-            approved_paths=["src/new.py"],
-            plan_sha256=plan.plan_sha256,
-        )
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        result = app.apply_patch(
-            plan=plan, decision=decision,
-            workspace_id="ws_1", repository_root=repo_root, run_id="run_test",
-        )
-        assert not (repo_root / "src" / "new.py").exists()

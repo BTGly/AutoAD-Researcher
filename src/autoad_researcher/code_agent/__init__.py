@@ -23,7 +23,7 @@ from autoad_researcher.code_agent.approval import (
     validate_approved_paths_against_policy,
     validate_approval_consistency,
 )
-from autoad_researcher.code_agent.conflict_analyzer import analyze_variant_conflicts
+from autoad_researcher.code_agent.conflict_analyzer import analyze_variant_conflicts, apply_workspace_layout
 from autoad_researcher.code_agent.patch_applicator import ControlledPatchApplicator
 from autoad_researcher.code_agent.patch_planner import PatchPlannerAgent
 from autoad_researcher.code_agent.planner_validator import validate_repository_change_plan
@@ -32,6 +32,7 @@ __all__ = [
     "ControlledPatchApplicator",
     "PatchPlannerAgent",
     "analyze_variant_conflicts",
+    "apply_workspace_layout",
     "compute_approval_effective_write_paths",
     "validate_approved_paths_against_policy",
     "validate_approval_consistency",
