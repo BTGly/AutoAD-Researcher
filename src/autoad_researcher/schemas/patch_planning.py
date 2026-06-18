@@ -2,47 +2,31 @@
 
 Models cover:
   - PlannedRepositoryChange (change_kind + target_mode)
-  - SymbolContractDelta
-  - RepositoryChangePlan
-  - VariantWorkspacePlan
-  - PatchConflictAnalysis
-  - PatchPlanValidationReport
-  - NarrowRepositoryReadRequest / RepositoryScopeExpansionRequired
-  - ApprovalRequest / ApprovalDecision / WorkspaceApprovalSummary
-  - PatchApplicationManifest / ChangedFileEntry
-  - PostPatchValidationReport
+  - RepositoryChangePlan (canonical plan with complete SHA)
+  - PatchConflictAnalysis (path + symbol level)
+  - ApprovalRequest / ApprovalDecision with structured ValidationCommand
+  - ChangedFileEntry with before_blob for rollback
+  - PostPatchValidationReport with consistency validators
   - PatchRunnerHandoff
-  - RollbackManifest / PatchExecutionResult
 
 Schema owner: Step 3.6 Patch Planner + Step 3.7 Approval & Controlled Application.
 Consumer: Step 3.8 Runner Intake (handoff).
 """
 
+import json
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.paper_intelligence.ids import IdentifierPattern, Sha256Pattern, validate_workspace_path
 from autoad_researcher.schemas.transfer_design import InterfaceContractDelta
 
-# ---------------------------------------------------------------------------
-# Change target model — separate from ModificationHook
-# ---------------------------------------------------------------------------
-
 _CHANGE_KIND_VALUES = Literal[
-    "create",
-    "modify",
-    "delete",
-    "rename",
-    "configuration_only",
-    "test_only",
+    "create", "modify", "delete", "rename", "configuration_only", "test_only",
 ]
 
-_TARGET_MODE_VALUES = Literal[
-    "existing_target",
-    "new_target",
-]
+_TARGET_MODE_VALUES = Literal["existing_target", "new_target"]
 
 
 class SymbolContractDelta(BaseModel):
@@ -99,11 +83,6 @@ class PlannedTestChange(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# PlannedRepositoryChange — core 3.6 model
-# ---------------------------------------------------------------------------
-
-
 class PlannedRepositoryChange(BaseModel):
     """One planned change to repository files/symbols.
 
@@ -119,11 +98,8 @@ class PlannedRepositoryChange(BaseModel):
     change_kind: _CHANGE_KIND_VALUES
     target_mode: _TARGET_MODE_VALUES
 
-    # existing_target: at least one must be set
     hook_id: str | None = None
     existing_symbol_id: str | None = None
-
-    # new_target: proposed_symbol is required
     proposed_symbol: str | None = None
 
     repository_path: str
@@ -136,14 +112,15 @@ class PlannedRepositoryChange(BaseModel):
 
     risk_category: Literal["low", "medium", "high"] = "medium"
 
-    rollback_strategy: Literal[
-        "git_checkout",
-        "remove_file",
-        "revert_config",
-        "remove_directory",
-        "noop",
-    ] = "git_checkout"
-    rollback_file_paths: list[str] = Field(default_factory=list)
+    rename_target_path: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_repository_path(self):
+        try:
+            validate_workspace_path(self.repository_path)
+        except ValueError as exc:
+            raise ValueError(f"change {self.change_id}: invalid repository_path: {exc}")
+        return self
 
     @model_validator(mode="after")
     def _validate_target_mode_and_hook(self):
@@ -177,17 +154,22 @@ class PlannedRepositoryChange(BaseModel):
             raise ValueError(f"change {self.change_id}: {kind} requires target_mode=existing_target")
         if kind == "modify" and tm != "existing_target":
             raise ValueError(f"change {self.change_id}: modify requires target_mode=existing_target")
+        if kind == "rename" and not self.rename_target_path:
+            raise ValueError(f"change {self.change_id}: rename requires rename_target_path")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_rename_target_path(self):
+        if self.rename_target_path:
+            try:
+                validate_workspace_path(self.rename_target_path)
+            except ValueError as exc:
+                raise ValueError(f"change {self.change_id}: invalid rename_target_path: {exc}")
         return self
 
 
-# ---------------------------------------------------------------------------
-# VariantWorkspacePlan
-# ---------------------------------------------------------------------------
-
 _ISOLATION_MODE_VALUES = Literal[
-    "shared_workspace",
-    "configuration_switched",
-    "separate_worktree",
+    "shared_workspace", "configuration_switched", "separate_worktree",
 ]
 
 
@@ -211,15 +193,8 @@ class VariantWorkspacePlan(BaseModel):
     conflict_group_ids: list[str] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# PatchConflictAnalysis
-# ---------------------------------------------------------------------------
-
 _CONFLICT_KIND_VALUES = Literal[
-    "no_conflict",
-    "parameterizable",
-    "mutually_exclusive",
-    "path_overlap",
+    "no_conflict", "parameterizable", "mutually_exclusive", "path_overlap",
 ]
 
 
@@ -230,6 +205,7 @@ class PatchConflictGroup(BaseModel):
 
     conflict_group_id: str = Field(pattern=IdentifierPattern)
     target_path: str = Field(min_length=1)
+    target_symbols: list[str] = Field(default_factory=list)
     competing_change_ids: list[str] = Field(default_factory=list)
     competing_variant_ids: list[str] = Field(default_factory=list)
     kind: _CONFLICT_KIND_VALUES
@@ -248,11 +224,6 @@ class PatchConflictAnalysis(BaseModel):
     conflict_groups: list[PatchConflictGroup] = Field(default_factory=list)
     overall_status: Literal["clean", "parameterizable_conflicts", "worktree_split_required", "incompatible"]
     recommendation: str = Field(min_length=1)
-
-
-# ---------------------------------------------------------------------------
-# RepositoryChangePlan
-# ---------------------------------------------------------------------------
 
 
 class RepositoryChangePlan(BaseModel):
@@ -282,9 +253,32 @@ class RepositoryChangePlan(BaseModel):
     plan_sha256: str = Field(pattern=Sha256Pattern)
 
 
-# ---------------------------------------------------------------------------
-# PatchPlanValidationReport
-# ---------------------------------------------------------------------------
+def compute_canonical_plan_sha256(plan: "RepositoryChangePlan") -> str:
+    """Compute the canonical SHA of a RepositoryChangePlan from all content.
+
+    Excludes only the plan_sha256 field itself. Includes repo context,
+    every change field, dependencies, configs, tests, and workspace plans.
+    """
+    data = {}
+    for field_name in plan.__class__.model_fields:
+        if field_name == "plan_sha256":
+            continue
+        value = getattr(plan, field_name, None)
+        data[field_name] = _serializable(value)
+    payload = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+    import hashlib
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _serializable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        obj = value.model_dump(mode="json", exclude_none=True)
+        return {k: _serializable(v) for k, v in sorted(obj.items())}
+    if isinstance(value, list):
+        return [_serializable(v) for v in sorted(value, key=lambda x: str(x))]
+    if isinstance(value, dict):
+        return {k: _serializable(v) for k, v in sorted(value.items())}
+    return value
 
 
 class PatchPlanValidationIssue(BaseModel):
@@ -294,14 +288,10 @@ class PatchPlanValidationIssue(BaseModel):
 
     issue_id: str = Field(pattern=IdentifierPattern)
     category: Literal[
-        "schema_violation",
-        "path_classification_violation",
-        "hook_reference_broken",
-        "symbol_table_conflict",
-        "variant_reference_missing",
-        "protected_path_violation",
-        "evidence_missing",
-        "policy_violation",
+        "schema_violation", "path_classification_violation",
+        "hook_reference_broken", "symbol_table_conflict",
+        "variant_reference_missing", "protected_path_violation",
+        "evidence_missing", "policy_violation",
     ]
     description: str = Field(min_length=1)
     artifact_ids: list[str] = Field(default_factory=list)
@@ -319,11 +309,6 @@ class PatchPlanValidationReport(BaseModel):
     status: Literal["passed", "failed"]
     issues: list[PatchPlanValidationIssue] = Field(default_factory=list)
     validated_at: datetime
-
-
-# ---------------------------------------------------------------------------
-# NarrowRepositoryReadRequest / RepositoryScopeExpansionRequired
-# ---------------------------------------------------------------------------
 
 
 class SymbolQuery(BaseModel):
@@ -379,11 +364,6 @@ class RepositoryScopeExpansionRequired(BaseModel):
     completion_criteria: list[str] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Approval protocol
-# ---------------------------------------------------------------------------
-
-
 class WorkspaceApprovalSummary(BaseModel):
     """Per-workspace summary for approval review."""
 
@@ -395,6 +375,19 @@ class WorkspaceApprovalSummary(BaseModel):
     affected_paths: list[str] = Field(default_factory=list)
     dependency_change_ids: list[str] = Field(default_factory=list)
     risk_ids: list[str] = Field(default_factory=list)
+
+
+class ValidationCommand(BaseModel):
+    """A structured validation command with an identifiable ID."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: str = Field(pattern=IdentifierPattern)
+    label: str = Field(min_length=1)
+    argv: list[str] = Field(min_length=1)
+    expected_exit_code: int = 0
+    timeout_seconds: int = 120
+    working_directory: str | None = None
 
 
 class ApprovalRequest(BaseModel):
@@ -414,17 +407,14 @@ class ApprovalRequest(BaseModel):
     workspace_summaries: list[WorkspaceApprovalSummary] = Field(default_factory=list)
 
     dependency_changes_summary: list[PlannedDependencyChange] = Field(default_factory=list)
-    validation_commands: list[str] = Field(default_factory=list)
+    validation_commands: list[ValidationCommand] = Field(default_factory=list)
     rollback_plan_sha256: str | None = None
 
     created_at: datetime
 
 
 _APPROVAL_DECISION_VALUES = Literal[
-    "approve_all",
-    "approve_partial",
-    "revise",
-    "reject",
+    "approve_all", "approve_partial", "revise", "reject",
 ]
 
 
@@ -468,11 +458,6 @@ class ApprovalDecision(BaseModel):
         return self
 
 
-# ---------------------------------------------------------------------------
-# Patch application artifacts
-# ---------------------------------------------------------------------------
-
-
 class ChangedFileEntry(BaseModel):
     """Record of one changed file during patch application."""
 
@@ -483,6 +468,7 @@ class ChangedFileEntry(BaseModel):
     change_kind: _CHANGE_KIND_VALUES
     before_sha256: str | None = None
     after_sha256: str | None = None
+    before_blob: str | None = None
     change_ids: list[str] = Field(default_factory=list)
     operation: Literal["written", "created", "deleted", "renamed"]
     applied_at: datetime
@@ -551,6 +537,17 @@ class PostPatchValidationReport(BaseModel):
     issues: list[str] = Field(default_factory=list)
     validated_at: datetime
 
+    @model_validator(mode="after")
+    def _status_consistent_with_checks(self):
+        if self.status == "patch_applied_and_local_validations_passed":
+            if not (self.syntax_check_passed and self.format_check_passed
+                    and self.static_check_passed and self.type_check_passed
+                    and self.import_check_passed):
+                raise ValueError(
+                    "status=passed requires all checks to be True"
+                )
+        return self
+
 
 class PatchExecutionResult(BaseModel):
     """Aggregate result of patch application + validation."""
@@ -561,6 +558,7 @@ class PatchExecutionResult(BaseModel):
     run_id: str = Field(pattern=IdentifierPattern)
 
     overall_status: Literal[
+        "patch_applied",
         "patch_applied_and_local_validations_passed",
         "patch_applied_but_local_validation_failed",
         "patch_application_failed",
@@ -582,10 +580,28 @@ class PatchExecutionResult(BaseModel):
         "blocked",
     ]
 
+    @model_validator(mode="after")
+    def _intake_requires_validation_passed(self):
+        if self.next_stage == "eligible_for_runner_intake":
+            if self.overall_status != "patch_applied_and_local_validations_passed":
+                raise ValueError(
+                    "eligible_for_runner_intake requires "
+                    "overall_status=patch_applied_and_local_validations_passed"
+                )
+            if not self.validation_reports:
+                raise ValueError(
+                    "eligible_for_runner_intake requires at least one validation_report"
+                )
+        return self
 
-# ---------------------------------------------------------------------------
-# Runner handoff
-# ---------------------------------------------------------------------------
+    @model_validator(mode="after")
+    def _rolled_back_or_failed_must_not_go_to_intake(self):
+        if self.overall_status in {"patch_application_failed", "rolled_back", "replan_required"}:
+            if self.next_stage == "eligible_for_runner_intake":
+                raise ValueError(
+                    f"overall_status={self.overall_status} is incompatible with eligible_for_runner_intake"
+                )
+        return self
 
 
 class PatchRunnerHandoff(BaseModel):

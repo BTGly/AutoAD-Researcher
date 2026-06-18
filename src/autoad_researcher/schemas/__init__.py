@@ -79,8 +79,10 @@ from autoad_researcher.schemas.patch_planning import (
     RollbackManifest,
     SymbolContractDelta,
     SymbolQuery,
+    ValidationCommand,
     VariantWorkspacePlan,
     WorkspaceApprovalSummary,
+    compute_canonical_plan_sha256,
 )
 from autoad_researcher.schemas.readers import (
     EvidenceReference,
@@ -208,8 +210,11 @@ __all__ = [
     "RollbackManifest",
     "SymbolContractDelta",
     "SymbolQuery",
+    "ValidationCommand",
     "VariantWorkspacePlan",
     "WorkspaceApprovalSummary",
+    # Patch planning — functions
+    "compute_canonical_plan_sha256",
     # Readers
     "EvidenceReference",
     "KnowledgeState",

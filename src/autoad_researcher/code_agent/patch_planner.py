@@ -5,22 +5,22 @@ with file-level change descriptions. Does NOT modify the repository.
 """
 
 import hashlib
-import json
 from pathlib import Path
 
 from autoad_researcher.schemas.baseline_architecture import ModificationHook
 from autoad_researcher.schemas.patch_planning import (
+    PatchPlanValidationIssue,
     PlannedConfigurationChange,
     PlannedDependencyChange,
     PlannedRepositoryChange,
     PlannedTestChange,
     RepositoryChangePlan,
     SymbolContractDelta,
+    compute_canonical_plan_sha256,
 )
 from autoad_researcher.schemas.transfer_design import (
     HookBinding,
     ImplementationVariant,
-    InterfaceContractDelta,
 )
 
 
@@ -29,6 +29,7 @@ class PatchPlannerAgent:
 
     Uses ModificationHook references from baseline architecture
     and ImplementationVariant hook_bindings as the mapping source.
+    Collects unknown hook references as plan planning issues.
     Does not execute any code or modify files.
     """
 
@@ -46,12 +47,13 @@ class PatchPlannerAgent:
         idea_id: str,
         selected_variants: list[ImplementationVariant],
         known_hooks: dict[str, ModificationHook],
-    ) -> RepositoryChangePlan:
-        """Produce a RepositoryChangePlan from selected variants."""
+    ) -> tuple[RepositoryChangePlan, list[PatchPlanValidationIssue]]:
+        """Produce a RepositoryChangePlan and any planning issues."""
         changes: list[PlannedRepositoryChange] = []
         dep_changes: list[PlannedDependencyChange] = []
         config_changes: list[PlannedConfigurationChange] = []
         test_changes: list[PlannedTestChange] = []
+        planning_issues: list[PatchPlanValidationIssue] = []
         variant_ids: list[str] = []
         seen_paths: dict[str, set[str]] = {}
 
@@ -63,6 +65,18 @@ class PatchPlannerAgent:
             for bi, binding in enumerate(variant.hook_bindings):
                 hook = known_hooks.get(binding.hook_id)
                 if hook is None:
+                    planning_issues.append(
+                        PatchPlanValidationIssue(
+                            issue_id=f"planner_missing_hook_{vi:03d}_{bi:03d}",
+                            category="hook_reference_broken",
+                            description=(
+                                f"Hook {binding.hook_id} for variant "
+                                f"{variant.variant_label} not found in known_hooks"
+                            ),
+                            artifact_ids=[variant.variant_id, binding.hook_id],
+                            resolution="return_to_3_1",
+                        )
+                    )
                     continue
 
                 path = hook.module_path
@@ -71,7 +85,7 @@ class PatchPlannerAgent:
                     continue
                 seen_paths.setdefault(path, set()).add(variant.variant_id)
 
-                change_id = f"chg_{_safe_hash(run_id, variant.variant_id, hook.hook_id, bi)}"
+                change_id = f"chg_{_safe_hash(run_id, variant.variant_id, hook.hook_id, str(bi))}"
 
                 change = PlannedRepositoryChange(
                     change_id=change_id,
@@ -88,7 +102,7 @@ class PatchPlannerAgent:
                         current_responsibility=hook.semantic_role,
                         planned_responsibility=f"Augmented: {binding.role}",
                     ),
-                    interface_delta=_build_interface_delta(variant),
+                    interface_delta=_primary_interface_delta(variant),
                     risk_category=variant.risk_level,
                 )
                 changes.append(change)
@@ -116,31 +130,26 @@ class PatchPlannerAgent:
             dependency_changes=dep_changes,
             configuration_changes=config_changes,
             test_changes=test_changes,
-            plan_sha256=_compute_plan_sha256(changes, dep_changes),
+            plan_sha256="",
         )
-        return plan
+        plan = plan.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(plan)})
+        return plan, planning_issues
 
 
-def _build_interface_delta(variant: ImplementationVariant) -> InterfaceContractDelta | None:
-    if variant.interface_deltas:
+def _primary_interface_delta(variant: ImplementationVariant):
+    if not variant.interface_deltas:
+        return None
+    if len(variant.interface_deltas) == 1:
         return variant.interface_deltas[0]
-    return None
+    merged_input = []
+    merged_output = []
+    for d in variant.interface_deltas:
+        merged_input.extend(d.input_deltas)
+        merged_output.extend(d.output_deltas)
+    from autoad_researcher.schemas.transfer_design import InterfaceContractDelta
+    return InterfaceContractDelta(input_deltas=merged_input, output_deltas=merged_output)
 
 
 def _safe_hash(*parts: str) -> str:
     data = "|".join(parts).encode("utf-8")
     return hashlib.sha256(data).hexdigest()[:12]
-
-
-def _compute_plan_sha256(
-    changes: list[PlannedRepositoryChange],
-    deps: list[PlannedDependencyChange],
-) -> str:
-    payload = {
-        "changes": sorted(
-            [(c.change_id, c.repository_path, c.change_kind) for c in changes]
-        ),
-        "deps": sorted(d.dependency_change_id for d in deps),
-    }
-    data = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    return hashlib.sha256(data).hexdigest()
