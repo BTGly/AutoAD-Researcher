@@ -11,3 +11,4 @@
 | 2026-06-15 | [2026-06-15.md](2026-06-15.md) | Spike 01、验证门禁、AgentHarness ABC、Schema 迁移、ArtifactStore、EventStore、CI 修复、日志结构重构 |
 | 2026-06-17 | [2026-06-17.md](2026-06-17.md) | 3.0C-2 封板、3.0C-3 Commit 1/2A/2B（lock contracts, lockfile generation）、Step 3.2 Paper Intelligence、3.4 v1.3、3.5 v1.3、3.6–3.7 Patch Planning & Approval（schemas + planner + validator + conflict analyzer + approval + controlled applicator）|
 | 2026-06-16 | [2026-06-16.md](2026-06-16.md) | Steps 2.5-2.15（全地基阶段：CLI/Pipeline/Intake/Reader/Clarifier/Idea/Router/DirectIdeaBackend）+ 3.0A baseline provenance + 3.0B benchmark lock + 3.0C-1 evidence contracts |
+| 2026-06-18 | [2026-06-18.md](2026-06-18.md) | 3.8/3.9 计划 v2.10→v2.12 迭代（~10 轮审阅，~30 P0 修复）；Stage 3 完整状态复核；3.10 E2E 验收计划文档初稿 |
