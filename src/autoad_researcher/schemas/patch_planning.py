@@ -12,10 +12,12 @@ from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.schemas.clarification import ArtifactReference
 from autoad_researcher.schemas.transfer_design import InterfaceContractDelta
 
-_CHANGE_KIND_VALUES = Literal["create", "modify", "delete", "rename", "configuration_only", "test_only"]
+_OPERATION_KIND_VALUES = Literal["create", "modify", "delete", "rename"]
+_CHANGE_ROLE_VALUES = Literal["implementation", "configuration", "test"]
 _TARGET_MODE_VALUES = Literal["existing_target", "new_target"]
+_COLLISION_POLICY_VALUES = Literal["must_not_exist", "replace_existing"]
 _CHECK_KIND_VALUES = Literal["syntax", "format", "static", "type", "import", "unit_test"]
-_ORDERED_LIST_NAMES = {"changes", "validation_commands", "workspace_plans", "patch_payloads"}
+_ORDERED_LIST_NAMES = {"changes", "validation_commands", "workspace_plans"}
 
 
 class SymbolContractDelta(BaseModel):
@@ -66,8 +68,9 @@ class PatchPayload(BaseModel):
     change_id: str = Field(pattern=IdentifierPattern)
     payload_kind: Literal["unified_diff", "full_after_content"]
     before_sha256: str | None = None
+    target_before_sha256: str | None = None
     target_path: str = Field(min_length=1)
-    payload_artifact_ref: str = Field(min_length=1)
+    payload_artifact_id: str = Field(min_length=1)
     payload_sha256: str = Field(pattern=Sha256Pattern)
 
 
@@ -75,7 +78,8 @@ class PlannedRepositoryChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
     change_id: str = Field(pattern=IdentifierPattern)
     workspace_id: str = Field(pattern=IdentifierPattern)
-    change_kind: _CHANGE_KIND_VALUES
+    operation_kind: _OPERATION_KIND_VALUES
+    change_role: _CHANGE_ROLE_VALUES = "implementation"
     target_mode: _TARGET_MODE_VALUES
     hook_id: str | None = None
     existing_symbol_id: str | None = None
@@ -89,6 +93,8 @@ class PlannedRepositoryChange(BaseModel):
     interface_delta: InterfaceContractDelta | None = None
     risk_category: Literal["low", "medium", "high"] = "medium"
     rename_target_path: str | None = None
+    target_collision_policy: _COLLISION_POLICY_VALUES | None = None
+    target_before_sha256: str | None = None
 
     @model_validator(mode="after")
     def _validate_repository_path(self):
@@ -111,16 +117,24 @@ class PlannedRepositoryChange(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_change_kind_and_target_mode(self):
-        kind, tm = self.change_kind, self.target_mode
-        if kind == "create" and tm != "new_target":
+    def _validate_operation_kind_and_target_mode(self):
+        ok, tm = self.operation_kind, self.target_mode
+        if ok == "create" and tm != "new_target":
             raise ValueError(f"change {self.change_id}: create requires target_mode=new_target")
-        if kind in {"delete", "rename"} and tm != "existing_target":
-            raise ValueError(f"change {self.change_id}: {kind} requires target_mode=existing_target")
-        if kind == "modify" and tm != "existing_target":
+        if ok in {"delete", "rename"} and tm != "existing_target":
+            raise ValueError(f"change {self.change_id}: {ok} requires target_mode=existing_target")
+        if ok == "modify" and tm != "existing_target":
             raise ValueError(f"change {self.change_id}: modify requires target_mode=existing_target")
-        if kind == "rename" and not self.rename_target_path:
+        if ok == "rename" and not self.rename_target_path:
             raise ValueError(f"change {self.change_id}: rename requires rename_target_path")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_collision_policy(self):
+        if self.operation_kind in {"modify", "delete", "rename"}:
+            if self.target_collision_policy == "replace_existing":
+                if not self.target_before_sha256:
+                    raise ValueError(f"change {self.change_id}: replace_existing requires target_before_sha256")
         return self
 
     @model_validator(mode="after")
@@ -172,7 +186,7 @@ class PatchConflictAnalysis(BaseModel):
 
 class RepositoryChangePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     run_id: str = Field(pattern=IdentifierPattern)
     patch_plan_id: str = Field(pattern=IdentifierPattern)
     repository_source_id: str = Field(min_length=1)
@@ -181,19 +195,18 @@ class RepositoryChangePlan(BaseModel):
     selected_variant_ids: list[str] = Field(default_factory=list)
     idea_id: str = Field(pattern=IdentifierPattern)
     changes: list[PlannedRepositoryChange] = Field(default_factory=list)
-    patch_payloads: list[PatchPayload] = Field(default_factory=list)
     dependency_changes: list[PlannedDependencyChange] = Field(default_factory=list)
     configuration_changes: list[PlannedConfigurationChange] = Field(default_factory=list)
     test_changes: list[PlannedTestChange] = Field(default_factory=list)
     workspace_plans: list[VariantWorkspacePlan] = Field(default_factory=list)
     conflict_analysis_id: str | None = None
-    plan_sha256: str = Field(pattern=Sha256Pattern)
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
 
 
 def compute_canonical_plan_sha256(plan: "RepositoryChangePlan") -> str:
     data = {}
     for field_name in plan.__class__.model_fields:
-        if field_name == "plan_sha256":
+        if field_name == "patch_plan_sha256":
             continue
         value = getattr(plan, field_name, None)
         data[field_name] = _serializable(value, field_name in _ORDERED_LIST_NAMES)
@@ -241,7 +254,7 @@ class PatchPlanValidationIssue(BaseModel):
     category: Literal[
         "schema_violation", "path_classification_violation", "hook_reference_broken",
         "symbol_table_conflict", "variant_reference_missing", "protected_path_violation",
-        "evidence_missing", "policy_violation",
+        "evidence_missing", "policy_violation", "target_before_sha_mismatch",
     ]
     description: str = Field(min_length=1)
     artifact_ids: list[str] = Field(default_factory=list)
@@ -253,10 +266,70 @@ class PatchPlanValidationReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     report_id: str = Field(pattern=IdentifierPattern)
     run_id: str = Field(pattern=IdentifierPattern)
-    plan_sha256: str = Field(pattern=Sha256Pattern)
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
     status: Literal["passed", "failed"]
     issues: list[PatchPlanValidationIssue] = Field(default_factory=list)
     validated_at: datetime
+
+
+class PatchPayloadManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    manifest_id: str = Field(pattern=IdentifierPattern)
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    payloads: list[PatchPayload] = Field(default_factory=list)
+    proposed_diff_artifact_id: str = Field(min_length=1)
+    manifest_sha256: str = Field(pattern=Sha256Pattern)
+
+
+class PatchPayloadValidationIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_id: str = Field(pattern=IdentifierPattern)
+    category: Literal[
+        "payload_sha_mismatch", "before_sha_mismatch", "target_before_sha_mismatch",
+        "undeclared_path", "undeclared_file_creation", "diff_content_mismatch",
+        "rename_target_path_conflict",
+    ]
+    description: str = Field(min_length=1)
+    payload_id: str | None = None
+    affected_change_ids: list[str] = Field(default_factory=list)
+
+
+class PatchPayloadValidationReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    report_id: str = Field(pattern=IdentifierPattern)
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
+    status: Literal["passed", "failed"]
+    issues: list[PatchPayloadValidationIssue] = Field(default_factory=list)
+    validated_at: datetime
+
+
+class InternalValidationStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    step_id: str = Field(pattern=IdentifierPattern)
+    name: str = Field(min_length=1)
+    required: bool = False
+    validation_function: Literal["ast_parse", "diff_integrity", "path_containment", "before_after_identity"]
+    target_artifact_ids: list[str] = Field(default_factory=list)
+
+
+class ExternalValidationCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command_id: str = Field(pattern=IdentifierPattern)
+    template_id: str = Field(min_length=1)
+    resolved_argv: list[str] = Field(min_length=1)
+    working_directory: str | None = None
+    required: bool = False
+
+
+class ApprovalPatchBundle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bundle_id: str = Field(pattern=IdentifierPattern)
+    approval_request_id: str = Field(min_length=1)
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    approved_change_ids: list[str] = Field(default_factory=list)
+    approved_diff_artifact_id: str = Field(min_length=1)
+    bundle_sha256: str = Field(pattern=Sha256Pattern)
 
 
 class SymbolQuery(BaseModel):
@@ -320,44 +393,79 @@ class ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approval_request_id: str = Field(pattern=IdentifierPattern)
     run_id: str = Field(pattern=IdentifierPattern)
+    workspace_id: str = Field(pattern=IdentifierPattern)
     patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    patch_payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
+    proposed_patch_diff_sha256: str = Field(pattern=Sha256Pattern)
     repository_before_fingerprint: str = Field(min_length=1)
     selected_variant_ids: list[str] = Field(default_factory=list)
     overall_risk_level: Literal["low", "medium", "high"] = "medium"
     workspace_summaries: list[WorkspaceApprovalSummary] = Field(default_factory=list)
     dependency_changes_summary: list[PlannedDependencyChange] = Field(default_factory=list)
-    validation_commands: list[ValidationCommand] = Field(default_factory=list)
+    internal_validation_steps: list[InternalValidationStep] = Field(default_factory=list)
+    external_validation_commands: list[ExternalValidationCommand] = Field(default_factory=list)
     rollback_plan_sha256: str | None = None
+    approval_request_sha256: str = Field(pattern=Sha256Pattern)
     created_at: datetime
 
 
-class ApprovalDecision(BaseModel):
+class FullApprovalDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision_id: str = Field(pattern=IdentifierPattern)
-    decision: Literal["approve_all", "approve_partial", "revise", "reject"]
+    decision: Literal["full"] = "full"
+    workspace_id: str = Field(pattern=IdentifierPattern)
     approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    approved_payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
     approved_change_ids: list[str] = Field(default_factory=list)
-    rejected_change_ids: list[str] = Field(default_factory=list)
-    approved_dependency_change_ids: list[str] = Field(default_factory=list)
-    approved_validation_command_ids: list[str] = Field(default_factory=list)
+    approved_internal_step_ids: list[str] = Field(default_factory=list)
+    approved_external_command_ids: list[str] = Field(default_factory=list)
+    approved_collision_change_ids: list[str] = Field(default_factory=list)
     approved_ask_paths: list[str] = Field(default_factory=list)
-    approved_paths: list[str] = Field(default_factory=list)
     user_evidence_id: str = Field(pattern=IdentifierPattern)
     decided_at: datetime
 
     @model_validator(mode="after")
     def _approve_requires_changes(self):
-        if self.decision in {"approve_all", "approve_partial"}:
-            if not self.approved_change_ids:
-                raise ValueError(f"decision={self.decision} requires approved_change_ids")
+        if not self.approved_change_ids:
+            raise ValueError("full approval requires approved_change_ids")
         return self
 
+
+class PartialApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision_id: str = Field(pattern=IdentifierPattern)
+    decision: Literal["partial"] = "partial"
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    approved_payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
+    approved_change_ids: list[str] = Field(default_factory=list)
+    rejected_change_ids: list[str] = Field(default_factory=list)
+    approved_internal_step_ids: list[str] = Field(default_factory=list)
+    approved_external_command_ids: list[str] = Field(default_factory=list)
+    approved_collision_change_ids: list[str] = Field(default_factory=list)
+    approved_ask_paths: list[str] = Field(default_factory=list)
+    user_evidence_id: str = Field(pattern=IdentifierPattern)
+    decided_at: datetime
+
     @model_validator(mode="after")
-    def _reject_revise_must_not_approve(self):
-        if self.decision in {"reject", "revise"}:
-            if self.approved_change_ids:
-                raise ValueError(f"decision={self.decision} must not have approved_change_ids")
+    def _approve_requires_changes(self):
+        if not self.approved_change_ids:
+            raise ValueError("partial approval requires approved_change_ids")
         return self
+
+
+class RejectDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision_id: str = Field(pattern=IdentifierPattern)
+    decision: Literal["reject"] = "reject"
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    rejected_request_sha256: str = Field(pattern=Sha256Pattern)
+    user_evidence_id: str = Field(pattern=IdentifierPattern)
+    decided_at: datetime
+
+
+ApprovalDecision = FullApprovalDecision | PartialApprovalDecision | RejectDecision
 
 
 class ChangedFileEntry(BaseModel):
@@ -365,7 +473,7 @@ class ChangedFileEntry(BaseModel):
     file_entry_id: str = Field(pattern=IdentifierPattern)
     repository_path: str
     rename_target_path: str | None = None
-    change_kind: _CHANGE_KIND_VALUES
+    operation_kind: _OPERATION_KIND_VALUES
     before_sha256: str | None = None
     after_sha256: str | None = None
     before_blob: str | None = None
@@ -389,7 +497,7 @@ class PatchApplicationManifest(BaseModel):
     failed_changes: list[str] = Field(default_factory=list)
     changed_files: list[ChangedFileEntry] = Field(default_factory=list)
     patch_diff_sha256: str | None = None
-    patch_diff_artifact_ref: str | None = None
+    patch_diff_artifact_id: str | None = None
     applied_at: datetime
 
 

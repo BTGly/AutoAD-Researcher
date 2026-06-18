@@ -198,5 +198,5 @@ def apply_workspace_layout(
         "workspace_plans": analysis.workspace_plans,
         "conflict_analysis_id": analysis.analysis_id,
     })
-    new_plan = new_plan.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(new_plan)})
+    new_plan = new_plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(new_plan)})
     return new_plan

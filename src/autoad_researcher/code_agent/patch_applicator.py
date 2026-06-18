@@ -7,11 +7,13 @@ import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from autoad_researcher.schemas.patch_planning import (
     ApprovalDecision, ApprovalRequest, ChangedFileEntry, CheckResult,
-    PatchApplicationManifest, PatchApplicationPreflightResult,
-    PatchExecutionResult, PatchPayload,
+    ExternalValidationCommand, FullApprovalDecision, InternalValidationStep,
+    PartialApprovalDecision, PatchApplicationManifest,
+    PatchApplicationPreflightResult, PatchExecutionResult, PatchPayload,
     PatchPlanValidationReport, PlannedRepositoryChange,
     PostPatchValidationReport, RepositoryChangePlan,
     RollbackManifest, ValidationCommand, compute_canonical_plan_sha256,
@@ -28,12 +30,10 @@ class ControlledPatchApplicator:
     def _set_approved_ask_paths(self, paths: set[str]) -> None:
         self._approved_ask_paths = paths
 
-    def can_write_path(self, *, path: str, approved_change_ids: set[str], approved_paths: set[str],
+    def can_write_path(self, *, path: str, approved_change_ids: set[str],
                        change: PlannedRepositoryChange, planned_paths: set[str]) -> tuple[bool, str]:
         if change.change_id not in approved_change_ids:
             return False, f"change_id {change.change_id} not approved"
-        if path not in approved_paths:
-            return False, f"path {path} not in approved_paths"
         if path in self.policy_denied_paths:
             return False, f"path {path} is policy-denied"
         for ancestor in _ancestors(path):
@@ -47,7 +47,8 @@ class ControlledPatchApplicator:
             return False, f"path {path} not in policy-allowed scope"
         return True, "allowed"
 
-    def _check_and_resolve_path(self, repository_root: Path, path_key: str) -> Path | None:
+    @staticmethod
+    def _check_and_resolve_path(repository_root: Path, path_key: str) -> Path | None:
         try:
             candidate = (repository_root / path_key).resolve()
             root = repository_root.resolve()
@@ -60,16 +61,17 @@ class ControlledPatchApplicator:
     def run_preflight(self, *, plan: RepositoryChangePlan, request: ApprovalRequest,
                       decision: ApprovalDecision, workspace_id: str,
                       repository_root: Path, run_id: str,
-                      validation_report: PatchPlanValidationReport | None = None) -> PatchApplicationPreflightResult:
+                      validation_report: PatchPlanValidationReport | None = None,
+                      payload_manifest_sha256: str | None = None) -> PatchApplicationPreflightResult:
         issues: list[str] = []
         canonical = compute_canonical_plan_sha256(plan)
-        psv = canonical == plan.plan_sha256
+        psv = canonical == plan.patch_plan_sha256
         if not psv:
-            issues.append("plan_sha256 mismatch")
-        dsv = decision.approved_patch_plan_sha256 == plan.plan_sha256
+            issues.append("patch_plan_sha256 mismatch")
+        dsv = _decision_plan_sha(decision) == plan.patch_plan_sha256
         if not dsv:
             issues.append("decision SHA != plan SHA")
-        rsv = request.patch_plan_sha256 == plan.plan_sha256
+        rsv = request.patch_plan_sha256 == plan.patch_plan_sha256
         if not rsv:
             issues.append("request SHA != plan SHA")
         actual = _fingerprint(repository_root)
@@ -85,12 +87,17 @@ class ControlledPatchApplicator:
         vrv = False
         if validation_report:
             vrv = (validation_report.run_id == plan.run_id
-                   and validation_report.plan_sha256 == plan.plan_sha256
+                   and validation_report.patch_plan_sha256 == plan.patch_plan_sha256
                    and validation_report.status == "passed"
                    and not validation_report.issues)
             if not vrv:
                 issues.append("validation_report not valid")
-        ready = all([psv, dsv, rsv, fpm, ridm, wse, vrv]) if validation_report else all([psv, dsv, rsv, fpm, ridm, wse])
+        msm = True
+        if payload_manifest_sha256 and hasattr(request, 'patch_payload_manifest_sha256'):
+            msm = request.patch_payload_manifest_sha256 == payload_manifest_sha256
+            if not msm:
+                issues.append("payload manifest SHA mismatch")
+        ready = all([psv, dsv, rsv, fpm, ridm, wse, vrv, msm])
         return PatchApplicationPreflightResult(
             preflight_id=f"preflight_{run_id}_{workspace_id}", run_id=run_id, workspace_id=workspace_id,
             plan_sha_valid=psv, decision_sha_valid=dsv, request_sha_valid=rsv,
@@ -102,7 +109,8 @@ class ControlledPatchApplicator:
     def apply_patch(self, *, plan: RepositoryChangePlan, decision: ApprovalDecision,
                     request: ApprovalRequest, workspace_id: str,
                     repository_root: Path, run_id: str,
-                    validation_report: PatchPlanValidationReport | None = None) -> PatchExecutionResult:
+                    validation_report: PatchPlanValidationReport | None = None,
+                    payload_manifest: list[PatchPayload] | None = None) -> PatchExecutionResult:
         preflight = self.run_preflight(
             plan=plan, request=request, decision=decision, workspace_id=workspace_id,
             repository_root=repository_root, run_id=run_id, validation_report=validation_report,
@@ -112,15 +120,14 @@ class ControlledPatchApplicator:
                                         preflight=preflight, overall_status="blocked",
                                         next_stage="replan_required")
 
-        approved_change_ids = set(decision.approved_change_ids)
-        approved_paths = set(decision.approved_paths)
+        approved_change_ids = _decision_approved_ids(decision)
         planned_paths = {c.repository_path for c in plan.changes}
         for c in plan.changes:
             if c.rename_target_path:
                 planned_paths.add(c.rename_target_path)
 
-        payload_map: dict[str, PatchPayload] = {p.change_id: p for p in plan.patch_payloads}
-        self._set_approved_ask_paths(set(decision.approved_ask_paths))
+        payload_map: dict[str, PatchPayload] = {p.change_id: p for p in (payload_manifest or [])}
+        self._set_approved_ask_paths(_decision_ask_paths(decision))
 
         now = datetime.now(timezone.utc)
         before_fp = _fingerprint(repository_root)
@@ -135,7 +142,7 @@ class ControlledPatchApplicator:
             path_key = change.repository_path
             allowed, reason = self.can_write_path(
                 path=path_key, approved_change_ids=approved_change_ids,
-                approved_paths=approved_paths, change=change, planned_paths=planned_paths,
+                change=change, planned_paths=planned_paths,
             )
             if not allowed:
                 skipped.append(change.change_id)
@@ -145,7 +152,7 @@ class ControlledPatchApplicator:
                 skipped.append(change.change_id)
                 continue
             target_abs = None
-            if change.change_kind == "rename" and change.rename_target_path:
+            if change.operation_kind == "rename" and change.rename_target_path:
                 target_abs = self._check_and_resolve_path(repository_root, change.rename_target_path)
                 if target_abs is None:
                     skipped.append(change.change_id)
@@ -177,7 +184,7 @@ class ControlledPatchApplicator:
             attempted_change_ids=attempted, applied_change_ids=applied,
             skipped_change_ids=skipped, failed_changes=failed,
             changed_files=changed_files, patch_diff_sha256=diff_sha,
-            patch_diff_artifact_ref=diff_artifact, applied_at=now,
+            patch_diff_artifact_id=diff_artifact, applied_at=now,
         )
 
         rollback = RollbackManifest(
@@ -257,10 +264,13 @@ class ControlledPatchApplicator:
 
     def run_local_validation(self, *, result: PatchExecutionResult, run_id: str,
                              workspace_id: str, repository_root: Path | None = None,
-                             commands: list[ValidationCommand] | None = None,
+                             internal_steps: list[InternalValidationStep] | None = None,
+                             external_commands: list[ExternalValidationCommand] | None = None,
+                             approved_step_ids: list[str] | None = None,
                              approved_command_ids: list[str] | None = None) -> PostPatchValidationReport:
         now = datetime.now(timezone.utc)
-        approved = set(approved_command_ids or [])
+        approved_steps = set(approved_step_ids or [])
+        approved_cmds = set(approved_command_ids or [])
         checks: dict[str, CheckResult] = {
             "syntax": CheckResult(status="not_run"),
             "format": CheckResult(status="not_run"),
@@ -271,20 +281,22 @@ class ControlledPatchApplicator:
         }
         issues: list[str] = []
 
-        if commands:
-            for cmd in commands:
-                if cmd.command_id not in approved:
+        if internal_steps:
+            for step in internal_steps:
+                if step.step_id not in approved_steps:
+                    if step.required:
+                        issues.append(f"required step {step.step_id} not approved")
+                    continue
+
+        if external_commands:
+            for cmd in external_commands:
+                if cmd.command_id not in approved_cmds:
                     if cmd.required:
                         issues.append(f"required command {cmd.command_id} not approved")
                     continue
-                r = _exec_validation_command(cmd)
-                existing = checks.get(cmd.check_kind)
-                if isinstance(existing, CheckResult) and existing.status in {"not_run", "not_required"}:
-                    checks[cmd.check_kind] = r
-                elif existing is None:
-                    checks[cmd.check_kind] = r
-                elif r.status == "failed":
-                    checks[cmd.check_kind] = r
+                r = _exec_external_command(cmd)
+                if r.status == "failed":
+                    issues.append(f"external command {cmd.command_id} failed")
 
         if repository_root and repository_root.exists():
             if checks["syntax"].status == "not_run":
@@ -307,10 +319,11 @@ class ControlledPatchApplicator:
 
     def finalize_with_validation(self, *, result: PatchExecutionResult, run_id: str,
                                  workspace_id: str, repository_root: Path,
-                                 commands: list[ValidationCommand] | None = None,
+                                 internal_steps: list[InternalValidationStep] | None = None,
+                                 external_commands: list[ExternalValidationCommand] | None = None,
+                                 approved_step_ids: list[str] | None = None,
                                  approved_command_ids: list[str] | None = None) -> PatchExecutionResult:
-        applied = result.overall_status
-        if applied not in {"patch_applied", "patch_applied_and_local_validations_passed"}:
+        if result.overall_status not in {"patch_applied", "patch_applied_and_local_validations_passed"}:
             return PatchExecutionResult(
                 result_id=result.result_id, run_id=run_id, preflight=result.preflight,
                 overall_status=result.overall_status if result.overall_status != "blocked" else "blocked",
@@ -320,8 +333,9 @@ class ControlledPatchApplicator:
             )
         report = self.run_local_validation(
             result=result, run_id=run_id, workspace_id=workspace_id,
-            repository_root=repository_root, commands=commands,
-            approved_command_ids=approved_command_ids,
+            repository_root=repository_root, internal_steps=internal_steps,
+            external_commands=external_commands,
+            approved_step_ids=approved_step_ids, approved_command_ids=approved_command_ids,
         )
         new_status = ("patch_applied_and_local_validations_passed"
                       if report.status == "patch_applied_and_local_validations_passed"
@@ -335,26 +349,29 @@ class ControlledPatchApplicator:
         )
 
     def _apply_without_preflight(self, *, plan, decision, workspace_id, repository_root, run_id):
-        """Internal: apply without preflight checks (test-only)."""
         from autoad_researcher.schemas.patch_planning import ApprovalRequest
         req = ApprovalRequest(
             approval_request_id="internal", run_id=plan.run_id,
-            patch_plan_sha256=plan.plan_sha256,
+            workspace_id=workspace_id,
+            patch_plan_sha256=plan.patch_plan_sha256,
+            patch_payload_manifest_sha256="",
+            proposed_patch_diff_sha256="",
             repository_before_fingerprint=plan.repository_fingerprint,
-            validation_commands=[], created_at=datetime.now(timezone.utc),
+            internal_validation_steps=[], external_validation_commands=[],
+            approval_request_sha256="",
+            created_at=datetime.now(timezone.utc),
         )
         return self._apply_internal(plan=plan, decision=decision, request=req,
                                     workspace_id=workspace_id, repository_root=repository_root, run_id=run_id)
 
     def _apply_internal(self, *, plan, decision, request, workspace_id, repository_root, run_id):
-        approved_change_ids = set(decision.approved_change_ids)
-        approved_paths = set(decision.approved_paths)
+        approved_change_ids = _decision_approved_ids(decision)
         planned_paths = {c.repository_path for c in plan.changes}
         for c in plan.changes:
             if c.rename_target_path:
                 planned_paths.add(c.rename_target_path)
-        payload_map = {p.change_id: p for p in plan.patch_payloads}
-        self._set_approved_ask_paths(set(decision.approved_ask_paths))
+        payload_map: dict[str, PatchPayload] = {}
+        self._set_approved_ask_paths(_decision_ask_paths(decision))
         now = datetime.now(timezone.utc)
         before_fp = _fingerprint(repository_root)
         changed_files, attempted, applied, skipped, failed = [], [], [], [], []
@@ -365,7 +382,7 @@ class ControlledPatchApplicator:
             attempted.append(change.change_id)
             allowed, _ = self.can_write_path(
                 path=change.repository_path, approved_change_ids=approved_change_ids,
-                approved_paths=approved_paths, change=change, planned_paths=planned_paths,
+                change=change, planned_paths=planned_paths,
             )
             if not allowed:
                 skipped.append(change.change_id); continue
@@ -373,7 +390,7 @@ class ControlledPatchApplicator:
             if abs_path is None:
                 skipped.append(change.change_id); continue
             target_abs = None
-            if change.change_kind == "rename" and change.rename_target_path:
+            if change.operation_kind == "rename" and change.rename_target_path:
                 target_abs = self._check_and_resolve_path(repository_root, change.rename_target_path)
                 if target_abs is None:
                     skipped.append(change.change_id); continue
@@ -423,6 +440,21 @@ class ControlledPatchApplicator:
         )
 
 
+def _decision_plan_sha(d):
+    return d.approved_patch_plan_sha256
+
+
+def _decision_approved_ids(d):
+    if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
+        return set(d.approved_change_ids)
+    return set()
+
+
+def _decision_ask_paths(d):
+    if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
+        return set(getattr(d, 'approved_ask_paths', []))
+    return set()
+
 
 def _apply_single_change(change, abs_path: Path, now: datetime,
                           target_abs: Path | None = None,
@@ -433,18 +465,18 @@ def _apply_single_change(change, abs_path: Path, now: datetime,
         before_content = abs_path.read_bytes()
         before_sha = hashlib.sha256(before_content).hexdigest()
 
-    if change.change_kind == "delete":
+    if change.operation_kind == "delete":
         if not abs_path.exists():
             return None
         abs_path.unlink()
         return ChangedFileEntry(
             file_entry_id=f"fe_{change.change_id}", repository_path=change.repository_path,
-            change_kind=change.change_kind, before_sha256=before_sha, after_sha256=None,
+            operation_kind=change.operation_kind, before_sha256=before_sha, after_sha256=None,
             before_blob=_to_blob(before_content), change_ids=[change.change_id],
             operation="deleted", applied_at=now,
         )
 
-    if change.change_kind == "rename":
+    if change.operation_kind == "rename":
         if not abs_path.exists():
             return None
         if not target_abs:
@@ -461,13 +493,13 @@ def _apply_single_change(change, abs_path: Path, now: datetime,
         return ChangedFileEntry(
             file_entry_id=f"fe_{change.change_id}", repository_path=change.repository_path,
             rename_target_path=change.rename_target_path,
-            change_kind=change.change_kind, before_sha256=src_sha, after_sha256=None,
+            operation_kind=change.operation_kind, before_sha256=src_sha, after_sha256=None,
             before_blob=_to_blob(src_content),
             target_before_blob=target_before_blob,
             change_ids=[change.change_id], operation="renamed", applied_at=now,
         )
 
-    if change.change_kind in {"modify", "configuration_only", "test_only"}:
+    if change.operation_kind == "modify":
         if not abs_path.exists():
             return None
         if payload and payload.payload_kind == "full_after_content":
@@ -491,7 +523,7 @@ def _apply_single_change(change, abs_path: Path, now: datetime,
     operation = "created" if before_sha is None else "written"
     return ChangedFileEntry(
         file_entry_id=f"fe_{change.change_id}", repository_path=change.repository_path,
-        change_kind=change.change_kind, before_sha256=before_sha, after_sha256=after_sha,
+        operation_kind=change.operation_kind, before_sha256=before_sha, after_sha256=after_sha,
         before_blob=_to_blob(before_content), change_ids=[change.change_id],
         operation=operation, applied_at=now,
     )
@@ -505,7 +537,7 @@ def _to_blob(content: bytes | None) -> str | None:
 
 def _resolve_payload_content(payload: PatchPayload) -> bytes:
     try:
-        ref_path = Path(payload.payload_artifact_ref)
+        ref_path = Path(payload.payload_artifact_id)
         if ref_path.exists():
             return ref_path.read_bytes()
     except Exception:
@@ -567,11 +599,11 @@ def _run_syntax_check(root):
         return CheckResult(status="failed", command_id="cmd_syntax", stderr_ref=str(exc)[:500])
 
 
-def _exec_validation_command(cmd: ValidationCommand) -> CheckResult:
+def _exec_external_command(cmd: ExternalValidationCommand) -> CheckResult:
     try:
-        proc = subprocess.run(cmd.argv, capture_output=True, text=True, timeout=cmd.timeout_seconds,
+        proc = subprocess.run(cmd.resolved_argv, capture_output=True, text=True, timeout=120,
                               cwd=cmd.working_directory)
-        ok = proc.returncode == cmd.expected_exit_code
+        ok = proc.returncode == 0
         return CheckResult(
             status="passed" if ok else "failed", command_id=cmd.command_id,
             exit_code=proc.returncode,

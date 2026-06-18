@@ -1,8 +1,9 @@
-"""Approval protocol — deterministic validation of approval decisions."""
+"""Approval protocol — deterministic validation of approval decisions (schema v2)."""
 
 from autoad_researcher.schemas.patch_planning import (
-    ApprovalDecision, ApprovalRequest, PatchPlanValidationReport,
-    PlannedRepositoryChange, RepositoryChangePlan,
+    ApprovalDecision, ApprovalRequest, FullApprovalDecision,
+    PartialApprovalDecision, PatchPlanValidationReport,
+    PlannedRepositoryChange, RejectDecision, RepositoryChangePlan,
 )
 
 
@@ -13,62 +14,61 @@ def validate_approval_consistency(
 ) -> list[str]:
     errors: list[str] = []
 
-    if request.patch_plan_sha256 != plan.plan_sha256:
-        errors.append("ApprovalRequest patch_plan_sha256 does not match plan.plan_sha256")
-    if decision.approved_patch_plan_sha256 != plan.plan_sha256:
-        errors.append("ApprovalDecision approved_patch_plan_sha256 does not match plan.plan_sha256")
-    if request.patch_plan_sha256 != decision.approved_patch_plan_sha256:
+    if request.patch_plan_sha256 != plan.patch_plan_sha256:
+        errors.append("ApprovalRequest patch_plan_sha256 does not match plan.patch_plan_sha256")
+    if _decision_plan_sha(decision) != plan.patch_plan_sha256:
+        errors.append("ApprovalDecision approved_patch_plan_sha256 does not match plan.patch_plan_sha256")
+    if request.patch_plan_sha256 != _decision_plan_sha(decision):
         errors.append("Decision binds to different SHA than request")
 
+    if request.workspace_id != _decision_ws(decision):
+        errors.append(f"Decision workspace {_decision_ws(decision)} != request workspace {request.workspace_id}")
+
     all_ids = {c.change_id for c in plan.changes}
-    approved_set = set(decision.approved_change_ids)
-    rejected_set = set(decision.rejected_change_ids)
 
-    if validation_report and validation_report.issues:
-        blocked = set()
-        for issue in validation_report.issues:
-            for aid in (issue.affected_change_ids or issue.artifact_ids):
-                blocked.add(aid)
-        non_blocked = all_ids - blocked
-    else:
-        non_blocked = all_ids
-
-    if decision.decision == "approve_all":
+    if isinstance(decision, FullApprovalDecision):
+        approved_set = set(decision.approved_change_ids)
         if approved_set - all_ids:
-            errors.append("approve_all references change_ids not in plan")
-        if approved_set != non_blocked:
-            errors.append("approve_all must include all non-blocked change_ids")
+            errors.append("full approval references change_ids not in plan")
+        if validation_report and validation_report.issues:
+            blocked = set()
+            for issue in validation_report.issues:
+                for aid in (issue.affected_change_ids or issue.artifact_ids):
+                    blocked.add(aid)
+            non_blocked = all_ids - blocked
+            if approved_set != non_blocked:
+                errors.append("full approval must include all non-blocked change_ids")
 
-    elif decision.decision == "approve_partial":
+    elif isinstance(decision, PartialApprovalDecision):
+        approved_set = set(decision.approved_change_ids)
+        rejected_set = set(decision.rejected_change_ids)
         if not approved_set:
-            errors.append("approve_partial must have approved_change_ids")
+            errors.append("partial approval must have approved_change_ids")
         if approved_set - all_ids:
-            errors.append("approve_partial references ids not in plan")
+            errors.append("partial approval references ids not in plan")
         if rejected_set - all_ids:
             errors.append("rejected ids not in plan")
         if approved_set & rejected_set:
             errors.append("ids in both approved and rejected")
+        if approved_set | rejected_set != all_ids:
+            errors.append("partial approval must cover all plan change_ids")
 
-    elif decision.decision in {"reject", "revise"}:
-        if approved_set:
-            errors.append(f"{decision.decision} must not have approved_change_ids")
+    elif isinstance(decision, RejectDecision):
+        pass
 
-    approved_paths = set(decision.approved_paths)
-    derived = _derive_paths(plan.changes, approved_set)
-    if approved_paths != derived:
-        missing = derived - approved_paths
-        extra = approved_paths - derived
-        if missing:
-            errors.append(f"approved_paths missing: {sorted(missing)}")
-        if extra:
-            errors.append(f"approved_paths contains extra: {sorted(extra)}")
+    approved_paths_candidate = _derive_paths(plan.changes, _decision_approved_ids(decision))
+    _validate_path_coverage(decision, approved_paths_candidate, errors)
 
     return errors
 
 
-def validate_approved_paths_against_policy(*, decision: ApprovalDecision, policy_denied_paths: set[str]) -> list[str]:
+def validate_approved_paths_against_policy(
+    *, decision: ApprovalDecision, policy_denied_paths: set[str],
+    approved_paths: set[str] | None = None,
+) -> list[str]:
     errors: list[str] = []
-    for path in decision.approved_paths:
+    candidate = approved_paths if approved_paths is not None else _decision_paths(decision)
+    for path in candidate:
         if path in policy_denied_paths:
             errors.append(f"Path {path} is policy-denied")
             continue
@@ -87,7 +87,7 @@ def compute_approval_effective_write_paths(
     policy_denied_paths: set[str], policy_allowed_paths: set[str] | None = None,
     policy_ask_paths: set[str] | None = None,
 ) -> dict[str, str]:
-    approved_set = set(decision.approved_paths)
+    approved_set = _decision_paths(decision) if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)) else set()
     ask_set = policy_ask_paths or set()
     allowed_set = policy_allowed_paths or set()
     result: dict[str, str] = {}
@@ -111,6 +111,37 @@ def compute_approval_effective_write_paths(
             else:
                 result[path] = "deny"
     return result
+
+
+def _decision_plan_sha(d: ApprovalDecision) -> str:
+    if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
+        return d.approved_patch_plan_sha256
+    return d.approved_patch_plan_sha256
+
+
+def _decision_ws(d: ApprovalDecision) -> str:
+    return d.workspace_id
+
+
+def _decision_approved_ids(d: ApprovalDecision) -> set[str]:
+    if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
+        return set(d.approved_change_ids)
+    return set()
+
+
+def _decision_paths(d: ApprovalDecision) -> set[str]:
+    if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
+        return set(d.approved_change_ids)
+    return set()
+
+
+def _validate_path_coverage(decision: ApprovalDecision, derived: set[str], errors: list[str]) -> None:
+    if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)):
+        approved_set = set(decision.approved_change_ids)
+        if approved_set:
+            covered = derived
+            if not covered:
+                errors.append("approved_change_ids derive to empty path set — check change paths")
 
 
 def _ancestors(path: str) -> list[str]:

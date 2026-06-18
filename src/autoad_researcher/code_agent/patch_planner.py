@@ -90,7 +90,8 @@ class PatchPlannerAgent:
                 change = PlannedRepositoryChange(
                     change_id=change_id,
                     workspace_id=workspace_id,
-                    change_kind="modify",
+                    operation_kind="modify",
+                    change_role="implementation",
                     target_mode="existing_target",
                     hook_id=hook.hook_id,
                     repository_path=path,
@@ -130,9 +131,9 @@ class PatchPlannerAgent:
             dependency_changes=dep_changes,
             configuration_changes=config_changes,
             test_changes=test_changes,
-            plan_sha256="",
+            patch_plan_sha256="",
         )
-        plan = plan.model_copy(update={"plan_sha256": compute_canonical_plan_sha256(plan)})
+        plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
         return plan, planning_issues
 
 

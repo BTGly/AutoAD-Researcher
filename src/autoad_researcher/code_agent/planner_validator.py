@@ -32,7 +32,7 @@ def validate_repository_change_plan(
         _check_system_paths(change, issues, i)
     status = "passed" if not issues else "failed"
     return PatchPlanValidationReport(
-        report_id=report_id, run_id=plan.run_id, plan_sha256=plan.plan_sha256,
+        report_id=report_id, run_id=plan.run_id, patch_plan_sha256=plan.patch_plan_sha256,
         status=status, issues=issues, validated_at=datetime.now(timezone.utc),
     )
 
