@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.paper_intelligence.ids import IdentifierPattern, Sha256Pattern, validate_workspace_path
+from autoad_researcher.schemas.clarification import ArtifactReference
 from autoad_researcher.schemas.transfer_design import InterfaceContractDelta
 
 _CHANGE_KIND_VALUES = Literal["create", "modify", "delete", "rename", "configuration_only", "test_only"]
@@ -478,16 +479,58 @@ class PatchExecutionResult(BaseModel):
         return self
 
 
-class PatchRunnerHandoff(BaseModel):
+# ---------------------------------------------------------------------------
+# Step 3.7 → 3.8: Multi-workspace PatchRunnerHandoff v2
+# ---------------------------------------------------------------------------
+
+
+class BaselineWorkspaceRef(BaseModel):
+    """Baseline workspace — repo without any variant patch applied."""
     model_config = ConfigDict(extra="forbid")
-    schema_version: Literal[1] = 1
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    repository_fingerprint: str = Field(min_length=1)
+    repository_commit: str = Field(min_length=1)
+    repository_validation_ref: ArtifactReference
+
+
+class VariantWorkspaceHandoff(BaseModel):
+    """A workspace with one or more variant patches applied."""
+    model_config = ConfigDict(extra="forbid")
+    workspace_id: str = Field(pattern=IdentifierPattern)
+    variant_ids: list[str] = Field(min_length=1)
+    repository_fingerprint: str = Field(min_length=1)
+    patch_diff_sha256: str = Field(pattern=Sha256Pattern)
+    local_validation_report_sha256: str = Field(pattern=Sha256Pattern)
+    patch_application_manifest_ref: ArtifactReference
+    post_patch_validation_report_ref: ArtifactReference
+
+
+class PatchRunnerHandoff(BaseModel):
+    """Structured handoff from Step 3.7 to Step 3.8.
+
+    v2: supports multiple variant workspaces + baseline workspace.
+    """
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal[2] = 2
     status: Literal["eligible_for_runner_intake"] = "eligible_for_runner_intake"
     run_id: str = Field(pattern=IdentifierPattern)
     repository_before_commit: str = Field(min_length=1)
-    repository_after_fingerprint: str = Field(min_length=1)
     approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
-    patch_diff_sha256: str = Field(pattern=Sha256Pattern)
-    local_validation_report_sha256: str = Field(pattern=Sha256Pattern)
     selected_variant_ids: list[str] = Field(default_factory=list)
     experiment_bundle_ref: str = Field(min_length=1)
+    baseline_workspace_ref: BaselineWorkspaceRef
+    variant_workspaces: list[VariantWorkspaceHandoff] = Field(default_factory=list)
     next_stage: Literal["runner_intake"] = "runner_intake"
+
+    @model_validator(mode="after")
+    def _selected_variants_match_workspaces(self):
+        from itertools import chain
+        workspace_variant_ids = list(chain.from_iterable(
+            ws.variant_ids for ws in self.variant_workspaces
+        ))
+        for vid in self.selected_variant_ids:
+            if vid not in workspace_variant_ids:
+                raise ValueError(
+                    f"selected variant '{vid}' not found in any variant workspace"
+                )
+        return self
