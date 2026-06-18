@@ -946,13 +946,20 @@ class ExperimentPlanValidationReport(BaseModel):
     @model_validator(mode="after")
     def _validate_artifact_refs(self):
         paths = [r.relative_path for r in self.validated_artifact_refs]
-        if sorted(paths) != sorted(PLANNING_ARTIFACT_PATHS):
-            raise ValueError(
-                "validated_artifact_refs must contain exactly the 7 planning artifacts, "
-                f"got {sorted(paths)}"
-            )
         if len(paths) != len(set(paths)):
             raise ValueError("validated_artifact_refs must have unique relative_path")
+        known_paths = set(PLANNING_ARTIFACT_PATHS)
+        path_set = set(paths)
+        if self.status == "passed":
+            if path_set != known_paths:
+                raise ValueError(
+                    "passed report must bind all 7 planning artifacts, "
+                    f"got {sorted(paths)}"
+                )
+        elif not path_set <= known_paths:
+            raise ValueError(
+                "failed report validated_artifact_refs contains unknown artifact path"
+            )
         return self
 
 

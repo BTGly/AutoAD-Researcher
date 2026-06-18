@@ -362,6 +362,7 @@ def _check_hyperparameter(specs) -> list[ExperimentPlanValidationIssue]:
     issues = []
     if specs is None:
         return issues
+    search_budgets: dict[str, tuple[int, float]] = {}
     for v in specs.variants:
         hp = v.hyperparameter_plan
         if hp.selection_split and hp.selection_split.declared_role == "test":
@@ -385,13 +386,6 @@ def _check_hyperparameter(specs) -> list[ExperimentPlanValidationIssue]:
                         "must use validation partition"
                     ),
                 ))
-        if hp.mode == "fixed_from_source" and not hp.source_evidence_ids:
-            issues.append(_issue(
-                issue_id=f"hp_fixed_source_missing_evidence_{v.variant_id}",
-                severity="blocking",
-                invariant_category="hyperparameter_safety",
-                message=f"{v.variant_id}: fixed_from_source requires source_evidence_ids",
-            ))
             if not hp.search_space:
                 missing.append("search_space")
             if hp.search_budget is None:
@@ -408,6 +402,26 @@ def _check_hyperparameter(specs) -> list[ExperimentPlanValidationIssue]:
                         f"{', '.join(missing)}"
                     ),
                 ))
+            if hp.search_budget is not None:
+                search_budgets[v.variant_id] = (
+                    hp.search_budget.max_trials,
+                    hp.search_budget.max_gpu_hours,
+                )
+        elif hp.mode == "fixed_from_source":
+            if not hp.source_evidence_ids:
+                issues.append(_issue(
+                    issue_id=f"hp_fixed_source_missing_evidence_{v.variant_id}",
+                    severity="blocking",
+                    invariant_category="hyperparameter_safety",
+                    message=f"{v.variant_id}: fixed_from_source requires source_evidence_ids",
+                ))
+    if len(set(search_budgets.values())) > 1:
+        issues.append(_issue(
+            issue_id="hp_search_budget_mismatch",
+            severity="blocking",
+            invariant_category="hyperparameter_safety",
+            message="predeclared_search variants must use identical search_budget",
+        ))
     return issues
 
 
@@ -620,6 +634,51 @@ def _check_dependency_dag(matrix, specs) -> list[ExperimentPlanValidationIssue]:
     # Check for cycles
     if not issues:
         issues.extend(_check_no_cycles(matrix))
+    expected_bindings: set[tuple[str, str]] = set()
+    for entry in matrix.entries:
+        intent = intent_by_id.get(entry.intent_ref)
+        if intent is None:
+            continue
+        for requirement in intent.required_inputs:
+            if requirement.artifact_type == "model_weights":
+                expected_bindings.add((entry.entry_id, requirement.requirement_id))
+    actual_binding_counts: dict[tuple[str, str], int] = {}
+    for binding in matrix.input_bindings:
+        key = (binding.consumer_entry_id, binding.consumer_requirement_id)
+        actual_binding_counts[key] = actual_binding_counts.get(key, 0) + 1
+    actual_bindings = set(actual_binding_counts)
+    for consumer_entry_id, requirement_id in sorted(expected_bindings - actual_bindings):
+        issues.append(_issue(
+            issue_id=f"dag_binding_missing_{consumer_entry_id}_{requirement_id}",
+            severity="blocking",
+            invariant_category="dependency_dag",
+            message=(
+                f"consumer {consumer_entry_id} requirement {requirement_id} "
+                "has no input binding"
+            ),
+        ))
+    for consumer_entry_id, requirement_id in sorted(actual_bindings - expected_bindings):
+        if consumer_entry_id in entry_by_id:
+            issues.append(_issue(
+                issue_id=f"dag_binding_unexpected_{consumer_entry_id}_{requirement_id}",
+                severity="blocking",
+                invariant_category="dependency_dag",
+                message=(
+                    f"binding for consumer {consumer_entry_id} requirement "
+                    f"{requirement_id} is not required by its intent"
+                ),
+            ))
+    for (consumer_entry_id, requirement_id), count in actual_binding_counts.items():
+        if count > 1:
+            issues.append(_issue(
+                issue_id=f"dag_binding_duplicate_{consumer_entry_id}_{requirement_id}",
+                severity="blocking",
+                invariant_category="dependency_dag",
+                message=(
+                    f"consumer {consumer_entry_id} requirement {requirement_id} "
+                    f"has {count} bindings; exactly one is required"
+                ),
+            ))
     # Check bindings
     for b in matrix.input_bindings:
         consumer = entry_by_id.get(b.consumer_entry_id)
@@ -640,6 +699,16 @@ def _check_dependency_dag(matrix, specs) -> list[ExperimentPlanValidationIssue]:
             ))
         if consumer is None or producer is None:
             continue
+        if producer.entry_id not in _dependency_ancestors(entry_by_id, consumer):
+            issues.append(_issue(
+                issue_id=f"dag_binding_not_dependency_{b.consumer_entry_id}_{b.producer_entry_id}",
+                severity="blocking",
+                invariant_category="dependency_dag",
+                message=(
+                    f"binding producer {b.producer_entry_id} is not a dependency "
+                    f"ancestor of consumer {b.consumer_entry_id}"
+                ),
+            ))
         consumer_intent = intent_by_id.get(consumer.intent_ref)
         requirement = None
         if consumer_intent is None:
@@ -752,6 +821,21 @@ def _check_no_cycles(matrix) -> list[ExperimentPlanValidationIssue]:
         _dfs(eid)
 
     return issues
+
+
+def _dependency_ancestors(entry_by_id, entry) -> set[str]:
+    ancestors: set[str] = set()
+    stack = list(entry.depends_on)
+    while stack:
+        dep_id = stack.pop()
+        if dep_id in ancestors:
+            continue
+        dep_entry = entry_by_id.get(dep_id)
+        if dep_entry is None:
+            continue
+        ancestors.add(dep_id)
+        stack.extend(dep_entry.depends_on)
+    return ancestors
 
 
 def _check_uniqueness(matrix, specs) -> list[ExperimentPlanValidationIssue]:

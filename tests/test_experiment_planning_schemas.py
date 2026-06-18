@@ -778,7 +778,7 @@ def test_validation_report_exactly_7_refs():
 
 def test_validation_report_missing_artifact_rejected():
     refs = [_mock_validated_ref(p) for p in PLANNING_ARTIFACT_PATHS[:6]]
-    with pytest.raises(ValidationError, match="must contain exactly"):
+    with pytest.raises(ValidationError, match="passed report must bind all 7"):
         ExperimentPlanValidationReport(
             report_id="rpt_001",
             run_id="run_001",
@@ -786,6 +786,25 @@ def test_validation_report_missing_artifact_rejected():
             status="passed",
             validated_artifact_refs=refs,
         )
+
+
+def test_failed_validation_report_allows_artifact_ref_subset():
+    issue = ExperimentPlanValidationIssue(
+        issue_id="i_01",
+        severity="blocking",
+        invariant_category="structure",
+        message="Missing file",
+    )
+    refs = [_mock_validated_ref(p) for p in PLANNING_ARTIFACT_PATHS[:6]]
+    report = ExperimentPlanValidationReport(
+        report_id="rpt_001",
+        run_id="run_001",
+        protocol_fingerprint="fp_abc",
+        status="failed",
+        issues=[issue],
+        validated_artifact_refs=refs,
+    )
+    assert len(report.validated_artifact_refs) == 6
 
 
 def test_validation_report_duplicate_path_rejected():

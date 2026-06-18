@@ -62,6 +62,19 @@ def test_validate_plan_invalid_json_is_blocking_structure_issue(tmp_path):
     assert not structure.passed
 
 
+def test_validate_plan_missing_artifact_returns_failed_report(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    artifacts["resource_budget.json"].unlink()
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(i.issue_id == "struct_missing_resource_budget.json" for i in report.issues)
+    assert {
+        ref.relative_path for ref in report.validated_artifact_refs
+    } == set(PLANNING_ARTIFACT_PATHS) - {"resource_budget.json"}
+
+
 def test_emit_handoff_manifest_includes_report_without_self_binding(tmp_path):
     artifacts = _write_valid_artifacts(tmp_path)
     report = validate_plan(artifacts, run_id="run_validator")
@@ -98,6 +111,127 @@ def test_validate_plan_rejects_binding_to_missing_requirement(tmp_path):
     assert any(i.issue_id == "dag_binding_requirement_var_A_smoke" for i in report.issues)
 
 
+def test_validate_plan_rejects_missing_smoke_binding(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    matrix_data = json.loads(artifacts["experiment_matrix.json"].read_text())
+    matrix_data["input_bindings"] = matrix_data["input_bindings"][1:]
+    artifacts["experiment_matrix.json"].write_text(json.dumps(matrix_data))
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(
+        i.issue_id == "dag_binding_missing_var_A_smoke_model_weights_req_var_A"
+        for i in report.issues
+    )
+
+
+def test_validate_plan_rejects_missing_full_binding(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    matrix_data = json.loads(artifacts["experiment_matrix.json"].read_text())
+    matrix_data["input_bindings"] = matrix_data["input_bindings"][:1]
+    artifacts["experiment_matrix.json"].write_text(json.dumps(matrix_data))
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(
+        i.issue_id == "dag_binding_missing_var_A_full_s42_model_weights_req_var_A"
+        for i in report.issues
+    )
+
+
+def test_validate_plan_rejects_duplicate_requirement_binding(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    matrix_data = json.loads(artifacts["experiment_matrix.json"].read_text())
+    matrix_data["input_bindings"].append(matrix_data["input_bindings"][0])
+    artifacts["experiment_matrix.json"].write_text(json.dumps(matrix_data))
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(
+        i.issue_id == "dag_binding_duplicate_var_A_smoke_model_weights_req_var_A"
+        for i in report.issues
+    )
+
+
+def test_validate_plan_rejects_binding_producer_outside_dependency_chain(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    matrix_data = json.loads(artifacts["experiment_matrix.json"].read_text())
+    for entry in matrix_data["entries"]:
+        if entry["entry_id"] == "var_A_smoke":
+            entry["depends_on"] = []
+    artifacts["experiment_matrix.json"].write_text(json.dumps(matrix_data))
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(
+        i.issue_id == "dag_binding_not_dependency_var_A_smoke_var_A_fit_s42"
+        for i in report.issues
+    )
+
+
+def test_validate_plan_rejects_fixed_from_source_without_evidence(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    specs_data = json.loads(artifacts["experiment_trial_specs.json"].read_text())
+    specs_data["variants"][0]["hyperparameter_plan"]["source_evidence_ids"] = []
+    artifacts["experiment_trial_specs.json"].write_text(json.dumps(specs_data))
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(
+        i.issue_id == "hp_fixed_source_missing_evidence_var_A"
+        for i in report.issues
+    )
+
+
+def test_validate_plan_rejects_predeclared_search_missing_fields(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    specs_data = json.loads(artifacts["experiment_trial_specs.json"].read_text())
+    specs_data["variants"][0]["hyperparameter_plan"] = {
+        "mode": "predeclared_search",
+        "source_evidence_ids": ["ev_hp"],
+        "selection_split": {
+            "partition_id": "val",
+            "dataset_manifest_sha256": "b" * 64,
+            "declared_role": "validation",
+            "evidence_ids": ["ev_split"],
+        },
+    }
+    artifacts["experiment_trial_specs.json"].write_text(json.dumps(specs_data))
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(i.issue_id == "hp_search_missing_var_A" for i in report.issues)
+
+
+def test_validate_plan_rejects_predeclared_search_budget_mismatch(tmp_path):
+    artifacts = _write_valid_artifacts(tmp_path)
+    specs_data = json.loads(artifacts["experiment_trial_specs.json"].read_text())
+    var_a = specs_data["variants"][0]
+    var_a["hyperparameter_plan"] = _predeclared_search_plan(max_trials=5)
+    var_b = json.loads(json.dumps(var_a))
+    var_b["variant_id"] = "var_B"
+    var_b["variant_label"] = "Variant B"
+    var_b["idea_id"] = "idea_B"
+    var_b["primary_hook_id"] = "hook_B"
+    var_b["fit"]["intent_id"] = "fit_var_B"
+    var_b["smoke"]["intent_id"] = "smoke_var_B"
+    var_b["full"]["intent_id"] = "full_var_B"
+    var_b["hyperparameter_plan"] = _predeclared_search_plan(max_trials=8)
+    specs_data["variants"].append(var_b)
+    artifacts["experiment_trial_specs.json"].write_text(json.dumps(specs_data))
+
+    report = validate_plan(artifacts, run_id="run_validator")
+
+    assert report.status == "failed"
+    assert any(i.issue_id == "hp_search_budget_mismatch" for i in report.issues)
+
+
 def test_validate_plan_rejects_incomplete_budget_entry_coverage(tmp_path):
     artifacts = _write_valid_artifacts(tmp_path)
     budget_data = json.loads(artifacts["resource_budget.json"].read_text())
@@ -110,6 +244,27 @@ def test_validate_plan_rejects_incomplete_budget_entry_coverage(tmp_path):
 
     assert report.status == "failed"
     assert any(i.issue_id == "budget_missing_entry_estimate" for i in report.issues)
+
+
+def _predeclared_search_plan(max_trials: int) -> dict:
+    return {
+        "mode": "predeclared_search",
+        "source_evidence_ids": ["ev_hp"],
+        "search_space": [
+            {"name": "k", "type": "int", "range": [1, 3]},
+        ],
+        "selection_split": {
+            "partition_id": "val",
+            "dataset_manifest_sha256": "b" * 64,
+            "declared_role": "validation",
+            "evidence_ids": ["ev_split"],
+        },
+        "search_budget": {
+            "max_trials": max_trials,
+            "max_gpu_hours": 2.0,
+        },
+        "selection_metric": "image_auroc",
+    }
 
 
 def _write_valid_artifacts(root: Path) -> dict[str, Path]:
