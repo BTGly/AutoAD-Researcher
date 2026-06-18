@@ -1,6 +1,7 @@
 """Patch planning, approval, and controlled application behavior tests."""
 
 import base64
+import hashlib
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,7 +13,7 @@ from autoad_researcher.schemas.baseline_architecture import ModificationHook
 from autoad_researcher.schemas.patch_planning import (
     ApprovalDecision, ApprovalRequest, CheckResult, ExternalValidationCommand,
     FullApprovalDecision, PartialApprovalDecision,
-    PatchPlanValidationIssue, PatchPlanValidationReport,
+    PatchPayload, PatchPlanValidationIssue, PatchPlanValidationReport,
     PlannedRepositoryChange, RejectDecision, RepositoryChangePlan,
     _normalize, canonical_sha, compute_canonical_plan_sha256,
 )
@@ -24,6 +25,7 @@ from autoad_researcher.code_agent.approval import (
 from autoad_researcher.code_agent.conflict_analyzer import analyze_variant_conflicts, apply_workspace_layout
 from autoad_researcher.code_agent.patch_applicator import ControlledPatchApplicator
 from autoad_researcher.code_agent.planner_validator import validate_repository_change_plan
+from autoad_researcher.core.artifacts import ArtifactStore
 
 _NOW = datetime.now(timezone.utc)
 _FPT = "b" * 64
@@ -31,6 +33,30 @@ _FPT = "b" * 64
 
 class _DatetimeProbe(BaseModel):
     observed_at: datetime
+
+
+def _test_store(run_id: str = "run_test") -> ArtifactStore:
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="test_store_")
+    return ArtifactStore(runs_root=tmp, enable_events=False)
+
+
+def _test_payload(change, store: ArtifactStore, content: bytes, run_id: str = "run_test") -> PatchPayload:
+    payload_id = f"pld_test_{change.change_id}"
+    artifact_id = f"payload_{payload_id}.bin"
+    store.write_raw(run_id, artifact_id, content)
+    return PatchPayload(
+        payload_id=payload_id,
+        change_id=change.change_id,
+        payload_kind="full_after_content",
+        payload_media_type="application/octet-stream",
+        payload_size_bytes=len(content),
+        before_sha256=None,
+        target_before_sha256=change.target_before_sha256,
+        target_path=change.repository_path,
+        payload_artifact_id=artifact_id,
+        payload_sha256=hashlib.sha256(content).hexdigest(),
+    )
 
 
 def _plan(*, run_id="run_test", changes=None, deps=None, **kw):
@@ -118,9 +144,10 @@ def _c(cid, ws, kind="create", tm="new_target", path="src/x.py", ps=None):
     )
 
 
-def _apply(app, plan, dec, ws, repo, run_id):
+def _apply(app, plan, dec, ws, repo, run_id, store=None, payloads=None):
     return app._apply_internal(plan=plan, decision=dec, request=_req(sha=plan.patch_plan_sha256),
-                               workspace_id=ws, repository_root=repo, run_id=run_id)
+                               workspace_id=ws, repository_root=repo, run_id=run_id,
+                               artifact_store=store, payload_manifest=payloads)
 
 
 def _app():
@@ -171,23 +198,29 @@ class TestFailClosedResult:
         assert r.overall_status == "patch_application_failed"
 
     def test_partial_failure(self, tmp_path):
+        store = _test_store()
         app = ControlledPatchApplicator(policy_denied_paths={"denied"}, policy_allowed_paths={"src/"})
         c1 = _c("chg_1", "ws", path="src/a.py")
         c2 = _c("chg_2", "ws", path="denied/b.py")
         plan = _psha(changes=[c1, c2])
         dec = _dec(approved_change_ids=["chg_1", "chg_2"], sha=plan.patch_plan_sha256)
         repo = tmp_path / "repo"; repo.mkdir()
-        r = _apply(app, plan, dec, "ws", repo, plan.run_id)
+        p1 = _test_payload(c1, store, b"content1\n")
+        p2 = _test_payload(c2, store, b"content2\n")
+        r = _apply(app, plan, dec, "ws", repo, plan.run_id, store=store, payloads=[p1, p2])
         assert r.overall_status == "patch_application_partial_failure"
 
     def test_manifest_tracks(self, tmp_path):
+        store = _test_store()
         app = ControlledPatchApplicator(policy_denied_paths={"denied"}, policy_allowed_paths={"src/"})
         c1 = _c("chg_1", "ws", path="src/a.py")
         c2 = _c("chg_2", "ws", path="denied/b.py")
         plan = _psha(changes=[c1, c2])
         dec = _dec(approved_change_ids=["chg_1", "chg_2"], sha=plan.patch_plan_sha256)
         repo = tmp_path / "repo"; repo.mkdir()
-        r = _apply(app, plan, dec, "ws", repo, plan.run_id)
+        p1 = _test_payload(c1, store, b"content1\n")
+        p2 = _test_payload(c2, store, b"content2\n")
+        r = _apply(app, plan, dec, "ws", repo, plan.run_id, store=store, payloads=[p1, p2])
         m = r.manifests[0]
         assert set(m.attempted_change_ids) == {"chg_1", "chg_2"}
         assert m.applied_change_ids == ["chg_1"]
@@ -195,12 +228,14 @@ class TestFailClosedResult:
         assert r.overall_status == "patch_application_partial_failure"
 
     def test_all_success(self, tmp_path):
+        store = _test_store()
         app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
         repo = tmp_path / "repo"; repo.mkdir()
-        r = _apply(app, plan, dec, "ws", repo, plan.run_id)
+        p = _test_payload(c, store, b"content\n")
+        r = _apply(app, plan, dec, "ws", repo, plan.run_id, store=store, payloads=[p])
         assert r.overall_status == "patch_applied"
 
 
@@ -247,12 +282,14 @@ class TestPreflight:
 
 class TestBase64Blob:
     def test_blob_is_base64(self, tmp_path):
+        store = _test_store()
         app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
         repo = tmp_path / "repo"; repo.mkdir()
-        r = _apply(app, plan, dec, "ws", repo, plan.run_id)
+        p = _test_payload(c, store, b"blob content\n")
+        r = _apply(app, plan, dec, "ws", repo, plan.run_id, store=store, payloads=[p])
         blob = r.rollback_manifests[0].rollback_blobs[0]
         base64.b64decode(blob)
 
@@ -321,12 +358,14 @@ class TestFinalizeGuard:
 
 class TestAskApproval:
     def test_ask_path_allowed_when_approved(self, tmp_path):
+        store = _test_store()
         app = ControlledPatchApplicator(policy_ask_paths={"src/ask.py"}, policy_allowed_paths={"src/"})
         c = _c("chg_1", "ws", path="src/ask.py")
         plan = _psha(changes=[c])
         dec = _dec(approved_change_ids=["chg_1"], approved_ask_paths=["src/ask.py"], sha=plan.patch_plan_sha256)
         repo = tmp_path / "repo"; repo.mkdir()
-        r = _apply(app, plan, dec, "ws", repo, plan.run_id)
+        p = _test_payload(c, store, b"ask content\n")
+        r = _apply(app, plan, dec, "ws", repo, plan.run_id, store=store, payloads=[p])
         assert (repo / "src" / "ask.py").exists()
 
 

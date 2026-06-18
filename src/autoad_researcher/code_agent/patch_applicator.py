@@ -352,7 +352,8 @@ class ControlledPatchApplicator:
                     validation_report: PatchPlanValidationReport | None = None,
                     payload_validation_report: "PatchPayloadValidationReport | None" = None,
                     bundle: "ApprovalPatchBundle | None" = None,
-                    payload_manifest: list[PatchPayload] | None = None) -> PatchExecutionResult:
+                    payload_manifest: list[PatchPayload] | None = None,
+                    artifact_store=None) -> PatchExecutionResult:
         preflight = self.run_preflight(
             plan=plan, request=request, decision=decision, workspace_id=workspace_id,
             repository_root=repository_root, run_id=run_id,
@@ -411,7 +412,8 @@ class ControlledPatchApplicator:
 
             payload = payload_map.get(change.change_id)
             try:
-                entry = _apply_single_change(change, abs_path, now, target_abs, payload)
+                entry = _apply_single_change(change, abs_path, now, target_abs, payload,
+                                             artifact_store, run_id)
             except Exception:
                 failed.append(change.change_id)
                 entry = None
@@ -651,13 +653,14 @@ class ControlledPatchApplicator:
             next_stage=ns,
         )
 
-    def _apply_internal(self, *, plan, decision, request, workspace_id, repository_root, run_id):
+    def _apply_internal(self, *, plan, decision, request, workspace_id, repository_root, run_id,
+                        artifact_store=None, payload_manifest: list[PatchPayload] | None = None):
         approved_change_ids = _decision_approved_ids(decision)
         planned_paths = {c.repository_path for c in plan.changes}
         for c in plan.changes:
             if c.rename_target_path:
                 planned_paths.add(c.rename_target_path)
-        payload_map: dict[str, PatchPayload] = {}
+        payload_map: dict[str, PatchPayload] = {p.change_id: p for p in (payload_manifest or [])}
         self._set_approved_ask_paths(_decision_ask_paths(decision))
         now = datetime.now(timezone.utc)
         before_fp = _fingerprint(repository_root)
@@ -689,7 +692,8 @@ class ControlledPatchApplicator:
                     skipped.append(change.change_id); continue
             payload = payload_map.get(change.change_id)
             try:
-                entry = _apply_single_change(change, abs_path, now, target_abs, payload)
+                entry = _apply_single_change(change, abs_path, now, target_abs, payload,
+                                             artifact_store, run_id)
             except Exception:
                 failed.append(change.change_id); entry = None
             if entry:
@@ -762,7 +766,8 @@ def _decision_ask_paths(d):
 
 def _apply_single_change(change, abs_path: Path, now: datetime,
                           target_abs: Path | None = None,
-                          payload: PatchPayload | None = None) -> ChangedFileEntry | None:
+                          payload: PatchPayload | None = None,
+                          artifact_store=None, run_id: str | None = None) -> ChangedFileEntry | None:
     before_content: bytes | None = None
     before_sha: str | None = None
     path_exists = abs_path.exists()
@@ -837,13 +842,21 @@ def _apply_single_change(change, abs_path: Path, now: datetime,
         if not abs_path.exists():
             return None
         if payload and payload.payload_kind == "full_after_content":
-            new_content = _resolve_payload_content(payload)
+            new_content = _resolve_payload_from_store(payload, artifact_store, run_id)
+            if new_content is None:
+                return None
         else:
-            original = before_content or b""
-            new_content = original + b"\n" + _render_placeholder(change)
-    else:
+            return None
+    elif change.operation_kind == "create":
         abs_path.parent.mkdir(parents=True, exist_ok=True)
-        new_content = _render_placeholder(change)
+        if payload and payload.payload_kind == "full_after_content":
+            new_content = _resolve_payload_from_store(payload, artifact_store, run_id)
+            if new_content is None:
+                return None
+        else:
+            return None
+    else:
+        return None
 
     tmp_path = abs_path.with_suffix(abs_path.suffix + ".patch_tmp")
     try:
@@ -869,22 +882,20 @@ def _to_blob(content: bytes | None) -> str | None:
     return base64.b64encode(content).decode("ascii")
 
 
-def _resolve_payload_content(payload: PatchPayload) -> bytes:
+def _resolve_payload_from_store(payload: PatchPayload,
+                                  artifact_store=None,
+                                  run_id: str | None = None) -> bytes | None:
+    """Read payload bytes from ArtifactStore. Returns None if unavailable."""
+    if artifact_store is None or run_id is None:
+        return None
     try:
-        ref_path = Path(payload.payload_artifact_id)
-        if ref_path.exists():
-            return ref_path.read_bytes()
-    except Exception:
-        pass
-    return f"# payload placeholder: {payload.payload_id}\n".encode()
-
-
-def _render_placeholder(change) -> bytes:
-    lines = [f"# Patch: {change.change_id}", f"# Variant: {change.variant_ids}", f"# Rationale: {change.rationale}"]
-    if change.symbol_delta:
-        sd = change.symbol_delta
-        lines.append(f"# Symbol: {sd.symbol_name}")
-    return "\n".join(lines).encode("utf-8") + b"\n"
+        content = artifact_store.read_raw(run_id, payload.payload_artifact_id)
+        actual_sha = hashlib.sha256(content).hexdigest()
+        if actual_sha != payload.payload_sha256:
+            return None
+        return content
+    except (FileNotFoundError, ValueError, OSError):
+        return None
 
 
 def _generate_unified_diff(root, before, after, files) -> str | None:

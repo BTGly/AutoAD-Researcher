@@ -92,6 +92,28 @@ class ArtifactStore:
         return self.artifact_path(run_id, filename).exists()
 
     # ------------------------------------------------------------------
+    # Raw bytes
+    # ------------------------------------------------------------------
+
+    def write_raw(self, run_id: str, filename: str, data: bytes) -> Path:
+        run_dir = self.run_dir(run_id)
+        path = (run_dir / filename).resolve()
+        if not path.is_relative_to(run_dir.resolve()):
+            raise ValueError(f"path escapes run_dir: {path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def read_raw(self, run_id: str, filename: str) -> bytes:
+        run_dir = self.run_dir(run_id)
+        path = (run_dir / filename).resolve()
+        if not path.is_relative_to(run_dir.resolve()):
+            raise ValueError(f"path escapes run_dir: {path}")
+        if not path.exists():
+            raise FileNotFoundError(f"artifact not found: {path}")
+        return path.read_bytes()
+
+    # ------------------------------------------------------------------
     # JSON 写 / 读
     # ------------------------------------------------------------------
 

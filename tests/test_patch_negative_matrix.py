@@ -235,7 +235,7 @@ class TestPreflightC07ReverseRollback:
         _write(repo, "src/a.py", "original\n")
         orig_fp = _fingerprint(repo)
 
-        c = _c("chg_1", "ws", kind="modify", tm="existing_target", path="src/a.py")
+        c = _c("chg_1", "ws", kind="delete", tm="existing_target", path="src/a.py")
         plan = _psha(changes=[c])
         dec = _dec(ids=["chg_1"], sha=plan.patch_plan_sha256)
         result = _apply(ControlledPatchApplicator(policy_allowed_paths={"src/"}), plan, dec, "ws", repo, plan.run_id)
@@ -756,12 +756,12 @@ class TestPreflightE48PayloadBeforeSha:
             manifest_id="manifest_test",
         )
         plan = _psha(changes=[change])
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "x.py").write_text("x = 1\n")
         result = validate_payload_manifest(
             manifest=manifest,
             plan=plan,
             repository_root=tmp_path,
             report_id="vr_48",
         )
-        # payload lacks target_before_sha256, change has replace_existing → no issue raised
-        # (validator only checks target_before_sha256 if payload has it set)
-        assert result.status == "passed"
+        assert result.status == "failed"  # target_before_sha256 missing for replace_existing
