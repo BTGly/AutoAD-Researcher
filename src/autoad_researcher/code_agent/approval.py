@@ -17,7 +17,7 @@ def validate_approval_consistency(
     if request.patch_plan_sha256 != plan.patch_plan_sha256:
         errors.append("ApprovalRequest patch_plan_sha256 does not match plan.patch_plan_sha256")
     if _decision_plan_sha(decision) != plan.patch_plan_sha256:
-        errors.append("ApprovalDecision approved_patch_plan_sha256 does not match plan.patch_plan_sha256")
+        errors.append("ApprovalDecision patch_plan_sha256 does not match plan.patch_plan_sha256")
     if request.patch_plan_sha256 != _decision_plan_sha(decision):
         errors.append("Decision binds to different SHA than request")
 
@@ -31,13 +31,9 @@ def validate_approval_consistency(
         if approved_set - all_ids:
             errors.append("full approval references change_ids not in plan")
         if validation_report and validation_report.issues:
-            blocked = set()
-            for issue in validation_report.issues:
-                for aid in (issue.affected_change_ids or issue.artifact_ids):
-                    blocked.add(aid)
-            non_blocked = all_ids - blocked
-            if approved_set != non_blocked:
-                errors.append("full approval must include all non-blocked change_ids")
+            # v1.5.8: issues no longer carry affected_change_ids/artifact_ids
+            if validation_report.status != "passed":
+                errors.append("validation report has issues and status is not passed")
 
     elif isinstance(decision, PartialApprovalDecision):
         approved_set = set(decision.approved_change_ids)
@@ -65,9 +61,15 @@ def validate_approval_consistency(
 def validate_approved_paths_against_policy(
     *, decision: ApprovalDecision, policy_denied_paths: set[str],
     approved_paths: set[str] | None = None,
+    changes: list[PlannedRepositoryChange] | None = None,
 ) -> list[str]:
     errors: list[str] = []
-    candidate = approved_paths if approved_paths is not None else _decision_paths(decision)
+    if approved_paths is not None:
+        candidate = approved_paths
+    elif changes is not None:
+        candidate = _decision_paths(decision, changes)
+    else:
+        candidate = set()
     for path in candidate:
         if path in policy_denied_paths:
             errors.append(f"Path {path} is policy-denied")
@@ -86,8 +88,12 @@ def compute_approval_effective_write_paths(
     *, decision: ApprovalDecision, planned_paths: set[str],
     policy_denied_paths: set[str], policy_allowed_paths: set[str] | None = None,
     policy_ask_paths: set[str] | None = None,
+    changes: list[PlannedRepositoryChange] | None = None,
 ) -> dict[str, str]:
-    approved_set = _decision_paths(decision) if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)) else set()
+    if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)) and changes is not None:
+        approved_set = _decision_paths(decision, changes)
+    else:
+        approved_set = set()
     ask_set = policy_ask_paths or set()
     allowed_set = policy_allowed_paths or set()
     result: dict[str, str] = {}
@@ -114,9 +120,7 @@ def compute_approval_effective_write_paths(
 
 
 def _decision_plan_sha(d: ApprovalDecision) -> str:
-    if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
-        return d.approved_patch_plan_sha256
-    return d.approved_patch_plan_sha256
+    return d.patch_plan_sha256
 
 
 def _decision_ws(d: ApprovalDecision) -> str:
@@ -129,9 +133,9 @@ def _decision_approved_ids(d: ApprovalDecision) -> set[str]:
     return set()
 
 
-def _decision_paths(d: ApprovalDecision) -> set[str]:
+def _decision_paths(d: ApprovalDecision, changes: list[PlannedRepositoryChange]) -> set[str]:
     if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
-        return set(d.approved_change_ids)
+        return _derive_paths(changes, set(d.approved_change_ids))
     return set()
 
 

@@ -10,8 +10,11 @@ from pathlib import Path
 from typing import Optional
 
 from autoad_researcher.schemas.patch_planning import (
-    PatchPayload, PatchPayloadManifest, PlannedRepositoryChange,
+    PatchPayload,
+    PatchPayloadManifest,
+    PlannedRepositoryChange,
     RepositoryChangePlan,
+    canonical_sha,
 )
 
 
@@ -75,13 +78,10 @@ class PatchMaterializer:
             else:
                 return None
 
-        # Generate proposed content (placeholder for MVP — real code synthesis
-        # to be replaced by LLM-driven payload generation)
         proposed_content = self._generate_proposed_content(change, before_content)
         payload_content = proposed_content or b""
         payload_sha256 = hashlib.sha256(payload_content).hexdigest()
 
-        # Create a deterministic payload artifact path (for ArtifactStore)
         payload_artifact_id = f"runs/{change.change_id}/payload_{change.payload_id}"
 
         if change.operation_kind == "create" and before_sha256 is None:
@@ -91,6 +91,8 @@ class PatchMaterializer:
             payload_id=change.payload_id if change.payload_id else f"pl_{change.change_id}",
             change_id=change.change_id,
             payload_kind="full_after_content",
+            payload_media_type="text/x-diff",
+            payload_size_bytes=len(payload_content),
             before_sha256=before_sha256,
             target_before_sha256=change.target_before_sha256,
             target_path=change.repository_path,
@@ -125,28 +127,22 @@ def build_payload_manifest(
     *,
     run_id: str,
     workspace_id: str,
+    patch_plan_sha256: str,
     payloads: list[PatchPayload],
     proposed_diff_artifact_id: str,
+    proposed_diff_sha256: str,
     manifest_id: Optional[str] = None,
 ) -> PatchPayloadManifest:
     """Build a PatchPayloadManifest from materialized payloads."""
-    import hashlib
-    import json
-
-    placeholder_sha = hashlib.sha256(b"placeholder").hexdigest()
     manifest = PatchPayloadManifest(
         manifest_id=manifest_id or f"manifest_{run_id}_{workspace_id}",
+        run_id=run_id,
         workspace_id=workspace_id,
+        patch_plan_sha256=patch_plan_sha256,
         payloads=payloads,
         proposed_diff_artifact_id=proposed_diff_artifact_id,
-        manifest_sha256=placeholder_sha,
+        proposed_diff_sha256=proposed_diff_sha256,
+        manifest_sha256="0" * 64,
     )
-    canonical = json.dumps(
-        manifest.model_dump(mode="python", exclude={"manifest_sha256"}),
-        sort_keys=True,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    manifest.manifest_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    manifest.manifest_sha256 = canonical_sha(manifest)
     return manifest

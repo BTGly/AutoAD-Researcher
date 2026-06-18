@@ -14,8 +14,8 @@ from autoad_researcher.schemas.patch_planning import (
     FullApprovalDecision, PartialApprovalDecision,
     PatchPlanValidationIssue, PatchPlanValidationReport,
     PlannedRepositoryChange, RejectDecision, RepositoryChangePlan,
-    ValidationCommand, compute_canonical_plan_sha256,
-    _serializable,
+    compute_canonical_plan_sha256,
+    _normalize,
 )
 from autoad_researcher.code_agent.approval import (
     compute_approval_effective_write_paths,
@@ -58,9 +58,10 @@ def _req(sha="c" * 64):
         patch_plan_sha256=sha,
         patch_payload_manifest_sha256=sha,
         proposed_patch_diff_sha256=sha,
+        patch_payload_validation_report_sha256=sha,
+        patch_plan_validation_report_sha256=sha,
         repository_before_fingerprint="b" * 64,
-        selected_variant_ids=[], workspace_summaries=[],
-        dependency_changes_summary=[],
+        selected_variant_ids=[],
         internal_validation_steps=[], external_validation_commands=[],
         approval_request_sha256=sha,
         created_at=_NOW,
@@ -70,9 +71,13 @@ def _req(sha="c" * 64):
 def _dec_full(approved_change_ids=None, sha="c" * 64, approved_ask_paths=None):
     return FullApprovalDecision(
         decision_id="ad",
+        approval_request_id="ar",
+        approved_request_sha256=sha,
         workspace_id="ws",
-        approved_patch_plan_sha256=sha,
-        approved_payload_manifest_sha256=sha,
+        patch_plan_sha256=sha,
+        payload_manifest_sha256=sha,
+        approved_diff_sha256=sha,
+        approved_paths=[],
         approved_change_ids=approved_change_ids or [],
         approved_internal_step_ids=[],
         approved_external_command_ids=[],
@@ -85,9 +90,13 @@ def _dec_full(approved_change_ids=None, sha="c" * 64, approved_ask_paths=None):
 def _dec(approved_change_ids=None, sha="c" * 64, approved_ask_paths=None):
     return FullApprovalDecision(
         decision_id="ad",
+        approval_request_id="ar",
+        approved_request_sha256=sha,
         workspace_id="ws",
-        approved_patch_plan_sha256=sha,
-        approved_payload_manifest_sha256=sha,
+        patch_plan_sha256=sha,
+        payload_manifest_sha256=sha,
+        approved_diff_sha256=sha,
+        approved_paths=[],
         approved_change_ids=approved_change_ids or [],
         approved_internal_step_ids=[],
         approved_external_command_ids=[],
@@ -113,8 +122,9 @@ def _apply(app, plan, dec, ws, repo, run_id):
 def _dec_reject(sha="c" * 64):
     return RejectDecision(
         decision_id="ad",
+        approval_request_id="ar",
         workspace_id="ws",
-        approved_patch_plan_sha256=sha,
+        patch_plan_sha256=sha,
         rejected_request_sha256=sha,
         user_evidence_id="ev_u", decided_at=_NOW,
     )
@@ -129,14 +139,14 @@ class TestCanonicalDatetime:
             observed_at=datetime(2026, 6, 18, 4, 0, 0, tzinfo=timezone.utc)
         )
 
-        assert _serializable(plus_eight) == _serializable(utc)
-        assert _serializable(plus_eight)["observed_at"] == "2026-06-18T04:00:00Z"
+        assert _normalize(plus_eight) == _normalize(utc)
+        assert _normalize(plus_eight)["observed_at"] == "2026-06-18T04:00:00Z"
 
     def test_naive_datetime_is_rejected(self):
         probe = _DatetimeProbe(observed_at=datetime(2026, 6, 18, 4, 0, 0))
 
         with pytest.raises(ValueError, match="naive datetime is forbidden"):
-            _serializable(probe)
+            _normalize(probe)
 
 
 # --- P0-2: fail-closed ---
@@ -268,7 +278,7 @@ class TestCheckKind:
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
         repo = Path(tempfile.mkdtemp())
         r = _apply(app, plan, dec, "ws", repo, plan.run_id)
-        cmds = [ExternalValidationCommand(command_id="c1", template_id="echo", resolved_argv=["echo", "ok"])]
+        cmds = [ExternalValidationCommand(command_id="c1", template_id="ruff_check_no_fix", resolved_argv=["ruff", "check", "--no-fix", "--no-unsafe-fixes"], working_directory=str(repo))]
         rep = app.run_local_validation(result=r, run_id=plan.run_id, workspace_id="ws", repository_root=repo, external_commands=cmds, approved_command_ids=["c1"])
         assert rep.status in ("patch_applied_and_local_validations_passed", "patch_applied_but_local_validation_failed")
 
@@ -279,7 +289,7 @@ class TestCheckKind:
         dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
         repo = Path(tempfile.mkdtemp())
         r = _apply(app, plan, dec, "ws", repo, plan.run_id)
-        cmds = [ExternalValidationCommand(command_id="c1", template_id="must", resolved_argv=["echo"], required=True)]
+        cmds = [ExternalValidationCommand(command_id="c1", template_id="ruff_check_no_fix", resolved_argv=["ruff", "check", "--no-fix", "--no-unsafe-fixes"], working_directory=str(repo), required=True)]
         rep = app.run_local_validation(result=r, run_id=plan.run_id, workspace_id="ws", repository_root=repo, external_commands=cmds, approved_command_ids=[])
         assert "not approved" in str(rep.issues)
 
@@ -343,9 +353,13 @@ class TestApprovalDecision:
         with pytest.raises(ValueError):
             # RejectDecision cannot have approved_change_ids
             FullApprovalDecision(
-                decision_id="ad", workspace_id="ws",
-                approved_patch_plan_sha256="c" * 64,
-                approved_payload_manifest_sha256="c" * 64,
+                decision_id="ad", approval_request_id="ar",
+                approved_request_sha256="c" * 64,
+                workspace_id="ws",
+                patch_plan_sha256="c" * 64,
+                payload_manifest_sha256="c" * 64,
+                approved_diff_sha256="c" * 64,
+                approved_paths=[],
                 approved_change_ids=[],
                 approved_internal_step_ids=[],
                 approved_external_command_ids=[],
@@ -360,9 +374,13 @@ class TestApprovalProtocol:
         plan = _psha(changes=[c])
         req = _req(sha=plan.patch_plan_sha256)
         dec = PartialApprovalDecision(
-            decision_id="ad", workspace_id="ws",
-            approved_patch_plan_sha256=plan.patch_plan_sha256,
-            approved_payload_manifest_sha256=plan.patch_plan_sha256,
+            decision_id="ad", approval_request_id="ar",
+            approved_request_sha256="c" * 64,
+            workspace_id="ws",
+            patch_plan_sha256=plan.patch_plan_sha256,
+            payload_manifest_sha256=plan.patch_plan_sha256,
+            approval_patch_bundle_sha256=plan.patch_plan_sha256,
+            approved_paths=[],
             approved_change_ids=["chg_1"],
             rejected_change_ids=[],
             approved_internal_step_ids=[],
@@ -385,10 +403,10 @@ class TestValidationWithReport:
         plan = _psha(changes=[c1, c2])
         dec = _dec(approved_change_ids=["chg_1", "chg_2"], sha=plan.patch_plan_sha256)
         vrep = PatchPlanValidationReport(report_id="vr", run_id=plan.run_id, patch_plan_sha256=plan.patch_plan_sha256, status="failed", issues=[
-            PatchPlanValidationIssue(issue_id="i1", category="policy_violation", description="blocked", artifact_ids=["chg_2"], affected_change_ids=["chg_2"], resolution="blocked")
+            PatchPlanValidationIssue(issue_id="i1", category="policy_violation", description="blocked", resolution="blocked")
         ], validated_at=_NOW)
         errors = validate_approval_consistency(request=_req(sha=plan.patch_plan_sha256), decision=dec, plan=plan, validation_report=vrep)
-        assert any("must include all non-blocked" in e for e in errors)
+        assert any("validation report has issues" in e for e in errors)
 
 
 def _fp(root):

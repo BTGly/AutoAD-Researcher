@@ -16,8 +16,13 @@ from autoad_researcher.schemas.patch_planning import (
     PatchApplicationPreflightResult, PatchExecutionResult, PatchPayload,
     PatchPlanValidationReport, PlannedRepositoryChange,
     PostPatchValidationReport, RepositoryChangePlan,
-    RollbackManifest, ValidationCommand, compute_canonical_plan_sha256,
+    RollbackManifest, canonical_sha, compute_canonical_plan_sha256,
 )
+
+from autoad_researcher.code_agent.validation_commands import execute_template_command
+from autoad_researcher.code_agent.validation_steps.ast_parse import ast_parse_step
+from autoad_researcher.code_agent.validation_steps.diff_integrity import diff_integrity_step
+from autoad_researcher.code_agent.validation_steps.path_containment import path_containment_step
 
 
 class ControlledPatchApplicator:
@@ -263,11 +268,11 @@ class ControlledPatchApplicator:
         )
 
     def run_local_validation(self, *, result: PatchExecutionResult, run_id: str,
-                             workspace_id: str, repository_root: Path | None = None,
-                             internal_steps: list[InternalValidationStep] | None = None,
-                             external_commands: list[ExternalValidationCommand] | None = None,
-                             approved_step_ids: list[str] | None = None,
-                             approved_command_ids: list[str] | None = None) -> PostPatchValidationReport:
+                              workspace_id: str, repository_root: Path | None = None,
+                              internal_steps: list[InternalValidationStep] | None = None,
+                              external_commands: list[ExternalValidationCommand] | None = None,
+                              approved_step_ids: list[str] | None = None,
+                              approved_command_ids: list[str] | None = None) -> PostPatchValidationReport:
         now = datetime.now(timezone.utc)
         approved_steps = set(approved_step_ids or [])
         approved_cmds = set(approved_command_ids or [])
@@ -281,26 +286,78 @@ class ControlledPatchApplicator:
         }
         issues: list[str] = []
 
-        if internal_steps:
+        changed_paths: list[str] = []
+        if result.manifests:
+            for m in result.manifests:
+                for fe in m.changed_files:
+                    changed_paths.append(fe.repository_path)
+
+        if internal_steps and repository_root and repository_root.exists():
             for step in internal_steps:
                 if step.step_id not in approved_steps:
                     if step.required:
                         issues.append(f"required step {step.step_id} not approved")
                     continue
 
-        if external_commands:
+                try:
+                    if step.step_id == "ast_parse":
+                        py_files = [repository_root / p for p in changed_paths if p.endswith(".py")]
+                        if not py_files:
+                            checks["syntax"] = CheckResult(status="not_required")
+                        else:
+                            all_errors: list[str] = []
+                            for fp in py_files:
+                                errs = ast_parse_step(file_path=fp)
+                                all_errors.extend(errs)
+                            checks["syntax"] = CheckResult(
+                                status="passed" if not all_errors else "failed",
+                                stderr_ref="\n".join(all_errors)[:500] if all_errors else None,
+                            )
+                    elif step.step_id == "diff_integrity":
+                        diff_text = ""
+                        if result.manifests and result.manifests[0].patch_diff_artifact_id:
+                            artifact_path = Path(result.manifests[0].patch_diff_artifact_id)
+                            if artifact_path.exists():
+                                diff_text = artifact_path.read_text()
+                        if not diff_text or not changed_paths:
+                            checks["static"] = CheckResult(status="not_run")
+                        else:
+                            errs = diff_integrity_step(
+                                proposed_diff=diff_text,
+                                repository_root=repository_root,
+                                changed_paths=changed_paths,
+                            )
+                            checks["static"] = CheckResult(
+                                status="passed" if not errs else "failed",
+                                stderr_ref="\n".join(errs)[:500] if errs else None,
+                            )
+                    elif step.step_id == "path_containment":
+                        approved = self._policy_allowed_set if self._policy_allowed_set is not None else set(changed_paths)
+                        errs = path_containment_step(
+                            touched_paths=set(changed_paths),
+                            approved_paths=approved,
+                            policy_denied_paths=self.policy_denied_paths,
+                        )
+                        checks["format"] = CheckResult(
+                            status="passed" if not errs else "failed",
+                            stderr_ref="\n".join(errs)[:500] if errs else None,
+                        )
+                except Exception as e:
+                    issues.append(f"internal step {step.step_id} error: {e}")
+
+        if external_commands and repository_root and repository_root.exists():
             for cmd in external_commands:
                 if cmd.command_id not in approved_cmds:
                     if cmd.required:
                         issues.append(f"required command {cmd.command_id} not approved")
                     continue
-                r = _exec_external_command(cmd)
+                r = execute_template_command(cmd, repository_root=repository_root)
                 if r.status == "failed":
                     issues.append(f"external command {cmd.command_id} failed")
-
-        if repository_root and repository_root.exists():
-            if checks["syntax"].status == "not_run":
-                checks["syntax"] = _run_syntax_check(repository_root)
+                if cmd.template_id == "ruff_check_no_fix" and checks["static"].status == "not_run":
+                    checks["static"] = r
+                elif cmd.template_id == "ruff_format_check" and checks["format"].status == "not_run":
+                    checks["format"] = r
 
         all_ok = all(
             v is None or (isinstance(v, CheckResult) and v.status in {"passed", "not_required"})
@@ -350,12 +407,15 @@ class ControlledPatchApplicator:
 
     def _apply_without_preflight(self, *, plan, decision, workspace_id, repository_root, run_id):
         from autoad_researcher.schemas.patch_planning import ApprovalRequest
+        _empty_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         req = ApprovalRequest(
             approval_request_id="internal", run_id=plan.run_id,
             workspace_id=workspace_id,
             patch_plan_sha256=plan.patch_plan_sha256,
-            patch_payload_manifest_sha256="",
-            proposed_patch_diff_sha256="",
+            patch_payload_manifest_sha256=_empty_sha,
+            proposed_patch_diff_sha256=_empty_sha,
+            patch_payload_validation_report_sha256=_empty_sha,
+            patch_plan_validation_report_sha256=_empty_sha,
             repository_before_fingerprint=plan.repository_fingerprint,
             internal_validation_steps=[], external_validation_commands=[],
             approval_request_sha256="",
@@ -441,7 +501,7 @@ class ControlledPatchApplicator:
 
 
 def _decision_plan_sha(d):
-    return d.approved_patch_plan_sha256
+    return d.patch_plan_sha256
 
 
 def _decision_approved_ids(d):
@@ -478,11 +538,21 @@ def _apply_single_change(change, abs_path: Path, now: datetime,
         if policy == "replace_existing" and change.target_before_sha256:
             if before_sha != change.target_before_sha256:
                 return None
-    elif change.operation_kind == "rename":
-        if not path_exists:
+    if change.operation_kind == "rename":
+        if not abs_path.exists():
             return None
+        if target_abs is not None:
+            if target_abs.exists():
+                if policy != "replace_existing":
+                    return None
+                target_before_content = target_abs.read_bytes()
+                target_before_sha = hashlib.sha256(target_before_content).hexdigest()
+                if change.target_before_sha256 and target_before_sha != change.target_before_sha256:
+                    return None
         if policy == "replace_existing" and change.target_before_sha256:
-            if before_sha != change.target_before_sha256:
+            if target_abs and target_abs.exists():
+                pass
+            else:
                 return None
 
     if change.operation_kind == "delete":

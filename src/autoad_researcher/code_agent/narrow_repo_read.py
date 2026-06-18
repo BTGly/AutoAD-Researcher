@@ -5,6 +5,7 @@ payloads (for before_sha256 and diff computation). Read-only by contract;
 raises PermissionError on any write attempt.
 """
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -23,10 +24,16 @@ def read_file_safe(root: Path, relative_path: str) -> bytes:
         raise PermissionError(
             f"path traversal denied: {relative_path}"
         )
-    if not str(resolved).startswith(str(actual_root)):
-        raise PermissionError(
-            f"resolved path {resolved} is outside root {actual_root}"
-        )
+    try:
+        if not resolved.is_relative_to(actual_root):
+            raise PermissionError(
+                f"resolved path {resolved} is outside root {actual_root}"
+            )
+    except AttributeError:
+        if not str(resolved).startswith(str(actual_root) + os.sep) and resolved != actual_root:
+            raise PermissionError(
+                f"resolved path {resolved} is outside root {actual_root}"
+            )
 
     return resolved.read_bytes()
 

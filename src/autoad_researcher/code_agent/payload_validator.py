@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Optional
 
 from autoad_researcher.schemas.patch_planning import (
-    PatchPayload, PatchPayloadManifest, PatchPayloadValidationIssue,
-    PatchPayloadValidationReport, RepositoryChangePlan,
+    PatchPayload,
+    PatchPayloadManifest,
+    PatchPayloadValidationIssue,
+    PatchPayloadValidationReport,
+    RepositoryChangePlan,
 )
 
 
@@ -20,7 +23,7 @@ def validate_payload_manifest(
     """Deterministic validation of all payloads in a PatchPayloadManifest.
 
     Checks:
-      1. payload_sha256 matches actual payload content
+      1. payload_sha256 matches actual payload artifact content
       2. before_sha256 matches current file content
       3. target_before_sha256 matches target file content (replace_existing)
       4. Each change_id exists in plan
@@ -61,6 +64,8 @@ def _validate_single_payload(
             category="undeclared_path",
             description=f"change_id {payload.change_id} not in plan",
             payload_id=payload.payload_id,
+            change_id=payload.change_id,
+            resolution="blocked",
         ))
         return issues
 
@@ -70,10 +75,11 @@ def _validate_single_payload(
             category="undeclared_path",
             description=f"payload target_path {payload.target_path} != plan path {change.repository_path}",
             payload_id=payload.payload_id,
-            affected_change_ids=[payload.change_id],
+            change_id=payload.change_id,
+            resolution="blocked",
         ))
 
-    _validate_sha_integrity(payload, repository_root, issues)
+    _validate_sha_integrity(payload, change, repository_root, issues)
     _validate_target_before_sha(payload, change, repository_root, issues)
 
     return issues
@@ -81,11 +87,14 @@ def _validate_single_payload(
 
 def _validate_sha_integrity(
     payload: PatchPayload,
+    change: "PlannedRepositoryChange",
     repository_root: Path,
     issues: list,
 ) -> None:
-    """Verify payload_sha256 and before_sha256 against filesystem."""
-    file_path = repository_root / payload.target_path
+    """Verify payload_sha256 against artifact content and before_sha256 against filesystem."""
+    _validate_payload_artifact_sha(payload, repository_root, issues)
+
+    file_path = _resolve_file_path(payload, change, repository_root)
     actual_before_sha: Optional[str] = None
     if file_path.exists():
         actual_before_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
@@ -97,8 +106,38 @@ def _validate_sha_integrity(
                 category="before_sha_mismatch",
                 description=f"before_sha256 mismatch for {payload.target_path}",
                 payload_id=payload.payload_id,
-                affected_change_ids=[payload.change_id],
+                change_id=payload.change_id,
+                resolution="regenerate",
             ))
+
+
+def _validate_payload_artifact_sha(
+    payload: PatchPayload,
+    repository_root: Path,
+    issues: list,
+) -> None:
+    """Read artifact content from payload_artifact_id and verify against payload_sha256."""
+    artifact_path = repository_root / payload.payload_artifact_id
+    if artifact_path.exists():
+        actual_payload_sha = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        if actual_payload_sha != payload.payload_sha256:
+            issues.append(PatchPayloadValidationIssue(
+                issue_id=f"ppvi_{payload.payload_id}_payload_sha",
+                category="payload_sha_mismatch",
+                description=f"payload_sha256 mismatch for artifact {payload.payload_artifact_id}",
+                payload_id=payload.payload_id,
+                change_id=payload.change_id,
+                resolution="regenerate",
+            ))
+    else:
+        issues.append(PatchPayloadValidationIssue(
+            issue_id=f"ppvi_{payload.payload_id}_payload_sha",
+            category="payload_sha_mismatch",
+            description=f"payload artifact not found: {payload.payload_artifact_id}",
+            payload_id=payload.payload_id,
+            change_id=payload.change_id,
+            resolution="regenerate",
+        ))
 
 
 def _validate_target_before_sha(
@@ -109,7 +148,7 @@ def _validate_target_before_sha(
 ) -> None:
     """Verify target_before_sha256 if replace_existing."""
     if change.target_collision_policy == "replace_existing" and payload.target_before_sha256:
-        target_path = repository_root / payload.target_path
+        target_path = _resolve_target_before_path(payload, change, repository_root)
         if target_path.exists():
             actual = hashlib.sha256(target_path.read_bytes()).hexdigest()
             if payload.target_before_sha256 != actual:
@@ -118,5 +157,34 @@ def _validate_target_before_sha(
                     category="target_before_sha_mismatch",
                     description=f"target_before_sha256 mismatch for {payload.target_path}",
                     payload_id=payload.payload_id,
-                    affected_change_ids=[payload.change_id],
+                    change_id=payload.change_id,
+                    resolution="regenerate",
                 ))
+
+
+def _resolve_file_path(
+    payload: PatchPayload,
+    change: "PlannedRepositoryChange",
+    repository_root: Path,
+) -> Path:
+    """Return the filesystem path to use for SHA comparisons.
+
+    For rename operations the actual target file path is used instead of source.
+    """
+    if change.operation_kind == "rename" and change.rename_target_path:
+        return repository_root / change.rename_target_path
+    return repository_root / payload.target_path
+
+
+def _resolve_target_before_path(
+    payload: PatchPayload,
+    change: "PlannedRepositoryChange",
+    repository_root: Path,
+) -> Path:
+    """Return the filesystem path for target_before_sha256 validation.
+
+    For rename operations the actual target file path is used.
+    """
+    if change.operation_kind == "rename" and change.rename_target_path:
+        return repository_root / change.rename_target_path
+    return repository_root / payload.target_path

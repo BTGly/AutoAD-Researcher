@@ -39,7 +39,7 @@ _FINGERPRINT_TEMPLATE = "b" * 64
 
 
 def _c(cid, ws="ws", kind="create", tm="new_target", path="src/x.py",
-       policy=None, before_sha=None, hook=None, rename_target=None):
+       policy="must_not_exist", before_sha=None, hook=None, rename_target=None):
     return PlannedRepositoryChange(
         change_id=cid, workspace_id=ws, operation_kind=kind, target_mode=tm,
         proposed_symbol=cid.upper() if tm == "new_target" else None,
@@ -71,9 +71,10 @@ def _req(sha="c" * 64):
         patch_plan_sha256=sha,
         patch_payload_manifest_sha256=sha,
         proposed_patch_diff_sha256=sha,
+        patch_payload_validation_report_sha256=sha,
+        patch_plan_validation_report_sha256=sha,
         repository_before_fingerprint=_FINGERPRINT_TEMPLATE,
-        selected_variant_ids=["v1"], workspace_summaries=[],
-        dependency_changes_summary=[],
+        selected_variant_ids=["v1"],
         internal_validation_steps=[], external_validation_commands=[],
         approval_request_sha256=sha,
         created_at=_NOW,
@@ -83,9 +84,13 @@ def _req(sha="c" * 64):
 def _dec(ids, sha="c" * 64):
     change_ids = list(ids) if ids else ["dummy"]
     return FullApprovalDecision(
-        decision_id="ad", workspace_id="ws",
-        approved_patch_plan_sha256=sha,
-        approved_payload_manifest_sha256=sha,
+        decision_id="ad", approval_request_id="ar",
+        approved_request_sha256=sha,
+        workspace_id="ws",
+        patch_plan_sha256=sha,
+        payload_manifest_sha256=sha,
+        approved_diff_sha256=sha,
+        approved_paths=[],
         approved_change_ids=change_ids,
         approved_internal_step_ids=[],
         approved_external_command_ids=[],
@@ -131,8 +136,10 @@ class TestPreflightA01PayloadSHA:
         )
         manifest = build_payload_manifest(
             run_id="run_test", workspace_id="ws",
+            patch_plan_sha256="c" * 64,
             payloads=[payload],
             proposed_diff_artifact_id="diff_1",
+            proposed_diff_sha256="c" * 64,
             manifest_id="manifest_test",
         )
         result = validate_payload_manifest(
@@ -313,8 +320,7 @@ class TestPreflightC12InternalStepUnapproved:
 
     def test_blocked(self, tmp_path):
         step = InternalValidationStep(
-            step_id="step_ast", name="ast_parse", required=True,
-            validation_function="ast_parse",
+            step_id="ast_parse", required=True,
         )
         app = ControlledPatchApplicator()
         c = _c("chg_1", "ws")
@@ -332,12 +338,13 @@ class TestPreflightC12InternalStepUnapproved:
 
 
 class TestPreflightC13UnknownTemplate:
-    """13: ExternalValidationCommand template_id not in registry → validation failed."""
+    """13: ExternalValidationCommand argv mismatch with registered template → validation failed."""
 
     def test_blocked(self):
         cmd = ExternalValidationCommand(
-            command_id="cmd_bad", template_id="nonexistent_template",
+            command_id="cmd_bad", template_id="ruff_check_no_fix",
             resolved_argv=["python", "-c", "pass"],
+            working_directory="/tmp",
             required=True,
         )
         err = validate_command_argv(cmd)
@@ -457,7 +464,7 @@ class TestPreflightD20ManifestSha:
         repo = tmp_path / "repo"
         repo.mkdir()
         dec = _dec(ids=[], sha=plan.patch_plan_sha256)
-        dec2 = dec.model_copy(update={"approved_payload_manifest_sha256": "z" * 64})
+        dec2 = dec.model_copy(update={"payload_manifest_sha256": "z" * 64})
         pf = app.run_preflight(
             plan=plan, request=_req(sha=plan.patch_plan_sha256),
             decision=dec2,
@@ -520,11 +527,10 @@ class TestPreflightD26EmptyStepTarget:
 
     def test_blocked(self):
         step = InternalValidationStep(
-            step_id="step_empty", name="ast_parse", required=True,
-            validation_function="ast_parse",
+            step_id="ast_parse", target_artifact_ids=[], required=True,
         )
         assert step.required
-        # Target artifact resolution failure is caught at deploy time
+        assert step.target_artifact_ids == []
 
 
 class TestPreflightD35DiffShaVsFullDecision:
@@ -538,7 +544,7 @@ class TestPreflightD35DiffShaVsFullDecision:
         req = _req(sha=plan.patch_plan_sha256)
         req2 = req.model_copy(update={"proposed_patch_diff_sha256": "d1" * 32})
         dec = _dec(ids=[], sha=plan.patch_plan_sha256)
-        dec2 = dec.model_copy(update={"approved_payload_manifest_sha256": "d2" * 32})
+        dec2 = dec.model_copy(update={"payload_manifest_sha256": "d2" * 32})
         pf = app.run_preflight(
             plan=plan, request=req2, decision=dec2,
             workspace_id="ws", repository_root=repo, run_id=plan.run_id,
@@ -599,9 +605,13 @@ class TestPreflightE41PartialApprovalUnknownId:
 
     def test_blocked(self):
         dec = PartialApprovalDecision(
-            decision_id="pd", workspace_id="ws",
-            approved_patch_plan_sha256="c" * 64,
-            approved_payload_manifest_sha256="c" * 64,
+            decision_id="pd", approval_request_id="ar",
+            approved_request_sha256="c" * 64,
+            workspace_id="ws",
+            patch_plan_sha256="c" * 64,
+            payload_manifest_sha256="c" * 64,
+            approval_patch_bundle_sha256="c" * 64,
+            approved_paths=[],
             approved_change_ids=["chg_unknown"],
             rejected_change_ids=[],
             approved_internal_step_ids=[],
@@ -624,9 +634,13 @@ class TestPreflightE42PartialApprovalConflict:
 
     def test_blocked(self):
         dec = PartialApprovalDecision(
-            decision_id="pd", workspace_id="ws",
-            approved_patch_plan_sha256="c" * 64,
-            approved_payload_manifest_sha256="c" * 64,
+            decision_id="pd", approval_request_id="ar",
+            approved_request_sha256="c" * 64,
+            workspace_id="ws",
+            patch_plan_sha256="c" * 64,
+            payload_manifest_sha256="c" * 64,
+            approval_patch_bundle_sha256="c" * 64,
+            approved_paths=[],
             approved_change_ids=["chg_1"],
             rejected_change_ids=["chg_1"],
             approved_internal_step_ids=[],
@@ -652,8 +666,10 @@ class TestPreflightE43ManifestPlanSha:
         )
         manifest = build_payload_manifest(
             run_id="run_test", workspace_id="ws",
+            patch_plan_sha256="c" * 64,
             payloads=[payload],
             proposed_diff_artifact_id="diff_1",
+            proposed_diff_sha256="c" * 64,
             manifest_id="manifest_test",
         )
         assert manifest.manifest_id is not None
@@ -672,8 +688,10 @@ class TestPreflightE44ManifestRunId:
         )
         manifest = build_payload_manifest(
             run_id="run_wrong", workspace_id="ws",
+            patch_plan_sha256="c" * 64,
             payloads=[payload],
             proposed_diff_artifact_id="diff_1",
+            proposed_diff_sha256="c" * 64,
             manifest_id="manifest_test",
         )
         assert manifest.manifest_id is not None
@@ -707,27 +725,34 @@ class TestPreflightE47CanonicalTime:
     def test_consistent(self):
         plus_eight = datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone(timedelta(hours=8)))
         utc = datetime(2026, 6, 18, 4, 0, 0, tzinfo=timezone.utc)
-        from autoad_researcher.schemas.patch_planning import _serializable
-        assert _serializable({"dt": plus_eight}) == _serializable({"dt": utc})
+        from autoad_researcher.schemas.patch_planning import _normalize
 
+        assert _normalize({"dt": plus_eight}) == _normalize({"dt": utc})
 
 class TestPreflightE48PayloadBeforeSha:
     """48: payload.target_before_sha256 != change.target_before_sha256 → validation failed."""
 
     def test_mismatch(self, tmp_path):
+        artifact_dir = tmp_path / "runs" / "r" / "ws"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_content = b"placeholder_artifact"
+        (artifact_dir / "x.py").write_bytes(artifact_content)
+        payload_sha = hashlib.sha256(artifact_content).hexdigest()
         payload = PatchPayload(
             payload_id="pld_1", change_id="chg_1",
             payload_kind="full_after_content",
             target_path="src/x.py",
             payload_artifact_id="runs/r/ws/x.py",
-            payload_sha256="c" * 64,
+            payload_sha256=payload_sha,
         )
         change = _c("chg_1", "ws", kind="modify", tm="existing_target",
                     path="src/x.py", policy="replace_existing", before_sha="correct_sha")
         manifest = build_payload_manifest(
             run_id="run_test", workspace_id="ws",
+            patch_plan_sha256="c" * 64,
             payloads=[payload],
             proposed_diff_artifact_id="diff_1",
+            proposed_diff_sha256="c" * 64,
             manifest_id="manifest_test",
         )
         plan = _psha(changes=[change])

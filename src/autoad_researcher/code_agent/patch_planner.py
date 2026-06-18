@@ -2,6 +2,7 @@
 
 Takes selected variants from 3.4/3.5 and produces a RepositoryChangePlan
 with file-level change descriptions. Does NOT modify the repository.
+Pre-allocates deterministic payload_id for every change requiring code synthesis.
 """
 
 import hashlib
@@ -16,12 +17,15 @@ from autoad_researcher.schemas.patch_planning import (
     PlannedTestChange,
     RepositoryChangePlan,
     SymbolContractDelta,
+    canonical_sha,
     compute_canonical_plan_sha256,
 )
 from autoad_researcher.schemas.transfer_design import (
     HookBinding,
     ImplementationVariant,
 )
+
+_PLACEHOLDER_SHA = hashlib.sha256(b"placeholder").hexdigest()
 
 
 class PatchPlannerAgent:
@@ -73,7 +77,6 @@ class PatchPlannerAgent:
                                 f"Hook {binding.hook_id} for variant "
                                 f"{variant.variant_label} not found in known_hooks"
                             ),
-                            artifact_ids=[variant.variant_id, binding.hook_id],
                             resolution="return_to_3_1",
                         )
                     )
@@ -86,6 +89,7 @@ class PatchPlannerAgent:
                 seen_paths.setdefault(path, set()).add(variant.variant_id)
 
                 change_id = f"chg_{_safe_hash(run_id, variant.variant_id, hook.hook_id, str(bi))}"
+                payload_id = f"pld_{_safe_hash(change_id, 'payload')}"
 
                 change = PlannedRepositoryChange(
                     change_id=change_id,
@@ -94,6 +98,7 @@ class PatchPlannerAgent:
                     change_role="implementation",
                     target_mode="existing_target",
                     hook_id=hook.hook_id,
+                    payload_id=payload_id,
                     repository_path=path,
                     variant_ids=[variant.variant_id],
                     rationale=f"Variant {variant.variant_label}: {binding.description}",
@@ -104,7 +109,6 @@ class PatchPlannerAgent:
                         planned_responsibility=f"Augmented: {binding.role}",
                     ),
                     interface_delta=_primary_interface_delta(variant),
-                    risk_category=variant.risk_level,
                 )
                 changes.append(change)
 
@@ -131,7 +135,7 @@ class PatchPlannerAgent:
             dependency_changes=dep_changes,
             configuration_changes=config_changes,
             test_changes=test_changes,
-            patch_plan_sha256="",
+            patch_plan_sha256=_PLACEHOLDER_SHA,
         )
         plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
         return plan, planning_issues

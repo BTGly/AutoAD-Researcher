@@ -37,8 +37,12 @@ def resolve_containment(
     errors: list[str] = []
     for rel_path in touched_paths:
         full = (repository_root / rel_path).resolve()
-        if not str(full).startswith(str(repository_root.resolve())):
-            errors.append(f"symlink escape detected: {rel_path} -> {full}")
+        try:
+            if not full.is_relative_to(repository_root.resolve()):
+                errors.append(f"symlink escape detected: {rel_path} -> {full}")
+        except AttributeError:
+            if not str(full).startswith(str(repository_root.resolve()) + "/") and full != repository_root.resolve():
+                errors.append(f"symlink escape detected: {rel_path} -> {full}")
     return errors
 
 

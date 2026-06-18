@@ -25,6 +25,8 @@ def clone_shared_changes(
     Each cloned change gets:
       - A new change_id (prefixed with 'shared_{target_ws}_')
       - workspace_id set to target_workspace_id
+      - A new payload_id derived from the new change_id
+      - variant_ids empty (rebound by workspace plan)
       - All other fields preserved (operation_kind, target_mode, path, etc.)
 
     Args:
@@ -36,6 +38,8 @@ def clone_shared_changes(
     Returns:
         List of new PlannedRepositoryChange entries.
     """
+    import hashlib
+
     source_change_ids: set[str] = set()
     if change_ids:
         source_change_ids = set(change_ids)
@@ -53,9 +57,12 @@ def clone_shared_changes(
             continue
 
         new_cid = f"shared_{target_workspace_id}_{cid}"
+        new_payload_id = f"pld_{hashlib.sha256(new_cid.encode()).hexdigest()[:16]}"
         clone = original.model_copy(update={
             "change_id": new_cid,
             "workspace_id": target_workspace_id,
+            "payload_id": new_payload_id,
+            "variant_ids": [],
         })
         clones.append(clone)
 
@@ -79,12 +86,24 @@ def build_workspace_binding(
         change_ids=shared_change_ids,
     )
 
+    cloned_ids = [clone.change_id for clone in clones]
     new_changes = list(plan.changes) + clones
 
     from autoad_researcher.schemas.patch_planning import compute_canonical_plan_sha256
 
+    new_workspace_plans = []
+    for wp in plan.workspace_plans:
+        if wp.workspace_id == target_workspace.workspace_id:
+            new_wp = wp.model_copy(update={
+                "planned_change_ids": list(wp.planned_change_ids) + cloned_ids,
+            })
+            new_workspace_plans.append(new_wp)
+        else:
+            new_workspace_plans.append(wp)
+
     new_plan = plan.model_copy(update={
         "changes": new_changes,
+        "workspace_plans": new_workspace_plans,
         "patch_plan_sha256": "",
     })
     new_plan = new_plan.model_copy(update={
@@ -97,11 +116,17 @@ def merge_workspace_manifests(
     *,
     manifests: list[PatchPayloadManifest],
     target_workspace_id: str,
+    run_id: str,
+    patch_plan_sha256: str,
+    proposed_diff_sha256: str,
 ) -> Optional[PatchPayloadManifest]:
     """Merge payload manifests from multiple workspaces into one.
 
     Used when shared changes have been cloned across workspaces and each
     workspace has its own manifest; this produces a unified manifest.
+
+    Each workspace has its own manifest and approval scope; the primary use
+    of merge is for internal tooling that needs a combined view.
     """
     if not manifests:
         return None
@@ -115,12 +140,12 @@ def merge_workspace_manifests(
                 all_payloads.append(p)
                 combined_payload_ids.add(p.payload_id)
 
-    from autoad_researcher.code_agent.patch_materializer import build_payload_manifest
-
     return build_payload_manifest(
-        run_id=manifests[0].manifest_id.split("_manifest_")[0] if "_manifest_" in manifests[0].manifest_id else "run",
+        run_id=run_id,
         workspace_id=target_workspace_id,
+        patch_plan_sha256=patch_plan_sha256,
         payloads=all_payloads,
         proposed_diff_artifact_id=manifests[0].proposed_diff_artifact_id,
+        proposed_diff_sha256=proposed_diff_sha256,
         manifest_id=f"merged_manifest_{target_workspace_id}",
     )

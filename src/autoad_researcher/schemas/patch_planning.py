@@ -1,6 +1,5 @@
-"""Step 3.6–3.7: Patch Planning, Approval & Controlled Application."""
+"""Step 3.6–3.7: Patch Planning, Approval & Controlled Application — v1.5.8 schema."""
 
-import base64
 import json
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -16,9 +15,62 @@ _OPERATION_KIND_VALUES = Literal["create", "modify", "delete", "rename"]
 _CHANGE_ROLE_VALUES = Literal["implementation", "configuration", "test"]
 _TARGET_MODE_VALUES = Literal["existing_target", "new_target"]
 _COLLISION_POLICY_VALUES = Literal["must_not_exist", "replace_existing"]
-_CHECK_KIND_VALUES = Literal["syntax", "format", "static", "type", "import", "unit_test"]
-_ORDERED_LIST_NAMES = {"changes", "validation_commands", "workspace_plans"}
 
+
+# ── Self-referencing canonical SHA exclusion ──────────────────────────
+
+CANONICAL_HASH_EXCLUDED_FIELDS: dict[type[BaseModel], set[str]] = {
+    # populated after class definitions below
+}
+
+
+def _model_canonical_excluded(model_cls: type[BaseModel]) -> set[str]:
+    return CANONICAL_HASH_EXCLUDED_FIELDS.get(model_cls, set())
+
+
+# ── Normalisation helpers ─────────────────────────────────────────────
+
+def _normalize(value: Any) -> Any:
+    """Recursively normalise a Python value for canonical serialisation."""
+    if isinstance(value, BaseModel):
+        d = value.model_dump(exclude_none=True, mode="python")
+        excluded = _model_canonical_excluded(type(value))
+        return {k: _normalize(v) for k, v in sorted(d.items()) if k not in excluded}
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("naive datetime is forbidden in canonical SHA")
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, list):
+        return [_normalize(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _normalize(v) for k, v in sorted(value.items())}
+    return value
+
+
+def canonical_sha(model: BaseModel) -> str:
+    """Compute self-referencing-safe canonical SHA-256 for any BaseModel.
+
+    Excludes the model's self-hash field(s) per CANONICAL_HASH_EXCLUDED_FIELDS,
+    normalises datetimes to UTC Z, preserves list order, and uses compact JSON.
+    """
+    import hashlib
+
+    d = _normalize(model)
+    raw = json.dumps(
+        d,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def compute_canonical_plan_sha256(plan: "RepositoryChangePlan") -> str:
+    return canonical_sha(plan)
+
+
+# ── Core data models ──────────────────────────────────────────────────
 
 class SymbolContractDelta(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -67,6 +119,8 @@ class PatchPayload(BaseModel):
     payload_id: str = Field(pattern=IdentifierPattern)
     change_id: str = Field(pattern=IdentifierPattern)
     payload_kind: Literal["unified_diff", "full_after_content"]
+    payload_media_type: Literal["text/x-diff", "application/octet-stream"] = "text/x-diff"
+    payload_size_bytes: int = 0
     before_sha256: str | None = None
     target_before_sha256: str | None = None
     target_path: str = Field(min_length=1)
@@ -88,12 +142,10 @@ class PlannedRepositoryChange(BaseModel):
     repository_path: str
     variant_ids: list[str] = Field(default_factory=list)
     rationale: str = Field(min_length=1)
-    evidence_ids: list[str] = Field(default_factory=list)
     symbol_delta: SymbolContractDelta | None = None
     interface_delta: InterfaceContractDelta | None = None
-    risk_category: Literal["low", "medium", "high"] = "medium"
     rename_target_path: str | None = None
-    target_collision_policy: _COLLISION_POLICY_VALUES | None = None
+    target_collision_policy: _COLLISION_POLICY_VALUES = "must_not_exist"
     target_before_sha256: str | None = None
 
     @model_validator(mode="after")
@@ -131,7 +183,7 @@ class PlannedRepositoryChange(BaseModel):
 
     @model_validator(mode="after")
     def _validate_collision_policy(self):
-        if self.operation_kind in {"modify", "delete", "rename"}:
+        if self.operation_kind in {"modify", "delete"}:
             if self.target_collision_policy == "replace_existing":
                 if not self.target_before_sha256:
                     raise ValueError(f"change {self.change_id}: replace_existing requires target_before_sha256")
@@ -144,6 +196,8 @@ class PlannedRepositoryChange(BaseModel):
             except ValueError as exc: raise ValueError(f"change {self.change_id}: invalid rename_target_path: {exc}")
         return self
 
+
+# ── Workspace / conflict models ───────────────────────────────────────
 
 _ISOLATION_MODE_VALUES = Literal["shared_workspace", "configuration_switched", "separate_worktree"]
 
@@ -184,6 +238,8 @@ class PatchConflictAnalysis(BaseModel):
     recommendation: str = Field(min_length=1)
 
 
+# ── Plan ──────────────────────────────────────────────────────────────
+
 class RepositoryChangePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal[2] = 2
@@ -203,50 +259,7 @@ class RepositoryChangePlan(BaseModel):
     patch_plan_sha256: str = Field(pattern=Sha256Pattern)
 
 
-def compute_canonical_plan_sha256(plan: "RepositoryChangePlan") -> str:
-    data = {}
-    for field_name in plan.__class__.model_fields:
-        if field_name == "patch_plan_sha256":
-            continue
-        value = getattr(plan, field_name, None)
-        data[field_name] = _serializable(value, field_name in _ORDERED_LIST_NAMES)
-    payload = json.dumps(
-        data,
-        sort_keys=True,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    import hashlib
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _serializable(value: Any, preserve_order: bool = False) -> Any:
-    if isinstance(value, BaseModel):
-        obj = value.model_dump(mode="python", exclude_none=True)
-        return {k: _serializable(v, k in _ORDERED_LIST_NAMES) for k, v in sorted(obj.items())}
-    if isinstance(value, datetime):
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("naive datetime is forbidden in canonical SHA")
-        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    if isinstance(value, list):
-        items = [_serializable(v) for v in value]
-        if preserve_order:
-            return items
-        return sorted(
-            items,
-            key=lambda x: json.dumps(
-                x,
-                sort_keys=True,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-        )
-    if isinstance(value, dict):
-        return {k: _serializable(v) for k, v in sorted(value.items())}
-    return value
-
+# ── Validation reports ────────────────────────────────────────────────
 
 class PatchPlanValidationIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -257,8 +270,6 @@ class PatchPlanValidationIssue(BaseModel):
         "evidence_missing", "policy_violation", "target_before_sha_mismatch",
     ]
     description: str = Field(min_length=1)
-    artifact_ids: list[str] = Field(default_factory=list)
-    affected_change_ids: list[str] = Field(default_factory=list)
     resolution: Literal["repair_change", "return_to_3_1", "blocked"]
 
 
@@ -275,23 +286,29 @@ class PatchPlanValidationReport(BaseModel):
 class PatchPayloadManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     manifest_id: str = Field(pattern=IdentifierPattern)
+    run_id: str = Field(pattern=IdentifierPattern)
     workspace_id: str = Field(pattern=IdentifierPattern)
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
     payloads: list[PatchPayload] = Field(default_factory=list)
     proposed_diff_artifact_id: str = Field(min_length=1)
+    proposed_diff_sha256: str = Field(pattern=Sha256Pattern)
     manifest_sha256: str = Field(pattern=Sha256Pattern)
 
 
 class PatchPayloadValidationIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
     issue_id: str = Field(pattern=IdentifierPattern)
+    payload_id: str | None = None
+    change_id: str | None = None
     category: Literal[
-        "payload_sha_mismatch", "before_sha_mismatch", "target_before_sha_mismatch",
-        "undeclared_path", "undeclared_file_creation", "diff_content_mismatch",
-        "rename_target_path_conflict",
+        "payload_sha_mismatch", "before_sha_mismatch",
+        "target_before_sha_mismatch",
+        "undeclared_path", "undeclared_file_creation",
+        "file_mode_change", "symlink_change", "submodule_change",
+        "unsupported_payload_kind",
     ]
     description: str = Field(min_length=1)
-    payload_id: str | None = None
-    affected_change_ids: list[str] = Field(default_factory=list)
+    resolution: Literal["regenerate", "blocked"]
 
 
 class PatchPayloadValidationReport(BaseModel):
@@ -304,33 +321,47 @@ class PatchPayloadValidationReport(BaseModel):
     validated_at: datetime
 
 
+# ── Internal / external validation ────────────────────────────────────
+
 class InternalValidationStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    step_id: str = Field(pattern=IdentifierPattern)
-    name: str = Field(min_length=1)
-    required: bool = False
-    validation_function: Literal["ast_parse", "diff_integrity", "path_containment", "before_after_identity"]
+    step_id: Literal[
+        "ast_parse",
+        "diff_integrity",
+        "path_containment",
+        "import_declaration_scan",
+    ]
     target_artifact_ids: list[str] = Field(default_factory=list)
+    required: bool = True
 
 
 class ExternalValidationCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command_id: str = Field(pattern=IdentifierPattern)
-    template_id: str = Field(min_length=1)
+    template_id: Literal["ruff_check_no_fix", "ruff_format_check"]
     resolved_argv: list[str] = Field(min_length=1)
-    working_directory: str | None = None
-    required: bool = False
+    working_directory: str = Field(min_length=1)
+    required: bool = True
 
+
+# ── Bundle ────────────────────────────────────────────────────────────
 
 class ApprovalPatchBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
     bundle_id: str = Field(pattern=IdentifierPattern)
     approval_request_id: str = Field(min_length=1)
+    created_at: datetime
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
     workspace_id: str = Field(pattern=IdentifierPattern)
     approved_change_ids: list[str] = Field(default_factory=list)
+    approved_payload_ids: list[str] = Field(default_factory=list)
     approved_diff_artifact_id: str = Field(min_length=1)
+    approved_diff_sha256: str = Field(pattern=Sha256Pattern)
+    payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
     bundle_sha256: str = Field(pattern=Sha256Pattern)
 
+
+# ── Narrow repository read ────────────────────────────────────────────
 
 class SymbolQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -358,7 +389,7 @@ class RepositoryScopeExpansionRequired(BaseModel):
     cause_change_ids: list[str] = Field(default_factory=list)
     cause_hook_ids: list[str] = Field(default_factory=list)
     missing_paths: list[str] = Field(default_factory=list)
-    missing_symbols: list[SymbolQuery] = Field(default_factory=list)
+    missing_symbols: list[str] = Field(default_factory=list)
     required_evidence_types: list[str] = Field(default_factory=list)
     current_repository_source_id: str = Field(min_length=1)
     current_repository_commit: str = Field(min_length=1)
@@ -366,6 +397,8 @@ class RepositoryScopeExpansionRequired(BaseModel):
     reason: str = Field(min_length=1)
     completion_criteria: list[str] = Field(default_factory=list)
 
+
+# ── Workspace summary ─────────────────────────────────────────────────
 
 class WorkspaceApprovalSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -377,17 +410,7 @@ class WorkspaceApprovalSummary(BaseModel):
     risk_ids: list[str] = Field(default_factory=list)
 
 
-class ValidationCommand(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    command_id: str = Field(pattern=IdentifierPattern)
-    label: str = Field(min_length=1)
-    check_kind: _CHECK_KIND_VALUES
-    required: bool = False
-    argv: list[str] = Field(min_length=1)
-    expected_exit_code: int = 0
-    timeout_seconds: int = 120
-    working_directory: str | None = None
-
+# ── Approval request ──────────────────────────────────────────────────
 
 class ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -397,30 +420,36 @@ class ApprovalRequest(BaseModel):
     patch_plan_sha256: str = Field(pattern=Sha256Pattern)
     patch_payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
     proposed_patch_diff_sha256: str = Field(pattern=Sha256Pattern)
+    patch_payload_validation_report_sha256: str = Field(pattern=Sha256Pattern)
+    patch_plan_validation_report_sha256: str = Field(pattern=Sha256Pattern)
     repository_before_fingerprint: str = Field(min_length=1)
     selected_variant_ids: list[str] = Field(default_factory=list)
     overall_risk_level: Literal["low", "medium", "high"] = "medium"
-    workspace_summaries: list[WorkspaceApprovalSummary] = Field(default_factory=list)
-    dependency_changes_summary: list[PlannedDependencyChange] = Field(default_factory=list)
+    workspace_summary: WorkspaceApprovalSummary | None = None
     internal_validation_steps: list[InternalValidationStep] = Field(default_factory=list)
     external_validation_commands: list[ExternalValidationCommand] = Field(default_factory=list)
-    rollback_plan_sha256: str | None = None
     approval_request_sha256: str = Field(pattern=Sha256Pattern)
     created_at: datetime
 
 
+# ── Approval decisions ────────────────────────────────────────────────
+
 class FullApprovalDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision_id: str = Field(pattern=IdentifierPattern)
-    decision: Literal["full"] = "full"
+    decision: Literal["approve_all"] = "approve_all"
+    approval_request_id: str = Field(min_length=1)
+    approved_request_sha256: str = Field(pattern=Sha256Pattern)
     workspace_id: str = Field(pattern=IdentifierPattern)
-    approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
-    approved_payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
+    approved_diff_sha256: str = Field(pattern=Sha256Pattern)
     approved_change_ids: list[str] = Field(default_factory=list)
+    approved_paths: list[str] = Field(default_factory=list)
+    approved_ask_paths: list[str] = Field(default_factory=list)
     approved_internal_step_ids: list[str] = Field(default_factory=list)
     approved_external_command_ids: list[str] = Field(default_factory=list)
     approved_collision_change_ids: list[str] = Field(default_factory=list)
-    approved_ask_paths: list[str] = Field(default_factory=list)
     user_evidence_id: str = Field(pattern=IdentifierPattern)
     decided_at: datetime
 
@@ -434,16 +463,20 @@ class FullApprovalDecision(BaseModel):
 class PartialApprovalDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision_id: str = Field(pattern=IdentifierPattern)
-    decision: Literal["partial"] = "partial"
+    decision: Literal["approve_partial"] = "approve_partial"
+    approval_request_id: str = Field(min_length=1)
+    approved_request_sha256: str = Field(pattern=Sha256Pattern)
     workspace_id: str = Field(pattern=IdentifierPattern)
-    approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
-    approved_payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    payload_manifest_sha256: str = Field(pattern=Sha256Pattern)
+    approval_patch_bundle_sha256: str = Field(pattern=Sha256Pattern)
     approved_change_ids: list[str] = Field(default_factory=list)
     rejected_change_ids: list[str] = Field(default_factory=list)
+    approved_paths: list[str] = Field(default_factory=list)
+    approved_ask_paths: list[str] = Field(default_factory=list)
     approved_internal_step_ids: list[str] = Field(default_factory=list)
     approved_external_command_ids: list[str] = Field(default_factory=list)
     approved_collision_change_ids: list[str] = Field(default_factory=list)
-    approved_ask_paths: list[str] = Field(default_factory=list)
     user_evidence_id: str = Field(pattern=IdentifierPattern)
     decided_at: datetime
 
@@ -457,16 +490,20 @@ class PartialApprovalDecision(BaseModel):
 class RejectDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision_id: str = Field(pattern=IdentifierPattern)
-    decision: Literal["reject"] = "reject"
+    decision: Literal["reject", "revise"] = "reject"
+    approval_request_id: str = Field(min_length=1)
     workspace_id: str = Field(pattern=IdentifierPattern)
-    approved_patch_plan_sha256: str = Field(pattern=Sha256Pattern)
+    patch_plan_sha256: str = Field(pattern=Sha256Pattern)
     rejected_request_sha256: str = Field(pattern=Sha256Pattern)
+    reason: str | None = None
     user_evidence_id: str = Field(pattern=IdentifierPattern)
     decided_at: datetime
 
 
 ApprovalDecision = FullApprovalDecision | PartialApprovalDecision | RejectDecision
 
+
+# ── Application models ────────────────────────────────────────────────
 
 class ChangedFileEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -608,13 +645,9 @@ class PatchExecutionResult(BaseModel):
         return self
 
 
-# ---------------------------------------------------------------------------
-# Step 3.7 → 3.8: Multi-workspace PatchRunnerHandoff v2
-# ---------------------------------------------------------------------------
-
+# ── Step 3.7 → 3.8 handoff ────────────────────────────────────────────
 
 class BaselineWorkspaceRef(BaseModel):
-    """Baseline workspace — repo without any variant patch applied."""
     model_config = ConfigDict(extra="forbid")
     workspace_id: str = Field(pattern=IdentifierPattern)
     repository_fingerprint: str = Field(min_length=1)
@@ -623,7 +656,6 @@ class BaselineWorkspaceRef(BaseModel):
 
 
 class VariantWorkspaceHandoff(BaseModel):
-    """A workspace with one or more variant patches applied."""
     model_config = ConfigDict(extra="forbid")
     workspace_id: str = Field(pattern=IdentifierPattern)
     variant_ids: list[str] = Field(min_length=1)
@@ -635,10 +667,6 @@ class VariantWorkspaceHandoff(BaseModel):
 
 
 class PatchRunnerHandoff(BaseModel):
-    """Structured handoff from Step 3.7 to Step 3.8.
-
-    v2: supports multiple variant workspaces + baseline workspace.
-    """
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal[2] = 2
     status: Literal["eligible_for_runner_intake"] = "eligible_for_runner_intake"
@@ -658,17 +686,13 @@ class PatchRunnerHandoff(BaseModel):
         workspace_variant_ids = list(chain.from_iterable(
             ws.variant_ids for ws in self.variant_workspaces
         ))
-
         if len(selected) != len(set(selected)):
             raise ValueError("duplicate selected_variant_ids")
-
         workspace_id_list = [ws.workspace_id for ws in self.variant_workspaces]
         if len(workspace_id_list) != len(set(workspace_id_list)):
             raise ValueError("duplicate workspace_id in variant_workspaces")
-
         if len(workspace_variant_ids) != len(set(workspace_variant_ids)):
             raise ValueError("variant appears in multiple workspaces")
-
         if set(selected) != set(workspace_variant_ids):
             missing = set(selected) - set(workspace_variant_ids)
             extra = set(workspace_variant_ids) - set(selected)
@@ -679,3 +703,13 @@ class PatchRunnerHandoff(BaseModel):
                 parts.append(f"workspace variants not selected: {sorted(extra)}")
             raise ValueError("; ".join(parts))
         return self
+
+
+# ── Register self-hash exclusions after all models are defined ────────
+
+CANONICAL_HASH_EXCLUDED_FIELDS.update({
+    ApprovalRequest: {"approval_request_sha256"},
+    PatchPayloadManifest: {"manifest_sha256"},
+    ApprovalPatchBundle: {"bundle_sha256"},
+    RepositoryChangePlan: {"patch_plan_sha256"},
+})
