@@ -10,10 +10,12 @@ from autoad_researcher.experiment.adapter_34 import (
     compute_unresolved_dimension_id,
     derive_preparation_phase,
 )
+from autoad_researcher.experiment.shared_protocol import build_shared_protocol
 
 __all__ = [
     "Stage34HandoffError",
     "Stage34InputAdapter",
+    "build_shared_protocol",
     "compute_unresolved_dimension_id",
     "derive_preparation_phase",
 ]
