@@ -14,8 +14,7 @@ from autoad_researcher.schemas.patch_planning import (
     FullApprovalDecision, PartialApprovalDecision,
     PatchPlanValidationIssue, PatchPlanValidationReport,
     PlannedRepositoryChange, RejectDecision, RepositoryChangePlan,
-    compute_canonical_plan_sha256,
-    _normalize,
+    _normalize, canonical_sha, compute_canonical_plan_sha256,
 )
 from autoad_researcher.code_agent.approval import (
     compute_approval_effective_write_paths,
@@ -27,6 +26,7 @@ from autoad_researcher.code_agent.patch_applicator import ControlledPatchApplica
 from autoad_researcher.code_agent.planner_validator import validate_repository_change_plan
 
 _NOW = datetime.now(timezone.utc)
+_FPT = "b" * 64
 
 
 class _DatetimeProbe(BaseModel):
@@ -52,31 +52,34 @@ def _psha(changes=None, deps=None, **kw):
 
 
 def _req(sha="c" * 64):
-    return ApprovalRequest(
+    _empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    req = ApprovalRequest(
         approval_request_id="ar", run_id="run_test",
         workspace_id="ws",
         patch_plan_sha256=sha,
-        patch_payload_manifest_sha256=sha,
-        proposed_patch_diff_sha256=sha,
-        patch_payload_validation_report_sha256=sha,
-        patch_plan_validation_report_sha256=sha,
+        patch_payload_manifest_sha256=_empty,
+        proposed_patch_diff_sha256=_empty,
+        patch_payload_validation_report_sha256=_empty,
+        patch_plan_validation_report_sha256=_empty,
         repository_before_fingerprint="b" * 64,
         selected_variant_ids=[],
         internal_validation_steps=[], external_validation_commands=[],
-        approval_request_sha256=sha,
+        approval_request_sha256=_empty,
         created_at=_NOW,
     )
+    return req.model_copy(update={"approval_request_sha256": canonical_sha(req)})
 
 
 def _dec_full(approved_change_ids=None, sha="c" * 64, approved_ask_paths=None):
+    _empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     return FullApprovalDecision(
         decision_id="ad",
         approval_request_id="ar",
-        approved_request_sha256=sha,
+        approved_request_sha256=_req(sha).approval_request_sha256,
         workspace_id="ws",
         patch_plan_sha256=sha,
-        payload_manifest_sha256=sha,
-        approved_diff_sha256=sha,
+        payload_manifest_sha256=_empty,
+        approved_diff_sha256=_empty,
         approved_paths=[],
         approved_change_ids=approved_change_ids or [],
         approved_internal_step_ids=[],
@@ -88,14 +91,15 @@ def _dec_full(approved_change_ids=None, sha="c" * 64, approved_ask_paths=None):
 
 
 def _dec(approved_change_ids=None, sha="c" * 64, approved_ask_paths=None):
+    _empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     return FullApprovalDecision(
         decision_id="ad",
         approval_request_id="ar",
-        approved_request_sha256=sha,
+        approved_request_sha256=_req(sha).approval_request_sha256,
         workspace_id="ws",
         patch_plan_sha256=sha,
-        payload_manifest_sha256=sha,
-        approved_diff_sha256=sha,
+        payload_manifest_sha256=_empty,
+        approved_diff_sha256=_empty,
         approved_paths=[],
         approved_change_ids=approved_change_ids or [],
         approved_internal_step_ids=[],
@@ -205,7 +209,8 @@ class TestFailClosedResult:
 class TestPreflight:
     def test_sha_checks(self, tmp_path):
         app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
-        plan = _psha()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
         repo = tmp_path / "repo"; repo.mkdir()
         fp = _fp(repo)
         plan = plan.model_copy(update={"repository_fingerprint": fp})
@@ -217,13 +222,15 @@ class TestPreflight:
 
     def test_sha_mismatch(self, tmp_path):
         app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
-        plan = _psha(); repo = tmp_path / "repo"; repo.mkdir()
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c]); repo = tmp_path / "repo"; repo.mkdir()
         fp = _fp(repo)
         plan = plan.model_copy(update={"repository_fingerprint": fp})
         plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
         dec = _dec(sha=plan.patch_plan_sha256, approved_change_ids=["chg_1"])
         pf = app.run_preflight(plan=plan, request=_req(sha="d" * 64), decision=dec, workspace_id="ws", repository_root=repo, run_id=plan.run_id)
-        assert not pf.request_sha_valid
+        assert not pf.ready
+        assert any("A5" in issue for issue in pf.issues)
 
     def test_blocks_on_fail(self, tmp_path):
         app = ControlledPatchApplicator(policy_allowed_paths={"src/"})

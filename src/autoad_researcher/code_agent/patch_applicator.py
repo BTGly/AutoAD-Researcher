@@ -59,68 +59,305 @@ class ControlledPatchApplicator:
         try:
             candidate = (repository_root / path_key).resolve()
             root = repository_root.resolve()
-            if not str(candidate).startswith(str(root) + os.sep) and candidate != root:
-                return None
+            try:
+                if not candidate.is_relative_to(root):
+                    return None
+            except AttributeError:
+                if not str(candidate).startswith(str(root) + os.sep) and candidate != root:
+                    return None
             return candidate
         except (ValueError, OSError):
             return None
 
+    # ── Full Preflight A1–E10 ─────────────────────────────────────────
+
     def run_preflight(self, *, plan: RepositoryChangePlan, request: ApprovalRequest,
                       decision: ApprovalDecision, workspace_id: str,
                       repository_root: Path, run_id: str,
+                      manifest: "PatchPayloadManifest | None" = None,
                       validation_report: PatchPlanValidationReport | None = None,
-                      payload_manifest_sha256: str | None = None) -> PatchApplicationPreflightResult:
+                      payload_validation_report: "PatchPayloadValidationReport | None" = None,
+                      bundle: "ApprovalPatchBundle | None" = None,
+                      blocked_change_ids: set[str] | None = None,
+                      ) -> PatchApplicationPreflightResult:
+        """Execute full A1–E10 preflight per v1.5.8. Returns issues and readiness."""
+        from autoad_researcher.schemas.patch_planning import (
+            ApprovalPatchBundle, PatchPayloadManifest,
+            PatchPayloadValidationReport,
+        )
+
         issues: list[str] = []
-        canonical = compute_canonical_plan_sha256(plan)
-        psv = canonical == plan.patch_plan_sha256
-        if not psv:
-            issues.append("patch_plan_sha256 mismatch")
-        dsv = _decision_plan_sha(decision) == plan.patch_plan_sha256
-        if not dsv:
-            issues.append("decision SHA != plan SHA")
-        rsv = request.patch_plan_sha256 == plan.patch_plan_sha256
-        if not rsv:
-            issues.append("request SHA != plan SHA")
-        actual = _fingerprint(repository_root)
-        fpm = actual == plan.repository_fingerprint
-        if not fpm:
-            issues.append(f"fingerprint mismatch: {actual[:16]} != {plan.repository_fingerprint[:16]}")
-        ridm = run_id == plan.run_id
-        if not ridm:
-            issues.append("run_id mismatch")
-        wse = any(w.workspace_id == workspace_id for w in plan.workspace_plans)
-        if not wse:
-            issues.append(f"workspace {workspace_id} not in plan.workspace_plans")
-        vrv = False
+        blocked = blocked_change_ids or set()
+
+        # A1: decision binds to request
+        a1 = _decision_request_id(decision) == request.approval_request_id
+        if not a1:
+            issues.append("A1: decision.approval_request_id != request.approval_request_id")
+
+        # A2: run_id consistency
+        a2 = (request.run_id == plan.run_id)
+        if manifest:
+            a2 = a2 and (manifest.run_id == plan.run_id)
+        if not a2:
+            issues.append("A2: run_id mismatch across request/plan/manifest")
+
+        # A3: canonical_sha(request) == request.approval_request_sha256 == decision.approved_request_sha256
+        req_canonical = canonical_sha(request)
+        a3 = (req_canonical == request.approval_request_sha256)
+        if isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)):
+            a3 = a3 and (req_canonical == decision.approved_request_sha256)
+        if not a3:
+            issues.append("A3: canonical_sha(request) != request.approval_request_sha256 or decision.approved_request_sha256")
+
+        # A4: canonical_sha(plan) == plan.patch_plan_sha256
+        a4 = compute_canonical_plan_sha256(plan) == plan.patch_plan_sha256
+        if not a4:
+            issues.append("A4: canonical_sha(plan) != plan.patch_plan_sha256")
+
+        # A5: decision.patch_plan_sha256 == plan.patch_plan_sha256 == request.patch_plan_sha256
+        a5 = (decision.patch_plan_sha256 == plan.patch_plan_sha256 == request.patch_plan_sha256)
+        if not a5:
+            issues.append("A5: decision/request patch_plan_sha256 != plan.patch_plan_sha256")
+
+        # A6: decision.payload_manifest_sha256 == manifest.manifest_sha256 == request.patch_payload_manifest_sha256
+        if manifest:
+            a6 = (decision.payload_manifest_sha256 == manifest.manifest_sha256 == request.patch_payload_manifest_sha256)
+            if not a6:
+                issues.append("A6: decision/request payload manifest SHA mismatch")
+        else:
+            a6 = True
+
+        # A7: manifest.patch_plan_sha256 == plan.patch_plan_sha256
+        if manifest:
+            a7 = manifest.patch_plan_sha256 == plan.patch_plan_sha256
+            if not a7:
+                issues.append("A7: manifest.patch_plan_sha256 != plan.patch_plan_sha256")
+        else:
+            a7 = True
+
+        # A8: workspace_id consistency
+        a8 = (decision.workspace_id == request.workspace_id)
+        if manifest:
+            a8 = a8 and (manifest.workspace_id == request.workspace_id)
+        if not a8:
+            issues.append("A8: workspace_id mismatch across decision/request/manifest")
+
+        # A9: repository fingerprint
+        actual_fp = _fingerprint(repository_root)
+        a9 = (request.repository_before_fingerprint == plan.repository_fingerprint == actual_fp)
+        if not a9:
+            issues.append(f"A9: fingerprint mismatch: request={request.repository_before_fingerprint[:16]}, plan={plan.repository_fingerprint[:16]}, actual={actual_fp[:16]}")
+
+        # A10: workspace exists in plan
+        a10 = any(w.workspace_id == workspace_id for w in plan.workspace_plans)
+        if not a10:
+            issues.append(f"A10: workspace {workspace_id} not in plan.workspace_plans")
+
+        # A11: variant scope
+        ws_plan = next((w for w in plan.workspace_plans if w.workspace_id == workspace_id), None)
+        if ws_plan and request.workspace_summary:
+            a11 = (set(ws_plan.variant_ids) == set(request.workspace_summary.variant_ids)
+                   == set(request.selected_variant_ids))
+            if not a11:
+                issues.append("A11: variant_ids mismatch across workspace_plan/summary/selected")
+        else:
+            a11 = True
+
+        # A12: Plan Validation Report
+        a12 = True
         if validation_report:
-            vrv = (validation_report.run_id == plan.run_id
+            a12 = (validation_report.run_id == plan.run_id
                    and validation_report.patch_plan_sha256 == plan.patch_plan_sha256
                    and validation_report.status == "passed"
                    and not validation_report.issues)
-            if not vrv:
-                issues.append("validation_report not valid")
-        msm = True
-        if payload_manifest_sha256 and hasattr(request, 'patch_payload_manifest_sha256'):
-            msm = request.patch_payload_manifest_sha256 == payload_manifest_sha256
-            if not msm:
-                issues.append("payload manifest SHA mismatch")
-        ready = all([psv, dsv, rsv, fpm, ridm, wse, vrv, msm])
+            if not a12:
+                issues.append("A12: plan validation report not valid")
+        # if request has plan_validation_report_sha256, we verify it was provided
+        if request.patch_plan_validation_report_sha256 and request.patch_plan_validation_report_sha256 != _EMPTY_SHA:
+            if validation_report is None:
+                a12 = False
+                issues.append("A12: plan validation report required but not provided")
+
+        # A13: Payload Validation Report
+        a13 = True
+        if payload_validation_report:
+            a13 = (payload_validation_report.patch_plan_sha256 == plan.patch_plan_sha256
+                   and payload_validation_report.status == "passed"
+                   and not payload_validation_report.issues)
+            if manifest:
+                a13 = a13 and (payload_validation_report.payload_manifest_sha256 == manifest.manifest_sha256)
+            if not a13:
+                issues.append("A13: payload validation report not valid")
+        if request.patch_payload_validation_report_sha256 and request.patch_payload_validation_report_sha256 != _EMPTY_SHA:
+            if payload_validation_report is None:
+                a13 = False
+                issues.append("A13: payload validation report required but not provided")
+
+        # A14: derive_paths(approved_change_ids) == approved_paths
+        workspace_changes = [c for c in plan.changes if c.workspace_id == workspace_id]
+        a14 = _verify_approved_paths_projection(decision, workspace_changes, issues)
+
+        # A15: workspace_summary.workspace_id matches
+        if request.workspace_summary:
+            a15 = request.workspace_summary.workspace_id == request.workspace_id
+            if not a15:
+                issues.append("A15: workspace_summary.workspace_id != request.workspace_id")
+        else:
+            a15 = True
+
+        # A16: payload.target_before_sha256 == change.target_before_sha256
+        a16 = True
+        if manifest:
+            for payload in manifest.payloads:
+                matching = [c for c in plan.changes if c.change_id == payload.change_id]
+                if matching:
+                    change = matching[0]
+                    if (payload.target_before_sha256 or change.target_before_sha256):
+                        if payload.target_before_sha256 != change.target_before_sha256:
+                            a16 = False
+                            issues.append(f"A16: payload/change target_before_sha256 mismatch for {payload.change_id}")
+                            break
+
+        # ── B: Full approval binding ──
+        b_all = True
+        if isinstance(decision, FullApprovalDecision):
+            b1 = True  # diff SHA check
+            if manifest:
+                b1 = (request.proposed_patch_diff_sha256 == decision.approved_diff_sha256
+                      == manifest.proposed_diff_sha256)
+            if not b1:
+                b_all = False; issues.append("B1: full approval diff SHA mismatch")
+            # B3: approved_change_ids == workspace non-blocked changes
+            ws_non_blocked = {c.change_id for c in workspace_changes if c.change_id not in blocked}
+            b3 = set(decision.approved_change_ids) == ws_non_blocked
+            if not b3:
+                b_all = False; issues.append("B3: full approval does not cover all workspace non-blocked changes")
+        else:
+            b_all = True
+
+        # ── C: Partial approval binding ──
+        c_all = True
+        if isinstance(decision, PartialApprovalDecision):
+            if bundle:
+                c1 = bundle.approval_request_id == request.approval_request_id
+                if not c1:
+                    c_all = False; issues.append("C1: bundle.approval_request_id != request.approval_request_id")
+                c2 = decision.approval_patch_bundle_sha256 == canonical_sha(bundle)
+                if not c2:
+                    c_all = False; issues.append("C2: bundle canonical SHA mismatch")
+                c3 = bundle.patch_plan_sha256 == plan.patch_plan_sha256
+                if not c3:
+                    c_all = False; issues.append("C3: bundle.patch_plan_sha256 != plan.patch_plan_sha256")
+                if manifest:
+                    c4 = bundle.payload_manifest_sha256 == manifest.manifest_sha256
+                    if not c4:
+                        c_all = False; issues.append("C4: bundle.payload_manifest_sha256 != manifest.manifest_sha256")
+                c5 = bundle.workspace_id == request.workspace_id
+                if not c5:
+                    c_all = False; issues.append("C5: bundle.workspace_id != request.workspace_id")
+                c6 = set(decision.approved_change_ids) == set(bundle.approved_change_ids)
+                if not c6:
+                    c_all = False; issues.append("C6: decision/bundle approved_change_ids mismatch")
+            ws_reviewable = {c.change_id for c in workspace_changes if c.change_id not in blocked}
+            c10 = set(decision.approved_change_ids).issubset(ws_reviewable)
+            if not c10:
+                c_all = False; issues.append("C10: approved_change_ids not subset of workspace reviewable")
+            c11 = set(decision.rejected_change_ids).issubset(ws_reviewable)
+            if not c11:
+                c_all = False; issues.append("C11: rejected_change_ids not subset of workspace reviewable")
+            c12 = not set(decision.approved_change_ids) & set(decision.rejected_change_ids)
+            if not c12:
+                c_all = False; issues.append("C12: approved ∩ rejected non-empty")
+            c13 = set(decision.approved_change_ids) | set(decision.rejected_change_ids) == ws_reviewable
+            if not c13:
+                c_all = False; issues.append("C13: partial approval does not cover all reviewable changes")
+
+        # ── D: Validation authorization ──
+        d_all = True
+        request_step_ids = {s.step_id for s in request.internal_validation_steps}
+        d1 = set(decision.approved_internal_step_ids).issubset(request_step_ids)
+        if not d1:
+            d_all = False; issues.append("D1: approved internal steps not subset of request steps")
+        request_cmd_ids = {c.command_id for c in request.external_validation_commands}
+        d2 = set(decision.approved_external_command_ids).issubset(request_cmd_ids)
+        if not d2:
+            d_all = False; issues.append("D2: approved commands not subset of request commands")
+        for step in request.internal_validation_steps:
+            if step.required and step.step_id not in decision.approved_internal_step_ids:
+                d_all = False
+                issues.append(f"D3: required step {step.step_id} not approved")
+        for cmd in request.external_validation_commands:
+            if cmd.required and cmd.command_id not in decision.approved_external_command_ids:
+                d_all = False
+                issues.append(f"D3: required command {cmd.command_id} not approved")
+        for step in request.internal_validation_steps:
+            if step.required and not step.target_artifact_ids:
+                d_all = False
+                issues.append(f"D4: required step {step.step_id} has empty target_artifact_ids")
+
+        # ── E: Collision and path policy ──
+        e_all = True
+        e1 = set(decision.approved_collision_change_ids).issubset(set(decision.approved_change_ids))
+        if not e1:
+            e_all = False; issues.append("E1: approved_collision_change_ids not subset of approved_change_ids")
+        for c in plan.changes:
+            if c.workspace_id == workspace_id and c.target_collision_policy == "replace_existing":
+                abs_path = repository_root / c.repository_path
+                tgt = repository_root / c.rename_target_path if c.rename_target_path else abs_path
+                if tgt.exists() and c.change_id not in decision.approved_collision_change_ids:
+                    e_all = False; issues.append(f"E2: replace_existing change {c.change_id} not in collision approval")
+        for cid in decision.approved_collision_change_ids:
+            change = next((c for c in plan.changes if c.change_id == cid), None)
+            if change and change.target_collision_policy not in ("replace_existing",):
+                e_all = False; issues.append(f"E3: non-collision change {cid} in collision approval")
+
+        # E4: allow scope must be non-empty for any workspace with writes
+        has_policy_writes = any(
+            c.workspace_id == workspace_id
+            and c.change_id in decision.approved_change_ids
+            for c in plan.changes
+        )
+        if has_policy_writes:
+            e4 = self._policy_allowed_set is not None and len(self._policy_allowed_set) > 0
+            if not e4:
+                e_all = False; issues.append("E4: allow scope must be non-empty")
+
+        # E10: symlink escape
+        for c in plan.changes:
+            if c.workspace_id == workspace_id and c.change_id in decision.approved_change_ids:
+                abs_path = self._check_and_resolve_path(repository_root, c.repository_path)
+                if abs_path is None:
+                    e_all = False; issues.append(f"E10: path escape for {c.repository_path}")
+                    break
+                if c.rename_target_path:
+                    tgt = self._check_and_resolve_path(repository_root, c.rename_target_path)
+                    if tgt is None:
+                        e_all = False; issues.append(f"E10: rename target escape for {c.rename_target_path}")
+                        break
+
+        ready = all([a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16,
+                     b_all, c_all, d_all, e_all])
         return PatchApplicationPreflightResult(
             preflight_id=f"preflight_{run_id}_{workspace_id}", run_id=run_id, workspace_id=workspace_id,
-            plan_sha_valid=psv, decision_sha_valid=dsv, request_sha_valid=rsv,
-            repository_fingerprint_match=fpm, run_id_match=ridm,
-            workspace_exists_in_plan=wse, validation_report_valid=vrv,
+            plan_sha_valid=a4, decision_sha_valid=a5, request_sha_valid=a3,
+            repository_fingerprint_match=a9, run_id_match=a2,
+            workspace_exists_in_plan=a10, validation_report_valid=(a12 and a13),
             ready=ready, issues=issues,
         )
 
     def apply_patch(self, *, plan: RepositoryChangePlan, decision: ApprovalDecision,
                     request: ApprovalRequest, workspace_id: str,
                     repository_root: Path, run_id: str,
+                    manifest: "PatchPayloadManifest | None" = None,
                     validation_report: PatchPlanValidationReport | None = None,
+                    payload_validation_report: "PatchPayloadValidationReport | None" = None,
+                    bundle: "ApprovalPatchBundle | None" = None,
                     payload_manifest: list[PatchPayload] | None = None) -> PatchExecutionResult:
         preflight = self.run_preflight(
             plan=plan, request=request, decision=decision, workspace_id=workspace_id,
-            repository_root=repository_root, run_id=run_id, validation_report=validation_report,
+            repository_root=repository_root, run_id=run_id,
+            manifest=manifest, validation_report=validation_report,
+            payload_validation_report=payload_validation_report, bundle=bundle,
         )
         if not preflight.ready:
             return PatchExecutionResult(result_id=f"result_{run_id}", run_id=run_id,
@@ -500,6 +737,17 @@ def _decision_plan_sha(d):
     return d.patch_plan_sha256
 
 
+def _decision_request_id(d):
+    if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
+        return d.approval_request_id
+    if isinstance(d, RejectDecision):
+        return d.approval_request_id
+    return ""
+
+
+_EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
 def _decision_approved_ids(d):
     if isinstance(d, (FullApprovalDecision, PartialApprovalDecision)):
         return set(d.approved_change_ids)
@@ -741,3 +989,17 @@ def _fingerprint(root: Path) -> str:
 
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _verify_approved_paths_projection(decision: ApprovalDecision,
+                                       workspace_changes: list[PlannedRepositoryChange],
+                                       issues: list[str]) -> bool:
+    """Verify approved_paths derive exactly from approved_change_ids."""
+    if not isinstance(decision, (FullApprovalDecision, PartialApprovalDecision)):
+        return True
+    derived = {c.repository_path for c in workspace_changes
+               if c.change_id in decision.approved_change_ids}
+    if set(decision.approved_paths) != derived:
+        issues.append("A14: approved_paths do not match derived paths from approved_change_ids")
+        return False
+    return True
