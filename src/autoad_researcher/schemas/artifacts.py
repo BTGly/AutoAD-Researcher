@@ -11,11 +11,13 @@ form.  3.7+ schemas (``patch_planning.py`` v2 handoff, 3.8 execution records,
 3.9 analysis reports) use ``ArtifactReferenceV2``.
 """
 
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.paper_intelligence.ids import Sha256Pattern
+
+T = TypeVar("T")
 
 
 class ArtifactReferenceV2(BaseModel):
@@ -29,3 +31,13 @@ class ArtifactReferenceV2(BaseModel):
     sha256: str = Field(pattern=Sha256Pattern)
     source_id: str | None = None
     size_bytes: int | None = None
+
+
+class ResolvedArtifact(BaseModel, Generic[T]):
+    """A resolved artifact with its reference and typed payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str = Field(min_length=1)
+    artifact_ref: ArtifactReferenceV2
+    payload: T
