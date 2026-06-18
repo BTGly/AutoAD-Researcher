@@ -525,12 +525,28 @@ class PatchRunnerHandoff(BaseModel):
     @model_validator(mode="after")
     def _selected_variants_match_workspaces(self):
         from itertools import chain
+        selected = self.selected_variant_ids
         workspace_variant_ids = list(chain.from_iterable(
             ws.variant_ids for ws in self.variant_workspaces
         ))
-        for vid in self.selected_variant_ids:
-            if vid not in workspace_variant_ids:
-                raise ValueError(
-                    f"selected variant '{vid}' not found in any variant workspace"
-                )
+
+        if len(selected) != len(set(selected)):
+            raise ValueError("duplicate selected_variant_ids")
+
+        workspace_id_list = [ws.workspace_id for ws in self.variant_workspaces]
+        if len(workspace_id_list) != len(set(workspace_id_list)):
+            raise ValueError("duplicate workspace_id in variant_workspaces")
+
+        if len(workspace_variant_ids) != len(set(workspace_variant_ids)):
+            raise ValueError("variant appears in multiple workspaces")
+
+        if set(selected) != set(workspace_variant_ids):
+            missing = set(selected) - set(workspace_variant_ids)
+            extra = set(workspace_variant_ids) - set(selected)
+            parts = []
+            if missing:
+                parts.append(f"selected variants not in any workspace: {sorted(missing)}")
+            if extra:
+                parts.append(f"workspace variants not selected: {sorted(extra)}")
+            raise ValueError("; ".join(parts))
         return self
