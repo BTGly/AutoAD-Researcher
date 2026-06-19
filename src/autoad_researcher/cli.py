@@ -8,6 +8,8 @@ from typing import Sequence
 
 from autoad_researcher.core import PipelineController
 from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
+from autoad_researcher.pipeline.orchestrator import Orchestrator
+from autoad_researcher.schemas.stage3_acceptance import Stage3AcceptanceRequest, Stage3ProviderConfig
 from autoad_researcher.repository_intelligence.cli_runner import run_local_repository_intelligence
 
 
@@ -67,6 +69,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_parser.add_argument("--run-id", required=True, help="Run identifier")
     context_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+
+
+    stage3_parser = subparsers.add_parser(
+        "stage3-acceptance",
+        help="Run deterministic Step 3.10 L1/L2 acceptance orchestration",
+    )
+    stage3_parser.add_argument("--run-id", required=True, help="Run identifier")
+    stage3_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
+    stage3_parser.add_argument(
+        "--mode",
+        choices=["l1-l2", "l3-preflight"],
+        default="l1-l2",
+        help="Acceptance mode; L3 is preflight-only",
+    )
+    stage3_parser.add_argument(
+        "--require-artifact",
+        action="append",
+        default=[],
+        metavar="STAGE:RELATIVE_PATH",
+        help="Require an existing run artifact for a stage; may be repeated",
+    )
+    stage3_parser.add_argument("--provider-base-url", default=None, help="Provider base URL for L3 preflight")
+    stage3_parser.add_argument("--provider-api-key-env", default="DEEPSEEK_API_KEY", help="Environment variable name for provider API key")
+    stage3_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
     return parser
 
@@ -296,6 +322,56 @@ def run_research_context(args: argparse.Namespace) -> int:
         return 1
 
 
+def _parse_required_artifacts(values: list[str]) -> dict[str, list[str]]:
+    required: dict[str, list[str]] = {}
+    for value in values:
+        if ":" not in value:
+            raise ValueError("--require-artifact must use STAGE:RELATIVE_PATH")
+        stage, relative_path = value.split(":", 1)
+        if not stage or not relative_path:
+            raise ValueError("--require-artifact must include both stage and relative path")
+        required.setdefault(stage, []).append(relative_path)
+    return required
+
+
+def run_stage3_acceptance(args: argparse.Namespace) -> int:
+    """Run Step 3.10 deterministic L1/L2 acceptance orchestration."""
+    try:
+        request = Stage3AcceptanceRequest(
+            run_id=args.run_id,
+            runs_root=args.runs_root,
+            mode=args.mode,
+            provider_config=Stage3ProviderConfig(
+                base_url=args.provider_base_url,
+                api_key_env=args.provider_api_key_env,
+            ),
+            required_artifact_paths=_parse_required_artifacts(args.require_artifact),
+        )
+        result = Orchestrator().run(request)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(result.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2))
+    else:
+        print("AutoAD stage3 acceptance")
+        print(f"run_id: {result.run_id}")
+        print(f"mode: {result.mode}")
+        print(f"status: {result.status}")
+        if result.failed_stage:
+            print(f"failed_stage: {result.failed_stage}")
+        if result.failure_reason:
+            print(f"failure_reason: {result.failure_reason}")
+        print(f"artifact_dir: {result.artifact_dir}")
+
+    if result.status == "passed":
+        return 0
+    if result.status == "blocked":
+        return 3
+    return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 主入口。"""
     parser = build_parser()
@@ -309,6 +385,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_paper_intelligence(args)
     if args.command == "research-context":
         return run_research_context(args)
+    if args.command == "stage3-acceptance":
+        return run_stage3_acceptance(args)
 
     parser.error(f"unsupported command: {args.command}")
     return 2

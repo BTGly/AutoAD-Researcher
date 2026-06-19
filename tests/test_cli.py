@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from autoad_researcher.cli import main
 from autoad_researcher.core import EventStore, PipelineController, PipelineResult
 
@@ -118,3 +120,54 @@ def test_invalid_run_id_returns_two(tmp_path, capsys):
     assert exit_code == 2
     assert "error:" in captured.err
     assert not (tmp_path.parent / "escape").exists()
+
+
+def test_stage3_acceptance_help(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["stage3-acceptance", "--help"])
+
+    assert excinfo.value.code == 0
+    assert "stage3-acceptance" in capsys.readouterr().out
+
+
+def test_stage3_acceptance_l1_l2_json_output(tmp_path, capsys):
+    exit_code = main(
+        [
+            "stage3-acceptance",
+            "--run-id",
+            "run_310",
+            "--runs-root",
+            str(tmp_path),
+            "--mode",
+            "l1-l2",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run_id"] == "run_310"
+    assert payload["status"] == "passed"
+    assert "stage3_acceptance_manifest.json" in payload["artifacts"]
+
+
+def test_stage3_acceptance_missing_artifact_returns_blocked(tmp_path, capsys):
+    exit_code = main(
+        [
+            "stage3-acceptance",
+            "--run-id",
+            "run_missing",
+            "--runs-root",
+            str(tmp_path),
+            "--mode",
+            "l1-l2",
+            "--require-artifact",
+            "intake:input_task.yaml",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "blocked"
+    assert payload["failure_reason"] == "blocked_missing_artifact:intake"
