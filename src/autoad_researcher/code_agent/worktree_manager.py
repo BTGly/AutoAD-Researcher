@@ -11,7 +11,9 @@ from typing import Optional
 from autoad_researcher.schemas.patch_planning import (
     PatchPayload, PatchPayloadManifest, PlannedRepositoryChange,
     RepositoryChangePlan, VariantWorkspacePlan,
+    compute_canonical_plan_sha256,
 )
+from autoad_researcher.code_agent.patch_materializer import build_payload_manifest
 
 
 def clone_shared_changes(
@@ -88,8 +90,6 @@ def build_workspace_binding(
 
     cloned_ids = [clone.change_id for clone in clones]
     new_changes = list(plan.changes) + clones
-
-    from autoad_researcher.schemas.patch_planning import compute_canonical_plan_sha256
 
     new_workspace_plans = []
     for wp in plan.workspace_plans:

@@ -326,9 +326,10 @@ class InternalValidationStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     step_id: Literal[
         "ast_parse",
+        "before_after_identity",
         "diff_integrity",
-        "path_containment",
         "import_declaration_scan",
+        "path_containment",
     ]
     target_artifact_ids: list[str] = Field(default_factory=list)
     required: bool = True

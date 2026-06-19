@@ -11,12 +11,14 @@ from typing import Optional
 
 from autoad_researcher.core.artifacts import ArtifactStore
 from autoad_researcher.schemas.patch_planning import (
+    NarrowRepositoryReadRequest,
     PatchPayload,
     PatchPayloadManifest,
     PlannedRepositoryChange,
     RepositoryChangePlan,
     canonical_sha,
 )
+from autoad_researcher.code_agent.narrow_repo_read import NarrowRepositoryReader
 
 
 class PatchMaterializer:
@@ -40,30 +42,55 @@ class PatchMaterializer:
         plan: RepositoryChangePlan,
         repository_root: Path,
         run_id: str,
+        narrow_request: Optional[NarrowRepositoryReadRequest] = None,
     ) -> list[PatchPayload]:
         """Produce PatchPayload list from plan changes.
 
         Only materializes changes that have a non-None payload_id.
         Reads current file content from repository_root for before_sha256.
         Writes generated payload bytes to ArtifactStore.
+
+        If narrow_request is provided, file access is constrained by
+        NarrowRepositoryReader (allowed_paths, max_files, max_bytes).
         """
+        reader: Optional[NarrowRepositoryReader] = None
+        if narrow_request is not None:
+            reader = NarrowRepositoryReader(narrow_request, repository_root)
+
         payloads: list[PatchPayload] = []
         workspace_changes = [c for c in plan.changes
                               if c.payload_id is not None
                               and c.operation_kind in {"create", "modify", "rename"}]
 
         for change in workspace_changes:
-            payload = self._materialize_change(change, repository_root, run_id)
+            payload = self._materialize_change(change, repository_root, run_id, reader)
             if payload is not None:
                 payloads.append(payload)
 
         return payloads
+
+    def _read_file(
+        self,
+        path: Path,
+        relative: str,
+        reader: Optional[NarrowRepositoryReader],
+    ) -> Optional[bytes]:
+        """Read file content, optionally through NarrowRepositoryReader."""
+        if reader is not None:
+            try:
+                return reader.read_file(relative)
+            except (PermissionError, FileNotFoundError):
+                return None
+        if path.exists():
+            return path.read_bytes()
+        return None
 
     def _materialize_change(
         self,
         change: PlannedRepositoryChange,
         repository_root: Path,
         run_id: str,
+        reader: Optional[NarrowRepositoryReader] = None,
     ) -> Optional[PatchPayload]:
         """Produce a single PatchPayload for one change.
 
@@ -76,11 +103,10 @@ class PatchMaterializer:
         before_sha256: Optional[str] = None
 
         if change.operation_kind in {"modify", "rename"}:
-            if file_path.exists():
-                before_content = file_path.read_bytes()
-                before_sha256 = hashlib.sha256(before_content).hexdigest()
-            else:
+            before_content = self._read_file(file_path, change.repository_path, reader)
+            if before_content is None:
                 return None
+            before_sha256 = hashlib.sha256(before_content).hexdigest()
 
         proposed_content = self._generate_proposed_content(change, before_content)
         payload_content = proposed_content or b""
@@ -112,20 +138,12 @@ class PatchMaterializer:
     ) -> bytes:
         """Generate proposed file content.
 
-        MVP: wraps existing content with a placeholder comment.
-        Future: LLM-driven code synthesis.
+        For modify/rename: content is the existing file content (unchanged).
+        For create: generates a minimal file with target path header.
         """
-        lines = [
-            f"# PatchMaterializer: {change.change_id}",
-            f"# operation: {change.operation_kind}",
-        ]
-        if change.symbol_delta:
-            lines.append(f"# Symbol: {change.symbol_delta.symbol_name}")
-        trailer = "\n".join(lines).encode("utf-8") + b"\n"
-
         if before_content:
-            return before_content.rstrip(b"\n") + b"\n" + trailer
-        return trailer
+            return before_content
+        return f"# {change.repository_path}\n".encode("utf-8")
 
 
 def build_payload_manifest(
