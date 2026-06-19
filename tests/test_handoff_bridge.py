@@ -14,6 +14,7 @@ from autoad_researcher.schemas.patch_planning import (
     PatchRunnerHandoff,
     RepositoryChangePlan,
     VariantWorkspacePlan,
+    canonical_sha,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -95,38 +96,74 @@ def _PostPatchValidationReport():
     )
 
 
+def _artifact_refs(result: PatchExecutionResult):
+    """Build real artifact refs from a PatchExecutionResult.
+
+    Computes canonical SHAs from the actual manifest and validation report
+    objects so the bridge can validate ref → object consistency.
+    """
+    manifest = result.manifests[0]
+    matching = [r for r in result.validation_reports if r.workspace_id == manifest.workspace_id]
+    report = matching[0]
+
+    manifest_sha = canonical_sha(manifest)
+    report_sha = canonical_sha(report)
+
+    return dict(
+        baseline_repository_validation_ref=ArtifactReferenceV2(
+            artifact_id="val_ws_baseline",
+            artifact_type="repository_validation",
+            locator="runs/run_test/ws_baseline/validation.json",
+            sha256=report_sha,
+        ),
+        patch_application_manifest_ref=ArtifactReferenceV2(
+            artifact_id="manifest_run_test_ws",
+            artifact_type="patch_application_manifest",
+            locator="runs/run_test/ws/manifest.json",
+            sha256=manifest_sha,
+        ),
+        post_patch_validation_report_ref=ArtifactReferenceV2(
+            artifact_id="post_val_run_test_ws",
+            artifact_type="post_patch_validation_report",
+            locator="runs/run_test/ws/post_validation.json",
+            sha256=report_sha,
+        ),
+    )
+
+
+def _handoff_args(**kw):
+    """Build the common kwargs dict for build_patch_runner_handoff."""
+    plan = kw.get("plan", _plan())
+    result = kw.get("result", _result())
+    refs = _artifact_refs(result)
+    return dict(
+        run_id="run_test",
+        patch_execution_result=result,
+        plan=plan,
+        repository_before_commit=_HEX40,
+        experiment_bundle_ref="bundle_001",
+        baseline_repository_validation_ref=refs["baseline_repository_validation_ref"],
+        patch_application_manifest_ref=refs["patch_application_manifest_ref"],
+        post_patch_validation_report_ref=refs["post_patch_validation_report_ref"],
+    )
+
+
 # ── build_patch_runner_handoff ────────────────────────────────────────
 
 
 class TestBuildPatchRunnerHandoff:
     def test_builds_valid_handoff(self):
-        plan = _plan()
-        result = _result()
-        handoff = build_patch_runner_handoff(
-            run_id="run_test",
-            patch_execution_result=result,
-            plan=plan,
-            repository_before_commit=_HEX40,
-            experiment_bundle_ref="bundle_001",
-        )
+        handoff = build_patch_runner_handoff(**_handoff_args())
         assert handoff.status == "eligible_for_runner_intake"
         assert handoff.run_id == "run_test"
         assert "v1" in handoff.selected_variant_ids
 
     def test_raises_on_not_eligible(self):
-        plan = _plan()
         result = _result(next_stage="replan_required")
         with pytest.raises(ValueError, match="not eligible for intake"):
-            build_patch_runner_handoff(
-                run_id="run_test",
-                patch_execution_result=result,
-                plan=plan,
-                repository_before_commit=_HEX40,
-                experiment_bundle_ref="bundle_001",
-            )
+            build_patch_runner_handoff(**_handoff_args(result=result))
 
     def test_raises_on_missing_manifest(self):
-        plan = _plan()
         result = PatchExecutionResult(
             result_id="result_run_test", run_id="run_test",
             overall_status="patch_applied_and_local_validations_passed",
@@ -136,38 +173,107 @@ class TestBuildPatchRunnerHandoff:
         )
         with pytest.raises(ValueError, match="has no manifests"):
             build_patch_runner_handoff(
-                run_id="run_test",
-                patch_execution_result=result,
-                plan=plan,
-                repository_before_commit=_HEX40,
+                run_id="run_test", patch_execution_result=result,
+                plan=_plan(), repository_before_commit=_HEX40,
                 experiment_bundle_ref="bundle_001",
+                baseline_repository_validation_ref=ArtifactReferenceV2(
+                    artifact_id="val_ws_baseline", artifact_type="repository_validation",
+                    locator="runs/run_test/ws_baseline/validation.json",
+                    sha256="a" * 64,
+                ),
+                patch_application_manifest_ref=ArtifactReferenceV2(
+                    artifact_id="manifest_run_test_ws", artifact_type="patch_application_manifest",
+                    locator="runs/run_test/ws/manifest.json",
+                    sha256="b" * 64,
+                ),
+                post_patch_validation_report_ref=ArtifactReferenceV2(
+                    artifact_id="post_val_run_test_ws", artifact_type="post_patch_validation_report",
+                    locator="runs/run_test/ws/post_validation.json",
+                    sha256="c" * 64,
+                ),
             )
 
     def test_handoff_round_trips_through_validators(self):
-        plan = _plan()
-        result = _result()
-        handoff = build_patch_runner_handoff(
-            run_id="run_test",
-            patch_execution_result=result,
-            plan=plan,
-            repository_before_commit=_HEX40,
-            experiment_bundle_ref="bundle_001",
-        )
-        # PatchRunnerHandoff model validators run at construction
+        handoff = build_patch_runner_handoff(**_handoff_args())
         assert handoff.next_stage == "runner_intake"
 
     def test_baseline_workspace_ref(self):
-        plan = _plan()
+        handoff = build_patch_runner_handoff(**_handoff_args())
+        ref = handoff.baseline_workspace_ref
+        assert ref.repository_fingerprint == "f" * 64
+        # Must not be placeholder SHA
+        assert ref.repository_validation_ref.sha256 != "0" * 64
+
+    def test_manifest_ref_sha_matches_canonical(self):
         result = _result()
-        handoff = build_patch_runner_handoff(
-            run_id="run_test",
-            patch_execution_result=result,
-            plan=plan,
-            repository_before_commit=_HEX40,
-            experiment_bundle_ref="bundle_001",
-        )
-        assert handoff.baseline_workspace_ref.repository_fingerprint == "f" * 64
-        assert handoff.baseline_workspace_ref.repository_validation_ref.sha256 == "0" * 64
+        manifest = result.manifests[0]
+        expected = canonical_sha(manifest)
+        args = _handoff_args(result=result)
+        handoff = build_patch_runner_handoff(**args)
+        assert handoff.variant_workspaces[0].patch_application_manifest_ref.sha256 == expected
+
+    def test_validation_ref_sha_matches_canonical(self):
+        result = _result()
+        report = result.validation_reports[0]
+        expected = canonical_sha(report)
+        args = _handoff_args(result=result)
+        handoff = build_patch_runner_handoff(**args)
+        assert handoff.variant_workspaces[0].post_patch_validation_report_ref.sha256 == expected
+
+    def test_local_validation_report_sha_matches_validation_ref(self):
+        handoff = build_patch_runner_handoff(**_handoff_args())
+        vw = handoff.variant_workspaces[0]
+        assert vw.local_validation_report_sha256 == vw.post_patch_validation_report_ref.sha256
+
+    def test_raises_on_wrong_manifest_sha(self):
+        result = _result()
+        refs = _artifact_refs(result)
+        # Corrupt manifest ref SHA
+        refs["patch_application_manifest_ref"].sha256 = "d" * 64
+        with pytest.raises(ValueError, match="does not match canonical_sha"):
+            build_patch_runner_handoff(
+                run_id="run_test", patch_execution_result=result,
+                plan=_plan(), repository_before_commit=_HEX40,
+                experiment_bundle_ref="bundle_001",
+                **refs,
+            )
+
+    def test_raises_on_wrong_validation_report_sha(self):
+        result = _result()
+        refs = _artifact_refs(result)
+        refs["post_patch_validation_report_ref"].sha256 = "d" * 64
+        with pytest.raises(ValueError, match="does not match canonical_sha"):
+            build_patch_runner_handoff(
+                run_id="run_test", patch_execution_result=result,
+                plan=_plan(), repository_before_commit=_HEX40,
+                experiment_bundle_ref="bundle_001",
+                **refs,
+            )
+
+    def test_raises_on_placeholder_baseline_sha(self):
+        result = _result()
+        refs = _artifact_refs(result)
+        refs["baseline_repository_validation_ref"].sha256 = "0" * 64
+        with pytest.raises(ValueError, match="placeholder"):
+            build_patch_runner_handoff(
+                run_id="run_test", patch_execution_result=result,
+                plan=_plan(), repository_before_commit=_HEX40,
+                experiment_bundle_ref="bundle_001",
+                **refs,
+            )
+
+    def test_raises_on_no_matching_validation_report(self):
+        result = _result()
+        refs = _artifact_refs(result)
+        # Mutate AFTER computing ref SHAs to break bridge's lookup
+        result.validation_reports[0].workspace_id = "other_ws"
+        with pytest.raises(ValueError, match="no PostPatchValidationReport found"):
+            build_patch_runner_handoff(
+                run_id="run_test", patch_execution_result=result,
+                plan=_plan(), repository_before_commit=_HEX40,
+                experiment_bundle_ref="bundle_001",
+                **refs,
+            )
 
 
 # ── build_runner_intake_request ───────────────────────────────────────
@@ -175,15 +281,7 @@ class TestBuildPatchRunnerHandoff:
 
 class TestBuildRunnerIntakeRequest:
     def test_builds_with_derived_workspace_refs(self):
-        plan = _plan()
-        result = _result()
-        handoff = build_patch_runner_handoff(
-            run_id="run_test",
-            patch_execution_result=result,
-            plan=plan,
-            repository_before_commit=_HEX40,
-            experiment_bundle_ref="bundle_001",
-        )
+        handoff = build_patch_runner_handoff(**_handoff_args())
         intake = build_runner_intake_request(
             handoff=handoff,
             handoff_artifact_sha256=_SHA,
@@ -197,15 +295,7 @@ class TestBuildRunnerIntakeRequest:
         assert intake.patch_runner_handoff_ref.sha256 == _SHA
 
     def test_intake_validation_passes(self):
-        plan = _plan()
-        result = _result()
-        handoff = build_patch_runner_handoff(
-            run_id="run_test",
-            patch_execution_result=result,
-            plan=plan,
-            repository_before_commit=_HEX40,
-            experiment_bundle_ref="bundle_001",
-        )
+        handoff = build_patch_runner_handoff(**_handoff_args())
         intake = build_runner_intake_request(
             handoff=handoff,
             handoff_artifact_sha256=_SHA,
@@ -215,5 +305,4 @@ class TestBuildRunnerIntakeRequest:
             statistical_analysis_plan_sha256=_SHA,
             operational_guard_policy_sha256=_SHA,
         )
-        # Validates internally via validate_intake_against_patch_handoff
         assert intake.patch_runner_handoff_ref is not None

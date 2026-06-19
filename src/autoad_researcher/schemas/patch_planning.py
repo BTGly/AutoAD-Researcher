@@ -654,6 +654,15 @@ class BaselineWorkspaceRef(BaseModel):
     repository_commit: str = Field(min_length=1)
     repository_validation_ref: ArtifactReferenceV2
 
+    @model_validator(mode="after")
+    def _reject_placeholder_sha(self):
+        if self.repository_validation_ref.sha256 == "0" * 64:
+            raise ValueError(
+                f"baseline repository_validation_ref.sha256={self.repository_validation_ref.sha256} "
+                "is the placeholder '000...0'; real artifact SHA required"
+            )
+        return self
+
 
 class VariantWorkspaceHandoff(BaseModel):
     model_config = ConfigDict(extra="forbid")

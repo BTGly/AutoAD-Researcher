@@ -10,8 +10,10 @@ from autoad_researcher.schemas.patch_planning import (
     BaselineWorkspaceRef,
     PatchExecutionResult,
     PatchRunnerHandoff,
+    PostPatchValidationReport,
     RepositoryChangePlan,
     VariantWorkspaceHandoff,
+    canonical_sha,
 )
 
 
@@ -22,8 +24,15 @@ def build_patch_runner_handoff(
     plan: RepositoryChangePlan,
     repository_before_commit: str,
     experiment_bundle_ref: str,
+    baseline_repository_validation_ref: ArtifactReferenceV2,
+    patch_application_manifest_ref: ArtifactReferenceV2,
+    post_patch_validation_report_ref: ArtifactReferenceV2,
 ) -> PatchRunnerHandoff:
     """Build PatchRunnerHandoff v2 from a successful patch execution.
+
+    All artifact refs must be provided by the caller (not fabricated here).
+    The function validates that each ref's SHA matches the canonical SHA of
+    the corresponding artifact object in ``patch_execution_result``.
 
     Args:
         run_id: Run identifier.
@@ -31,12 +40,20 @@ def build_patch_runner_handoff(
         plan: The approved RepositoryChangePlan.
         repository_before_commit: Git commit SHA before the patch.
         experiment_bundle_ref: Reference to the 3.5 experiment bundle.
+        baseline_repository_validation_ref: Real ref to the baseline repository
+            validation artifact (pre-patch validation). Must not use placeholder SHA.
+        patch_application_manifest_ref: Real ref to the patch application
+            manifest artifact. SHA must match ``canonical_sha(manifests[0])``.
+        post_patch_validation_report_ref: Real ref to the post-patch validation
+            report artifact. SHA must match ``canonical_sha(report)`` for the
+            report belonging to the same workspace as the manifest.
 
     Returns:
         A validated PatchRunnerHandoff instance.
 
     Raises:
-        ValueError: if patch_execution_result is not eligible for intake.
+        ValueError: if patch_execution_result is not eligible for intake,
+            or any artifact ref SHA fails canonical validation.
     """
     if patch_execution_result.next_stage != "eligible_for_runner_intake":
         raise ValueError(
@@ -50,7 +67,32 @@ def build_patch_runner_handoff(
 
     manifest = patch_execution_result.manifests[0]
 
-    # Determine baseline and variant workspaces from the plan
+    # ── Validate manifest ref SHA ───────────────────────────────────────
+    expected_manifest_sha = canonical_sha(manifest)
+    if patch_application_manifest_ref.sha256 != expected_manifest_sha:
+        raise ValueError(
+            f"patch_application_manifest_ref.sha256={patch_application_manifest_ref.sha256} "
+            f"does not match canonical_sha(manifests[0])={expected_manifest_sha}"
+        )
+
+    # ── Validate post-patch validation report ref SHA ───────────────────
+    matching_reports = [
+        r for r in patch_execution_result.validation_reports
+        if r.workspace_id == manifest.workspace_id
+    ]
+    if not matching_reports:
+        raise ValueError(
+            f"no PostPatchValidationReport found for workspace_id={manifest.workspace_id}"
+        )
+    validation_report = matching_reports[0]
+    expected_report_sha = canonical_sha(validation_report)
+    if post_patch_validation_report_ref.sha256 != expected_report_sha:
+        raise ValueError(
+            f"post_patch_validation_report_ref.sha256={post_patch_validation_report_ref.sha256} "
+            f"does not match canonical_sha(validation_report)={expected_report_sha}"
+        )
+
+    # ── Determine baseline and variant workspaces from the plan ──────────
     baseline_wp = None
     variant_wps = []
     for wp in plan.workspace_plans:
@@ -67,35 +109,22 @@ def build_patch_runner_handoff(
         workspace_id=baseline_wp.workspace_id if baseline_wp else "",
         repository_fingerprint=plan.repository_fingerprint,
         repository_commit=repository_before_commit,
-        repository_validation_ref=ArtifactReferenceV2(
-            artifact_id=f"val_{run_id}_{baseline_wp.workspace_id}" if baseline_wp else "",
-            artifact_type="validation_report",
-            locator=f"runs/{run_id}/{baseline_wp.workspace_id}/validation.json" if baseline_wp else "",
-            sha256="0" * 64,
-        ),
+        repository_validation_ref=baseline_repository_validation_ref,
     )
+
+    diff_sha = manifest.patch_diff_sha256 or "0" * 64
+    local_validation_report_sha = post_patch_validation_report_ref.sha256
 
     variant_handoffs: list[VariantWorkspaceHandoff] = []
     for wp in variant_wps:
-        diff_sha = manifest.patch_diff_sha256 or "0" * 64
         variant_handoffs.append(VariantWorkspaceHandoff(
             workspace_id=wp.workspace_id,
             variant_ids=wp.variant_ids,
             repository_fingerprint=plan.repository_fingerprint,
             patch_diff_sha256=diff_sha,
-            local_validation_report_sha256=diff_sha,
-            patch_application_manifest_ref=ArtifactReferenceV2(
-                artifact_id=f"manifest_{run_id}_{wp.workspace_id}",
-                artifact_type="patch_application_manifest",
-                locator=f"runs/{run_id}/{wp.workspace_id}/manifest.json",
-                sha256=diff_sha,
-            ),
-            post_patch_validation_report_ref=ArtifactReferenceV2(
-                artifact_id=f"post_val_{run_id}_{wp.workspace_id}",
-                artifact_type="post_patch_validation_report",
-                locator=f"runs/{run_id}/{wp.workspace_id}/post_validation.json",
-                sha256=diff_sha,
-            ),
+            local_validation_report_sha256=local_validation_report_sha,
+            patch_application_manifest_ref=patch_application_manifest_ref,
+            post_patch_validation_report_ref=post_patch_validation_report_ref,
         ))
 
     handoff = PatchRunnerHandoff(
