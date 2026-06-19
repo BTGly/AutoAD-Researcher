@@ -97,12 +97,25 @@ def build_patch_runner_handoff(
         else:
             variant_wps.append(wp)
 
+    if baseline_wp is None:
+        raise ValueError(
+            "plan has no baseline workspace: no VariantWorkspacePlan with "
+            "variant_ids=[] found in plan.workspace_plans"
+        )
+
+    if baseline_validation_report.workspace_id != baseline_wp.workspace_id:
+        raise ValueError(
+            f"baseline_validation_report.workspace_id="
+            f"{baseline_validation_report.workspace_id} does not match "
+            f"baseline_wp.workspace_id={baseline_wp.workspace_id}"
+        )
+
     all_variant_ids = sorted(set(
         vid for wp in variant_wps for vid in wp.variant_ids
     ))
 
     baseline_ref = BaselineWorkspaceRef(
-        workspace_id=baseline_wp.workspace_id if baseline_wp else "",
+        workspace_id=baseline_wp.workspace_id,
         repository_fingerprint=plan.repository_fingerprint,
         repository_commit=repository_before_commit,
         repository_validation_ref=baseline_repository_validation_ref,

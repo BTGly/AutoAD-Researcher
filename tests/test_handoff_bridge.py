@@ -389,6 +389,27 @@ class TestBuildPatchRunnerHandoff:
                 },
             )
 
+    def test_raises_on_missing_baseline_workspace(self):
+        """Plan without any baseline workspace (all variant workspaces)."""
+        plan = _plan()
+        plan.workspace_plans = [wp for wp in plan.workspace_plans if wp.variant_ids]
+        result = _result()
+        refs = _artifact_refs(result)
+        with pytest.raises(ValueError, match="no baseline workspace"):
+            build_patch_runner_handoff(**_default_kwargs(plan=plan, result=result, **refs))
+
+    def test_raises_on_baseline_report_workspace_id_mismatch(self):
+        """baseline_validation_report.workspace_id must match baseline workspace."""
+        result = _result()
+        refs = _artifact_refs(result)
+        refs["baseline_validation_report"].workspace_id = "wrong_baseline_ws"
+        # Recompute baseline ref SHA from the mutated report so SHA check passes
+        refs["baseline_repository_validation_ref"].sha256 = canonical_sha(
+            refs["baseline_validation_report"]
+        )
+        with pytest.raises(ValueError, match="baseline_validation_report.workspace_id"):
+            build_patch_runner_handoff(**_default_kwargs(result=result, **refs))
+
 
 # ── build_runner_intake_request ───────────────────────────────────────
 
