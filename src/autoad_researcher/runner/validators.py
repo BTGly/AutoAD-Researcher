@@ -16,6 +16,7 @@ from autoad_researcher.schemas.execution import (
     AttemptRecord,
     ExecutionManifest,
     ExecutionStatus,
+    ExecutionUnitPlan,
     ExecutionUnitRecord,
     ExecutionUnitStatus,
     ResourceUsageReport,
@@ -331,3 +332,19 @@ def validate_handoff_against_manifest(
         raise ValueError("failed_unit_count mismatch")
     if manifest.blocked_unit_count != derived_blocked:
         raise ValueError("blocked_unit_count mismatch")
+
+
+def validate_binding_ids_unique(
+    plans: list[ExecutionUnitPlan],
+) -> None:
+    """Enforce seal item 7: binding_id must be unique across all ExecutionUnitPlans."""
+    seen: set[str] = set()
+    for plan in plans:
+        for prod in plan.planned_productions:
+            for binding in prod.bindings:
+                if binding.binding_id in seen:
+                    raise ValueError(
+                        f"duplicate binding_id={binding.binding_id} "
+                        f"across execution unit plans"
+                    )
+                seen.add(binding.binding_id)

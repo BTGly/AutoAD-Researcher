@@ -34,7 +34,7 @@ TerminalReason = Literal[
 ExecutionStatus = Literal["succeeded", "failed", "timeout", "not_run"]
 
 FailureClassification = Literal[
-    "max_retries", "wall_time", "metric", "environment", "repository",
+    "transient", "resource_exhaustion", "code_bug", "design_flaw", "environment_issue",
 ]
 
 OverallExecutionStatus = Literal["completed", "partially_completed", "failed", "blocked"]
@@ -372,6 +372,11 @@ class RetryDecision(BaseModel):
             raise ValueError("retry_same_command requires identity_match=True")
         if self.decision != "retry_same_command" and self.identity_match:
             raise ValueError("non-retry decision requires identity_match=False")
+        if self.decision == "retry_same_command" and self.failure_classification in ("code_bug", "design_flaw"):
+            raise ValueError(
+                f"retry_same_command incompatible with "
+                f"failure_classification={self.failure_classification}"
+            )
         return self
 
 

@@ -780,7 +780,7 @@ class TestRetryDecision:
             prev_identity=_retry_identity(),
             identity_match=True,
             decision="retry_same_command",
-            failure_classification="metric",
+            failure_classification="transient",
             reason="threshold not met",
         )
         assert rd.decision == "retry_same_command"
@@ -792,7 +792,7 @@ class TestRetryDecision:
             prev_identity=_retry_identity(),
             identity_match=False,
             decision="do_not_retry",
-            failure_classification="max_retries",
+            failure_classification="resource_exhaustion",
             reason="max retries exhausted",
         )
         assert rd.decision == "do_not_retry"
@@ -804,7 +804,7 @@ class TestRetryDecision:
             prev_identity=_retry_identity(),
             identity_match=False,
             decision="return_to_3_5",
-            failure_classification="repository",
+            failure_classification="environment_issue",
             reason="repo changed",
         )
         assert rd.decision == "return_to_3_5"
@@ -816,7 +816,7 @@ class TestRetryDecision:
             prev_identity=_retry_identity(),
             identity_match=False,
             decision="return_to_3_6_3_7",
-            failure_classification="environment",
+            failure_classification="environment_issue",
             reason="env mismatch",
         )
         assert rd.decision == "return_to_3_6_3_7"
@@ -828,7 +828,7 @@ class TestRetryDecision:
             prev_identity=_retry_identity(),
             identity_match=False,
             decision="blocked",
-            failure_classification="wall_time",
+            failure_classification="resource_exhaustion",
             reason="timeout",
         )
         assert rd.decision == "blocked"
@@ -841,7 +841,7 @@ class TestRetryDecision:
                 prev_identity=_retry_identity(),
                 identity_match=False,
                 decision="retry_same_command",
-                failure_classification="metric",
+                failure_classification="transient",
                 reason="x",
             )
 
@@ -853,7 +853,7 @@ class TestRetryDecision:
                 prev_identity=_retry_identity(),
                 identity_match=True,
                 decision="do_not_retry",
-                failure_classification="max_retries",
+                failure_classification="resource_exhaustion",
                 reason="x",
             )
 
@@ -865,7 +865,7 @@ class TestRetryDecision:
                 prev_identity=_retry_identity(),
                 identity_match=True,
                 decision="blocked",
-                failure_classification="wall_time",
+                failure_classification="resource_exhaustion",
                 reason="x",
             )
 
@@ -877,7 +877,7 @@ class TestRetryDecision:
                 prev_identity=_retry_identity(),
                 identity_match=False,
                 decision="do_not_retry",
-                failure_classification="max_retries",
+                failure_classification="resource_exhaustion",
                 reason="",
             )
 
@@ -889,10 +889,46 @@ class TestRetryDecision:
                 prev_identity=_retry_identity(),
                 identity_match=False,
                 decision="do_not_retry",
-                failure_classification="max_retries",
+                failure_classification="resource_exhaustion",
                 reason="x",
                 extra_field="bad",
             )
+
+    def test_retry_rejects_code_bug(self):
+        with pytest.raises(ValueError, match="retry_same_command incompatible with failure_classification=code_bug"):
+            RetryDecision(
+                attempt_id="att_01",
+                unit_id=_ID,
+                prev_identity=_retry_identity(),
+                identity_match=True,
+                decision="retry_same_command",
+                failure_classification="code_bug",
+                reason="null pointer",
+            )
+
+    def test_retry_rejects_design_flaw(self):
+        with pytest.raises(ValueError, match="retry_same_command incompatible with failure_classification=design_flaw"):
+            RetryDecision(
+                attempt_id="att_01",
+                unit_id=_ID,
+                prev_identity=_retry_identity(),
+                identity_match=True,
+                decision="retry_same_command",
+                failure_classification="design_flaw",
+                reason="wrong algorithm",
+            )
+
+    def test_non_retry_accepts_code_bug(self):
+        rd = RetryDecision(
+            attempt_id="att_01",
+            unit_id=_ID,
+            prev_identity=_retry_identity(),
+            identity_match=False,
+            decision="return_to_3_6_3_7",
+            failure_classification="code_bug",
+            reason="null pointer",
+        )
+        assert rd.decision == "return_to_3_6_3_7"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

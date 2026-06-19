@@ -11,6 +11,7 @@ from autoad_researcher.runner.validators import (
     derive_terminal_reason,
     derive_workspace_execution_refs,
     validate_attempt_record_against_artifacts,
+    validate_binding_ids_unique,
     validate_intake_against_patch_handoff,
     validate_resolution_presence,
 )
@@ -800,4 +801,82 @@ class TestDeriveOverallStatus:
             failed_unit_count=1,
         )
         assert derive_overall_status(m) == "partially_completed"
+
+
+# 11. validate_binding_ids_unique
+
+
+class TestValidateBindingIdsUnique:
+    def test_unique_binding_ids_pass(self):
+        from autoad_researcher.schemas.execution import (
+            ExecutionUnitPlan, PlannedArtifactProduction, PlannedArtifactBinding,
+        )
+        plans = [
+            ExecutionUnitPlan(
+                unit_id="u1", matrix_entry_id="m1", workspace_id="ws",
+                stage="train", command_plan_sha256="c" * 64,
+                max_wall_time_seconds=60,
+                planned_productions=[
+                    PlannedArtifactProduction(
+                        unit_id="u1",
+                        bindings=[PlannedArtifactBinding(
+                            binding_id="b1", role="model", artifact_type="pytorch",
+                            producing_unit_id="u1",
+                        )],
+                    ),
+                ],
+            ),
+            ExecutionUnitPlan(
+                unit_id="u2", matrix_entry_id="m2", workspace_id="ws",
+                stage="eval", command_plan_sha256="d" * 64,
+                max_wall_time_seconds=60,
+                planned_productions=[
+                    PlannedArtifactProduction(
+                        unit_id="u2",
+                        bindings=[PlannedArtifactBinding(
+                            binding_id="b2", role="metrics", artifact_type="json",
+                            producing_unit_id="u2",
+                        )],
+                    ),
+                ],
+            ),
+        ]
+        validate_binding_ids_unique(plans)  # should not raise
+
+    def test_duplicate_binding_id_raises(self):
+        from autoad_researcher.schemas.execution import (
+            ExecutionUnitPlan, PlannedArtifactProduction, PlannedArtifactBinding,
+        )
+        plans = [
+            ExecutionUnitPlan(
+                unit_id="u1", matrix_entry_id="m1", workspace_id="ws",
+                stage="train", command_plan_sha256="c" * 64,
+                max_wall_time_seconds=60,
+                planned_productions=[
+                    PlannedArtifactProduction(
+                        unit_id="u1",
+                        bindings=[PlannedArtifactBinding(
+                            binding_id="b_dup", role="model", artifact_type="pytorch",
+                            producing_unit_id="u1",
+                        )],
+                    ),
+                ],
+            ),
+            ExecutionUnitPlan(
+                unit_id="u2", matrix_entry_id="m2", workspace_id="ws",
+                stage="eval", command_plan_sha256="d" * 64,
+                max_wall_time_seconds=60,
+                planned_productions=[
+                    PlannedArtifactProduction(
+                        unit_id="u2",
+                        bindings=[PlannedArtifactBinding(
+                            binding_id="b_dup", role="metrics", artifact_type="json",
+                            producing_unit_id="u2",
+                        )],
+                    ),
+                ],
+            ),
+        ]
+        with pytest.raises(ValueError, match="duplicate binding_id=b_dup"):
+            validate_binding_ids_unique(plans)
 
