@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from autoad_researcher.schemas.baseline_architecture import ModificationHook
 from autoad_researcher.schemas.patch_planning import (
     ApprovalDecision, ApprovalRequest, CheckResult, ExternalValidationCommand,
-    FullApprovalDecision, PartialApprovalDecision,
+    FullApprovalDecision, InternalValidationStep, PartialApprovalDecision,
     PatchPayload, PatchPayloadManifest, PatchPayloadValidationReport,
     PatchPlanValidationIssue, PatchPlanValidationReport,
     PlannedRepositoryChange, RejectDecision, RepositoryChangePlan,
@@ -487,6 +487,115 @@ class TestPreflight:
                             payload_validation_report=pvr,
                             artifact_store=None)
         assert r.overall_status == "blocked"
+
+    def test_full_approval_store_none_b2_fails(self, tmp_path):
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        repo = tmp_path / "repo"; repo.mkdir()
+        fp = _fp(repo)
+        plan = plan.model_copy(update={"repository_fingerprint": fp})
+        plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
+        m = _test_manifest(run_id=plan.run_id)
+        vr = _test_plan_report(plan)
+        pvr = _test_payload_report(m)
+        req = _req(sha=plan.patch_plan_sha256)
+        dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
+        pf = app.run_preflight(
+            plan=plan, request=req, decision=dec,
+            workspace_id="ws", repository_root=repo, run_id=plan.run_id,
+            manifest=m, validation_report=vr, payload_validation_report=pvr,
+            artifact_store=None,
+        )
+        assert not pf.ready
+        assert any("B2" in issue for issue in pf.issues)
+
+    def test_full_approval_wrong_diff_bytes_b2_fails(self, tmp_path):
+        store = _test_store()
+        store.write_raw("run_test", "diff_artifact", b"wrong bytes")
+        diff_sha = hashlib.sha256(b"expected bytes").hexdigest()
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        repo = tmp_path / "repo"; repo.mkdir()
+        fp = _fp(repo)
+        plan = plan.model_copy(update={"repository_fingerprint": fp})
+        plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
+        m = _test_manifest(run_id=plan.run_id)
+        m = m.model_copy(update={
+            "proposed_diff_sha256": diff_sha,
+            "proposed_diff_artifact_id": "diff_artifact",
+            "manifest_sha256": plan.patch_plan_sha256,
+        })
+        vr = _test_plan_report(plan)
+        pvr = _test_payload_report(m)
+        req = _req(sha=plan.patch_plan_sha256)
+        dec = FullApprovalDecision(
+            decision_id="ad", approval_request_id=req.approval_request_id,
+            approved_request_sha256=plan.patch_plan_sha256,
+            workspace_id="ws",
+            patch_plan_sha256=plan.patch_plan_sha256,
+            payload_manifest_sha256=m.manifest_sha256,
+            approved_diff_sha256=diff_sha,
+            approved_paths=["src/x.py"],
+            approved_change_ids=["chg_1"],
+            approved_internal_step_ids=["diff_integrity", "path_containment"],
+            approved_external_command_ids=[],
+            approved_collision_change_ids=[],
+            approved_ask_paths=[],
+            user_evidence_id="ev_u", decided_at=_NOW,
+        )
+        pf = app.run_preflight(
+            plan=plan, request=req, decision=dec,
+            workspace_id="ws", repository_root=repo, run_id=plan.run_id,
+            manifest=m, validation_report=vr, payload_validation_report=pvr,
+            artifact_store=store,
+        )
+        assert not pf.ready
+        assert any("B2" in issue for issue in pf.issues)
+
+    def test_full_approval_correct_diff_bytes_b2_passes(self, tmp_path):
+        store = _test_store()
+        diff_content = b"valid diff content"
+        diff_sha = hashlib.sha256(diff_content).hexdigest()
+        store.write_raw("run_test", "diff_artifact", diff_content)
+        app = ControlledPatchApplicator(policy_allowed_paths={"src/"})
+        c = _c("chg_1", "ws")
+        plan = _psha(changes=[c])
+        repo = tmp_path / "repo"; repo.mkdir()
+        fp = _fp(repo)
+        plan = plan.model_copy(update={"repository_fingerprint": fp})
+        plan = plan.model_copy(update={"patch_plan_sha256": compute_canonical_plan_sha256(plan)})
+        m = _test_manifest(run_id=plan.run_id)
+        m = m.model_copy(update={
+            "proposed_diff_sha256": diff_sha,
+            "proposed_diff_artifact_id": "diff_artifact",
+        })
+        vr = _test_plan_report(plan)
+        pvr = _test_payload_report(m)
+        req = _req(sha=plan.patch_plan_sha256)
+        req = req.model_copy(update={
+            "proposed_patch_diff_sha256": diff_sha,
+            "patch_payload_manifest_sha256": m.manifest_sha256,
+            "internal_validation_steps": [
+                InternalValidationStep(step_id="diff_integrity", target_artifact_ids=["diff"]),
+                InternalValidationStep(step_id="path_containment", target_artifact_ids=["paths"]),
+            ],
+        })
+        dec = _dec(approved_change_ids=["chg_1"], sha=plan.patch_plan_sha256)
+        dec = dec.model_copy(update={
+            "approved_diff_sha256": diff_sha,
+            "approved_paths": ["src/x.py"],
+            "approved_internal_step_ids": ["diff_integrity", "path_containment"],
+        })
+        pf = app.run_preflight(
+            plan=plan, request=req, decision=dec,
+            workspace_id="ws", repository_root=repo, run_id=plan.run_id,
+            manifest=m, validation_report=vr, payload_validation_report=pvr,
+            artifact_store=store,
+        )
+        b2_issues = [i for i in pf.issues if "B2" in i]
+        assert len(b2_issues) == 0, f"B2 should not fail with correct bytes: {b2_issues}"
 
 
 # --- P0-5: base64 blob ---
