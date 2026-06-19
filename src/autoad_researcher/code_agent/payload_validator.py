@@ -300,6 +300,17 @@ def _validate_target_before_sha(
                 resolution="regenerate",
             ))
             return
+    elif payload.target_before_sha256 is not None:
+        # For create/rename without replace_existing: target_before_sha256 must be None
+        issues.append(PatchPayloadValidationIssue(
+            issue_id=f"ppvi_{payload.payload_id}_target_before_unexpected",
+            category="target_before_sha_mismatch",
+            description=f"target_before_sha256 should be None for create without replace_existing",
+            payload_id=payload.payload_id,
+            change_id=payload.change_id,
+            resolution="regenerate",
+        ))
+        return
 
     if payload.target_before_sha256 is not None:
         if target_path.exists():

@@ -272,17 +272,29 @@ def _apply(app, plan, dec, ws, repo, run_id, store=None, payloads=None):
         "proposed_diff_artifact_id": diff_artifact_id,
     })
 
+    py_payload_artifacts = [p.payload_artifact_id for p in (payloads or []) if p.target_path.endswith(".py")]
+
     if isinstance(dec, (FullApprovalDecision, PartialApprovalDecision)):
+        dec_step_ids = ["diff_integrity", "path_containment"]
+        if py_payload_artifacts:
+            dec_step_ids.append("ast_parse")
         dec = dec.model_copy(update={
             "workspace_id": ws,
             "approved_paths": derived_paths,
             "payload_manifest_sha256": m.manifest_sha256,
             "approved_diff_sha256": diff_sha,
             "approved_change_ids": effective_approved,
-            "approved_internal_step_ids": ["diff_integrity", "path_containment", "ast_parse"],
+            "approved_internal_step_ids": dec_step_ids,
         })
 
     req = _req(sha=plan.patch_plan_sha256, ws=ws)
+    steps = [
+        InternalValidationStep(step_id="diff_integrity", target_artifact_ids=[diff_artifact_id]),
+        InternalValidationStep(step_id="path_containment", target_artifact_ids=[diff_artifact_id]),
+    ]
+    py_payload_artifacts = [p.payload_artifact_id for p in (payloads or []) if p.target_path.endswith(".py")]
+    if py_payload_artifacts:
+        steps.append(InternalValidationStep(step_id="ast_parse", target_artifact_ids=py_payload_artifacts))
     req = req.model_copy(update={
         "patch_payload_manifest_sha256": m.manifest_sha256,
         "repository_before_fingerprint": actual_fp,
@@ -294,11 +306,7 @@ def _apply(app, plan, dec, ws, repo, run_id, store=None, payloads=None):
             affected_paths=derived_paths,
             dependency_change_ids=[], risk_ids=[],
         ),
-        "internal_validation_steps": [
-            InternalValidationStep(step_id="diff_integrity", target_artifact_ids=["diff"]),
-            InternalValidationStep(step_id="path_containment", target_artifact_ids=["paths"]),
-            InternalValidationStep(step_id="ast_parse", target_artifact_ids=["ast"]),
-        ],
+        "internal_validation_steps": steps,
     })
 
     dec = dec.model_copy(update={"patch_plan_sha256": plan.patch_plan_sha256})

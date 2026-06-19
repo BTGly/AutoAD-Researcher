@@ -288,21 +288,32 @@ class ControlledPatchApplicator:
                 d_all = False
                 issues.append(f"D4: required step {step.step_id} has empty target_artifact_ids")
         # D5: ast_parse must cover all new/modified Python payload files
-        py_payload_files = [p.target_path for p in manifest.payloads
-                            if p.target_path.endswith(".py")
-                            and any(c.change_id == p.change_id and c.operation_kind in ("create", "modify")
-                                    for c in plan.changes)]
-        d5 = not py_payload_files or "ast_parse" in decision.approved_internal_step_ids
+        py_payloads = [p for p in manifest.payloads
+                       if p.target_path.endswith(".py")
+                       and any(c.change_id == p.change_id and c.operation_kind in ("create", "modify")
+                               for c in plan.changes)]
+        ast_parse_step = next((s for s in request.internal_validation_steps if s.step_id == "ast_parse"), None)
+        d5 = not py_payloads or (
+            "ast_parse" in decision.approved_internal_step_ids
+            and ast_parse_step is not None
+            and all(p.payload_artifact_id in ast_parse_step.target_artifact_ids for p in py_payloads)
+        )
         if not d5:
-            d_all = False; issues.append("D5: Python payload changes require ast_parse step")
+            d_all = False
+            issues.append("D5: ast_parse must cover all new/modified Python payload files in target_artifact_ids")
         # D6: diff_integrity must cover proposed diff
-        d6 = "diff_integrity" in decision.approved_internal_step_ids
+        diff_artifact_id = manifest.proposed_diff_artifact_id
+        diff_step = next((s for s in request.internal_validation_steps if s.step_id == "diff_integrity"), None)
+        d6 = "diff_integrity" in decision.approved_internal_step_ids and diff_step is not None and diff_artifact_id in diff_step.target_artifact_ids
         if not d6:
-            d_all = False; issues.append("D6: proposed diff requires diff_integrity step")
-        # D7: path_containment must cover all touched paths
-        d7 = "path_containment" in decision.approved_internal_step_ids
+            d_all = False
+            issues.append("D6: diff_integrity must cover proposed_diff_artifact_id in target_artifact_ids")
+        # D7: path_containment must cover diff artifact (touched paths)
+        path_step = next((s for s in request.internal_validation_steps if s.step_id == "path_containment"), None)
+        d7 = "path_containment" in decision.approved_internal_step_ids and path_step is not None and diff_artifact_id in path_step.target_artifact_ids
         if not d7:
-            d_all = False; issues.append("D7: touched paths require path_containment step")
+            d_all = False
+            issues.append("D7: path_containment must cover diff artifact in target_artifact_ids")
         # D8: approved commands argv match request commands
         for cmd_id in decision.approved_external_command_ids:
             req_cmd = next((c for c in request.external_validation_commands if c.command_id == cmd_id), None)

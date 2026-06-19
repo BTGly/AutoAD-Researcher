@@ -48,11 +48,12 @@ from autoad_researcher.code_agent.worktree_manager import (
     merge_workspace_manifests,
 )
 from autoad_researcher.code_agent.narrow_repo_read import (
-    iter_source_files, list_files, read_file_safe,
+    NarrowRepositoryReader, iter_source_files, list_files, read_file_safe,
 )
 
 __all__ = [
     "ControlledPatchApplicator",
+    "NarrowRepositoryReader",
     "PatchMaterializer",
     "PatchPlannerAgent",
     "analyze_variant_conflicts",
