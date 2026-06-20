@@ -70,6 +70,15 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument("--run-id", required=True, help="Run identifier")
     context_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
+    td_parser = subparsers.add_parser(
+        "transfer-design",
+        help="Run Stage 3.4 transfer design (idea → variants → handoff)",
+    )
+    td_parser.add_argument("--run-id", required=True, help="Run identifier")
+    td_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
+    td_parser.add_argument("--selected-variant-id", action="append", default=[], metavar="VARIANT_ID",
+                           help="Select a variant by ID; may be repeated")
+    td_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
     stage3_parser = subparsers.add_parser(
         "stage3-acceptance",
@@ -372,6 +381,38 @@ def run_stage3_acceptance(args: argparse.Namespace) -> int:
     return 1
 
 
+def run_transfer_design(args: argparse.Namespace) -> int:
+    """Run Stage 3.4 transfer design as a standalone CLI command."""
+    from pathlib import Path
+    runs_root = Path(args.runs_root)
+    run_dir = runs_root / args.run_id
+    stage_dir = run_dir / "transfer_design"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    from autoad_researcher.pipeline.transfer_stage import run_transfer_design_stage
+    record = run_transfer_design_stage(
+        run_id=args.run_id,
+        run_dir=run_dir,
+        stage_dir=stage_dir,
+    )
+
+    if args.json_output:
+        import json as _json
+        print(_json.dumps(record.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2))
+    else:
+        print("AutoAD transfer design")
+        print(f"run_id: {args.run_id}")
+        print(f"status: {record.status}")
+        if record.blocked_reason:
+            print(f"blocked_reason: {record.blocked_reason}")
+        if record.handoff_sha256:
+            print(f"handoff_sha256: {record.handoff_sha256}")
+
+    if record.status == "passed":
+        return 0
+    return 3 if record.status == "blocked" else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 主入口。"""
     parser = build_parser()
@@ -385,6 +426,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_paper_intelligence(args)
     if args.command == "research-context":
         return run_research_context(args)
+    if args.command == "transfer-design":
+        return run_transfer_design(args)
     if args.command == "stage3-acceptance":
         return run_stage3_acceptance(args)
 

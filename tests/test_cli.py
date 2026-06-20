@@ -131,6 +131,11 @@ def test_stage3_acceptance_help(capsys):
 
 
 def test_stage3_acceptance_l1_l2_json_output(tmp_path, capsys):
+    # Create input_task.yaml so intake passes; pipeline blocks at paper_intelligence (PDF outside tmp_path)
+    run_dir = tmp_path / "run_310"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "input_task.yaml").write_text("run_id: run_310\nrequest: test\n", encoding="utf-8")
+
     exit_code = main(
         [
             "stage3-acceptance",
@@ -144,10 +149,11 @@ def test_stage3_acceptance_l1_l2_json_output(tmp_path, capsys):
         ]
     )
 
-    assert exit_code == 0
+    assert exit_code == 3
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_id"] == "run_310"
-    assert payload["status"] == "passed"
+    assert payload["status"] == "blocked"
+    assert payload["failed_stage"] == "paper_intelligence"
     assert "stage3_acceptance_manifest.json" in payload["artifacts"]
 
 

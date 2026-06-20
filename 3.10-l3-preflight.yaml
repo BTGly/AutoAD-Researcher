@@ -1,0 +1,28 @@
+# 3.10 L3 Preflight Checklist
+# 重启后运行：bash scripts/3.10-l3-check.sh
+
+patchcore_paper_pdf: papers/patchcore.pdf
+
+patchcore_repository:
+  local_path: workspace/repos/patchcore-inspection
+  commit_sha: fcaa92f124fb1ad74a7acf56726decd4b27cbcad
+
+mvtec_ad:
+  root: "${AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT}"  # ← 等你重启后设
+  category: bottle
+  required_paths:
+    - bottle/train/good
+    - bottle/test
+    - bottle/ground_truth
+  license_confirmed_by_user: true
+
+environment:
+  environment_id: patchcore_linux_gpu_v1
+  lockfile: configs/benchmarks/environments/patchcore_linux_gpu/requirements.lock.txt
+  gpu_index: 0
+  cuda_available: "${CUDA_AVAILABLE}"  # ← 重启后确认
+
+provider:
+  model_id: deepseek-v4-flash
+  base_url_env: DEEPSEEK_BASE_URL
+  api_key_env: DEEPSEEK_API_KEY

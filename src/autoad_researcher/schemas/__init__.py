@@ -4,6 +4,7 @@
 harness、pipeline、storage 等模块不应在各自目录内重复定义 schema。
 """
 
+from autoad_researcher.schemas.approvals import Stage3Approval
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2, ResolvedArtifact
 from autoad_researcher.schemas.execution import (
     AttemptIdentitySnapshot,
