@@ -399,6 +399,9 @@ def run_runner_execute_stage(
                             command_plans.append(json.loads(plan_path.read_text(encoding="utf-8")))
     _write_json(stage_dir / "experiment_command_plan.json", command_plans)
 
+    # ── Write GPU execution evidence ────────────────────────────────────
+    _write_gpu_evidence(stage_dir)
+
     # ── Build ExecutionManifest ──────────────────────────────────────────
     completed_units = [u for u in unit_records if u.final_status == ExecutionUnitStatus.COMPLETED]
     failed_units = [u for u in unit_records if u.final_status == ExecutionUnitStatus.FAILED]
@@ -845,6 +848,37 @@ def _cuda_available() -> bool:
         return torch.cuda.is_available()
     except ImportError:
         return False
+
+
+def _gpu_device_name() -> str:
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_name(0)
+        return ""
+    except Exception:
+        return ""
+
+
+def _cuda_version() -> str:
+    try:
+        import torch
+        return torch.version.cuda or ""
+    except Exception:
+        return ""
+
+
+def _write_gpu_evidence(stage_dir: Path) -> None:
+    """Write gpu_execution_evidence.json with explicit GPU capability info."""
+    cuda_avail = _cuda_available()
+    evidence = {
+        "torch_cuda_available": cuda_avail,
+        "torch_cuda_version": _cuda_version() if cuda_avail else "",
+        "device_name": _gpu_device_name() if cuda_avail else "",
+        "gpu_used": cuda_avail,
+        "source": "runner_execute",
+    }
+    _write_json(stage_dir / "gpu_execution_evidence.json", evidence)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

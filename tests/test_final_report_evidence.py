@@ -7,6 +7,7 @@ Verifies:
 - All three claim sections present in report
 - No-op patch flagged in report when 3.9 says noop_patch_no_scientific_claim
 - Stage status accurately reflects manifest
+- GPU claim defaults to not_completed without explicit evidence
 """
 
 import hashlib
@@ -157,8 +158,40 @@ class TestFinalReportEvidenceAudit:
 
     # ── Idempotency ─────────────────────────────────────────────────────
 
-    def test_re_run_produces_same_handoff(self):
-        """Re-running final-report must produce the same handoff SHA (deterministic)."""
+    def test_handoff_contains_valid_sha_fields(self):
+        """Handoff SHA fields have valid length (determinism is guaranteed by source artifacts)."""
         assert self.handoff is not None
         assert len(self.handoff.get("report_sha256", "")) == 64
         assert len(self.handoff.get("facts_sha256", "")) == 64
+
+    # ── GPU evidence ────────────────────────────────────────────────────
+
+    def test_gpu_claim_not_completed_without_evidence(self):
+        """Without gpu_execution_evidence.json, GPU claim must be not_completed."""
+        assert self.handoff is not None
+        assert self.handoff.get("gpu_claim") == "not_completed"
+        assert self.handoff.get("gpu_evidence_found") is False
+
+    def test_execution_mode_not_verified_without_evidence(self):
+        """Without gpu_execution_evidence.json, execution mode must be not_verified."""
+        assert self.handoff is not None
+        assert self.handoff.get("execution_mode") == "not_verified"
+
+    def test_gpu_device_name_empty_without_evidence(self):
+        """Without gpu_execution_evidence.json, gpu_device_name must be empty."""
+        assert self.handoff is not None
+        assert self.handoff.get("gpu_device_name") == ""
+
+    def test_facts_contains_gpu_fields(self):
+        """final_report_facts.json must contain GPU evidence fields."""
+        assert self.facts is not None
+        assert "gpu_evidence_found" in self.facts
+        assert "gpu_device_name" in self.facts
+        assert "execution_mode" in self.facts
+        assert "l3_gpu_claim" in self.facts
+
+    def test_report_mentions_no_gpu_evidence(self):
+        """Report must mention when no GPU evidence is found."""
+        path = RUNS_ROOT / RUN_ID / "final_report" / "final_report.md"
+        text = path.read_text(encoding="utf-8")
+        assert "No GPU execution evidence found" in text

@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.schemas.execution import (
-    ExecutionManifest,
     ExecutionUnitStatus,
 )
 from autoad_researcher.schemas.results_analysis import (
@@ -58,34 +57,19 @@ def _check_noop_patch(run_dir: Path) -> bool:
         return False
 
 
-def _detect_cpu_fallback(run_dir: Path) -> bool:
-    """Detect if 3.8 execution fell back to CPU (no GPU available)."""
-    manifest_path = run_dir / "runner_execute" / "execution_manifest.json"
-    if not manifest_path.exists():
-        return False
+def _detect_gpu_evidence(run_dir: Path) -> dict | None:
+    """Read explicit GPU execution evidence written by 3.8 runner_execute.
+
+    Returns the evidence dict when available, or None if no evidence file
+    exists (caller must treat this as *not verified*, not as GPU completed).
+    """
+    evidence_path = run_dir / "runner_execute" / "gpu_execution_evidence.json"
+    if not evidence_path.exists():
+        return None
     try:
-        manifest = ExecutionManifest.model_validate_json(
-            manifest_path.read_text(encoding="utf-8"),
-        )
-        for rec in manifest.unit_records:
-            for att in rec.attempts:
-                if att.execution_result_ref is None:
-                    continue
-                locator = att.execution_result_ref.locator
-                candidate = run_dir / locator
-                if not candidate.exists():
-                    candidate = run_dir.parent / locator
-                if not candidate.exists():
-                    continue
-                result_dir = candidate.parent
-                stderr_path = result_dir / "stderr.log"
-                if stderr_path.exists():
-                    text = stderr_path.read_text(encoding="utf-8", errors="replace")
-                    if "CUDA initialization" in text or "No CUDA" in text:
-                        return True
-        return False
+        return json.loads(evidence_path.read_text(encoding="utf-8"))
     except Exception:
-        return False
+        return None
 
 
 def _stage_summary(status: str | None) -> str:
@@ -136,9 +120,23 @@ def run_final_report_stage(
             blocked_reason=f"blocked_upstream: cannot parse reflection.json: {exc}",
         )
 
-    # ── Detect mode flags ──────────────────────────────────────────────
+    # ── Detect execution mode ───────────────────────────────────────────
     is_noop = _check_noop_patch(run_dir)
-    is_cpu = _detect_cpu_fallback(run_dir)
+    gpu_evidence = _detect_gpu_evidence(run_dir)
+
+    if gpu_evidence:
+        if gpu_evidence.get("gpu_used") and gpu_evidence.get("device_name"):
+            execution_mode = "gpu_verified"
+            gpu_claim = "completed"
+            device_name = gpu_evidence.get("device_name", "unknown")
+        else:
+            execution_mode = "cpu_fallback"
+            gpu_claim = "not_completed"
+            device_name = ""
+    else:
+        execution_mode = "not_verified"
+        gpu_claim = "not_completed"
+        device_name = ""
 
     # ── Detect upstream stage status ────────────────────────────────────
     # Use stage3_acceptance_manifest.json when available; fall back to
@@ -221,14 +219,7 @@ def run_final_report_stage(
         scientific_claim = "not_established"
         scientific_detail = "No variant conclusions available."
 
-    # ── Execution mode ─────────────────────────────────────────────────
-    if is_cpu:
-        execution_mode = "cpu_fallback"
-        gpu_claim = "not_completed"
-    else:
-        execution_mode = "gpu"
-        gpu_claim = "completed"
-
+    # ──
     # ── Build facts ────────────────────────────────────────────────────
     report_facts = {
         "run_id": run_id,
@@ -239,15 +230,12 @@ def run_final_report_stage(
         "l3_gpu_claim": gpu_claim,
         "pipeline_stages": stage_status,
         "per_variant_conclusions": [
-            vc.model_dump(mode="json", exclude_none=True)
-            for vc in reflection.per_variant_conclusions
+            c.model_dump(mode="json") for c in (reflection.per_variant_conclusions or [])
         ],
         "noop_patch": is_noop,
-        "cpu_fallback": is_cpu,
-        "total_units": (
-            reflection.report_facts.num_successful + reflection.report_facts.num_failed
-            if reflection.report_facts else 0
-        ),
+        "gpu_evidence_found": gpu_evidence is not None,
+        "gpu_device_name": device_name,
+        "total_units": reflection.report_facts.num_failed + reflection.report_facts.num_successful if reflection.report_facts else 0,
         "num_variants": reflection.report_facts.num_variants if reflection.report_facts else 0,
     }
 
@@ -270,8 +258,12 @@ def run_final_report_stage(
     lines.append("")
     lines.append(f"- Execution mode: **{execution_mode}**")
     lines.append(f"- GPU L3 claim: **{gpu_claim}**")
-    if is_cpu:
+    if execution_mode == "cpu_fallback":
         lines.append("- ⚠️ CPU fallback was used — GPU execution not verified.")
+    elif execution_mode == "not_verified":
+        lines.append("- ⚠️ No GPU execution evidence found — GPU claim cannot be verified.")
+    elif execution_mode == "gpu_verified" and device_name:
+        lines.append(f"- GPU device: **{device_name}**")
     if reflection.report_facts:
         facts = reflection.report_facts
         lines.append(f"- Units: {facts.num_successful} successful, {facts.num_failed} failed")
@@ -309,6 +301,8 @@ def run_final_report_stage(
         "scientific_claim": scientific_claim,
         "execution_mode": execution_mode,
         "gpu_claim": gpu_claim,
+        "gpu_evidence_found": gpu_evidence is not None,
+        "gpu_device_name": device_name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
