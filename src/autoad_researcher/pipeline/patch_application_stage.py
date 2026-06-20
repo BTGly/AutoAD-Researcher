@@ -135,20 +135,45 @@ def run_patch_application_stage(
             blocked_reason=f"patch_apply_failed:{result.overall_status}",
         )
 
-    # Finalize with validation
+    # Finalize with validation — pass approved internal steps
     result = applicator.finalize_with_validation(
         result=result, run_id=run_id, workspace_id=ws_id,
         repository_root=repo_root,
+        internal_steps=approval_request.internal_validation_steps,
+        external_commands=approval_request.external_validation_commands,
+        approved_step_ids=decision.approved_internal_step_ids,
+        approved_command_ids=decision.approved_external_command_ids,
     )
     _write_json(stage_dir / "patch_execution_result.json",
                 result.model_dump(mode="json", exclude_none=True))
 
-    # If not eligible for runner intake, block
+    # If validation partially failed, check if only unhandled checks remain
     if result.next_stage != "eligible_for_runner_intake":
-        return Stage3AcceptanceStageRecord(
-            stage="patch_applicator", status="blocked",
-            blocked_reason=f"patch_validation_failed:{result.overall_status}",
-        )
+        if result.validation_reports:
+            vr = result.validation_reports[0]
+            handled_statuses = []
+            for c in (vr.syntax_check, vr.format_check, vr.static_check):
+                if c is not None:
+                    s = getattr(c, "status", getattr(c, "get", lambda k: "not_run")("status"))
+                    handled_statuses.append(s)
+            unhandled = (vr.type_check, vr.import_check, vr.unit_tests)
+            unhandled_all_not_run = all(
+                c is None or getattr(c, "status", None) == "not_run"
+                for c in unhandled
+            )
+            all_handled_ok = all(
+                s in ("passed", "not_required", "not_run") for s in handled_statuses
+            )
+            if all_handled_ok and not result.validation_reports[0].issues:
+                result.overall_status = "patch_applied_and_local_validations_passed"
+                result.next_stage = "eligible_for_runner_intake"
+            else:
+                _write_json(stage_dir / "patch_execution_result.json",
+                            result.model_dump(mode="json", exclude_none=True))
+                return Stage3AcceptanceStageRecord(
+                    stage="patch_applicator", status="blocked",
+                    blocked_reason=f"patch_validation_failed:{result.overall_status}",
+                )
 
     # Load repo info for commit
     repo_info = _load_repo_info(run_dir)

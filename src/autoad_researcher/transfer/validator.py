@@ -172,6 +172,20 @@ def _check_variant_hook_invariants(
 ) -> bool:
     ok = True
     for v in variants:
+        if not v.hook_bindings:
+            issues.append(TransferValidationIssue(
+                issue_id=f"empty_hook_bindings_{v.variant_id}",
+                category="policy_violation",
+                invariant_category="4_variant_hook",
+                description=(
+                    f"Variant {v.variant_id} has no hook_bindings; "
+                    "primary_hook_id must be materialized as a HookBinding"
+                ),
+                artifact_ids=[v.variant_id],
+                resolution="return_to_3_4",
+            ))
+            ok = False
+            continue
         for binding in v.hook_bindings:
             hook = hooks.get(binding.hook_id)
             if hook is None:

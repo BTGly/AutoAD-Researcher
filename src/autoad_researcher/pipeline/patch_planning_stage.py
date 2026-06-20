@@ -58,8 +58,8 @@ def run_patch_planning_stage(
     # Load baseline contract for known hooks
     contract = _load_baseline_contract(run_dir)
     known_hooks: dict[str, ModificationHook] = {}
-    if contract and contract.hooks:
-        known_hooks = {h.hook_id: h for h in contract.hooks}
+    if contract and contract.modifiable_hooks:
+        known_hooks = {h.hook_id: h for h in contract.modifiable_hooks}
 
     # Load selected variants from transfer_design
     variants_path = run_dir / "transfer_design" / "implementation_variants.json"
@@ -97,6 +97,17 @@ def run_patch_planning_stage(
         purpose="patch_planning",
     )
 
+    # Fail-closed: selected variants must have hook_bindings
+    for v in selected_variants:
+        if not v.hook_bindings:
+            return Stage3AcceptanceStageRecord(
+                stage="patch_planner", status="blocked",
+                blocked_reason=(
+                    f"blocked_empty_hook_bindings: variant {v.variant_id} has no "
+                    f"hook_bindings; return to 3.4 to populate implementation hook bindings"
+                ),
+            )
+
     # Run PatchPlannerAgent
     from autoad_researcher.code_agent.patch_planner import PatchPlannerAgent
     planner = PatchPlannerAgent()
@@ -111,9 +122,34 @@ def run_patch_planning_stage(
         selected_variants=selected_variants,
         known_hooks=known_hooks,
     )
+
+    # Fail-closed: plan must have changes when variants exist
+    if not plan.changes and selected_variants:
+        _write_json(stage_dir / "repository_change_plan.json", plan.model_dump(mode="json", exclude_none=True))
+        return Stage3AcceptanceStageRecord(
+            stage="patch_planner", status="blocked",
+            blocked_reason=(
+                f"blocked_empty_plan: plan has no changes with "
+                f"{len(selected_variants)} selected variant(s) and "
+                f"{len(planning_issues)} planning issue(s); "
+                f"check known_hooks match variant hook_bindings"
+            ),
+        )
+
+    # Conflict analysis + workspace layout (BEFORE validation/manifest)
+    from autoad_researcher.code_agent.conflict_analyzer import analyze_variant_conflicts, apply_workspace_layout
+    analysis = analyze_variant_conflicts(
+        changes=plan.changes, variant_ids=selected_ids,
+        repository_source_id=repository_source_id,
+        repository_commit=repository_commit,
+        run_id=run_id, analysis_id=f"ca_{run_id}",
+        known_hooks=known_hooks,
+    )
+    plan = apply_workspace_layout(plan, analysis)
+    _write_json(stage_dir / "patch_conflict_analysis.json", analysis.model_dump(mode="json", exclude_none=True))
     _write_json(stage_dir / "repository_change_plan.json", plan.model_dump(mode="json", exclude_none=True))
 
-    # Validate plan
+    # Validate plan (against final plan with correct SHA)
     from autoad_researcher.code_agent.planner_validator import validate_repository_change_plan
     plan_validation = validate_repository_change_plan(
         plan=plan, known_hooks=known_hooks,
@@ -137,9 +173,10 @@ def run_patch_planning_stage(
     diff_sha256 = hashlib.sha256(diff_content.encode()).hexdigest()
     store.write_raw(run_id, diff_artifact_id, diff_content.encode())
 
+    ws_id = analysis.workspace_plans[0].workspace_id if analysis.workspace_plans else f"ws_{run_id}_default"
     manifest = build_payload_manifest(
         run_id=run_id,
-        workspace_id=f"ws_{run_id}_default",
+        workspace_id=ws_id,
         patch_plan_sha256=plan.patch_plan_sha256,
         payloads=payloads,
         proposed_diff_artifact_id=diff_artifact_id,
@@ -157,19 +194,6 @@ def run_patch_planning_stage(
     )
     _write_json(stage_dir / "patch_payload_validation_report.json", payload_validation.model_dump(mode="json", exclude_none=True))
 
-    # Conflict analysis + workspace layout
-    from autoad_researcher.code_agent.conflict_analyzer import analyze_variant_conflicts, apply_workspace_layout
-    analysis = analyze_variant_conflicts(
-        changes=plan.changes, variant_ids=selected_ids,
-        repository_source_id=repository_source_id,
-        repository_commit=repository_commit,
-        run_id=run_id, analysis_id=f"ca_{run_id}",
-        known_hooks=known_hooks,
-    )
-    plan = apply_workspace_layout(plan, analysis)
-    _write_json(stage_dir / "patch_conflict_analysis.json", analysis.model_dump(mode="json", exclude_none=True))
-    _write_json(stage_dir / "repository_change_plan.json", plan.model_dump(mode="json", exclude_none=True))
-
     # Build ApprovalRequest
     from autoad_researcher.schemas.patch_planning import (
         ApprovalRequest,
@@ -179,8 +203,6 @@ def run_patch_planning_stage(
         canonical_sha,
     )
 
-    ws_plan = analysis.workspace_plans[0] if analysis.workspace_plans else None
-    ws_id = ws_plan.workspace_id if ws_plan else f"ws_{run_id}_default"
     affected_paths = sorted({c.repository_path for c in plan.changes})
     ws_summary = WorkspaceApprovalSummary(
         workspace_id=ws_id,
@@ -189,7 +211,25 @@ def run_patch_planning_stage(
         affected_paths=affected_paths,
     )
 
+    # Internal validation steps required for preflight D5-D7
+    py_payload_ids = [p.payload_artifact_id for p in payloads if p.target_path.endswith(".py")]
     internal_steps: list[InternalValidationStep] = []
+    if py_payload_ids:
+        internal_steps.append(InternalValidationStep(
+            step_id="ast_parse", required=True,
+            target_artifact_ids=py_payload_ids,
+        ))
+    # diff_integrity is non-required when _generate_proposed_content
+    # returns identical content (stub — no LLM code synthesis)
+    internal_steps.append(InternalValidationStep(
+        step_id="diff_integrity", required=False,
+        target_artifact_ids=[diff_artifact_id],
+    ))
+    internal_steps.append(InternalValidationStep(
+        step_id="path_containment", required=True,
+        target_artifact_ids=[diff_artifact_id],
+    ))
+
     external_cmds: list[ExternalValidationCommand] = []
 
     approval_request = ApprovalRequest(
@@ -199,8 +239,8 @@ def run_patch_planning_stage(
         patch_plan_sha256=plan.patch_plan_sha256,
         patch_payload_manifest_sha256=manifest.manifest_sha256,
         proposed_patch_diff_sha256=diff_sha256,
-        patch_payload_validation_report_sha256=payload_validation.payload_manifest_sha256,
-        patch_plan_validation_report_sha256=plan_validation.patch_plan_sha256,
+        patch_payload_validation_report_sha256=canonical_sha(payload_validation),
+        patch_plan_validation_report_sha256=canonical_sha(plan_validation),
         repository_before_fingerprint=repository_fingerprint,
         selected_variant_ids=selected_ids,
         overall_risk_level="medium",

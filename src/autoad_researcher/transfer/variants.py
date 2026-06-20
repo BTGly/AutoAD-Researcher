@@ -4,6 +4,7 @@ Generates 1-3 architectural-level variants from alignment results.
 """
 
 from autoad_researcher.schemas.transfer_design import (
+    HookBinding,
     IdeaContract,
     ImplementationVariant,
 )
@@ -37,6 +38,16 @@ def generate_variants(
             variant_label=f"Variant {chr(ord('A') + i)}: hook {hook_id}",
             idea_id=idea_contract.idea_id,
             primary_hook_id=hook_id,
+            hook_bindings=[
+                HookBinding(
+                    hook_id=hook_id,
+                    role="primary_insertion_point",
+                    description=(
+                        f"Apply the confirmed idea mechanism at baseline "
+                        f"hook {hook_id}."
+                    ),
+                ),
+            ],
             risk_level="medium",
             fallback_behavior="Revert to original baseline configuration.",
             expected_behavior_rationale=(
