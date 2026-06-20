@@ -162,10 +162,22 @@ def run_results_analysis_stage(
                 return metrics
         return None
 
+    def _attempt_ref(unit: ExecutionUnitRecord, attr: str) -> ArtifactReferenceV2 | None:
+        """Read metrics_report_ref or validity_report_ref from the final attempt."""
+        if not unit.attempts:
+            return None
+        for attempt in reversed(unit.attempts):
+            ref = getattr(attempt, attr, None)
+            if ref is not None:
+                return ref
+        return None
+
+    base_units_by_seed: dict[int, ExecutionUnitRecord] = {}
     base_metrics_map: dict[int, dict[str, float]] = {}
     for bu in baseline_units:
         m = _unit_metrics(bu)
-        if m is not None:
+        if m is not None and bu.seed is not None:
+            base_units_by_seed[bu.seed] = bu
             base_metrics_map[bu.seed] = m
 
     variant_info: list[dict] = []
@@ -189,11 +201,12 @@ def run_results_analysis_stage(
         v_seed = vi["seed"]
         v_metrics = vi["metrics"]
         v_id = vi["variant_id"]
-        if v_metrics is None:
+        if v_metrics is None or v_seed is None:
             continue
 
+        base_unit = base_units_by_seed.get(v_seed)
         base_metrics = base_metrics_map.get(v_seed)
-        if base_metrics is None:
+        if base_unit is None or base_metrics is None:
             continue
 
         base_val = base_metrics.get(METRIC_NAME)
@@ -212,28 +225,39 @@ def run_results_analysis_stage(
         raw_rel = raw_delta / abs_base * 100.0 if abs_base > 1e-10 else None
         imp_rel = improvement_delta / abs_base * 100.0 if abs_base > 1e-10 else None
 
+        base_metrics_ref = _attempt_ref(base_unit, "metrics_report_ref")
+        base_validity_ref = _attempt_ref(base_unit, "validity_report_ref")
+        var_metrics_ref = _attempt_ref(vu, "metrics_report_ref")
+        var_validity_ref = _attempt_ref(vu, "validity_report_ref")
+
+        pair_validity = "valid"
+        base_missing = base_metrics_ref is None or base_validity_ref is None
+        var_missing = var_metrics_ref is None or var_validity_ref is None
+        if base_missing or var_missing:
+            pair_validity = "insufficient_evidence"
+
         obs = PairedMetricObservation(
             seed=v_seed,
             baseline_source=CurrentRunBaselineMetricRef(
                 metric_name=METRIC_NAME,
-                unit_id=baseline_units[0].unit_id if baseline_units else "unknown",
+                unit_id=base_unit.unit_id,
                 seed=v_seed,
-                metric_ref=self_ref("metrics", vu, run_id),
-                validity_ref=self_ref("validity", vu, run_id),
+                metric_ref=base_metrics_ref or _unavailable_ref(f"metrics_{base_unit.unit_id}"),
+                validity_ref=base_validity_ref or _unavailable_ref(f"validity_{base_unit.unit_id}"),
             ),
             baseline_value=base_val,
             variant_unit_id=vu.unit_id,
             variant_id=v_id,
-            variant_metric_ref=self_ref("metrics", vu, run_id),
+            variant_metric_ref=var_metrics_ref or _unavailable_ref(f"metrics_{vu.unit_id}"),
             variant_value=var_val,
             direction=DIRECTION,
             raw_delta=raw_delta,
             improvement_delta=improvement_delta,
             raw_relative_change_pct=raw_rel,
             improvement_relative_change_pct=imp_rel,
-            pair_validity_status="valid",
-            variant_validity_ref=self_ref("validity", vu, run_id),
-            baseline_validity_ref=self_ref("validity", baseline_units[0], run_id) if baseline_units else self_ref("validity", vu, run_id),
+            pair_validity_status=pair_validity,
+            variant_validity_ref=var_validity_ref or _unavailable_ref(f"validity_{vu.unit_id}"),
+            baseline_validity_ref=base_validity_ref or _unavailable_ref(f"validity_{base_unit.unit_id}"),
             protocol_fingerprint=handoff_38.protocol_fingerprint,
         )
         paired_observations.append(obs)
@@ -341,8 +365,11 @@ def run_results_analysis_stage(
     per_variant_conclusions: list[VariantScientificConclusion] = []
     for v_id in seen_variant_ids:
         if no_effective_patch:
-            conclusion_val = ScientificConclusion.PRACTICALLY_EQUIVALENT
-            matched_rule = "noop_patch_detected"
+            # No effective patch was applied — the run validates execution and
+            # metrics plumbing only; it does not establish scientific improvement
+            # or practical equivalence.
+            conclusion_val = ScientificConclusion.INCOMPLETE
+            matched_rule = "noop_patch_no_scientific_claim"
         else:
             v_obs = [o for o in paired_observations if o.variant_id == v_id]
             if v_obs:
@@ -379,9 +406,19 @@ def run_results_analysis_stage(
         report_facts=report_facts,
     )
 
+    # Strip computed_fields that break round-trip serialization
+    def _strip_computed(obj):
+        if isinstance(obj, dict):
+            banned = {"total_actual_gpu_hours", "max_unit_actual_gpu_hours"}
+            return {k: _strip_computed(v) for k, v in obj.items() if k not in banned}
+        if isinstance(obj, list):
+            return [_strip_computed(v) for v in obj]
+        return obj
+
     # ── Write artifacts ────────────────────────────────────────────────
     stage_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(stage_dir / "reflection.json", reflection.model_dump(mode="json", exclude_none=True))
+    ref_data = _strip_computed(reflection.model_dump(mode="json", exclude_none=True))
+    _write_json(stage_dir / "reflection.json", ref_data)
     _write_json(handoff_path, {
         "run_id": run_id,
         "reflection_sha256": _sha256_file(stage_dir / "reflection.json"),
@@ -406,6 +443,11 @@ def run_results_analysis_stage(
     report_lines.append("## Scientific Conclusions")
     for vc in per_variant_conclusions:
         report_lines.append(f"- {vc.variant_id}: {vc.conclusion.value} (rule: {vc.matched_rule_id})")
+    if no_effective_patch:
+        report_lines.append("")
+        report_lines.append("> **Note:** No effective patch was applied. This run validates execution and")
+        report_lines.append("> metrics plumbing only; it does **not** establish scientific improvement or")
+        report_lines.append("> practical equivalence.")
     report_lines.append("")
     report_lines.append("## Paired Comparisons")
     for obs in paired_observations:
@@ -419,7 +461,7 @@ def run_results_analysis_stage(
     report_lines.append("## Resource Usage")
     report_lines.append("- Resource telemetry: not available")
 
-    report_path = stage_dir / "final_report.md"
+    report_path = stage_dir / "results_analysis_report.md"
     report_path.write_text("\n".join(report_lines), encoding="utf-8")
 
     handoff_sha = _sha256_file(handoff_path)
@@ -436,7 +478,7 @@ def run_results_analysis_stage(
         Stage3AcceptanceArtifactRef(
             relative_path=str(report_path.relative_to(run_dir)),
             sha256=_sha256_file(report_path),
-            artifact_type="final_report_md",
+            artifact_type="results_analysis_report",
         ),
     ]
     return Stage3AcceptanceStageRecord(
@@ -445,18 +487,23 @@ def run_results_analysis_stage(
     )
 
 
-def self_ref(role: str, unit: ExecutionUnitRecord, run_id: str) -> ArtifactReferenceV2:
-    """Build a placeholder artifact reference for metrics or validity."""
+def _unavailable_ref(artifact_id: str) -> ArtifactReferenceV2:
+    """Build a sentinel artifact reference for missing/absent evidence."""
     return ArtifactReferenceV2(
-        artifact_id=f"{role}_{unit.unit_id}",
-        artifact_type=role,
-        locator=f"{run_id}/runner_execute/attempts/{unit.unit_id}/attempt_1/{role}.json",
-        sha256=hashlib.sha256(f"{unit.unit_id}_{role}".encode()).hexdigest(),
+        artifact_id=artifact_id,
+        artifact_type="not_available",
+        locator="absent",
+        sha256="0" * 64,
     )
 
 
 def _check_noop_patch(run_dir: Path) -> bool:
-    """Check if the patch was a no-op by looking at the PatchRunnerHandoff."""
+    """Check if the patch was a no-op by looking at the PatchRunnerHandoff.
+
+    A patch is no-op if:
+    - patch_diff_sha256 is None/empty/zero, OR
+    - before_sha256 == after_sha256 (both empty or identical content)
+    """
     handoff_37_path = run_dir / "patch_applicator" / "patch_runner_handoff.json"
     if not handoff_37_path.exists():
         return False
@@ -467,6 +514,7 @@ def _check_noop_patch(run_dir: Path) -> bool:
             vw.get("patch_diff_sha256") is None
             or vw.get("patch_diff_sha256") == ""
             or vw.get("patch_diff_sha256") == "0" * 64
+            or vw.get("before_sha256") == vw.get("after_sha256")
             for vw in variants
         )
     except Exception:

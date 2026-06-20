@@ -244,6 +244,45 @@ def run_runner_execute_stage(
             validity_report = _make_validity_report(result, metrics_report)
             outcome = derive_attempt_outcome(result, metrics_report, validity_report)
 
+            # ── Persist metrics + validity evidence artifacts ─────────────
+            metrics_ref: ArtifactReferenceV2 | None = None
+            validity_ref: ArtifactReferenceV2 | None = None
+            evidence_bindings: list[ResolvedArtifactBinding] = []
+
+            if metrics_report is not None:
+                metrics_path = attempt_dir / "metrics_report.json"
+                _write_json(metrics_path, metrics_report.model_dump(mode="json", exclude_none=True))
+                metrics_sha = _sha256_file(metrics_path)
+                metrics_ref = ArtifactReferenceV2(
+                    artifact_id=f"metrics_report_{attempt_id}",
+                    artifact_type="metrics_report",
+                    locator=str(metrics_path.relative_to(run_dir.parent)),
+                    sha256=metrics_sha,
+                )
+                evidence_bindings.append(ResolvedArtifactBinding(
+                    binding_id=f"metrics_report_{attempt_id}",
+                    role="metrics_report",
+                    artifact_ref=metrics_ref,
+                    artifact_sha256=metrics_sha,
+                ))
+
+            if validity_report is not None:
+                validity_path = attempt_dir / "validity_report.json"
+                _write_json(validity_path, validity_report.model_dump(mode="json", exclude_none=True))
+                validity_sha = _sha256_file(validity_path)
+                validity_ref = ArtifactReferenceV2(
+                    artifact_id=f"validity_report_{attempt_id}",
+                    artifact_type="validity_report",
+                    locator=str(validity_path.relative_to(run_dir.parent)),
+                    sha256=validity_sha,
+                )
+                evidence_bindings.append(ResolvedArtifactBinding(
+                    binding_id=f"validity_report_{attempt_id}",
+                    role="validity_report",
+                    artifact_ref=validity_ref,
+                    artifact_sha256=validity_sha,
+                ))
+
             record = AttemptRecord(
                 attempt_id=attempt_id,
                 attempt_index=attempt_idx,
@@ -258,6 +297,8 @@ def run_runner_execute_stage(
                     ),
                     sha256=_sha256_file(attempt_dir / "execution_result.json"),
                 ),
+                metrics_report_ref=metrics_ref,
+                validity_report_ref=validity_ref,
                 produced_artifacts=[
                     ProducedArtifactRecord(
                         unit_id=unit.unit_id,
@@ -302,6 +343,7 @@ def run_runner_execute_stage(
                                 ),
                                 artifact_sha256=_compute_input_refs_sha(input_refs),
                             ),
+                            *evidence_bindings,
                         ],
                     ),
                 ],
