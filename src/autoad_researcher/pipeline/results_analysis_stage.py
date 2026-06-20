@@ -502,7 +502,11 @@ def _check_noop_patch(run_dir: Path) -> bool:
 
     A patch is no-op if:
     - patch_diff_sha256 is None/empty/zero, OR
-    - before_sha256 == after_sha256 (both empty or identical content)
+    - before_sha256 and after_sha256 are both non-empty strings and equal
+      (identical content — no effective change)
+
+    Important: None == None is NOT treated as equal-content to avoid false
+    positives when before/after fields are absent in future runs.
     """
     handoff_37_path = run_dir / "patch_applicator" / "patch_runner_handoff.json"
     if not handoff_37_path.exists():
@@ -510,12 +514,24 @@ def _check_noop_patch(run_dir: Path) -> bool:
     try:
         data = json.loads(handoff_37_path.read_text(encoding="utf-8"))
         variants = data.get("variant_workspaces", [])
-        return all(
-            vw.get("patch_diff_sha256") is None
-            or vw.get("patch_diff_sha256") == ""
-            or vw.get("patch_diff_sha256") == "0" * 64
-            or vw.get("before_sha256") == vw.get("after_sha256")
-            for vw in variants
-        )
+
+        def _is_noop(vw: dict) -> bool:
+            # Empty diff indicator
+            diff = vw.get("patch_diff_sha256")
+            if diff is None or diff == "" or diff == "0" * 64:
+                return True
+            # Equal content check — both must be present (not None) and equal.
+            # Empty strings are allowed (represent uncommitted workspaces).
+            before = vw.get("before_sha256")
+            after = vw.get("after_sha256")
+            if (
+                before is not None
+                and after is not None
+                and before == after
+            ):
+                return True
+            return False
+
+        return all(_is_noop(vw) for vw in variants)
     except Exception:
         return False

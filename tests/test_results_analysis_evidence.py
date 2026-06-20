@@ -9,6 +9,7 @@ Verifies:
 - No placeholder SHA from hash(unit_id + "_" + role)
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -47,6 +48,23 @@ def _load_reflection(runs_root: Path, run_id: str) -> Reflection | None:
         return Reflection.model_validate(json.load(f))
 
 
+def _is_sentinel(ref) -> bool:
+    """Check if an ArtifactReferenceV2 is the sentinel unavailable ref."""
+    return ref.locator == "absent" and ref.sha256 == "0" * 64
+
+
+def _resolve_artifact(ref) -> Path | None:
+    if _is_sentinel(ref):
+        return None
+    candidate = RUNS_ROOT / ref.locator
+    if candidate.exists():
+        return candidate
+    candidate = RUNS_ROOT / RUN_ID / ref.locator
+    if candidate.exists():
+        return candidate
+    return None
+
+
 class TestResultsAnalysisEvidenceAudit:
     """Evidence chain audit for 3.9 results analysis."""
 
@@ -70,15 +88,10 @@ class TestResultsAnalysisEvidenceAudit:
                 )
 
     def test_noop_conclusion_not_practically_equivalent(self):
-        """The string 'practically_equivalent' must not appear in a no-op conclusion."""
+        """'practically_equivalent' must not appear in a no-op conclusion."""
         reflection = _load_reflection(RUNS_ROOT, RUN_ID)
         if reflection is None:
             pytest.skip("no reflection.json for this run")
-        non_noop_ids = {
-            "positive_improvement_delta",
-            "negative_improvement_delta",
-            "zero_improvement_delta",
-        }
         for vc in reflection.per_variant_conclusions:
             if vc.matched_rule_id == "noop_patch_no_scientific_claim":
                 assert vc.conclusion != ScientificConclusion.PRACTICALLY_EQUIVALENT, (
@@ -87,6 +100,20 @@ class TestResultsAnalysisEvidenceAudit:
 
     # ── Evidence ref integrity ─────────────────────────────────────────
 
+    def test_metrics_report_ref_file_exists(self):
+        """Every non-sentinel metrics_report_ref must point to an existing file."""
+        for rec in self.manifest.unit_records:
+            for attempt in rec.attempts:
+                if attempt.metrics_report_ref is None:
+                    continue
+                ref = attempt.metrics_report_ref
+                if _is_sentinel(ref):
+                    continue
+                file_path = _resolve_artifact(ref)
+                assert file_path is not None and file_path.exists(), (
+                    f"metrics_report_ref points to non-existent file: {ref.locator}"
+                )
+
     def test_metrics_report_ref_sha_matches_file(self):
         """metrics_report_ref.sha256 must match the actual file on disk."""
         for rec in self.manifest.unit_records:
@@ -94,18 +121,27 @@ class TestResultsAnalysisEvidenceAudit:
                 if attempt.metrics_report_ref is None:
                     continue
                 ref = attempt.metrics_report_ref
-                # Locator may be relative to runs_root or run_dir
-                candidate = RUNS_ROOT / ref.locator
-                if not candidate.exists():
-                    candidate = RUNS_ROOT / RUN_ID / ref.locator
-                if not candidate.exists():
-                    continue  # file not on disk — skip
-                actual_sha = candidate.read_bytes().hex() if False else None
-                import hashlib
-                actual_sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                file_path = _resolve_artifact(ref)
+                if file_path is None:
+                    continue  # checked in test_metrics_report_ref_file_exists
+                actual_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
                 assert ref.sha256 == actual_sha, (
                     f"metrics_report_ref SHA mismatch for {ref.locator}: "
                     f"ref says {ref.sha256}, file has {actual_sha}"
+                )
+
+    def test_validity_report_ref_file_exists(self):
+        """Every non-sentinel validity_report_ref must point to an existing file."""
+        for rec in self.manifest.unit_records:
+            for attempt in rec.attempts:
+                if attempt.validity_report_ref is None:
+                    continue
+                ref = attempt.validity_report_ref
+                if _is_sentinel(ref):
+                    continue
+                file_path = _resolve_artifact(ref)
+                assert file_path is not None and file_path.exists(), (
+                    f"validity_report_ref points to non-existent file: {ref.locator}"
                 )
 
     def test_validity_report_ref_sha_matches_file(self):
@@ -115,13 +151,10 @@ class TestResultsAnalysisEvidenceAudit:
                 if attempt.validity_report_ref is None:
                     continue
                 ref = attempt.validity_report_ref
-                candidate = RUNS_ROOT / ref.locator
-                if not candidate.exists():
-                    candidate = RUNS_ROOT / RUN_ID / ref.locator
-                if not candidate.exists():
+                file_path = _resolve_artifact(ref)
+                if file_path is None:
                     continue
-                import hashlib
-                actual_sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                actual_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
                 assert ref.sha256 == actual_sha, (
                     f"validity_report_ref SHA mismatch for {ref.locator}: "
                     f"ref says {ref.sha256}, file has {actual_sha}"
@@ -137,10 +170,8 @@ class TestResultsAnalysisEvidenceAudit:
                     if ref is None:
                         continue
                     refs_seen += 1
-                    # Placeholder SHA would be hash(unit_id + "_metrics") or similar
                     unit_id = attempt.unit_id
                     for role in ("metrics", "validity"):
-                        import hashlib
                         placeholder = hashlib.sha256(f"{unit_id}_{role}".encode()).hexdigest()
                         if ref.sha256 == placeholder:
                             placeholder_count += 1
@@ -150,28 +181,32 @@ class TestResultsAnalysisEvidenceAudit:
             )
 
     def test_unavailable_ref_sentinel_structure(self):
-        """Sentinel refs must have locator='' and sha256=64 zeros."""
+        """Sentinel refs must have locator='absent' and sha256=64 zeros."""
         from autoad_researcher.pipeline.results_analysis_stage import _unavailable_ref
         sentinel = _unavailable_ref("test_artifact")
-        assert sentinel.locator == "absent", f"sentinel locator should be 'absent', got '{sentinel.locator}'"
-        assert sentinel.sha256 == "0" * 64, (
-            f"sentinel sha256 should be 64 zeros, got '{sentinel.sha256}'"
-        )
+        assert sentinel.locator == "absent"
+        assert sentinel.sha256 == "0" * 64
         assert sentinel.artifact_type == "not_available"
 
     # ── Conclusion logic ────────────────────────────────────────────────
 
-    def test_noop_check_function(self):
-        """_check_noop_patch returns True when patch_diff_sha256 is null."""
+    def test_noop_check_function_handoff(self):
+        """_check_noop_patch returns True/False based on handoff content.
+
+        run_l3_bottle_001 has patch_diff_sha256 set but before/after both None,
+        so _check_noop_patch returns False (no-op must be detected from
+        metric deltas, not from ambiguous handoff fields).
+        """
         from autoad_researcher.pipeline.results_analysis_stage import _check_noop_patch
         run_dir = RUNS_ROOT / RUN_ID
         handoff_path = run_dir / "patch_applicator" / "patch_runner_handoff.json"
         if not handoff_path.exists():
             pytest.skip("no PatchRunnerHandoff for this run")
         result = _check_noop_patch(run_dir)
-        # This is a real assertion — we know run_l3_bottle_001 has a no-op patch
-        assert result is True, (
-            "run_l3_bottle_001 should have no_effective_patch=True"
+        # before/after are both None — not enough to declare no-op from handoff alone
+        assert result is False, (
+            "run_l3_bottle_001 has patch_diff_sha256 set with before/after=None; "
+            "_check_noop_patch should return False (None==None guard)"
         )
 
     # ── Paired observation baseline ref correctness ─────────────────────
@@ -181,7 +216,6 @@ class TestResultsAnalysisEvidenceAudit:
         reflection = _load_reflection(RUNS_ROOT, RUN_ID)
         if reflection is None:
             pytest.skip("no reflection.json for this run")
-        # Load aggregated comparisons from disk
         ac_path = RUNS_ROOT / RUN_ID / "results_analysis" / "aggregated_comparisons.json"
         if not ac_path.exists():
             pytest.skip("no aggregated_comparisons.json")
@@ -191,16 +225,14 @@ class TestResultsAnalysisEvidenceAudit:
             for obs_data in comp.get("paired_observations", []):
                 obs = PairedMetricObservation.model_validate(obs_data)
                 seed = obs.seed
-                # The baseline_source.unit_id should contain the baseline unit's ID
                 baseline_unit_id = obs.baseline_source.unit_id
-                # Find the baseline unit with matching seed
                 matching_baselines = [
                     r for r in self.manifest.unit_records
                     if getattr(r, "stage", None) == "baseline"
                     and r.seed == seed
                 ]
                 if not matching_baselines:
-                    continue  # no baseline unit for this seed
+                    continue
                 expected_base_id = matching_baselines[0].unit_id
                 assert baseline_unit_id == expected_base_id, (
                     f"seed={seed}: PairedMetricObservation baseline unit_id="
@@ -212,7 +244,6 @@ class TestResultsAnalysisEvidenceAudit:
         reflection = _load_reflection(RUNS_ROOT, RUN_ID)
         if reflection is None:
             pytest.skip("no reflection.json for this run")
-        import hashlib
         ac_path = RUNS_ROOT / RUN_ID / "results_analysis" / "aggregated_comparisons.json"
         if not ac_path.exists():
             pytest.skip("no aggregated_comparisons.json")
