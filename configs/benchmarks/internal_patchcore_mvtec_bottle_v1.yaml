@@ -15,7 +15,7 @@ implementation_name: amazon-science-patchcore-inspection
 repository:
   url: https://github.com/amazon-science/patchcore-inspection
   ref: main
-  commit_sha: fcaa92f124fb1ad74a7acf56726decd4b27cbcad
+  commit_sha: aa6464978e25b7eb3078e1bbc14ee7103de14f23
   license: Apache-2.0
   entrypoint_path: bin/run_patchcore.py
   config_path: null
@@ -47,8 +47,8 @@ fixed_parameters:
   layers:
     - layer2
     - layer3
-  resize: 256
-  imagesize: 224
+  resize: 128
+  imagesize: 128
   pretrain_embed_dimension: 1024
   target_embed_dimension: 1024
   anomaly_scorer_num_nn: 1
@@ -56,7 +56,7 @@ fixed_parameters:
   sampler: approx_greedy_coreset
   coreset_sampling_ratio: 0.1
   batch_size: 2
-  num_workers: 8
+  num_workers: 2
   train_val_split: 1.0
   faiss_on_gpu: false
   log_online: false
@@ -69,7 +69,7 @@ fixed_parameters:
   aggregation: mean
   patchscore: max
   patchoverlap: 0.0
-  faiss_num_workers: 8
+  faiss_num_workers: 2
   augment: false
   log_project: autoad_internal_benchmark
   log_group: internal_patchcore_mvtec_bottle_v1

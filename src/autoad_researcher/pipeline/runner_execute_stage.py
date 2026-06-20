@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from autoad_researcher.benchmarks.hashing import canonical_sha256
+from autoad_researcher.analysis.metrics import MetricsReport, parse_metrics, MetricParseSpec
+from autoad_researcher.supervisor.validity import ScientificValidityReport, ValidityCheck
+from autoad_researcher.runner.models import ExperimentExecutionResult
 from autoad_researcher.runner.executor import (
     execute_experiment_attempt,
     experiment_command_sha256,
@@ -21,6 +25,7 @@ from autoad_researcher.runner.validators import (
 )
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.schemas.execution import (
+    AttemptOutcome,
     AttemptIdentitySnapshot,
     AttemptRecord,
     ExecutionManifest,
@@ -203,8 +208,15 @@ def run_runner_execute_stage(
                 command_sha256=cmd_sha,
             )
 
+            # execution_unit_plan_sha256 = canonical SHA of unit plan
+            # excluding the command_plan_sha256 placeholder (same for all
+            # retry attempts within the unit).
+            unit_payload = unit.model_dump(mode="json", exclude_none=True)
+            unit_payload.pop("command_plan_sha256", None)
+            execution_unit_plan_sha = canonical_sha256(unit_payload)
+
             identity = AttemptIdentitySnapshot(
-                execution_unit_plan_sha256=unit.command_plan_sha256,
+                execution_unit_plan_sha256=execution_unit_plan_sha,
                 command_sha256=cmd_sha,
                 input_refs_sha256=_compute_input_refs_sha(input_refs),
                 workspace_repository_fingerprint=(
@@ -225,8 +237,12 @@ def run_runner_execute_stage(
                         command_plan.model_dump(mode="json", exclude_none=True))
             _write_json(attempt_dir / "input_refs.json",
                         input_refs.model_dump(mode="json", exclude_none=True))
+            _write_json(attempt_dir / "execution_unit_plan.json",
+                        unit.model_dump(mode="json", exclude_none=True))
 
-            outcome = derive_attempt_outcome(result, None, None)
+            metrics_report = _parse_benchmark_metrics(attempt_dir, benchmark_config)
+            validity_report = _make_validity_report(result, metrics_report)
+            outcome = derive_attempt_outcome(result, metrics_report, validity_report)
 
             record = AttemptRecord(
                 attempt_id=attempt_id,
@@ -259,6 +275,19 @@ def run_runner_execute_stage(
                                     sha256=_sha256_file(attempt_dir / "command_plan.json"),
                                 ),
                                 artifact_sha256=cmd_sha,
+                            ),
+                            ResolvedArtifactBinding(
+                                binding_id=f"unit_plan_{attempt_id}",
+                                role="execution_unit_plan",
+                                artifact_ref=ArtifactReferenceV2(
+                                    artifact_id=f"unit_plan_{attempt_id}",
+                                    artifact_type="execution_unit_plan",
+                                    locator=str(
+                                        (attempt_dir / "execution_unit_plan.json").relative_to(run_dir.parent),
+                                    ),
+                                    sha256=_sha256_file(attempt_dir / "execution_unit_plan.json"),
+                                ),
+                                artifact_sha256=execution_unit_plan_sha,
                             ),
                             ResolvedArtifactBinding(
                                 binding_id=f"input_refs_{attempt_id}",
@@ -544,16 +573,17 @@ def _make_command_plan(
     the attempt dir, so executor can find expected outputs at ``results_root/outputs/...``.
     """
     repo = Path("workspace/repos/patchcore-inspection")
+    src_path = str(repo.resolve() / "src")
 
     if benchmark_config is None:
-        results_out = results_root / "outputs"
+        results_out = results_root.resolve() / "outputs"
         return ExperimentCommandPlan(
             schema_version=1,
             command_id=f"cmd_{unit.unit_id}",
             program="python",
             args=["bin/run_patchcore.py", str(results_out)],
             cwd=str(repo),
-            environment={},
+            environment={"PYTHONPATH": src_path},
             timeout_seconds=unit.max_wall_time_seconds,
             network=False,
             expected_outputs=["outputs/results.csv"],
@@ -571,7 +601,7 @@ def _make_command_plan(
 
     # Use absolute results path scoped to attempt_dir so executor's
     # expected_outputs check (relative to attempt_dir) can find the files.
-    results_out = results_root / "outputs"
+    results_out = results_root.resolve() / "outputs"
 
     raw_result_paths = eval_cfg.get("raw_result_paths", [])
     expected_outputs = list(raw_result_paths) if raw_result_paths else [
@@ -581,13 +611,13 @@ def _make_command_plan(
     gpu_enabled = _cuda_available()
     args = [
         entrypoint,
-        str(results_out),
         "--seed", str(params.get("seed", 0)),
         "--log_group", log_group,
         "--log_project", log_project,
     ]
     if gpu_enabled:
         args += ["--gpu", str(params.get("gpu", 0))]
+    args += [str(results_out)]
 
     args += [
         "patch_core",
@@ -611,8 +641,8 @@ def _make_command_plan(
 
     args += [
         "sampler",
-        params.get("sampler", "approx_greedy_coreset"),
         "--percentage", str(params.get("coreset_sampling_ratio", 0.1)),
+        params.get("sampler", "approx_greedy_coreset"),
     ]
 
     dataset_root_env = dataset_cfg.get("root_env", "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT")
@@ -621,30 +651,92 @@ def _make_command_plan(
 
     args += [
         "dataset",
-        "mvtec",
-        dataset_root,
         "-d", category,
         "--train_val_split", str(params.get("train_val_split", 1.0)),
         "--batch_size", str(params.get("batch_size", 2)),
         "--num_workers", str(params.get("num_workers", 8)),
         "--resize", str(params.get("resize", 256)),
         "--imagesize", str(params.get("imagesize", 224)),
+        "mvtec",
+        dataset_root,
     ]
 
+    env = {
+        dataset_root_env: dataset_root,
+        "PYTHONPATH": src_path,
+    }
     return ExperimentCommandPlan(
         schema_version=1,
         command_id=f"cmd_{unit.unit_id}",
         program="python",
         args=args,
         cwd=str(repo),
-        environment={
-            dataset_root_env: dataset_root,
-        },
+        environment=env,
         timeout_seconds=unit.max_wall_time_seconds,
         network=False,
         expected_outputs=expected_outputs,
     )
 
+
+# ── Validity report ───────────────────────────────────────────────────────
+
+def _make_validity_report(
+    result: ExperimentExecutionResult | None,
+    metrics_report: MetricsReport | None,
+) -> ScientificValidityReport | None:
+    if result is None or metrics_report is None:
+        return None
+    if result.exit_code != 0:
+        return None
+    checks = [
+        ValidityCheck(
+            check_id="execution_success",
+            status="passed" if result.exit_code == 0 else "failed",
+            message=f"exit code {result.exit_code}",
+        ),
+        ValidityCheck(
+            check_id="metrics_parsed",
+            status="passed" if metrics_report.status == "passed" else "failed",
+            message=f"required {metrics_report.required_parsed}/{metrics_report.required_total} metrics",
+        ),
+    ]
+    all_passed = all(c.status == "passed" for c in checks)
+    return ScientificValidityReport(
+        schema_version=1,
+        status="valid" if all_passed else "invalid",
+        checks=checks,
+    )
+
+# ── Metrics parsing ────────────────────────────────────────────────────────
+
+def _parse_benchmark_metrics(
+    attempt_dir: Path,
+    benchmark_config: dict[str, Any] | None,
+) -> MetricsReport | None:
+    """Parse metrics CSV from attempt output if benchmark config provides specs."""
+    if benchmark_config is None:
+        return None
+    eval_cfg = benchmark_config.get("evaluation", {})
+    metrics_cfg = eval_cfg.get("metrics", [])
+    if not metrics_cfg:
+        return None
+    raw_paths = eval_cfg.get("raw_result_paths", [])
+    if not raw_paths:
+        return None
+    specs = []
+    for m in metrics_cfg:
+        specs.append(MetricParseSpec(
+            metric_name=m["name"],
+            source_path=raw_paths[0],
+            source_format="csv",
+            csv_row_key="Row Names",
+            csv_row_value=m.get("dataset_row", "mvtec_bottle"),
+            csv_metric_column=m["name"],
+            dataset_row=m.get("dataset_row", "mvtec_bottle"),
+            unit=m.get("unit", "ratio"),
+            required=m.get("required", False),
+        ))
+    return parse_metrics(attempt_dir, specs)
 
 # ── SHA computation helpers ────────────────────────────────────────────────
 
