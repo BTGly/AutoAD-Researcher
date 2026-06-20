@@ -88,6 +88,22 @@ def build_parser() -> argparse.ArgumentParser:
     ep_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
     ep_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
+    pp_parser = subparsers.add_parser(
+        "patch-plan",
+        help="Run Stage 3.6 patch planner (plan → manifest → approval request)",
+    )
+    pp_parser.add_argument("--run-id", required=True, help="Run identifier")
+    pp_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
+    pp_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+
+    pa_parser = subparsers.add_parser(
+        "patch-apply",
+        help="Run Stage 3.7 patch application (approval → apply → runner handoff)",
+    )
+    pa_parser.add_argument("--run-id", required=True, help="Run identifier")
+    pa_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
+    pa_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+
     stage3_parser = subparsers.add_parser(
         "stage3-acceptance",
         help="Run deterministic Step 3.10 L1/L2 acceptance orchestration",
@@ -451,6 +467,66 @@ def run_experiment_plan(args: argparse.Namespace) -> int:
     return 3 if record.status == "blocked" else 1
 
 
+def run_patch_plan(args: argparse.Namespace) -> int:
+    """Run Stage 3.6 patch planner as a standalone CLI command."""
+    from pathlib import Path
+    runs_root = Path(args.runs_root)
+    run_dir = runs_root / args.run_id
+    stage_dir = run_dir / "patch_planner"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    from autoad_researcher.pipeline.patch_planning_stage import run_patch_planning_stage
+    record = run_patch_planning_stage(
+        run_id=args.run_id, run_dir=run_dir, stage_dir=stage_dir,
+    )
+
+    if args.json_output:
+        import json as _json
+        print(_json.dumps(record.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2))
+    else:
+        print("AutoAD patch planner")
+        print(f"run_id: {args.run_id}")
+        print(f"status: {record.status}")
+        if record.blocked_reason:
+            print(f"blocked_reason: {record.blocked_reason}")
+        if record.handoff_sha256:
+            print(f"handoff_sha256: {record.handoff_sha256}")
+
+    if record.status == "passed":
+        return 0
+    return 3 if record.status == "blocked" else 1
+
+
+def run_patch_apply(args: argparse.Namespace) -> int:
+    """Run Stage 3.7 patch application as a standalone CLI command."""
+    from pathlib import Path
+    runs_root = Path(args.runs_root)
+    run_dir = runs_root / args.run_id
+    stage_dir = run_dir / "patch_applicator"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    from autoad_researcher.pipeline.patch_application_stage import run_patch_application_stage
+    record = run_patch_application_stage(
+        run_id=args.run_id, run_dir=run_dir, stage_dir=stage_dir,
+    )
+
+    if args.json_output:
+        import json as _json
+        print(_json.dumps(record.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2))
+    else:
+        print("AutoAD patch applicator")
+        print(f"run_id: {args.run_id}")
+        print(f"status: {record.status}")
+        if record.blocked_reason:
+            print(f"blocked_reason: {record.blocked_reason}")
+        if record.handoff_sha256:
+            print(f"handoff_sha256: {record.handoff_sha256}")
+
+    if record.status == "passed":
+        return 0
+    return 3 if record.status == "blocked" else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 主入口。"""
     parser = build_parser()
@@ -468,6 +544,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_transfer_design(args)
     if args.command == "experiment-plan":
         return run_experiment_plan(args)
+    if args.command == "patch-plan":
+        return run_patch_plan(args)
+    if args.command == "patch-apply":
+        return run_patch_apply(args)
     if args.command == "stage3-acceptance":
         return run_stage3_acceptance(args)
 

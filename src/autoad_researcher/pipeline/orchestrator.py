@@ -327,19 +327,23 @@ class Orchestrator:
     def _stage_patch_planner(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Run Patch Planner (3.6). Blocked without experiment plan."""
-        return Stage3AcceptanceStageRecord(
-            stage="patch_planner", status="blocked",
-            blocked_reason="blocked_upstream: experiment_planner_handoff_required",
+        """Run Patch Planner (3.6)."""
+        from autoad_researcher.pipeline.patch_planning_stage import run_patch_planning_stage
+        return run_patch_planning_stage(
+            run_id=request.run_id,
+            run_dir=run_dir,
+            stage_dir=stage_dir,
         )
 
     def _stage_patch_applicator(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Apply patches (3.7). Blocked without patch plan approval."""
-        return Stage3AcceptanceStageRecord(
-            stage="patch_applicator", status="blocked",
-            blocked_reason="blocked_upstream: patch_planner_handoff_and_user_approval_required",
+        """Apply patches (3.7)."""
+        from autoad_researcher.pipeline.patch_application_stage import run_patch_application_stage
+        return run_patch_application_stage(
+            run_id=request.run_id,
+            run_dir=run_dir,
+            stage_dir=stage_dir,
         )
 
     def _stage_runner_execute(
