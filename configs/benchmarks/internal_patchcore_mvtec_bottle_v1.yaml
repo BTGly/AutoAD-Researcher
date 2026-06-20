@@ -15,13 +15,16 @@ implementation_name: amazon-science-patchcore-inspection
 repository:
   url: https://github.com/amazon-science/patchcore-inspection
   ref: main
-  commit_sha: aa6464978e25b7eb3078e1bbc14ee7103de14f23
+  commit_sha: aa646496cd960f30a21eedf1ba97d0371bc26200
   license: Apache-2.0
   entrypoint_path: bin/run_patchcore.py
   config_path: null
   dependency_files:
     - requirements.txt
     - setup.py
+  # Execution adapter patch: this commit cherry-picks click 8.4 decorator
+  # reorder (options before arguments) and CPU fallback when CUDA unavailable.
+  # NOT the upstream fcaa92f — see notes/2026-06-19.md for rationale.
 
 dataset:
   name: MVTec AD
