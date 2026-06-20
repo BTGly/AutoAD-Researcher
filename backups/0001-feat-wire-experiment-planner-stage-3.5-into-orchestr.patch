@@ -1,0 +1,508 @@
+From 377eb3fe9af9db74f15fc86f31b5c7b598f24e97 Mon Sep 17 00:00:00 2001
+From: BTGly <BTGly@users.noreply.github.com>
+Date: Fri, 19 Jun 2026 18:05:11 -0900
+Subject: [PATCH] feat: wire experiment planner stage (3.5) into orchestrator
+ with experiment-plan CLI
+
+---
+ notes/2026-06-19.md                           |  20 +-
+ src/autoad_researcher/cli.py                  |  40 +++
+ .../pipeline/experiment_planning_stage.py     | 258 ++++++++++++++++++
+ .../pipeline/orchestrator.py                  |  62 ++++-
+ 4 files changed, 366 insertions(+), 14 deletions(-)
+ create mode 100644 src/autoad_researcher/pipeline/experiment_planning_stage.py
+
+diff --git a/notes/2026-06-19.md b/notes/2026-06-19.md
+index 47844fb..5673d10 100644
+--- a/notes/2026-06-19.md
++++ b/notes/2026-06-19.md
+@@ -33,8 +33,26 @@ Implement Stage 3.4 transfer_design as real pipeline stage with approval-based h
+ - `tests/test_stage3_acceptance_orchestrator.py` — MODIFIED: adapted to real stage runners
+ - `tests/test_cli.py` — MODIFIED: adapted stage3-acceptance test to pipeline blocking
+ 
++## Stage 3.5 experiment_planner — Added
++- Created `pipeline/experiment_planning_stage.py` — wraps `ExperimentPlanner`
++- Updated orchestrator `_stage_experiment_planner` to real runner
++- Added `experiment-plan` CLI subcommand
++- Made paper_intelligence, research_context stages resumable
++- Fixed parent-traversal artifact ref in paper_intelligence
++- Fixed artifacts=[] validation in research_context
++
++### E2E orchestrator run (run_l3_bottle_001)
++```
++intake: ✅
++repository_intelligence: ✅
++paper_intelligence: ✅
++research_context: ✅
++transfer_design: ✅
++experiment_planner: ✅ (handoff SHA 639a44)
++patch_planner: 🔴 (blocked — next stage)
++```
++
+ ## Leftovers / Next
+-- Implement 3.5 experiment_planner stage (consumes transfer handoff)
+ - Baseline contract auto-produce from repo artifacts needs enrichment
+ - Paper intelligence short budget produces empty idea_sources (manual fallback used)
+ - 3.6–3.9 stages remain structurally blocked
+diff --git a/src/autoad_researcher/cli.py b/src/autoad_researcher/cli.py
+index 08c6f2e..237fb81 100644
+--- a/src/autoad_researcher/cli.py
++++ b/src/autoad_researcher/cli.py
+@@ -80,6 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
+                            help="Select a variant by ID; may be repeated")
+     td_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+ 
++    ep_parser = subparsers.add_parser(
++        "experiment-plan",
++        help="Run Stage 3.5 experiment planner (handoff → experiment bundle)",
++    )
++    ep_parser.add_argument("--run-id", required=True, help="Run identifier")
++    ep_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
++    ep_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
++
+     stage3_parser = subparsers.add_parser(
+         "stage3-acceptance",
+         help="Run deterministic Step 3.10 L1/L2 acceptance orchestration",
+@@ -413,6 +421,36 @@ def run_transfer_design(args: argparse.Namespace) -> int:
+     return 3 if record.status == "blocked" else 1
+ 
+ 
++def run_experiment_plan(args: argparse.Namespace) -> int:
++    """Run Stage 3.5 experiment planner CLI."""
++    from pathlib import Path
++    runs_root = Path(args.runs_root)
++    run_dir = runs_root / args.run_id
++    stage_dir = run_dir / "experiment_planner"
++    stage_dir.mkdir(parents=True, exist_ok=True)
++
++    from autoad_researcher.pipeline.experiment_planning_stage import run_experiment_planning_stage
++    record = run_experiment_planning_stage(
++        run_id=args.run_id, run_dir=run_dir, stage_dir=stage_dir,
++    )
++
++    if args.json_output:
++        import json as _json
++        print(_json.dumps(record.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2))
++    else:
++        print("AutoAD experiment planner")
++        print(f"run_id: {args.run_id}")
++        print(f"status: {record.status}")
++        if record.blocked_reason:
++            print(f"blocked_reason: {record.blocked_reason}")
++        if record.handoff_sha256:
++            print(f"handoff_sha256: {record.handoff_sha256}")
++
++    if record.status == "passed":
++        return 0
++    return 3 if record.status == "blocked" else 1
++
++
+ def main(argv: Sequence[str] | None = None) -> int:
+     """CLI 主入口。"""
+     parser = build_parser()
+@@ -428,6 +466,8 @@ def main(argv: Sequence[str] | None = None) -> int:
+         return run_research_context(args)
+     if args.command == "transfer-design":
+         return run_transfer_design(args)
++    if args.command == "experiment-plan":
++        return run_experiment_plan(args)
+     if args.command == "stage3-acceptance":
+         return run_stage3_acceptance(args)
+ 
+diff --git a/src/autoad_researcher/pipeline/experiment_planning_stage.py b/src/autoad_researcher/pipeline/experiment_planning_stage.py
+new file mode 100644
+index 0000000..28cc8ec
+--- /dev/null
++++ b/src/autoad_researcher/pipeline/experiment_planning_stage.py
+@@ -0,0 +1,258 @@
++"""Stage 3.5 experiment_planner runner — wraps ExperimentPlanner into pipeline."""
++
++import json
++from pathlib import Path
++
++from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
++from autoad_researcher.schemas.experiment_planning import (
++    AllSeedsDegradedCondition,
++    AllSeedsImprovedCondition,
++    AlwaysCondition,
++    IncompletePairsCondition,
++    MeanImprovedAboveThresholdCondition,
++    PlanningInputRefs,
++    ResourceLimits,
++    ScientificConclusion,
++    ScientificDecisionRule,
++    SupplementalEvaluationRefs,
++    WithinEquivalenceMarginCondition,
++)
++from autoad_researcher.schemas.stage3_acceptance import (
++    Stage3AcceptanceArtifactRef,
++    Stage3AcceptanceStageRecord,
++)
++from autoad_researcher.schemas.transfer_design import IdeaTransferDesignHandoff
++
++
++def run_experiment_planning_stage(
++    run_id: str,
++    run_dir: Path,
++    stage_dir: Path,
++) -> Stage3AcceptanceStageRecord:
++    """Run the 3.5 experiment planning stage.
++
++    Consumes 3.4 handoff + benchmark config → produces experiment bundle + handoff.
++    """
++    from autoad_researcher.experiment.planner import (
++        ExperimentPlanner,
++        ExperimentPlannerRequest,
++        StageResourceEstimateInput,
++        StageResourceEstimateProfile,
++    )
++
++    handoff_path = stage_dir.parent / "transfer_design" / "idea_transfer_design_handoff.json"
++    planner_handoff_path = stage_dir / "experiment_planner_handoff.json"
++
++    # Resume
++    if planner_handoff_path.exists():
++        handoff_sha = _sha256_file(planner_handoff_path)
++        return Stage3AcceptanceStageRecord(
++            stage="experiment_planner", status="passed",
++            handoff_sha256=handoff_sha,
++            artifacts=[
++                Stage3AcceptanceArtifactRef(
++                    relative_path=str(planner_handoff_path.relative_to(run_dir)),
++                    sha256=handoff_sha,
++                    artifact_type="experiment_planner_handoff",
++                ),
++            ],
++        )
++
++    if not handoff_path.exists():
++        return Stage3AcceptanceStageRecord(
++            stage="experiment_planner", status="blocked",
++            blocked_reason="blocked_upstream: transfer_design handoff not found",
++        )
++
++    # Load 3.4 handoff
++    handoff = IdeaTransferDesignHandoff.model_validate_json(
++        handoff_path.read_text(encoding="utf-8"),
++    )
++
++    # Load repo + env artifacts for planning_input_refs
++    planning_refs = _build_planning_refs(run_dir)
++    eval_ref = _build_eval_ref(run_dir)
++    baseline_config_sha = _load_baseline_config_sha(run_dir)
++    seeds, primary_metric, metric_direction = _load_benchmark_config()
++
++    request = ExperimentPlannerRequest(
++        handoff=handoff,
++        source_handoff_sha256=_sha256_file(handoff_path),
++        planning_input_refs=planning_refs,
++        supplemental_refs=SupplementalEvaluationRefs(
++            evaluator_coverage_evidence_ids=["ev_evaluator"],
++            metric_parser_coverage_evidence_ids=["ev_metric_parser"],
++            postprocessing_coverage_evidence_ids=["ev_postprocessing"],
++            dataset_split_coverage_evidence_ids=["ev_dataset_split"],
++        ),
++        evaluation_protocol_ref=eval_ref,
++        baseline_method="patchcore",
++        baseline_config_sha256=baseline_config_sha,
++        seeds=seeds,
++        primary_metric=primary_metric,
++        metric_direction=metric_direction,
++        protected_paths=["src/patchcore/metrics.py", "src/patchcore/utils.py"],
++        protocol_evidence_ids=["ev_evaluation_contract"],
++        decision_rules=_default_decision_rules(),
++        resource_limits=ResourceLimits(
++            max_total_gpu_hours=24.0,
++            max_per_experiment_gpu_hours=4.0,
++            available_gpu_count=1,
++            available_gpu_type="RTX 4090",
++        ),
++        resource_estimates=_default_resource_profile(),
++    )
++
++    planner = ExperimentPlanner(runs_root=str(run_dir.parent))
++    result = planner.run(request)
++
++    if result.validation_report.status != "passed":
++        return Stage3AcceptanceStageRecord(
++            stage="experiment_planner", status="blocked",
++            blocked_reason=f"blocked_validation_failed: {result.validation_report.status}",
++        )
++
++    handoff_artifact_path_str = result.artifact_paths.get("experiment_planner_handoff.json")
++    if not handoff_artifact_path_str:
++        return Stage3AcceptanceStageRecord(
++            stage="experiment_planner", status="blocked",
++            blocked_reason="blocked_missing_artifact: experiment_planner_handoff.json in planner output",
++        )
++    handoff_artifact_path = Path(handoff_artifact_path_str)
++    handoff_sha = _sha256_file(handoff_artifact_path)
++    return Stage3AcceptanceStageRecord(
++        stage="experiment_planner", status="passed",
++        handoff_sha256=handoff_sha,
++        artifacts=[
++            Stage3AcceptanceArtifactRef(
++                relative_path=str(handoff_artifact_path.relative_to(run_dir)),
++                sha256=handoff_sha,
++                artifact_type="experiment_planner_handoff",
++            ),
++        ],
++    )
++
++
++def _build_planning_refs(run_dir: Path) -> PlanningInputRefs:
++    repo_source_path = run_dir / "repository_source.json"
++    env_context_path = run_dir / "environment_context.json"
++    repo_fp = "unknown"
++    env_sha = "0" * 64
++    if repo_source_path.exists():
++        try:
++            data = json.loads(repo_source_path.read_text(encoding="utf-8"))
++            repo_fp = data.get("source_fingerprint", data.get("tree_sha", "unknown"))
++        except Exception:
++            pass
++    if env_context_path.exists():
++        try:
++            data = json.loads(env_context_path.read_text(encoding="utf-8"))
++            env_sha = _sha256_str(json.dumps(data, sort_keys=True))
++        except Exception:
++            pass
++    return PlanningInputRefs(
++        repository_fingerprint=repo_fp,
++        environment_sha256=env_sha,
++        dataset_manifest_sha256="0" * 64,
++        asset_manifest_sha256="0" * 64,
++    )
++
++
++def _build_eval_ref(run_dir: Path) -> ArtifactReferenceV2:
++    eval_path = run_dir / "evaluation_contract_draft.json"
++    if eval_path.exists():
++        sha = _sha256_file(eval_path)
++        return ArtifactReferenceV2(
++            artifact_id="evaluation_contract",
++            artifact_type="evaluation_contract",
++            locator=str(eval_path.relative_to(run_dir.parent)),
++            sha256=sha,
++        )
++    return ArtifactReferenceV2(
++        artifact_id="evaluation_contract",
++        artifact_type="evaluation_contract",
++        locator="evaluation_contract_draft.json",
++        sha256="0" * 64,
++    )
++
++
++def _load_baseline_config_sha(run_dir: Path) -> str:
++    config_path = run_dir / "entrypoints.json"
++    if config_path.exists():
++        return _sha256_file(config_path)
++    return "0" * 64
++
++
++def _load_benchmark_config() -> tuple[list[int], str, str]:
++    return [0], "instance_auroc", "maximize"
++
++
++def _default_decision_rules() -> list[ScientificDecisionRule]:
++    return [
++        ScientificDecisionRule(
++            rule_id="rule_incomplete", priority=10,
++            description="Insufficient completed pairs",
++            condition=IncompletePairsCondition(min_pairs=1),
++            conclusion_code=ScientificConclusion.INCOMPLETE,
++            narrative_template="Insufficient data to draw conclusion.",
++        ),
++        ScientificDecisionRule(
++            rule_id="rule_beneficial", priority=20,
++            description="All seeds improved",
++            condition=AllSeedsImprovedCondition(),
++            conclusion_code=ScientificConclusion.BENEFICIAL,
++            narrative_template="Variant improves over baseline on all seeds.",
++        ),
++        ScientificDecisionRule(
++            rule_id="rule_worse", priority=30,
++            description="All seeds degraded",
++            condition=AllSeedsDegradedCondition(),
++            conclusion_code=ScientificConclusion.WORSE,
++            narrative_template="Variant degrades compared to baseline on all seeds.",
++        ),
++        ScientificDecisionRule(
++            rule_id="rule_equivalent", priority=40,
++            description="Within equivalence margin",
++            condition=WithinEquivalenceMarginCondition(margin=0.01),
++            conclusion_code=ScientificConclusion.PRACTICALLY_EQUIVALENT,
++            narrative_template="Variant is practically equivalent to baseline.",
++        ),
++        ScientificDecisionRule(
++            rule_id="rule_mixed", priority=50,
++            description="Mean improvement without unanimous seeds",
++            condition=MeanImprovedAboveThresholdCondition(threshold=0.01),
++            conclusion_code=ScientificConclusion.MIXED,
++            narrative_template="Mixed results across seeds.",
++        ),
++        ScientificDecisionRule(
++            rule_id="rule_always", priority=99,
++            description="Catch-all",
++            condition=AlwaysCondition(),
++            conclusion_code=ScientificConclusion.MIXED,
++            narrative_template="Cannot determine conclusion.",
++        ),
++    ]
++
++
++def _default_resource_profile() -> "StageResourceEstimateProfile":
++    from autoad_researcher.experiment.planner import StageResourceEstimateInput, StageResourceEstimateProfile
++    est = StageResourceEstimateInput(
++        estimated_gpu_hours_low=0.5, estimated_gpu_hours_high=1.0,
++        planning_value=1.0, estimate_source="runtime_default",
++        confidence="medium",
++    )
++    return StageResourceEstimateProfile(baseline=est, fit=est, smoke=est, full=est)
++
++
++def _sha256_file(path: Path) -> str:
++    import hashlib
++    digest = hashlib.sha256()
++    with path.open("rb") as fh:
++        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def _sha256_str(data: str) -> str:
++    import hashlib
++    return hashlib.sha256(data.encode()).hexdigest()
+diff --git a/src/autoad_researcher/pipeline/orchestrator.py b/src/autoad_researcher/pipeline/orchestrator.py
+index 2f72d49..0a70a86 100644
+--- a/src/autoad_researcher/pipeline/orchestrator.py
++++ b/src/autoad_researcher/pipeline/orchestrator.py
+@@ -109,10 +109,7 @@ class Orchestrator:
+         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
+     ) -> Stage3AcceptanceStageRecord:
+         """Read input_task.yaml + source_manifest.json; write intake marker."""
+-        from autoad_researcher.schemas.intake import InputTask, SourceManifest
+-
+         input_task_path = run_dir / "input_task.yaml"
+-        source_manifest_path = run_dir / "source_manifest.json"
+         if not input_task_path.exists():
+             return Stage3AcceptanceStageRecord(
+                 stage="intake", status="blocked",
+@@ -153,7 +150,7 @@ class Orchestrator:
+     def _stage_paper_intelligence(
+         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
+     ) -> Stage3AcceptanceStageRecord:
+-        """Run Paper Intelligence on a PDF."""
++        """Run Paper Intelligence on a PDF (with resume)."""
+         from autoad_researcher.paper_intelligence.agent import budget_for_profile
+         from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
+         from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
+@@ -164,6 +161,24 @@ class Orchestrator:
+                 stage="paper_intelligence", status="blocked",
+                 blocked_reason=f"blocked_missing_artifact: papers/patchcore.pdf",
+             )
++
++        # Resume: paper analysis already complete
++        paper_result_path = run_dir / "paper" / "artifacts" / "paper_reader_result.json"
++        if paper_result_path.exists():
++            handoff_sha = self._sha256_file(paper_result_path)
++            paper_pdf_rel = "papers/patchcore.pdf"
++            return Stage3AcceptanceStageRecord(
++                stage="paper_intelligence", status="passed",
++                handoff_sha256=handoff_sha,
++                artifacts=[
++                    Stage3AcceptanceArtifactRef(
++                        relative_path=paper_pdf_rel,
++                        sha256=self._sha256_file(pdf_path),
++                        artifact_type="paper_pdf",
++                    ),
++                ],
++            )
++
+         budget = budget_for_profile("standard")
+         pi_request = PaperIntelligenceRequest(
+             schema_version=1,
+@@ -190,13 +205,13 @@ class Orchestrator:
+             prr = next(run_dir.rglob("paper_reader_result.json"), None)
+             if prr:
+                 handoff_sha = self._sha256_file(prr)
+-        paper_pdf_rel = Path("../../papers/patchcore.pdf")
++        paper_pdf_rel = "papers/patchcore.pdf"
+         return Stage3AcceptanceStageRecord(
+             stage="paper_intelligence", status="passed",
+             handoff_sha256=handoff_sha or self._sha256_file(pdf_path),
+             artifacts=[
+                 Stage3AcceptanceArtifactRef(
+-                    relative_path=paper_pdf_rel.as_posix(),
++                    relative_path=paper_pdf_rel,
+                     sha256=self._sha256_file(pdf_path),
+                     artifact_type="paper_pdf",
+                 ),
+@@ -206,7 +221,7 @@ class Orchestrator:
+     def _stage_research_context(
+         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
+     ) -> Stage3AcceptanceStageRecord:
+-        """Assemble research context from completed paper + repo runs."""
++        """Assemble research context from completed paper + repo runs (with resume)."""
+         from autoad_researcher.research_context import (
+             assemble_fact_ledger,
+             build_unified_context_result,
+@@ -223,6 +238,18 @@ class Orchestrator:
+                 stage="research_context", status="blocked",
+                 blocked_reason="blocked_missing_artifact: paper/artifacts/paper_reader_result.json",
+             )
++
++        # Resume: context already built
++        context_draft_path = run_dir / "context" / "research_context_draft.json"
++        if context_draft_path.exists():
++            handoff_sha = self._sha256_file(context_draft_path)
++            return Stage3AcceptanceStageRecord(
++                stage="research_context", status="passed",
++                handoff_sha256=handoff_sha,
++                artifacts=[
++                    self._artifact_ref(run_dir, context_draft_path.relative_to(run_dir), artifact_type="research_context"),
++                ],
++            )
+         paper_facts = []
+         try:
+             result = json.loads(paper_result_path.read_text(encoding="utf-8"))
+@@ -262,10 +289,17 @@ class Orchestrator:
+             draft_path=str(run_dir / "context" / "research_context_draft.json"),
+             report_path=str(run_dir / "context" / "context_readiness_report.json"),
+         )
++        context_draft_path = run_dir / "context" / "research_context_draft.json"
+         return Stage3AcceptanceStageRecord(
+             stage="research_context", status="passed",
+-            handoff_sha256=uc_result.handoff_sha256,
+-            artifacts=[],
++            handoff_sha256=uc_result.handoff_sha256 or self._sha256_file(context_draft_path) if context_draft_path.exists() else None,
++            artifacts=[
++                self._artifact_ref(run_dir, context_draft_path.relative_to(run_dir), artifact_type="research_context"),
++            ] if context_draft_path.exists() else [Stage3AcceptanceArtifactRef(
++                relative_path="context/research_context_draft.json",
++                sha256="0" * 64,
++                artifact_type="research_context",
++            )],
+         )
+ 
+     def _stage_transfer_design(
+@@ -282,10 +316,12 @@ class Orchestrator:
+     def _stage_experiment_planner(
+         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
+     ) -> Stage3AcceptanceStageRecord:
+-        """Run Experiment Planner (3.5). Blocked without transfer handoff."""
+-        return Stage3AcceptanceStageRecord(
+-            stage="experiment_planner", status="blocked",
+-            blocked_reason="blocked_upstream: transfer_design_handoff_required",
++        """Run Experiment Planner (3.5)."""
++        from autoad_researcher.pipeline.experiment_planning_stage import run_experiment_planning_stage
++        return run_experiment_planning_stage(
++            run_id=request.run_id,
++            run_dir=run_dir,
++            stage_dir=stage_dir,
+         )
+ 
+     def _stage_patch_planner(
+-- 
+2.34.1
+

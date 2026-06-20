@@ -349,10 +349,13 @@ class Orchestrator:
     def _stage_runner_execute(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Execute experiments (3.8). Blocked without PatchRunnerHandoff."""
-        return Stage3AcceptanceStageRecord(
-            stage="runner_execute", status="blocked",
-            blocked_reason="blocked_upstream: patch_runner_handoff_v2_required",
+        """Execute experiments (3.8). Consumes PatchRunnerHandoff → RunnerIntake → execution units."""
+        from autoad_researcher.pipeline.runner_execute_stage import run_runner_execute_stage
+        return run_runner_execute_stage(
+            run_id=request.run_id,
+            run_dir=run_dir,
+            stage_dir=stage_dir,
+            mode=request.mode,
         )
 
     def _stage_results_analysis(

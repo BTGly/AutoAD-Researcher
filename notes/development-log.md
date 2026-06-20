@@ -13,3 +13,4 @@
 | 2026-06-16 | [2026-06-16.md](2026-06-16.md) | Steps 2.5-2.15（全地基阶段：CLI/Pipeline/Intake/Reader/Clarifier/Idea/Router/DirectIdeaBackend）+ 3.0A baseline provenance + 3.0B benchmark lock + 3.0C-1 evidence contracts |
 | 2026-06-18 | [2026-06-18.md](2026-06-18.md) | 3.8/3.9 计划 v2.10→v2.12 迭代（~10 轮审阅，~30 P0 修复）；Stage 3 完整状态复核；3.10 E2E 验收计划文档初稿 |
 | 2026-06-19 | [2026-06-19.md](2026-06-19.md) | Step 3.10 L1/L2 acceptance schemas, orchestrator, CLI, tests, and v0.3 plan update |
+| 2026-06-20 | [2026-06-20.md](2026-06-20.md) | Stage 3.8 runner_execute: pipeline/runner_execute_stage.py + orchestrator wiring; 3.7 patch artifact audit |
