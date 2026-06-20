@@ -130,7 +130,11 @@ class TestFinalReportEvidenceAudit:
             str(c.matched_rule_id) == "noop_patch_no_scientific_claim"
             for c in self.reflection.per_variant_conclusions
         ) if self.reflection.per_variant_conclusions else False
-        if is_noop:
+        all_incomplete = all(
+            str(c.conclusion) == "incomplete" or str(c.conclusion.value) == "incomplete"
+            for c in self.reflection.per_variant_conclusions
+        ) if self.reflection.per_variant_conclusions else False
+        if is_noop or all_incomplete:
             assert self.handoff["scientific_claim"] == "not_established"
         else:
             assert self.handoff["scientific_claim"] in (
@@ -158,6 +162,21 @@ class TestFinalReportEvidenceAudit:
             for vc in self.reflection.per_variant_conclusions:
                 assert vc.variant_id in text
                 assert vc.conclusion.value in text
+
+    def test_no_observations_maps_to_not_established(self):
+        """When all variant conclusions are incomplete/no_observations,
+        scientific claim must be not_established, not mixed_or_inconclusive."""
+        assert self.handoff is not None
+        assert self.reflection is not None
+        if self.reflection.per_variant_conclusions:
+            all_observations_failed = all(
+                str(c.matched_rule_id) == "no_observations"
+                for c in self.reflection.per_variant_conclusions
+            )
+            if all_observations_failed:
+                assert self.handoff["scientific_claim"] == "not_established"
+                assert self.facts is not None
+                assert "No valid paired metric observations" in self.facts.get("scientific_detail", "")
 
     # ── SHA chain ───────────────────────────────────────────────────────
 

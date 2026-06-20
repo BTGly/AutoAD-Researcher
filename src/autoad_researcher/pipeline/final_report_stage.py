@@ -198,23 +198,35 @@ def run_final_report_stage(
             "and metrics plumbing but does not establish scientific improvement."
         )
     elif reflection.per_variant_conclusions:
-        beneficial = any(
-            str(c.conclusion) == "beneficial" or str(c.conclusion.value) == "beneficial"
+        all_incomplete = all(
+            str(c.conclusion) == "incomplete" or str(c.conclusion.value) == "incomplete"
             for c in reflection.per_variant_conclusions
         )
-        worse = any(
-            str(c.conclusion) == "worse" or str(c.conclusion.value) == "worse"
+        all_no_observations = all(
+            str(c.matched_rule_id) == "no_observations"
             for c in reflection.per_variant_conclusions
         )
-        if beneficial and not worse:
-            scientific_claim = "improvement_demonstrated"
-            scientific_detail = "At least one variant shows improvement."
-        elif worse and not beneficial:
-            scientific_claim = "regression_detected"
-            scientific_detail = "At least one variant shows regression."
+        if all_no_observations or all_incomplete:
+            scientific_claim = "not_established"
+            scientific_detail = "No valid paired metric observations were available."
         else:
-            scientific_claim = "mixed_or_inconclusive"
-            scientific_detail = "Results are mixed or inconclusive."
+            beneficial = any(
+                str(c.conclusion) == "beneficial" or str(c.conclusion.value) == "beneficial"
+                for c in reflection.per_variant_conclusions
+            )
+            worse = any(
+                str(c.conclusion) == "worse" or str(c.conclusion.value) == "worse"
+                for c in reflection.per_variant_conclusions
+            )
+            if beneficial and not worse:
+                scientific_claim = "improvement_demonstrated"
+                scientific_detail = "At least one variant shows improvement."
+            elif worse and not beneficial:
+                scientific_claim = "regression_detected"
+                scientific_detail = "At least one variant shows regression."
+            else:
+                scientific_claim = "mixed_or_inconclusive"
+                scientific_detail = "Results are mixed or inconclusive."
     else:
         scientific_claim = "not_established"
         scientific_detail = "No variant conclusions available."
