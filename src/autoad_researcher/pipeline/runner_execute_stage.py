@@ -30,6 +30,8 @@ from autoad_researcher.schemas.execution import (
     ExperimentExecutionHandoff,
     IntakeCheck,
     MatrixCoverageReport,
+    ProducedArtifactRecord,
+    ResolvedArtifactBinding,
     RetryDecision,
     RetryIdentity,
     RunnerIntakeReport,
@@ -219,6 +221,11 @@ def run_runner_execute_stage(
                 runner=run_experiment_subprocess,
             )
 
+            _write_json(attempt_dir / "command_plan.json",
+                        command_plan.model_dump(mode="json", exclude_none=True))
+            _write_json(attempt_dir / "input_refs.json",
+                        input_refs.model_dump(mode="json", exclude_none=True))
+
             outcome = derive_attempt_outcome(result, None, None)
 
             record = AttemptRecord(
@@ -235,6 +242,40 @@ def run_runner_execute_stage(
                     ),
                     sha256=_sha256_file(attempt_dir / "execution_result.json"),
                 ),
+                produced_artifacts=[
+                    ProducedArtifactRecord(
+                        unit_id=unit.unit_id,
+                        attempt_id=attempt_id,
+                        bindings=[
+                            ResolvedArtifactBinding(
+                                binding_id=f"cmd_plan_{attempt_id}",
+                                role="command_plan",
+                                artifact_ref=ArtifactReferenceV2(
+                                    artifact_id=f"cmd_plan_{attempt_id}",
+                                    artifact_type="command_plan",
+                                    locator=str(
+                                        (attempt_dir / "command_plan.json").relative_to(run_dir.parent),
+                                    ),
+                                    sha256=_sha256_file(attempt_dir / "command_plan.json"),
+                                ),
+                                artifact_sha256=cmd_sha,
+                            ),
+                            ResolvedArtifactBinding(
+                                binding_id=f"input_refs_{attempt_id}",
+                                role="input_refs",
+                                artifact_ref=ArtifactReferenceV2(
+                                    artifact_id=f"input_refs_{attempt_id}",
+                                    artifact_type="input_refs",
+                                    locator=str(
+                                        (attempt_dir / "input_refs.json").relative_to(run_dir.parent),
+                                    ),
+                                    sha256=_sha256_file(attempt_dir / "input_refs.json"),
+                                ),
+                                artifact_sha256=_compute_input_refs_sha(input_refs),
+                            ),
+                        ],
+                    ),
+                ],
                 started_at=datetime.now(timezone.utc),
                 completed_at=datetime.now(timezone.utc),
             )
@@ -274,12 +315,17 @@ def run_runner_execute_stage(
         )
         unit_records.append(unit_record)
 
-    # ── Build execution command plan manifest ────────────────────────────
+    # ── Build execution command plan manifest from real attempt artifacts ─
     command_plans = []
-    for unit in units:
-        ws_ref = _find_workspace_ref(intake_request.workspace_refs, unit.workspace_id)
-        plan = _make_command_plan(unit, benchmark_config, results_root=stage_dir / "attempts" / unit.unit_id)
-        command_plans.append(plan.model_dump(mode="json"))
+    for rec in unit_records:
+        if rec.attempts:
+            last_attempt = rec.attempts[-1]
+            for prod in last_attempt.produced_artifacts:
+                for bind in prod.bindings:
+                    if bind.role == "command_plan":
+                        plan_path = run_dir.parent / bind.artifact_ref.locator
+                        if plan_path.exists():
+                            command_plans.append(json.loads(plan_path.read_text(encoding="utf-8")))
     _write_json(stage_dir / "experiment_command_plan.json", command_plans)
 
     # ── Build ExecutionManifest ──────────────────────────────────────────
@@ -482,10 +528,6 @@ def _build_execution_units(
             max_wall_time_seconds=3600,
         )
         units.append(unit)
-
-    for unit in units:
-        command_plan = _make_command_plan(unit, benchmark_config, results_root=Path("/tmp"))
-        unit.command_plan_sha256 = experiment_command_sha256(command_plan)
 
     return units
 
