@@ -361,10 +361,12 @@ class Orchestrator:
     def _stage_results_analysis(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Analyze results (3.9). Blocked without execution results."""
-        return Stage3AcceptanceStageRecord(
-            stage="results_analysis", status="blocked",
-            blocked_reason="blocked_upstream: execution_results_required",
+        """Analyze results (3.9). Consumes ExperimentExecutionHandoff → paired comparisons + conclusions."""
+        from autoad_researcher.pipeline.results_analysis_stage import run_results_analysis_stage
+        return run_results_analysis_stage(
+            run_id=request.run_id,
+            run_dir=run_dir,
+            stage_dir=stage_dir,
         )
 
     def _stage_final_report(
