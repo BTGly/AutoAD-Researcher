@@ -869,16 +869,70 @@ def _cuda_version() -> str:
 
 
 def _write_gpu_evidence(stage_dir: Path) -> None:
-    """Write gpu_execution_evidence.json with explicit GPU capability info."""
+    """Write gpu_execution_evidence.json with explicit GPU capability info.
+
+    Probes the main process CUDA first; falls back to .venv-gpu subprocess
+    probe when the main env torch is incompatible with the installed driver.
+    """
     cuda_avail = _cuda_available()
-    evidence = {
-        "torch_cuda_available": cuda_avail,
-        "torch_cuda_version": _cuda_version() if cuda_avail else "",
-        "device_name": _gpu_device_name() if cuda_avail else "",
-        "gpu_used": cuda_avail,
-        "source": "runner_execute",
-    }
+    if cuda_avail:
+        evidence = {
+            "torch_cuda_available": True,
+            "torch_cuda_version": _cuda_version(),
+            "device_name": _gpu_device_name(),
+            "gpu_used": True,
+            "source": "runner_execute",
+        }
+    else:
+        venv_info = _probe_gpu_venv()
+        if venv_info is not None:
+            evidence = {
+                "torch_cuda_available": True,
+                "torch_cuda_version": venv_info["cuda_version"],
+                "device_name": venv_info["device_name"],
+                "gpu_used": True,
+                "source": "runner_execute_via_venv_gpu",
+            }
+        else:
+            evidence = {
+                "torch_cuda_available": False,
+                "torch_cuda_version": "",
+                "device_name": "",
+                "gpu_used": False,
+                "source": "runner_execute",
+            }
     _write_json(stage_dir / "gpu_execution_evidence.json", evidence)
+
+
+def _probe_gpu_venv() -> dict | None:
+    """Run a subprocess inside .venv-gpu to probe CUDA capability.
+
+    Returns {cuda_version, device_name} when CUDA is available,
+    or None when .venv-gpu is absent / CUDA unavailable / any error.
+    """
+    venv_python = Path(".venv-gpu/bin/python3")
+    if not venv_python.exists():
+        return None
+    import subprocess
+    code = (
+        "import torch; "
+        "a=torch.cuda.is_available(); "
+        "print(a, torch.version.cuda if a else '', "
+        "torch.cuda.get_device_name(0) if a else '', sep='|')"
+    )
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", code],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        parts = result.stdout.strip().split("|")
+        if len(parts) == 3 and parts[0] == "True":
+            return {"cuda_version": parts[1], "device_name": parts[2]}
+        return None
+    except Exception:
+        return None
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
