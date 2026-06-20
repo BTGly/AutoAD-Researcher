@@ -22,6 +22,18 @@ RUN_ID = "run_l3_bottle_001"
 RUNS_ROOT = Path("runs")
 
 
+def _required_artifacts_exist() -> bool:
+    """Check that all upstream artifacts for final_report audit are present."""
+    base = RUNS_ROOT / RUN_ID
+    required = [
+        base / "results_analysis" / "reflection.json",
+        base / "final_report" / "final_report.md",
+        base / "final_report" / "final_report_handoff.json",
+        base / "final_report" / "final_report_facts.json",
+    ]
+    return all(p.exists() for p in required)
+
+
 def _load_handoff(runs_root: Path, run_id: str) -> dict | None:
     path = runs_root / run_id / "final_report" / "final_report_handoff.json"
     if not path.exists():
@@ -54,6 +66,11 @@ class TestFinalReportEvidenceAudit:
 
     @classmethod
     def setup_class(cls):
+        if not _required_artifacts_exist():
+            pytest.skip(
+                "final_report evidence artifacts not present; "
+                "run `uv run autoad final-report --run-id run_l3_bottle_001 --json` first"
+            )
         cls.handoff = _load_handoff(RUNS_ROOT, RUN_ID)
         cls.facts = _load_facts(RUNS_ROOT, RUN_ID)
         cls.reflection = _load_reflection(RUNS_ROOT, RUN_ID)
