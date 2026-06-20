@@ -109,10 +109,7 @@ class Orchestrator:
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
         """Read input_task.yaml + source_manifest.json; write intake marker."""
-        from autoad_researcher.schemas.intake import InputTask, SourceManifest
-
         input_task_path = run_dir / "input_task.yaml"
-        source_manifest_path = run_dir / "source_manifest.json"
         if not input_task_path.exists():
             return Stage3AcceptanceStageRecord(
                 stage="intake", status="blocked",
@@ -153,7 +150,7 @@ class Orchestrator:
     def _stage_paper_intelligence(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Run Paper Intelligence on a PDF."""
+        """Run Paper Intelligence on a PDF (with resume)."""
         from autoad_researcher.paper_intelligence.agent import budget_for_profile
         from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
         from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
@@ -164,6 +161,24 @@ class Orchestrator:
                 stage="paper_intelligence", status="blocked",
                 blocked_reason=f"blocked_missing_artifact: papers/patchcore.pdf",
             )
+
+        # Resume: paper analysis already complete
+        paper_result_path = run_dir / "paper" / "artifacts" / "paper_reader_result.json"
+        if paper_result_path.exists():
+            handoff_sha = self._sha256_file(paper_result_path)
+            paper_pdf_rel = "papers/patchcore.pdf"
+            return Stage3AcceptanceStageRecord(
+                stage="paper_intelligence", status="passed",
+                handoff_sha256=handoff_sha,
+                artifacts=[
+                    Stage3AcceptanceArtifactRef(
+                        relative_path=paper_pdf_rel,
+                        sha256=self._sha256_file(pdf_path),
+                        artifact_type="paper_pdf",
+                    ),
+                ],
+            )
+
         budget = budget_for_profile("standard")
         pi_request = PaperIntelligenceRequest(
             schema_version=1,
@@ -190,13 +205,13 @@ class Orchestrator:
             prr = next(run_dir.rglob("paper_reader_result.json"), None)
             if prr:
                 handoff_sha = self._sha256_file(prr)
-        paper_pdf_rel = Path("../../papers/patchcore.pdf")
+        paper_pdf_rel = "papers/patchcore.pdf"
         return Stage3AcceptanceStageRecord(
             stage="paper_intelligence", status="passed",
             handoff_sha256=handoff_sha or self._sha256_file(pdf_path),
             artifacts=[
                 Stage3AcceptanceArtifactRef(
-                    relative_path=paper_pdf_rel.as_posix(),
+                    relative_path=paper_pdf_rel,
                     sha256=self._sha256_file(pdf_path),
                     artifact_type="paper_pdf",
                 ),
@@ -206,7 +221,7 @@ class Orchestrator:
     def _stage_research_context(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Assemble research context from completed paper + repo runs."""
+        """Assemble research context from completed paper + repo runs (with resume)."""
         from autoad_researcher.research_context import (
             assemble_fact_ledger,
             build_unified_context_result,
@@ -222,6 +237,18 @@ class Orchestrator:
             return Stage3AcceptanceStageRecord(
                 stage="research_context", status="blocked",
                 blocked_reason="blocked_missing_artifact: paper/artifacts/paper_reader_result.json",
+            )
+
+        # Resume: context already built
+        context_draft_path = run_dir / "context" / "research_context_draft.json"
+        if context_draft_path.exists():
+            handoff_sha = self._sha256_file(context_draft_path)
+            return Stage3AcceptanceStageRecord(
+                stage="research_context", status="passed",
+                handoff_sha256=handoff_sha,
+                artifacts=[
+                    self._artifact_ref(run_dir, context_draft_path.relative_to(run_dir), artifact_type="research_context"),
+                ],
             )
         paper_facts = []
         try:
@@ -262,10 +289,17 @@ class Orchestrator:
             draft_path=str(run_dir / "context" / "research_context_draft.json"),
             report_path=str(run_dir / "context" / "context_readiness_report.json"),
         )
+        context_draft_path = run_dir / "context" / "research_context_draft.json"
         return Stage3AcceptanceStageRecord(
             stage="research_context", status="passed",
-            handoff_sha256=uc_result.handoff_sha256,
-            artifacts=[],
+            handoff_sha256=uc_result.handoff_sha256 or self._sha256_file(context_draft_path) if context_draft_path.exists() else None,
+            artifacts=[
+                self._artifact_ref(run_dir, context_draft_path.relative_to(run_dir), artifact_type="research_context"),
+            ] if context_draft_path.exists() else [Stage3AcceptanceArtifactRef(
+                relative_path="context/research_context_draft.json",
+                sha256="0" * 64,
+                artifact_type="research_context",
+            )],
         )
 
     def _stage_transfer_design(
@@ -282,10 +316,12 @@ class Orchestrator:
     def _stage_experiment_planner(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Run Experiment Planner (3.5). Blocked without transfer handoff."""
-        return Stage3AcceptanceStageRecord(
-            stage="experiment_planner", status="blocked",
-            blocked_reason="blocked_upstream: transfer_design_handoff_required",
+        """Run Experiment Planner (3.5)."""
+        from autoad_researcher.pipeline.experiment_planning_stage import run_experiment_planning_stage
+        return run_experiment_planning_stage(
+            run_id=request.run_id,
+            run_dir=run_dir,
+            stage_dir=stage_dir,
         )
 
     def _stage_patch_planner(

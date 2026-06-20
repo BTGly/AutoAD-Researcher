@@ -80,6 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Select a variant by ID; may be repeated")
     td_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
+    ep_parser = subparsers.add_parser(
+        "experiment-plan",
+        help="Run Stage 3.5 experiment planner (handoff → experiment bundle)",
+    )
+    ep_parser.add_argument("--run-id", required=True, help="Run identifier")
+    ep_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
+    ep_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+
     stage3_parser = subparsers.add_parser(
         "stage3-acceptance",
         help="Run deterministic Step 3.10 L1/L2 acceptance orchestration",
@@ -413,6 +421,36 @@ def run_transfer_design(args: argparse.Namespace) -> int:
     return 3 if record.status == "blocked" else 1
 
 
+def run_experiment_plan(args: argparse.Namespace) -> int:
+    """Run Stage 3.5 experiment planner CLI."""
+    from pathlib import Path
+    runs_root = Path(args.runs_root)
+    run_dir = runs_root / args.run_id
+    stage_dir = run_dir / "experiment_planner"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    from autoad_researcher.pipeline.experiment_planning_stage import run_experiment_planning_stage
+    record = run_experiment_planning_stage(
+        run_id=args.run_id, run_dir=run_dir, stage_dir=stage_dir,
+    )
+
+    if args.json_output:
+        import json as _json
+        print(_json.dumps(record.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2))
+    else:
+        print("AutoAD experiment planner")
+        print(f"run_id: {args.run_id}")
+        print(f"status: {record.status}")
+        if record.blocked_reason:
+            print(f"blocked_reason: {record.blocked_reason}")
+        if record.handoff_sha256:
+            print(f"handoff_sha256: {record.handoff_sha256}")
+
+    if record.status == "passed":
+        return 0
+    return 3 if record.status == "blocked" else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 主入口。"""
     parser = build_parser()
@@ -428,6 +466,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_research_context(args)
     if args.command == "transfer-design":
         return run_transfer_design(args)
+    if args.command == "experiment-plan":
+        return run_experiment_plan(args)
     if args.command == "stage3-acceptance":
         return run_stage3_acceptance(args)
 
