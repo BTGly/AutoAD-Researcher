@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,19 +10,18 @@ from typing import Any
 
 from autoad_researcher.runner.executor import (
     execute_experiment_attempt,
+    experiment_command_sha256,
     run_experiment_subprocess,
 )
 from autoad_researcher.runner.handoff_bridge import build_runner_intake_request
 from autoad_researcher.runner.models import ExperimentCommandPlan, ExperimentInputRefs
 from autoad_researcher.runner.validators import (
     derive_attempt_outcome,
-    compute_identity_match,
     validate_intake_against_patch_handoff,
 )
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.schemas.execution import (
     AttemptIdentitySnapshot,
-    AttemptOutcome,
     AttemptRecord,
     ExecutionManifest,
     ExecutionUnitPlan,
@@ -30,7 +30,6 @@ from autoad_researcher.schemas.execution import (
     ExperimentExecutionHandoff,
     IntakeCheck,
     MatrixCoverageReport,
-    ResourceUsageReport,
     RetryDecision,
     RetryIdentity,
     RunnerIntakeReport,
@@ -105,9 +104,6 @@ def run_runner_execute_stage(
 
     handoff_35 = json.loads(handoff_35_path.read_text(encoding="utf-8"))
     experiment_matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
-    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
-    stats_plan = json.loads(stats_path.read_text(encoding="utf-8"))
-    guard_policy = json.loads(guard_path.read_text(encoding="utf-8"))
 
     # ── No-op patch gate ─────────────────────────────────────────────────
     no_effective_patch = all(
@@ -125,7 +121,7 @@ def run_runner_execute_stage(
             )
 
     # ── Load benchmark config for command construction ───────────────────
-    benchmark_config = _load_benchmark_config(run_dir)
+    benchmark_config = _load_benchmark_config()
 
     # ── Build RunnerIntakeRequest ────────────────────────────────────────
     handoff_37_sha = _sha256_file(handoff_37_path)
@@ -159,15 +155,13 @@ def run_runner_execute_stage(
     # ── Build execution unit plans from experiment matrix ────────────────
     units = _build_execution_units(
         experiment_matrix=experiment_matrix,
-        handoff_35=handoff_35,
         handoff_37=handoff_37,
-        stage_dir=stage_dir,
         benchmark_config=benchmark_config,
     )
     _write_json(stage_dir / "execution_unit_plans.json",
                 [u.model_dump(mode="json") for u in units])
 
-    # ── Build command plans and execute ──────────────────────────────────
+    # ── Execute each unit with per-attempt command plans ─────────────────
     unit_records: list[ExecutionUnitRecord] = []
     all_attempt_records: list[AttemptRecord] = []
     retry_decisions: list[RetryDecision] = []
@@ -175,16 +169,6 @@ def run_runner_execute_stage(
     for unit in units:
         unit_dir = stage_dir / "attempts" / unit.unit_id
         unit_dir.mkdir(parents=True, exist_ok=True)
-
-        command_plan, input_refs = _build_command_plan_and_refs(
-            unit=unit,
-            run_id=run_id,
-            workspace_ref=_find_workspace_ref(
-                intake_request.workspace_refs, unit.workspace_id,
-            ),
-            repo_root=repo_root,
-            benchmark_config=benchmark_config,
-        )
 
         attempts: list[AttemptRecord] = []
         final_status: ExecutionUnitStatus = ExecutionUnitStatus.BLOCKED
@@ -196,14 +180,33 @@ def run_runner_execute_stage(
             if attempt_dir.exists():
                 shutil.rmtree(attempt_dir)
 
+            # Build per-attempt command plan with results_path scoped to attempt_dir
+            command_plan = _make_command_plan(
+                unit=unit,
+                benchmark_config=benchmark_config,
+                results_root=attempt_dir,
+            )
+            cmd_sha = experiment_command_sha256(command_plan)
+
+            workspace_ref = _find_workspace_ref(
+                intake_request.workspace_refs, unit.workspace_id,
+            )
+            input_refs = ExperimentInputRefs(
+                repository_fingerprint=(
+                    workspace_ref.repository_fingerprint if workspace_ref else "0" * 64
+                ),
+                environment_sha256=_compute_env_lock_sha(),
+                dataset_manifest_sha256=_compute_dataset_manifest_sha(),
+                asset_manifest_sha256="0" * 64,
+                command_sha256=cmd_sha,
+            )
+
             identity = AttemptIdentitySnapshot(
                 execution_unit_plan_sha256=unit.command_plan_sha256,
-                command_sha256=input_refs.command_sha256,
+                command_sha256=cmd_sha,
                 input_refs_sha256=_compute_input_refs_sha(input_refs),
                 workspace_repository_fingerprint=(
-                    _find_workspace_ref(
-                        intake_request.workspace_refs, unit.workspace_id,
-                    ).repository_fingerprint
+                    workspace_ref.repository_fingerprint if workspace_ref else "0" * 64
                 ),
             )
 
@@ -272,8 +275,12 @@ def run_runner_execute_stage(
         unit_records.append(unit_record)
 
     # ── Build execution command plan manifest ────────────────────────────
-    _write_json(stage_dir / "experiment_command_plan.json",
-                _collect_command_plans(units, run_id, intake_request, repo_root, benchmark_config))
+    command_plans = []
+    for unit in units:
+        ws_ref = _find_workspace_ref(intake_request.workspace_refs, unit.workspace_id)
+        plan = _make_command_plan(unit, benchmark_config, results_root=stage_dir / "attempts" / unit.unit_id)
+        command_plans.append(plan.model_dump(mode="json"))
+    _write_json(stage_dir / "experiment_command_plan.json", command_plans)
 
     # ── Build ExecutionManifest ──────────────────────────────────────────
     completed_units = [u for u in unit_records if u.final_status == ExecutionUnitStatus.COMPLETED]
@@ -442,9 +449,7 @@ def _run_intake(
 
 def _build_execution_units(
     experiment_matrix: dict[str, Any],
-    handoff_35: dict[str, Any],
     handoff_37: PatchRunnerHandoff,
-    stage_dir: Path,
     benchmark_config: dict[str, Any] | None,
 ) -> list[ExecutionUnitPlan]:
     """Build one ExecutionUnitPlan per experiment matrix entry."""
@@ -456,7 +461,6 @@ def _build_execution_units(
         variant_id: str | None = entry.get("variant_id")
         seed: int | None = entry.get("seed")
 
-        # Determine workspace_id from variant_id
         if variant_id is None:
             workspace_id = handoff_37.baseline_workspace_ref.workspace_id
         else:
@@ -479,10 +483,8 @@ def _build_execution_units(
         )
         units.append(unit)
 
-    # Fix command_plan_sha256 after construction
     for unit in units:
-        command_plan = _make_command_plan(unit, benchmark_config, stage_dir)
-        from autoad_researcher.runner.executor import experiment_command_sha256
+        command_plan = _make_command_plan(unit, benchmark_config, results_root=Path("/tmp"))
         unit.command_plan_sha256 = experiment_command_sha256(command_plan)
 
     return units
@@ -491,16 +493,23 @@ def _build_execution_units(
 def _make_command_plan(
     unit: ExecutionUnitPlan,
     benchmark_config: dict[str, Any] | None,
-    stage_dir: Path,
+    results_root: Path,
 ) -> ExperimentCommandPlan:
-    """Construct an ExperimentCommandPlan with full PatchCore CLI args from benchmark config."""
+    """Construct ExperimentCommandPlan with attempt_dir-scoped output.
+
+    The PatchCore entrypoint path is passed as a relative path within the repo
+    (so it works when cwd=repo). The results_path is an absolute path within
+    the attempt dir, so executor can find expected outputs at ``results_root/outputs/...``.
+    """
+    repo = Path("workspace/repos/patchcore-inspection")
+
     if benchmark_config is None:
-        repo = Path("workspace/repos/patchcore-inspection")
+        results_out = results_root / "outputs"
         return ExperimentCommandPlan(
             schema_version=1,
             command_id=f"cmd_{unit.unit_id}",
             program="python",
-            args=[str(repo / "bin/run_patchcore.py"), "outputs"],
+            args=["bin/run_patchcore.py", str(results_out)],
             cwd=str(repo),
             environment={},
             timeout_seconds=unit.max_wall_time_seconds,
@@ -508,40 +517,36 @@ def _make_command_plan(
             expected_outputs=["outputs/results.csv"],
         )
 
-    repo = Path("workspace/repos/patchcore-inspection")
     entrypoint = benchmark_config.get("repository", {}).get(
         "entrypoint_path", "bin/run_patchcore.py",
     )
     params = benchmark_config.get("fixed_parameters", {})
-    repo_cfg = benchmark_config.get("repository", {})
     dataset_cfg = benchmark_config.get("dataset", {})
     eval_cfg = benchmark_config.get("evaluation", {})
 
-    # Resolve dataset root from env
-    dataset_root_env = dataset_cfg.get("root_env", "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT")
-    dataset_root = os.environ.get(dataset_root_env, "/tmp/mvtec")
-
-    category = dataset_cfg.get("category", "bottle")
     log_project = params.get("log_project", "autoad_internal_benchmark")
     log_group = params.get("log_group", "internal_patchcore_mvtec_bottle_v1")
 
-    # Build expected output paths
+    # Use absolute results path scoped to attempt_dir so executor's
+    # expected_outputs check (relative to attempt_dir) can find the files.
+    results_out = results_root / "outputs"
+
     raw_result_paths = eval_cfg.get("raw_result_paths", [])
     expected_outputs = list(raw_result_paths) if raw_result_paths else [
         f"outputs/{log_project}/{log_group}/results.csv",
     ]
 
-    # Construct CLI args for PatchCore chain
+    gpu_enabled = _cuda_available()
     args = [
-        str(repo / entrypoint),
-        params.get("results_path", "outputs"),
-        "--gpu", str(params.get("gpu", 0)),
+        entrypoint,
+        str(results_out),
         "--seed", str(params.get("seed", 0)),
         "--log_group", log_group,
         "--log_project", log_project,
     ]
+    if gpu_enabled:
+        args += ["--gpu", str(params.get("gpu", 0))]
 
-    # patch_core subcommand
     args += [
         "patch_core",
         "-b", params.get("backbone", "wideresnet50"),
@@ -562,14 +567,16 @@ def _make_command_plan(
     if params.get("faiss_on_gpu", False):
         args.append("--faiss_on_gpu")
 
-    # sampler subcommand
     args += [
         "sampler",
         params.get("sampler", "approx_greedy_coreset"),
         "--percentage", str(params.get("coreset_sampling_ratio", 0.1)),
     ]
 
-    # dataset subcommand
+    dataset_root_env = dataset_cfg.get("root_env", "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT")
+    dataset_root = os.environ.get(dataset_root_env, "/tmp/mvtec")
+    category = dataset_cfg.get("category", "bottle")
+
     args += [
         "dataset",
         "mvtec",
@@ -597,30 +604,7 @@ def _make_command_plan(
     )
 
 
-def _build_command_plan_and_refs(
-    unit: ExecutionUnitPlan,
-    run_id: str,
-    workspace_ref: WorkspaceExecutionRef | None,
-    repo_root: Path,
-    benchmark_config: dict[str, Any] | None = None,
-) -> tuple[ExperimentCommandPlan, ExperimentInputRefs]:
-    plan = _make_command_plan(unit, benchmark_config, Path("/tmp"))
-    from autoad_researcher.runner.executor import experiment_command_sha256
-    cmd_sha = experiment_command_sha256(plan)
-    env_sha = _compute_env_lock_sha()
-    dataset_sha = _compute_dataset_manifest_sha()
-
-    input_refs = ExperimentInputRefs(
-        repository_fingerprint=(
-            workspace_ref.repository_fingerprint if workspace_ref else "0" * 64
-        ),
-        environment_sha256=env_sha,
-        dataset_manifest_sha256=dataset_sha,
-        asset_manifest_sha256="0" * 64,
-        command_sha256=cmd_sha,
-    )
-    return plan, input_refs
-
+# ── SHA computation helpers ────────────────────────────────────────────────
 
 def _compute_env_lock_sha() -> str:
     lock_path = Path("configs/benchmarks/environments/patchcore_linux_gpu/requirements.lock.txt")
@@ -630,19 +614,34 @@ def _compute_env_lock_sha() -> str:
 
 
 def _compute_dataset_manifest_sha() -> str:
+    """Deterministic manifest SHA: sorted file paths + their SHAs."""
     dataset_root = os.environ.get("AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT")
     if not dataset_root or not Path(dataset_root).exists():
         return "0" * 64
     try:
-        import subprocess
-        result = subprocess.run(
-            ["find", dataset_root, "-type", "f", "-exec", "sha256sum", "{}", "+"],
-            capture_output=True, text=True, timeout=30,
-        )
-        return hashlib.sha256(result.stdout.encode()).hexdigest()
+        digest = hashlib.sha256()
+        root = Path(dataset_root)
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root)
+            digest.update(str(rel.as_posix()).encode())
+            file_sha = _sha256_file(path)
+            digest.update(file_sha.encode())
+        return digest.hexdigest()
     except Exception:
         return "0" * 64
 
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _find_workspace_ref(
     refs: list[WorkspaceExecutionRef],
@@ -654,9 +653,7 @@ def _find_workspace_ref(
     return None
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-def _load_benchmark_config(run_dir: Path) -> dict[str, Any] | None:
+def _load_benchmark_config() -> dict[str, Any] | None:
     yaml_path = Path("configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml")
     if yaml_path.exists():
         try:
@@ -705,21 +702,6 @@ def _derive_overall(manifest: ExecutionManifest) -> str:
     if manifest.completed_unit_count > 0:
         return "partially_completed"
     return "failed"
-
-
-def _collect_command_plans(
-    units: list[ExecutionUnitPlan],
-    run_id: str,
-    intake_request: RunnerIntakeRequest,
-    repo_root: Path,
-    benchmark_config: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    plans = []
-    for unit in units:
-        ws_ref = _find_workspace_ref(intake_request.workspace_refs, unit.workspace_id)
-        plan, _ = _build_command_plan_and_refs(unit, run_id, ws_ref, repo_root, benchmark_config)
-        plans.append(plan.model_dump(mode="json"))
-    return plans
 
 
 def _write_json(path: Path, payload: Any) -> None:
