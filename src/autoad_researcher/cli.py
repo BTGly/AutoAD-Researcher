@@ -120,6 +120,14 @@ def build_parser() -> argparse.ArgumentParser:
     ra_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
     ra_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
+    fr_parser = subparsers.add_parser(
+        "final-report",
+        help="Run Stage 3.10 final report (consolidate pipeline, execution, scientific claims)",
+    )
+    fr_parser.add_argument("--run-id", required=True, help="Run identifier")
+    fr_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
+    fr_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
+
     stage3_parser = subparsers.add_parser(
         "stage3-acceptance",
         help="Run deterministic Step 3.10 L1/L2 acceptance orchestration",
@@ -573,6 +581,36 @@ def run_runner_execute(args: argparse.Namespace) -> int:
     return 3 if record.status == "blocked" else 1
 
 
+def run_final_report(args: argparse.Namespace) -> int:
+    """Run Stage 3.10 final report as a standalone CLI command."""
+    from pathlib import Path
+    runs_root = Path(args.runs_root)
+    run_dir = runs_root / args.run_id
+    stage_dir = run_dir / "final_report"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    from autoad_researcher.pipeline.final_report_stage import run_final_report_stage
+    record = run_final_report_stage(
+        run_id=args.run_id, run_dir=run_dir, stage_dir=stage_dir,
+    )
+
+    if args.json_output:
+        import json as _json
+        print(_json.dumps(record.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2))
+    else:
+        print("AutoAD final report")
+        print(f"run_id: {args.run_id}")
+        print(f"status: {record.status}")
+        if record.blocked_reason:
+            print(f"blocked_reason: {record.blocked_reason}")
+        if record.handoff_sha256:
+            print(f"handoff_sha256: {record.handoff_sha256}")
+
+    if record.status == "passed":
+        return 0
+    return 3 if record.status == "blocked" else 1
+
+
 def run_results_analysis(args: argparse.Namespace) -> int:
     """Run Stage 3.9 results analysis as a standalone CLI command."""
     from pathlib import Path
@@ -628,6 +666,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_runner_execute(args)
     if args.command == "results-analysis":
         return run_results_analysis(args)
+    if args.command == "final-report":
+        return run_final_report(args)
     if args.command == "stage3-acceptance":
         return run_stage3_acceptance(args)
 

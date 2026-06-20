@@ -372,10 +372,12 @@ class Orchestrator:
     def _stage_final_report(
         self, request: Stage3AcceptanceRequest, run_dir: Path, stage_dir: Path,
     ) -> Stage3AcceptanceStageRecord:
-        """Generate final report. Blocked without analysis results."""
-        return Stage3AcceptanceStageRecord(
-            stage="final_report", status="blocked",
-            blocked_reason="blocked_upstream: results_analysis_required",
+        """Generate final report (3.10). Consumes 3.9 reflection → 3-block claim report."""
+        from autoad_researcher.pipeline.final_report_stage import run_final_report_stage
+        return run_final_report_stage(
+            run_id=request.run_id,
+            run_dir=run_dir,
+            stage_dir=stage_dir,
         )
 
     # ── Acceptance helpers ──────────────────────────────────────────────────

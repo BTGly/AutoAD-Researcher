@@ -177,3 +177,69 @@ def test_stage3_acceptance_missing_artifact_returns_blocked(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "blocked"
     assert payload["failure_reason"] == "blocked_missing_artifact:intake"
+
+
+def test_final_report_cli(tmp_path, capsys):
+    run_dir = tmp_path / "run_fr"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "input_task.yaml").write_text("run_id: run_fr\nrequest: test\n", encoding="utf-8")
+    ra_dir = run_dir / "results_analysis"
+    ra_dir.mkdir(parents=True, exist_ok=True)
+    (ra_dir / "reflection.json").write_text(
+        '{"report_facts":{"run_id":"run_fr","num_variants":1,"num_successful":0,"num_failed":1,"total_gpu_hours":0.0,"total_wall_time_seconds":0.0},"per_variant_conclusions":[{"variant_id":"var_A","conclusion":"incomplete","matched_rule_id":"noop_patch_no_scientific_claim","completed_seed_pairs":[],"missing_seed_pairs":[],"evidence_refs":[]}]}',
+        encoding="utf-8",
+    )
+
+    exit_code = main([
+        "final-report", "--run-id", "run_fr", "--runs-root", str(tmp_path),
+    ])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "AutoAD final report" in output
+    assert run_dir.joinpath("final_report", "final_report.md").exists()
+    assert run_dir.joinpath("final_report", "final_report_handoff.json").exists()
+    assert run_dir.joinpath("final_report", "final_report_facts.json").exists()
+
+
+def test_final_report_cli_json(tmp_path, capsys):
+    run_dir = tmp_path / "run_fr_json"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    ra_dir = run_dir / "results_analysis"
+    ra_dir.mkdir(parents=True, exist_ok=True)
+    (ra_dir / "reflection.json").write_text(
+        '{"report_facts":{"run_id":"run_fr_json","num_variants":1,"num_successful":1,"num_failed":0,"total_gpu_hours":0.5,"total_wall_time_seconds":120.0},"per_variant_conclusions":[{"variant_id":"var_A","conclusion":"beneficial","matched_rule_id":"improvement_demonstrated","completed_seed_pairs":[0],"missing_seed_pairs":[],"evidence_refs":[{"artifact_id":"ref_001","artifact_type":"paired_metric_obs","locator":"results_analysis/paired_metric_obs_var_A_seed0.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}]}',
+        encoding="utf-8",
+    )
+
+    exit_code = main([
+        "final-report", "--run-id", "run_fr_json", "--runs-root", str(tmp_path), "--json",
+    ])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stage"] == "final_report"
+    assert payload["status"] == "passed"
+    assert "handoff_sha256" in payload
+    assert len(payload["artifacts"]) == 3
+
+
+def test_final_report_blocked_without_reflection(tmp_path, capsys):
+    run_dir = tmp_path / "run_fr_blocked"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    exit_code = main([
+        "final-report", "--run-id", "run_fr_blocked", "--runs-root", str(tmp_path),
+    ])
+
+    assert exit_code == 3
+    output = capsys.readouterr().out
+    assert "status: blocked" in output
+    assert "results_analysis/reflection.json not found" in output
+
+
+def test_final_report_help(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["final-report", "--help"])
+    assert excinfo.value.code == 0
+    assert "final-report" in capsys.readouterr().out
