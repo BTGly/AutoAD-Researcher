@@ -1,10 +1,10 @@
 schema_version: 1
 status: locked
-environment_id: patchcore_linux_gpu_v1
+environment_id: patchcore_linux_gpu_v2
 case_id: internal_patchcore_mvtec_bottle_v1
 
 platform: linux_x86_64
-python_version: "3.11.15"
+python_version: "3.12.13"
 package_manager: uv
 package_manager_version: "0.11.21"
 package_indexes:
@@ -17,7 +17,7 @@ package_indexes:
 
 requirements_input_path: requirements.in
 lockfile_path: requirements.lock.txt
-lockfile_sha256: "4b9699feb20019458c266d751de151686c41e8d30c1c61f0d27e5eb6d697e856"
+lockfile_sha256: "d9b42a2f47e3ac610252e43f4672c593d268536f6fa2e1a9e2250950b6518774"
 
 required_imports:
   - torch

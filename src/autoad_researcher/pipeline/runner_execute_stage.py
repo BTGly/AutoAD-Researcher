@@ -574,16 +574,19 @@ def _make_command_plan(
     """
     repo = Path("workspace/repos/patchcore-inspection")
     src_path = str(repo.resolve() / "src")
+    _python = _runner_python()
 
     if benchmark_config is None:
         results_out = results_root.resolve() / "outputs"
+        env = {"PYTHONPATH": src_path}
+        env.update(_runner_python_env())
         return ExperimentCommandPlan(
             schema_version=1,
             command_id=f"cmd_{unit.unit_id}",
-            program="python",
+            program=_python,
             args=["bin/run_patchcore.py", str(results_out)],
             cwd=str(repo),
-            environment={"PYTHONPATH": src_path},
+            environment=env,
             timeout_seconds=unit.max_wall_time_seconds,
             network=False,
             expected_outputs=["outputs/results.csv"],
@@ -661,14 +664,15 @@ def _make_command_plan(
         dataset_root,
     ]
 
-    env = {
+    env: dict[str, str] = {
         dataset_root_env: dataset_root,
         "PYTHONPATH": src_path,
     }
+    env.update(_runner_python_env())
     return ExperimentCommandPlan(
         schema_version=1,
         command_id=f"cmd_{unit.unit_id}",
-        program="python",
+        program=_python,
         args=args,
         cwd=str(repo),
         environment=env,
@@ -676,6 +680,32 @@ def _make_command_plan(
         network=False,
         expected_outputs=expected_outputs,
     )
+
+
+# ── Runner Python ─────────────────────────────────────────────────────────
+
+def _runner_python() -> str:
+    """Return path to GPU-capable Python interpreter for experiment subprocess.
+
+    Prefers the dedicated GPU venv (Python 3.12 + torch cu124) over the
+    main project venv (Python 3.14, no cu124 wheel available).
+
+    NOTE: must NOT resolve() the symlink — the venv python3 symlink is
+    essential for Python to find the venv site-packages.
+    """
+    gpu_venv = Path(".venv-gpu/bin/python3")
+    if gpu_venv.exists():
+        return str(gpu_venv.absolute())
+    return "python"
+
+
+def _runner_python_env() -> dict[str, str]:
+    """Environment extras needed to activate the GPU venv for subprocess."""
+    gpu_venv_root = str(Path(".venv-gpu").resolve())
+    return {
+        "VIRTUAL_ENV": gpu_venv_root,
+        "PATH": f"{gpu_venv_root}/bin:{os.environ.get('PATH', '')}",
+    }
 
 
 # ── Validity report ───────────────────────────────────────────────────────
