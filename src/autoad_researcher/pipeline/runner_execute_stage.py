@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from autoad_researcher.schemas.execution import (
     MatrixCoverageReport,
     ResourceUsageReport,
     RetryDecision,
+    RetryIdentity,
     RunnerIntakeReport,
     RunnerIntakeRequest,
     TerminalReason,
@@ -181,6 +183,7 @@ def run_runner_execute_stage(
                 intake_request.workspace_refs, unit.workspace_id,
             ),
             repo_root=repo_root,
+            benchmark_config=benchmark_config,
         )
 
         attempts: list[AttemptRecord] = []
@@ -190,7 +193,8 @@ def run_runner_execute_stage(
         for attempt_idx in range(1, unit.max_attempts + 1):
             attempt_id = f"{unit.unit_id}_attempt_{attempt_idx}"
             attempt_dir = unit_dir / f"attempt_{attempt_idx}"
-            attempt_dir.mkdir(parents=True, exist_ok=True)
+            if attempt_dir.exists():
+                shutil.rmtree(attempt_dir)
 
             identity = AttemptIdentitySnapshot(
                 execution_unit_plan_sha256=unit.command_plan_sha256,
@@ -243,7 +247,7 @@ def run_runner_execute_stage(
                 retry_decisions.append(RetryDecision(
                     attempt_id=attempt_id,
                     unit_id=unit.unit_id,
-                    prev_identity=identity,
+                    prev_identity=RetryIdentity(**identity.model_dump()),
                     identity_match=True,
                     decision="retry_same_command",
                     failure_classification="transient",
@@ -269,7 +273,7 @@ def run_runner_execute_stage(
 
     # ── Build execution command plan manifest ────────────────────────────
     _write_json(stage_dir / "experiment_command_plan.json",
-                [c.model_dump(mode="json") for c in _collect_command_plans(units, run_id, intake_request, repo_root)])
+                _collect_command_plans(units, run_id, intake_request, repo_root, benchmark_config))
 
     # ── Build ExecutionManifest ──────────────────────────────────────────
     completed_units = [u for u in unit_records if u.final_status == ExecutionUnitStatus.COMPLETED]
@@ -348,10 +352,19 @@ def run_runner_execute_stage(
     _write_json(handoff_path, handoff.model_dump(mode="json", exclude_none=True))
     handoff_sha = _sha256_file(handoff_path)
 
-    stage_status = "passed" if overall_status in ("completed", "partially_completed") else "blocked"
+    if overall_status in ("completed", "partially_completed"):
+        stage_status = "passed"
+        blocked_reason = None
+    elif overall_status == "failed":
+        stage_status = "blocked"
+        blocked_reason = "execution_all_units_failed"
+    else:
+        stage_status = "blocked"
+        blocked_reason = f"execution_{overall_status}"
 
     return Stage3AcceptanceStageRecord(
         stage="runner_execute", status=stage_status,
+        blocked_reason=blocked_reason,
         handoff_sha256=handoff_sha,
         artifacts=[
             Stage3AcceptanceArtifactRef(
@@ -480,32 +493,104 @@ def _make_command_plan(
     benchmark_config: dict[str, Any] | None,
     stage_dir: Path,
 ) -> ExperimentCommandPlan:
-    """Construct an ExperimentCommandPlan for a single execution unit.
+    """Construct an ExperimentCommandPlan with full PatchCore CLI args from benchmark config."""
+    if benchmark_config is None:
+        repo = Path("workspace/repos/patchcore-inspection")
+        return ExperimentCommandPlan(
+            schema_version=1,
+            command_id=f"cmd_{unit.unit_id}",
+            program="python",
+            args=[str(repo / "bin/run_patchcore.py"), "outputs"],
+            cwd=str(repo),
+            environment={},
+            timeout_seconds=unit.max_wall_time_seconds,
+            network=False,
+            expected_outputs=["outputs/results.csv"],
+        )
 
-    Uses the benchmark config to build the PatchCore run command.
-    """
-    if benchmark_config:
-        entrypoint = benchmark_config.get("repository", {}).get(
-            "entrypoint_path", "bin/run_patchcore.py",
-        )
-        repo = Path("workspace/repos/patchcore-inspection")
-        raw_result_paths = benchmark_config.get("evaluation", {}).get(
-            "raw_result_paths",
-            ["outputs/autoad_internal_benchmark/internal_patchcore_mvtec_bottle_v1/results.csv"],
-        )
-        expected_outputs = raw_result_paths
-    else:
-        entrypoint = "bin/run_patchcore.py"
-        repo = Path("workspace/repos/patchcore-inspection")
-        expected_outputs = ["outputs/results.csv"]
+    repo = Path("workspace/repos/patchcore-inspection")
+    entrypoint = benchmark_config.get("repository", {}).get(
+        "entrypoint_path", "bin/run_patchcore.py",
+    )
+    params = benchmark_config.get("fixed_parameters", {})
+    repo_cfg = benchmark_config.get("repository", {})
+    dataset_cfg = benchmark_config.get("dataset", {})
+    eval_cfg = benchmark_config.get("evaluation", {})
+
+    # Resolve dataset root from env
+    dataset_root_env = dataset_cfg.get("root_env", "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT")
+    dataset_root = os.environ.get(dataset_root_env, "/tmp/mvtec")
+
+    category = dataset_cfg.get("category", "bottle")
+    log_project = params.get("log_project", "autoad_internal_benchmark")
+    log_group = params.get("log_group", "internal_patchcore_mvtec_bottle_v1")
+
+    # Build expected output paths
+    raw_result_paths = eval_cfg.get("raw_result_paths", [])
+    expected_outputs = list(raw_result_paths) if raw_result_paths else [
+        f"outputs/{log_project}/{log_group}/results.csv",
+    ]
+
+    # Construct CLI args for PatchCore chain
+    args = [
+        str(repo / entrypoint),
+        params.get("results_path", "outputs"),
+        "--gpu", str(params.get("gpu", 0)),
+        "--seed", str(params.get("seed", 0)),
+        "--log_group", log_group,
+        "--log_project", log_project,
+    ]
+
+    # patch_core subcommand
+    args += [
+        "patch_core",
+        "-b", params.get("backbone", "wideresnet50"),
+    ]
+    for layer in params.get("layers", ["layer2", "layer3"]):
+        args += ["-le", layer]
+    args += [
+        "--pretrain_embed_dimension", str(params.get("pretrain_embed_dimension", 1024)),
+        "--target_embed_dimension", str(params.get("target_embed_dimension", 1024)),
+        "--preprocessing", params.get("preprocessing", "mean"),
+        "--aggregation", params.get("aggregation", "mean"),
+        "--anomaly_scorer_num_nn", str(params.get("anomaly_scorer_num_nn", 1)),
+        "--patchsize", str(params.get("patchsize", 3)),
+        "--patchscore", params.get("patchscore", "max"),
+        "--patchoverlap", str(params.get("patchoverlap", 0.0)),
+        "--faiss_num_workers", str(params.get("faiss_num_workers", 8)),
+    ]
+    if params.get("faiss_on_gpu", False):
+        args.append("--faiss_on_gpu")
+
+    # sampler subcommand
+    args += [
+        "sampler",
+        params.get("sampler", "approx_greedy_coreset"),
+        "--percentage", str(params.get("coreset_sampling_ratio", 0.1)),
+    ]
+
+    # dataset subcommand
+    args += [
+        "dataset",
+        "mvtec",
+        dataset_root,
+        "-d", category,
+        "--train_val_split", str(params.get("train_val_split", 1.0)),
+        "--batch_size", str(params.get("batch_size", 2)),
+        "--num_workers", str(params.get("num_workers", 8)),
+        "--resize", str(params.get("resize", 256)),
+        "--imagesize", str(params.get("imagesize", 224)),
+    ]
 
     return ExperimentCommandPlan(
         schema_version=1,
         command_id=f"cmd_{unit.unit_id}",
         program="python",
-        args=[str(repo / entrypoint)],
+        args=args,
         cwd=str(repo),
-        environment={},
+        environment={
+            dataset_root_env: dataset_root,
+        },
         timeout_seconds=unit.max_wall_time_seconds,
         network=False,
         expected_outputs=expected_outputs,
@@ -517,21 +602,46 @@ def _build_command_plan_and_refs(
     run_id: str,
     workspace_ref: WorkspaceExecutionRef | None,
     repo_root: Path,
+    benchmark_config: dict[str, Any] | None = None,
 ) -> tuple[ExperimentCommandPlan, ExperimentInputRefs]:
-    plan = _make_command_plan(unit, None, Path("/tmp"))
+    plan = _make_command_plan(unit, benchmark_config, Path("/tmp"))
     from autoad_researcher.runner.executor import experiment_command_sha256
     cmd_sha = experiment_command_sha256(plan)
+    env_sha = _compute_env_lock_sha()
+    dataset_sha = _compute_dataset_manifest_sha()
 
     input_refs = ExperimentInputRefs(
         repository_fingerprint=(
             workspace_ref.repository_fingerprint if workspace_ref else "0" * 64
         ),
-        environment_sha256="0" * 64,
-        dataset_manifest_sha256="0" * 64,
+        environment_sha256=env_sha,
+        dataset_manifest_sha256=dataset_sha,
         asset_manifest_sha256="0" * 64,
         command_sha256=cmd_sha,
     )
     return plan, input_refs
+
+
+def _compute_env_lock_sha() -> str:
+    lock_path = Path("configs/benchmarks/environments/patchcore_linux_gpu/requirements.lock.txt")
+    if lock_path.exists():
+        return _sha256_file(lock_path)
+    return "0" * 64
+
+
+def _compute_dataset_manifest_sha() -> str:
+    dataset_root = os.environ.get("AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT")
+    if not dataset_root or not Path(dataset_root).exists():
+        return "0" * 64
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["find", dataset_root, "-type", "f", "-exec", "sha256sum", "{}", "+"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return hashlib.sha256(result.stdout.encode()).hexdigest()
+    except Exception:
+        return "0" * 64
 
 
 def _find_workspace_ref(
@@ -602,11 +712,12 @@ def _collect_command_plans(
     run_id: str,
     intake_request: RunnerIntakeRequest,
     repo_root: Path,
+    benchmark_config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     plans = []
     for unit in units:
         ws_ref = _find_workspace_ref(intake_request.workspace_refs, unit.workspace_id)
-        plan, _ = _build_command_plan_and_refs(unit, run_id, ws_ref, repo_root)
+        plan, _ = _build_command_plan_and_refs(unit, run_id, ws_ref, repo_root, benchmark_config)
         plans.append(plan.model_dump(mode="json"))
     return plans
 
