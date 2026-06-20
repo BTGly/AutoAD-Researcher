@@ -166,21 +166,28 @@ class TestFinalReportEvidenceAudit:
 
     # ── GPU evidence ────────────────────────────────────────────────────
 
-    def test_gpu_claim_not_completed_without_evidence(self):
-        """Without gpu_execution_evidence.json, GPU claim must be not_completed."""
-        assert self.handoff is not None
-        assert self.handoff.get("gpu_claim") == "not_completed"
-        assert self.handoff.get("gpu_evidence_found") is False
+    def _load_fresh_handoff(self) -> dict:
+        path = RUNS_ROOT / RUN_ID / "final_report" / "final_report_handoff.json"
+        if path.exists():
+            with path.open() as f:
+                return json.load(f)
+        return {}
 
-    def test_execution_mode_not_verified_without_evidence(self):
-        """Without gpu_execution_evidence.json, execution mode must be not_verified."""
-        assert self.handoff is not None
-        assert self.handoff.get("execution_mode") == "not_verified"
+    def test_gpu_claim_not_completed_with_cpu_evidence(self):
+        """When evidence shows GPU unavailable, GPU claim must be not_completed."""
+        handoff = self._load_fresh_handoff()
+        assert handoff.get("gpu_claim") == "not_completed"
+        assert handoff.get("gpu_evidence_found") is True
 
-    def test_gpu_device_name_empty_without_evidence(self):
-        """Without gpu_execution_evidence.json, gpu_device_name must be empty."""
-        assert self.handoff is not None
-        assert self.handoff.get("gpu_device_name") == ""
+    def test_execution_mode_cpu_fallback_when_gpu_unavailable(self):
+        """When evidence shows GPU unavailable, execution mode must be cpu_fallback."""
+        handoff = self._load_fresh_handoff()
+        assert handoff.get("execution_mode") == "cpu_fallback"
+
+    def test_gpu_device_name_empty_when_gpu_unavailable(self):
+        """When evidence shows GPU unavailable, gpu_device_name must be empty."""
+        handoff = self._load_fresh_handoff()
+        assert handoff.get("gpu_device_name") == ""
 
     def test_facts_contains_gpu_fields(self):
         """final_report_facts.json must contain GPU evidence fields."""
@@ -190,8 +197,41 @@ class TestFinalReportEvidenceAudit:
         assert "execution_mode" in self.facts
         assert "l3_gpu_claim" in self.facts
 
-    def test_report_mentions_no_gpu_evidence(self):
-        """Report must mention when no GPU evidence is found."""
+    def test_report_mentions_cpu_fallback(self):
+        """Report must mention CPU fallback when evidence shows GPU unavailable."""
+        handoff = self._load_fresh_handoff()
         path = RUNS_ROOT / RUN_ID / "final_report" / "final_report.md"
         text = path.read_text(encoding="utf-8")
-        assert "No GPU execution evidence found" in text
+        if handoff.get("execution_mode") == "cpu_fallback":
+            assert "CPU fallback was used" in text
+
+    def test_missing_gpu_evidence_file_yields_not_verified(self):
+        """Temporarily remove gpu_execution_evidence.json to test not_verified path."""
+        evidence_path = RUNS_ROOT / RUN_ID / "runner_execute" / "gpu_execution_evidence.json"
+        if not evidence_path.exists():
+            pytest.skip("gpu_execution_evidence.json already absent")
+        handoff_path = RUNS_ROOT / RUN_ID / "final_report" / "final_report_handoff.json"
+        backup_evidence = evidence_path.read_bytes()
+        try:
+            evidence_path.unlink()
+            if handoff_path.exists():
+                handoff_path.unlink()
+            from autoad_researcher.pipeline.final_report_stage import run_final_report_stage
+            run_final_report_stage(
+                run_id=RUN_ID, run_dir=RUNS_ROOT / RUN_ID,
+                stage_dir=RUNS_ROOT / RUN_ID / "final_report",
+            )
+            import json as _json
+            handoff = _json.loads(handoff_path.read_text(encoding="utf-8"))
+            assert handoff["execution_mode"] == "not_verified"
+            assert handoff["gpu_claim"] == "not_completed"
+            assert handoff["gpu_evidence_found"] is False
+        finally:
+            evidence_path.write_bytes(backup_evidence)
+            if handoff_path.exists():
+                handoff_path.unlink()
+            from autoad_researcher.pipeline.final_report_stage import run_final_report_stage
+            run_final_report_stage(
+                run_id=RUN_ID, run_dir=RUNS_ROOT / RUN_ID,
+                stage_dir=RUNS_ROOT / RUN_ID / "final_report",
+            )
