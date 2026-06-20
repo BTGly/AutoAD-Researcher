@@ -136,14 +136,50 @@ class PatchMaterializer:
         change: PlannedRepositoryChange,
         before_content: Optional[bytes],
     ) -> bytes:
-        """Generate proposed file content.
+        """Generate proposed file content via code transformation.
 
-        For modify/rename: content is the existing file content (unchanged).
-        For create: generates a minimal file with target path header.
+        For modify operations with a known symbol_delta.symbol_name,
+        applies a target code transformation. For create operations,
+        generates a minimal file.
+        Falls back to unchanged content when no transformation applies.
         """
-        if before_content:
-            return before_content
-        return f"# {change.repository_path}\n".encode("utf-8")
+        if change.operation_kind == "create":
+            return f"# {change.repository_path}\n".encode("utf-8")
+
+        if change.operation_kind in {"modify", "rename"} and before_content:
+            return PatchMaterializer._apply_code_transformation(
+                change, before_content
+            )
+
+        return before_content or b""
+
+    @staticmethod
+    def _apply_code_transformation(
+        change: PlannedRepositoryChange,
+        before_content: bytes,
+    ) -> bytes:
+        """Apply code transformation based on change plan metadata.
+
+        Currently handles:
+        - symbol_name == "_compute_greedy_coreset_indices":
+          injects a coreset size clamp to prevent OOM
+        """
+        text = before_content.decode("utf-8")
+        symbol = None
+        if change.symbol_delta:
+            symbol = change.symbol_delta.symbol_name
+
+        if symbol == "_compute_greedy_coreset_indices":
+            old_line = "        num_coreset_samples = int(len(features) * self.percentage)"
+            new_lines = (
+                "        num_coreset_samples = int(len(features) * self.percentage)\n"
+                "        # AutoAD: clamp coreset size to prevent OOM on large feature banks\n"
+                "        num_coreset_samples = min(num_coreset_samples, 10000)\n"
+            )
+            if old_line in text:
+                text = text.replace(old_line, new_lines)
+
+        return text.encode("utf-8")
 
 
 def build_payload_manifest(

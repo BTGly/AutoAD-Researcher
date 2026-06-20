@@ -168,7 +168,7 @@ def run_patch_planning_stage(
     )
 
     # Build proposed diff
-    diff_content = _build_proposed_diff(payloads, repo_root, plan)
+    diff_content = _build_proposed_diff(payloads, repo_root, plan, store, run_id)
     diff_artifact_id = f"patch_planner/proposed_patch.diff"
     diff_sha256 = hashlib.sha256(diff_content.encode()).hexdigest()
     store.write_raw(run_id, diff_artifact_id, diff_content.encode())
@@ -302,8 +302,15 @@ def _build_proposed_diff(
     payloads: list,
     repo_root: Path,
     plan: "RepositoryChangePlan",
+    artifact_store: Any = None,
+    run_id: str | None = None,
 ) -> str:
-    """Build a unified diff string from materialized payloads."""
+    """Build a unified diff string from materialized payloads.
+
+    Reads the before content from the repo root and the after content
+    from the artifact store (payload artifact) to produce a real diff.
+    Falls back to no-change when content is unavailable.
+    """
     import difflib
     lines: list[str] = []
     from autoad_researcher.schemas.patch_planning import PatchPayload, RepositoryChangePlan
@@ -317,12 +324,18 @@ def _build_proposed_diff(
         before = ""
         if source_path.exists():
             before = source_path.read_text()
-        after = before  # stub: proposed_content == before_content
+        after = before
+        if artifact_store is not None and run_id is not None and payload.payload_artifact_id:
+            try:
+                after_bytes = artifact_store.read_raw(run_id, payload.payload_artifact_id)
+                if after_bytes is not None:
+                    after = after_bytes.decode("utf-8")
+            except Exception:
+                pass
         ud = difflib.unified_diff(
             before.splitlines(keepends=True),
             after.splitlines(keepends=True),
-            fromfile=f"a/{path}",
-            tofile=f"b/{path}",
+            fromfile=f"a/{path}", tofile=f"b/{path}",
         )
         lines.extend(ud)
     return "".join(lines)
