@@ -574,11 +574,50 @@ def _run_intake(
     checks.append(IntakeCheck(name="repo_root_exists", status="passed"))
 
     repo_status = _repo_status(repo_root)
-    if repo_status != "clean":
-        checks.append(IntakeCheck(
-            name="repo_clean", status="passed",
-            details=f"repo status: {repo_status} (expected — patch applied by 3.7)",
-        ))
+    if repo_status == "clean":
+        checks.append(IntakeCheck(name="repo_clean", status="passed", details="clean"))
+    else:
+        dirty_sha = _compute_dirty_diff_sha256(repo_root)
+        expected_shas = {
+            ws.patch_diff_sha256
+            for ws in request.workspace_refs
+            if ws.subject_type == "variant" and ws.patch_diff_sha256
+        }
+        allowed, prohibited = _dirty_files_are_allowed(repo_root)
+        if dirty_sha is not None and dirty_sha in expected_shas:
+            if allowed:
+                checks.append(IntakeCheck(
+                    name="repo_clean", status="passed",
+                    details=(
+                        f"repo status: {repo_status} (expected — dirty diff "
+                        f"SHA {dirty_sha[:12]} matches variant workspace patch)"
+                    ),
+                ))
+            else:
+                checks.append(IntakeCheck(
+                    name="repo_clean", status="failed",
+                    details=(
+                        f"repo dirty with protected file changes: "
+                        f"{', '.join(prohibited)}"
+                    ),
+                ))
+                return RunnerIntakeReport(
+                    status="blocked", checks=checks,
+                    report_sha256="0" * 64,
+                )
+        else:
+            checks.append(IntakeCheck(
+                name="repo_clean", status="failed",
+                details=(
+                    f"repo status: {repo_status}; dirty diff SHA "
+                    f"{dirty_sha[:12] if dirty_sha else 'N/A'} does not match "
+                    f"any variant workspace expected SHA"
+                ),
+            ))
+            return RunnerIntakeReport(
+                status="blocked", checks=checks,
+                report_sha256="0" * 64,
+            )
     report = RunnerIntakeReport(status="eligible", checks=checks, report_sha256="0" * 64)
     report.report_sha256 = _compute_report_sha(report)
     return report
@@ -1071,6 +1110,81 @@ def _repo_status(repo_root: Path) -> str:
         return "clean" if not result.stdout.strip() else "dirty"
     except Exception:
         return "unknown"
+
+
+def _compute_dirty_diff_sha256(repo_root: Path) -> str | None:
+    """Run ``git diff`` against HEAD and return SHA256 of the unified diff text.
+
+    Returns ``None`` if git fails or the repo is not a git repository.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "diff"],
+            cwd=repo_root, capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return None
+        diff_text = result.stdout
+        if not diff_text.strip():
+            return None
+        return hashlib.sha256(diff_text.encode()).hexdigest()
+    except Exception:
+        return None
+
+
+PROTECTED_REPO_PATTERNS: list[str] = [
+    "bin/",
+    "configs/benchmarks/",
+    "tests/",
+    ".github/",
+    "Makefile",
+    "setup.py",
+    "setup.cfg",
+]
+
+
+def _dirty_files_are_allowed(repo_root: Path) -> tuple[bool, list[str]]:
+    """Check that dirty files are within allowed variant-patch paths.
+
+    Returns ``(allowed, prohibited_files)``.  Prohibited files are those
+    matching ``PROTECTED_REPO_PATTERNS`` — paths that a variant patch should
+    never touch (evaluator scripts, benchmark configs, CI, build files).
+
+    Uses ``git status --porcelain`` so both modified-tracked and
+    untracked files are caught.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root, capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return False, ["git status --porcelain failed"]
+        # Each line: XY <path>  (X=index, Y=worktree, "??" = untracked)
+        dirty_files: list[str] = []
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # status code is 2 chars, then space, then filename
+            path = line[3:] if len(line) > 3 else line
+            if path and not path.startswith('"'):
+                dirty_files.append(path)
+    except Exception as exc:
+        return False, [f"git status error: {exc}"]
+
+    if not dirty_files:
+        return True, []
+
+    prohibited: list[str] = []
+    for f in dirty_files:
+        for pat in PROTECTED_REPO_PATTERNS:
+            if f.startswith(pat) or f == pat:
+                prohibited.append(f)
+                break
+    return len(prohibited) == 0, prohibited
 
 
 def _compute_report_sha(report: RunnerIntakeReport) -> str:
