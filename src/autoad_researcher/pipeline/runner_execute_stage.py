@@ -11,8 +11,9 @@ from typing import Any
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.analysis.metrics import MetricsReport, parse_metrics, MetricParseSpec
-from autoad_researcher.supervisor.validity import ScientificValidityReport, ValidityCheck
-from autoad_researcher.runner.models import ExperimentExecutionResult
+from autoad_researcher.supervisor.validity import (ScientificValidityReport, ValidityCheck,
+                                                      validate_scientific_contract)
+from autoad_researcher.runner.models import ExperimentExecutionResult, ExperimentInputRefs
 from autoad_researcher.runner.executor import (
     execute_experiment_attempt,
     experiment_command_sha256,
@@ -265,7 +266,12 @@ def run_runner_execute_stage(
                         unit.model_dump(mode="json", exclude_none=True))
 
             metrics_report = _parse_benchmark_metrics(attempt_dir, benchmark_config)
-            validity_report = _make_validity_report(result, metrics_report)
+            validity_report = _make_validity_report(
+                result, metrics_report,
+                input_refs=input_refs,
+                expected_repository_fingerprint=input_refs.repository_fingerprint,
+                actual_repository_fingerprint=workspace_ref.repository_fingerprint if workspace_ref else None,
+            )
             outcome = derive_attempt_outcome(result, metrics_report, validity_report)
 
             # ── Persist metrics + validity evidence artifacts ─────────────
@@ -816,11 +822,34 @@ def _runner_python_env() -> dict[str, str]:
 def _make_validity_report(
     result: ExperimentExecutionResult | None,
     metrics_report: MetricsReport | None,
+    input_refs: ExperimentInputRefs | None = None,
+    expected_repository_fingerprint: str | None = None,
+    actual_repository_fingerprint: str | None = None,
+    expected_category: str | None = None,
+    actual_category: str | None = None,
+    expected_baseline: str | None = None,
+    actual_baseline: str | None = None,
+    seed_fixed: bool = False,
+    data_path_leak_detected: bool | None = None,
 ) -> ScientificValidityReport | None:
     if result is None or metrics_report is None:
         return None
     if result.exit_code != 0:
         return None
+    if input_refs is not None:
+        return validate_scientific_contract(
+            execution_result=result,
+            input_refs=input_refs,
+            metrics_report=metrics_report,
+            expected_repository_fingerprint=expected_repository_fingerprint or input_refs.repository_fingerprint,
+            actual_repository_fingerprint=actual_repository_fingerprint,
+            expected_category=expected_category,
+            actual_category=actual_category,
+            expected_baseline=expected_baseline,
+            actual_baseline=actual_baseline,
+            seed_fixed=seed_fixed,
+            data_path_leak_detected=data_path_leak_detected,
+        )
     checks = [
         ValidityCheck(
             check_id="execution_success",
