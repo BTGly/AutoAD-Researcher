@@ -14,6 +14,7 @@ from autoad_researcher.schemas.execution import (
     ExecutionUnitRecord,
     ExecutionUnitStatus,
     ExperimentExecutionHandoff,
+    ResourceUsageReport,
 )
 from autoad_researcher.schemas.experiment_planning import ScientificConclusion
 from autoad_researcher.schemas.results_analysis import (
@@ -320,26 +321,86 @@ def run_results_analysis_stage(
         ))
 
     # ── Resource comparison ────────────────────────────────────────────
-    baseline_resource = BaselineResourceAggregate(measurement_status="not_available")
+    def _load_resource_usage(u: ExecutionUnitRecord) -> ResourceUsageReport | None:
+        if not u.attempts:
+            return None
+        for attempt in reversed(u.attempts):
+            ref = attempt.resource_usage_ref
+            if ref is None:
+                continue
+            rsrc_path = _try_resolve(run_dir, ref.locator)
+            if rsrc_path is None:
+                continue
+            try:
+                return ResourceUsageReport.model_validate_json(rsrc_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return None
+
+    def _agg_resource(
+        units: list[ExecutionUnitRecord],
+    ) -> tuple[list[ArtifactReferenceV2], dict[str, float], float | None, float | None, str]:
+        refs: list[ArtifactReferenceV2] = []
+        per_unit_gpu: dict[str, float] = {}
+        total_wall: float = 0.0
+        peak_gpu_mem: float | None = None
+        any_measured = False
+        for u in units:
+            r = _load_resource_usage(u)
+            if r is None:
+                continue
+            refs.append(ArtifactReferenceV2(
+                artifact_id=f"resource_usage_{r.attempt_id}",
+                artifact_type="resource_usage_report",
+                locator="absent", sha256="0" * 64,
+            ))
+            per_unit_gpu[u.unit_id] = r.actual_gpu_hours or 0.0
+            if r.wall_time_seconds is not None:
+                total_wall += r.wall_time_seconds
+            if r.peak_gpu_memory_mb is not None:
+                peak_gpu_mem = max(peak_gpu_mem or 0, r.peak_gpu_memory_mb)
+            if r.measurement_kind == "measured":
+                any_measured = True
+        status = "measured" if any_measured else ("partially_measured" if refs else "not_available")
+        return refs, per_unit_gpu, total_wall if refs else None, peak_gpu_mem, status
+
+    base_refs, base_per_unit_gpu, base_wall, base_peak, base_status = _agg_resource(baseline_units)
+    baseline_resource = BaselineResourceAggregate(
+        attempt_report_refs=base_refs,
+        per_unit_actual_gpu_hours=base_per_unit_gpu,
+        total_wall_time_seconds=base_wall,
+        peak_gpu_memory_mb=base_peak,
+        measurement_status=base_status,
+    )
     per_variant_resource: dict[str, VariantResourceAggregate] = {}
     per_variant_deltas: dict[str, ResourceDelta] = {}
     per_variant_budget: dict[str, VariantBudgetAssessment] = {}
     for v_id in seen_variant_ids:
+        v_units = [u for u in variant_units if getattr(u, "variant_id", u.unit_id) == v_id]
+        v_refs, v_per_unit_gpu, v_wall, v_peak, v_status = _agg_resource(v_units)
         per_variant_resource[v_id] = VariantResourceAggregate(
-            variant_id=v_id, measurement_status="not_available",
+            variant_id=v_id, attempt_report_refs=v_refs,
+            per_unit_actual_gpu_hours=v_per_unit_gpu,
+            total_wall_time_seconds=v_wall, peak_gpu_memory_mb=v_peak,
+            measurement_status=v_status,
         )
+        wall_delta = (v_wall - base_wall) if (v_wall is not None and base_wall is not None) else None
+        mem_delta = (v_peak - base_peak) if (v_peak is not None and base_peak is not None) else None
         per_variant_deltas[v_id] = ResourceDelta(
-            variant_id=v_id, measurement_compatible=False,
+            variant_id=v_id,
+            wall_time_delta_seconds=wall_delta,
+            gpu_memory_delta_mb=mem_delta,
+            measurement_compatible=(v_status != "not_available" and base_status != "not_available"),
         )
         per_variant_budget[v_id] = VariantBudgetAssessment(
             variant_id=v_id, status="not_assessable",
-            reason="resource telemetry not available",
+            reason="resource budget not configured",
         )
     bundle_resource = BundleResourceAggregate(
         baseline=baseline_resource, per_variant=per_variant_resource,
     )
     bundle_budget = BundleBudgetAssessment(
-        status="not_assessable", reason="resource telemetry not available",
+        status="not_assessable", reason="resource budget not configured",
     )
     resource_report = ResourceComparisonReport(
         baseline=baseline_resource, per_variant=per_variant_resource,
@@ -351,13 +412,20 @@ def run_results_analysis_stage(
     # ── Report facts ───────────────────────────────────────────────────
     completed = handoff_38.completed_unit_ids
     failed = handoff_38.failed_unit_ids
+    total_gpu = (
+        bundle_resource.baseline.total_actual_gpu_hours + bundle_resource.total_actual_gpu_hours
+    ) if bundle_resource.baseline.measurement_status != "not_available" else 0.0
+    total_wall = (bundle_resource.baseline.total_wall_time_seconds or 0.0)
+    for v_agg in bundle_resource.per_variant.values():
+        if v_agg.total_wall_time_seconds is not None:
+            total_wall += v_agg.total_wall_time_seconds
     report_facts = ReportFacts(
         run_id=run_id,
         num_variants=len(seen_variant_ids),
         num_successful=len(completed),
         num_failed=len(failed),
-        total_gpu_hours=0.0,
-        total_wall_time_seconds=0.0,
+        total_gpu_hours=total_gpu,
+        total_wall_time_seconds=total_wall,
     )
 
     # ── Scientific conclusion (no-op aware) ────────────────────────────
@@ -459,7 +527,22 @@ def run_results_analysis_stage(
         )
     report_lines.append("")
     report_lines.append("## Resource Usage")
-    report_lines.append("- Resource telemetry: not available")
+    if base_status != "not_available":
+        report_lines.append(f"- Baseline: wall_time={base_wall:.1f}s, peak_gpu_mem={base_peak or 0:.0f}MB")
+        for v_id in seen_variant_ids:
+            v_agg = per_variant_resource.get(v_id)
+            if v_agg and v_agg.measurement_status != "not_available":
+                report_lines.append(
+                    f"- {v_id}: wall_time={v_agg.total_wall_time_seconds or 0:.1f}s, "
+                    f"peak_gpu_mem={v_agg.peak_gpu_memory_mb or 0:.0f}MB"
+                )
+                delta = per_variant_deltas.get(v_id)
+                if delta and delta.measurement_compatible:
+                    wd = delta.wall_time_delta_seconds
+                    md = delta.gpu_memory_delta_mb
+                    report_lines.append(f"  Δ wall_time={wd:+.1f}s, Δ gpu_mem={md:+.0f}MB" if wd is not None and md is not None else "")
+    else:
+        report_lines.append("- Resource telemetry: not available")
 
     report_path = stage_dir / "results_analysis_report.md"
     report_path.write_text("\n".join(report_lines), encoding="utf-8")

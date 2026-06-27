@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from autoad_researcher.schemas.execution import (
     IntakeCheck,
     MatrixCoverageReport,
     ProducedArtifactRecord,
+    ResourceUsageReport,
     ResolvedArtifactBinding,
     RetryDecision,
     RetryIdentity,
@@ -224,6 +226,7 @@ def run_runner_execute_stage(
                 ),
             )
 
+            _t0 = time.monotonic()
             result = execute_experiment_attempt(
                 run_id=run_id,
                 attempt=attempt_id,
@@ -231,6 +234,27 @@ def run_runner_execute_stage(
                 input_refs=input_refs,
                 attempt_dir=str(attempt_dir),
                 runner=run_experiment_subprocess,
+            )
+            _wall_time = time.monotonic() - _t0
+
+            # ── Gather resource telemetry ──────────────────────────────────
+            resource_report = _collect_resource_usage(
+                attempt_id=attempt_id,
+                unit_id=unit.unit_id,
+                wall_time_seconds=_wall_time,
+                subject_type="baseline" if unit.variant_id is None else "variant",
+                variant_id=unit.variant_id,
+                seed=unit.seed,
+            )
+            resource_report_path = attempt_dir / "resource_usage.json"
+            _write_json(resource_report_path,
+                        resource_report.model_dump(mode="json", exclude_none=True, exclude={"actual_gpu_hours"}))
+            resource_report_sha = _sha256_file(resource_report_path)
+            resource_usage_ref = ArtifactReferenceV2(
+                artifact_id=f"resource_usage_{attempt_id}",
+                artifact_type="resource_usage_report",
+                locator=str(resource_report_path.relative_to(run_dir.parent)),
+                sha256=resource_report_sha,
             )
 
             _write_json(attempt_dir / "command_plan.json",
@@ -299,6 +323,7 @@ def run_runner_execute_stage(
                 ),
                 metrics_report_ref=metrics_ref,
                 validity_report_ref=validity_ref,
+                resource_usage_ref=resource_usage_ref,
                 produced_artifacts=[
                     ProducedArtifactRecord(
                         unit_id=unit.unit_id,
@@ -927,6 +952,87 @@ def _probe_gpu_venv() -> dict | None:
         return None
     except Exception:
         return None
+
+
+def _collect_resource_usage(
+    attempt_id: str,
+    unit_id: str,
+    wall_time_seconds: float,
+    subject_type: str,
+    variant_id: str | None = None,
+    seed: int | None = None,
+) -> "ResourceUsageReport":
+    """Collect resource telemetry for an attempt.
+
+    Queries nvidia-smi for GPU memory stats and returns a
+    ResourceUsageReport with measured or partially_measured kind.
+    Falls back to wall_time-only when GPU query fails.
+    """
+    peak_gpu_mem, avg_gpu_mem, util_pct = _query_gpu_memory()
+    if peak_gpu_mem is not None:
+        measurement_kind = "partially_measured"
+        gpu_count = 1
+        peak_gpu_mem_val = peak_gpu_mem
+        avg_gpu_mem_val = avg_gpu_mem or peak_gpu_mem
+        util_pct_val = util_pct or 0.0
+    else:
+        measurement_kind = "partially_measured"
+        peak_gpu_mem_val = None
+        avg_gpu_mem_val = None
+        util_pct_val = None
+        gpu_count = None
+
+    return ResourceUsageReport(
+        attempt_id=attempt_id,
+        unit_id=unit_id,
+        subject_type=subject_type,  # type: ignore
+        variant_id=variant_id,
+        seed=seed,
+        measurement_kind=measurement_kind,
+        measurement_tool="nvidia-smi+wall_clock",
+        gpu_count_used=gpu_count,
+        peak_gpu_memory_mb=peak_gpu_mem_val,
+        avg_gpu_memory_mb=avg_gpu_mem_val,
+        peak_gpu_utilization_pct=util_pct_val,
+        avg_gpu_utilization_pct=util_pct_val,
+        wall_time_seconds=wall_time_seconds,
+        cpu_time_seconds=None,
+        peak_cpu_memory_mb=None,
+        evidence_refs=[],
+    )
+
+
+def _query_gpu_memory() -> tuple[float | None, float | None, float | None]:
+    """Query nvidia-smi for peak GPU memory and utilization.
+
+    Returns (peak_memory_mb, avg_memory_mb, utilization_pct).
+    All None when nvidia-smi is unavailable or fails.
+    """
+    import shutil
+    import subprocess
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi is None:
+        return None, None, None
+    try:
+        result = subprocess.run(
+            [
+                nvidia_smi, "--query-gpu=memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None, None, None
+        line = result.stdout.strip().split("\n")[0]
+        parts = [p.strip() for p in line.split(", ")]
+        if len(parts) >= 3:
+            mem_used = float(parts[0])
+            mem_total = float(parts[1])
+            util = float(parts[2])
+            return mem_used, mem_total, util
+        return None, None, None
+    except Exception:
+        return None, None, None
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
