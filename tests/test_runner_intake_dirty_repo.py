@@ -4,6 +4,7 @@ Creates temporary git repos to simulate clean, expected-dirty,
 unexpected-dirty, and protected-file-dirty scenarios.
 """
 
+import difflib
 import hashlib
 import os
 import subprocess
@@ -21,6 +22,34 @@ from autoad_researcher.schemas.patch_planning import PatchRunnerHandoff
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _compute_diff_sha(repo: Path) -> str:
+    """Compute dirty diff SHA using the same approach as ``_compute_dirty_diff_sha256``."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only"], cwd=repo,
+        capture_output=True, text=True, check=True, timeout=15,
+    )
+    dirty_files = [f for f in result.stdout.strip().splitlines() if f]
+    lines: list[str] = []
+    for rel_path in dirty_files:
+        abs_path = repo / rel_path
+        if not abs_path.exists():
+            continue
+        current = abs_path.read_text(encoding="utf-8")
+        head_result = subprocess.run(
+            ["git", "show", f"HEAD:{rel_path}"], cwd=repo,
+            capture_output=True, text=True, timeout=15,
+        )
+        original = head_result.stdout if head_result.returncode == 0 else ""
+        lines.append(f"--- a/{rel_path}")
+        lines.append(f"+++ b/{rel_path}")
+        diff = difflib.unified_diff(
+            original.split("\n"), current.split("\n"),
+            fromfile=f"a/{rel_path}", tofile=f"b/{rel_path}", lineterm="",
+        )
+        lines.extend(list(diff))
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 @pytest.fixture
@@ -153,11 +182,7 @@ class TestRunnerIntakeDirtyRepo:
         (temp_git_repo / "src" / "patchcore" / "samplers.py").write_text(
             "def sample():\n    return 42\n"
         )
-        # Compute expected SHA
-        diff_result = subprocess.run(
-            ["git", "diff"], cwd=temp_git_repo, capture_output=True, text=True, check=True,
-        )
-        expected_sha = hashlib.sha256(diff_result.stdout.encode()).hexdigest()
+        expected_sha = _compute_diff_sha(temp_git_repo)
 
         ws_refs = [
             WorkspaceExecutionRef(
@@ -222,10 +247,7 @@ class TestRunnerIntakeDirtyRepo:
         )
         (temp_git_repo / "bin").mkdir(parents=True, exist_ok=True)
         (temp_git_repo / "bin" / "eval.py").write_text("print('eval')\n")
-        diff_result = subprocess.run(
-            ["git", "diff"], cwd=temp_git_repo, capture_output=True, text=True, check=True,
-        )
-        expected_sha = hashlib.sha256(diff_result.stdout.encode()).hexdigest()
+        expected_sha = _compute_diff_sha(temp_git_repo)
 
         ws_refs = [
             WorkspaceExecutionRef(
@@ -246,7 +268,7 @@ class TestRunnerIntakeDirtyRepo:
         assert clean_check[0].status == "failed"
         assert "protected" in (clean_check[0].details or "").lower()
 
-    def test_allows_dirty_diff_without_variant_workspaces(self, temp_git_repo: Path):
+    def test_blocks_dirty_diff_without_variant_workspaces(self, temp_git_repo: Path):
         """No variant workspace refs -> dirty repo should still be blocked."""
         from autoad_researcher.pipeline.runner_execute_stage import _run_intake
         (temp_git_repo / "src").mkdir(parents=True, exist_ok=True)

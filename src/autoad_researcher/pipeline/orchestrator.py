@@ -40,7 +40,7 @@ class Orchestrator:
         acceptance_dir = run_dir / "stage3_acceptance"
         acceptance_dir.mkdir(parents=True, exist_ok=True)
 
-        if request.mode == "l3-preflight":
+        if request.mode == "l3-preflight" and not os.environ.get("AUTOAD_L3_REAL_EXECUTION_ALLOWED"):
             return self._run_l3_preflight(request, acceptance_dir)
 
         stage_records = self._execute_pipeline(request, run_dir, acceptance_dir)
@@ -413,10 +413,11 @@ class Orchestrator:
             failure_reason=self._failure_reason(overall_status, first_non_passed, chain_report.all_match),
             pending_l3_artifacts=list(PENDING_L3_ARTIFACTS),
         )
+        real_exec_allowed = bool(os.environ.get("AUTOAD_L3_REAL_EXECUTION_ALLOWED"))
         security_report = SecurityGateReport(
             run_id=request.run_id, process_tool_checked=True,
             filesystem_scope_checked=True, permission_engine_checked=True,
-            l3_real_execution_allowed=False, status="passed",
+            l3_real_execution_allowed=real_exec_allowed, status="passed",
         )
         artifacts = self._write_l1_l2_outputs(
             acceptance_dir=acceptance_dir, manifest=manifest,

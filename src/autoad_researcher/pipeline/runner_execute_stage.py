@@ -1113,19 +1113,51 @@ def _repo_status(repo_root: Path) -> str:
 
 
 def _compute_dirty_diff_sha256(repo_root: Path) -> str | None:
-    """Run ``git diff`` against HEAD and return SHA256 of the unified diff text.
+    """Compute SHA256 of dirty diff in the same format as
+    ``patch_applicator._generate_unified_diff`` (uses ``difflib.unified_diff``,
+    NOT ``git diff``, so SHAs match the handoff manifest).
 
-    Returns ``None`` if git fails or the repo is not a git repository.
+    Returns ``None`` if git fails or the repo is clean.
     """
+    import difflib
     import subprocess
     try:
-        result = subprocess.run(
-            ["git", "diff"],
+        # Get list of files with unstaged changes
+        name_result = subprocess.run(
+            ["git", "diff", "--name-only"],
             cwd=repo_root, capture_output=True, text=True, timeout=15,
         )
-        if result.returncode != 0:
+        if name_result.returncode != 0:
             return None
-        diff_text = result.stdout
+        dirty_files = [f for f in name_result.stdout.strip().splitlines() if f]
+        if not dirty_files:
+            return None
+
+        lines: list[str] = []
+        for rel_path in dirty_files:
+            abs_path = repo_root / rel_path
+            if not abs_path.exists():
+                continue
+            current = abs_path.read_text(encoding="utf-8")
+            # Get HEAD version via git show
+            head_result = subprocess.run(
+                ["git", "show", f"HEAD:{rel_path}"],
+                cwd=repo_root, capture_output=True, text=True, timeout=15,
+            )
+            original = head_result.stdout if head_result.returncode == 0 else ""
+
+            lines.append(f"--- a/{rel_path}")
+            lines.append(f"+++ b/{rel_path}")
+            diff = difflib.unified_diff(
+                original.split("\n"),
+                current.split("\n"),
+                fromfile=f"a/{rel_path}",
+                tofile=f"b/{rel_path}",
+                lineterm="",
+            )
+            lines.extend(list(diff))
+
+        diff_text = "\n".join(lines)
         if not diff_text.strip():
             return None
         return hashlib.sha256(diff_text.encode()).hexdigest()
