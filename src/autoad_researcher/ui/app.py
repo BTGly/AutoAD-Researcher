@@ -68,7 +68,8 @@ if page == "1. Run Config":
         st.text_input("Dataset root", key="dataset_root")
     with col2:
         st.text_input("Provider base URL", key="provider_base_url")
-        st.selectbox("Mode", ["l3-preflight", "l1-l2"], key="mode")
+        st.selectbox("Mode", ["l3-preflight"], key="mode", disabled=True,
+                     help="Preflight only from UI. Real L3: see command below.")
 
     st.text_input("DeepSeek API key", type="password", key="api_key")
     if st.session_state.api_key:
@@ -115,7 +116,7 @@ elif page == "2. Preflight Runner":
                 run_id=st.session_state.run_id,
                 provider_base_url=st.session_state.provider_base_url,
                 api_key=st.session_state.api_key,
-                mode=st.session_state.mode,
+                dataset_root=st.session_state.dataset_root,
             )
         st.session_state.preflight_result = result
         st.session_state.preflight_running = False
@@ -159,9 +160,13 @@ elif page == "2. Preflight Runner":
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "3. Artifact Explorer":
     st.title("Artifact Explorer")
-    run_dir = run_dir_path("runs", st.session_state.run_id)
+    try:
+        run_dir = run_dir_path("runs", st.session_state.run_id)
+    except ValueError as exc:
+        st.error(f"Invalid run_id: {exc}")
+        run_dir = None
 
-    if not run_dir.is_dir():
+    if run_dir is None or not run_dir.is_dir():
         st.warning(f"Run directory not found: `{run_dir}`")
     else:
         stages = list_stage_dirs(run_dir)
@@ -182,9 +187,13 @@ elif page == "3. Artifact Explorer":
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "4. Execution Monitor":
     st.title("Execution Monitor")
-    run_dir = run_dir_path("runs", st.session_state.run_id)
+    try:
+        run_dir = run_dir_path("runs", st.session_state.run_id)
+    except ValueError as exc:
+        st.error(f"Invalid run_id: {exc}")
+        run_dir = None
 
-    if not run_dir.is_dir():
+    if run_dir is None or not run_dir.is_dir():
         st.warning(f"Run directory not found: `{run_dir}`")
     else:
         col_refresh, _ = st.columns([1, 5])
@@ -223,9 +232,13 @@ elif page == "4. Execution Monitor":
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "5. Final Review":
     st.title("Final Review")
-    run_dir = run_dir_path("runs", st.session_state.run_id)
+    try:
+        run_dir = run_dir_path("runs", st.session_state.run_id)
+    except ValueError as exc:
+        st.error(f"Invalid run_id: {exc}")
+        run_dir = None
 
-    if not run_dir.is_dir():
+    if run_dir is None or not run_dir.is_dir():
         st.warning(f"Run directory not found: `{run_dir}`")
     else:
         col_refresh, _ = st.columns([1, 5])

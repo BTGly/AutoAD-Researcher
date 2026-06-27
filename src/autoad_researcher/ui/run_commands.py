@@ -12,21 +12,25 @@ def run_preflight(
     run_id: str,
     provider_base_url: str,
     api_key: str,
+    dataset_root: str = "",
     runs_root: str = "runs",
-    mode: str = "l3-preflight",
 ) -> dict[str, Any]:
-    """Run l3-preflight via subprocess and return parsed JSON result."""
+    """Run l3-preflight via subprocess and return parsed JSON result.
+
+    Phase 1 constraint: mode is always hardcoded to ``l3-preflight``.
+    Real L3 execution is NOT available through this function.
+    """
     cmd = [
         sys.executable, "-m", "autoad_researcher",
         "stage3-acceptance",
         "--run-id", run_id,
-        "--mode", mode,
+        "--mode", "l3-preflight",
         "--provider-base-url", provider_base_url,
         "--json",
     ]
     env = {
         "DEEPSEEK_API_KEY": api_key,
-        "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT": os.environ.get("AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT", ""),
+        "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT": dataset_root,
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
     }

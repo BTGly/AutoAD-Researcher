@@ -1,22 +1,18 @@
 """Read-only helpers for browsing runs/{run_id} artifacts."""
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
-STAGE_NAMES = [
-    "patch_planner",
-    "patch_applicator",
-    "runner_execute",
-    "results_analysis",
-    "final_report",
-    "stage3_acceptance",
-]
+from autoad_researcher.core.run_id import run_dir_path as core_run_dir_path
+from autoad_researcher.schemas.stage3_acceptance import STAGE3_ACCEPTANCE_STAGE_ORDER
+
+STAGE_NAMES = list(STAGE3_ACCEPTANCE_STAGE_ORDER) + ["stage3_acceptance"]
 
 
 def run_dir_path(runs_root: str, run_id: str) -> Path:
-    return Path(runs_root) / run_id
+    """Validate and resolve runs_root/run_id."""
+    return core_run_dir_path(runs_root, run_id)
 
 
 def list_stage_dirs(run_dir: Path) -> list[dict[str, Any]]:
