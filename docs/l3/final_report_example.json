@@ -1,0 +1,35 @@
+{
+  "run_id": "run_l3_bottle_001",
+  "all_upstream_stages_passed": false,
+  "scientific_claim": "mixed_or_inconclusive",
+  "scientific_detail": "Results are mixed or inconclusive.",
+  "execution_mode": "gpu_verified",
+  "l3_gpu_claim": "completed",
+  "pipeline_stages": {
+    "results_analysis": "passed",
+    "intake": "passed",
+    "repository_intelligence": "passed",
+    "paper_intelligence": "blocked",
+    "research_context": "blocked",
+    "transfer_design": "passed",
+    "experiment_planner": "passed",
+    "patch_planner": "passed",
+    "patch_applicator": "passed",
+    "runner_execute": "passed"
+  },
+  "per_variant_conclusions": [
+    {
+      "variant_id": "idea_run_l3_bottle_001_var_A",
+      "conclusion": "practically_equivalent",
+      "matched_rule_id": "zero_improvement_delta",
+      "completed_seed_pairs": [],
+      "missing_seed_pairs": [],
+      "evidence_refs": []
+    }
+  ],
+  "noop_patch": false,
+  "gpu_evidence_found": true,
+  "gpu_device_name": "NVIDIA GeForce RTX 4090",
+  "total_units": 3,
+  "num_variants": 1
+}
