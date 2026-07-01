@@ -14,4 +14,4 @@
 | 2026-06-18 | [2026-06-18.md](2026-06-18.md) | 3.8/3.9 计划 v2.10→v2.12 迭代（~10 轮审阅，~30 P0 修复）；Stage 3 完整状态复核；3.10 E2E 验收计划文档初稿 |
 | 2026-06-19 | [2026-06-19.md](2026-06-19.md) | Step 3.10 L1/L2 acceptance schemas, orchestrator, CLI, tests, and v0.3 plan update |
 | 2026-06-20 | [2026-06-20.md](2026-06-20.md) | Stage 3.8 runner_execute: pipeline/runner_execute_stage.py + orchestrator wiring; 3.7 patch artifact audit; Stage 3.10 final_report: pipeline + CLI + audit tests (1391 passed) |
-| 2026-06-26 | [2026-06-26.md](2026-06-26.md) | P0 `repo_clean`: validate dirty diff SHA against variant workspace patch before allowing intake; 5 new tests via temp git repos (1414 passed) |
+| 2026-06-26 | [2026-06-26.md](2026-06-26.md) | P0 `repo_clean`: validate dirty diff SHA against variant workspace patch before allowing intake; 5 new tests via temp git repos; L3 full rehearsal completed; ScientificValidityReport wired; Phase 1 Streamlit UI; REFERENCES.md |
