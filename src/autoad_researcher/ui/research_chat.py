@@ -6,7 +6,10 @@ import json
 import re
 from pathlib import Path
 
-import streamlit as st
+try:
+    import streamlit as st
+except ModuleNotFoundError:  # UI extra is optional in CI/unit-test environments.
+    st = None
 
 from autoad_researcher.ui.artifact_viewer import run_dir_path
 from autoad_researcher.ui.chat_client import call_research_chat
@@ -32,6 +35,8 @@ _MODE_LABELS = {
 
 
 def render_research_chat():
+    if st is None:
+        raise RuntimeError("streamlit is required to render the Research Assistant UI")
     st.title("研究助手")
     st.warning(_SAFETY_WARNING, icon="🛡️")
 
