@@ -36,7 +36,6 @@ _DEFAULTS = {
     "dataset_root": "/root/autodl-tmp/mvtec",
     "provider_base_url": "https://api.deepseek.com",
     "mode": "l3-preflight",
-    "api_key": "",
     "preflight_result": None,
     "preflight_running": False,
     "_run_id_hash": "",
@@ -130,14 +129,14 @@ elif page == "2. 预检执行器":
     st.markdown("**预检后你需要做什么：**")
     st.caption("预检通过 → 复制「终端复现命令」到 SSH 终端执行真实 L3 → 回到「执行监控」和「最终审阅」查看结果")
 
-    if not st.session_state.api_key:
+    if not st.session_state.get("api_key"):
         st.warning("请先在「运行配置」中填写 API Key。")
 
     col1, col2 = st.columns([1, 3])
     with col1:
         run_btn = st.button(
             "执行预检",
-            disabled=not st.session_state.api_key or st.session_state.preflight_running,
+            disabled=not st.session_state.get("api_key") or st.session_state.preflight_running,
             type="primary",
         )
     with col2:
@@ -151,7 +150,7 @@ elif page == "2. 预检执行器":
             result = run_preflight(
                 run_id=st.session_state._run_id_hash,
                 provider_base_url=st.session_state.provider_base_url,
-                api_key=st.session_state.api_key,
+                api_key=st.session_state.get("api_key", ""),
                 dataset_root=st.session_state.dataset_root,
             )
         st.session_state.preflight_result = result
