@@ -28,12 +28,9 @@ def run_preflight(
         "--provider-base-url", provider_base_url,
         "--json",
     ]
-    env = {
-        "DEEPSEEK_API_KEY": api_key,
-        "AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT": dataset_root,
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": os.environ.get("HOME", ""),
-    }
+    env = os.environ.copy()
+    env["DEEPSEEK_API_KEY"] = api_key
+    env["AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT"] = dataset_root
     try:
         result = subprocess.run(
             cmd,
@@ -45,14 +42,15 @@ def run_preflight(
         )
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
-        if result.returncode != 0:
+        try:
+            data = json.loads(stdout)
+        except (json.JSONDecodeError, ValueError):
             return {
                 "status": "subprocess_failed",
                 "returncode": result.returncode,
                 "stdout": stdout,
                 "stderr": stderr,
             }
-        data = json.loads(stdout)
         data["_returncode"] = result.returncode
         data["_stderr"] = stderr
         return data

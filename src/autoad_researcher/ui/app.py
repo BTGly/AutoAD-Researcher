@@ -1,11 +1,10 @@
-"""Streamlit UI — Phase 1: Artifact viewer + preflight runner."""
+"""Streamlit UI — Phase 1: 制品浏览器 + 预检执行器。"""
 
 import os
 import sys
 
 import streamlit as st
 
-# Ensure project root is on path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from autoad_researcher.ui.artifact_viewer import (
@@ -24,12 +23,11 @@ from autoad_researcher.ui.artifact_viewer import (
 from autoad_researcher.ui.run_commands import run_preflight
 
 st.set_page_config(
-    page_title="AutoAD Researcher — L3 Dashboard",
+    page_title="AutoAD Researcher — L3 控制台",
     page_icon="🔬",
     layout="wide",
 )
 
-# ── Session state defaults ────────────────────────────────────────────────
 _DEFAULTS = {
     "run_id": "run_l3_bottle_001",
     "dataset_root": "/root/autodl-tmp/mvtec",
@@ -42,41 +40,40 @@ _DEFAULTS = {
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
-# ── Sidebar navigation ────────────────────────────────────────────────────
 PAGES = [
-    "1. Run Config",
-    "2. Preflight Runner",
-    "3. Artifact Explorer",
-    "4. Execution Monitor",
-    "5. Final Review",
+    "1. 运行配置",
+    "2. 预检执行器",
+    "3. 制品浏览器",
+    "4. 执行监控",
+    "5. 最终审阅",
 ]
-page = st.sidebar.radio("Navigate", PAGES, index=0)
+page = st.sidebar.radio("页面导航", PAGES, index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Run: `{st.session_state.run_id}`")
+st.sidebar.caption(f"当前运行: `{st.session_state.run_id}`")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 1: Run Config
+# 页面 1: 运行配置
 # ═══════════════════════════════════════════════════════════════════════════
-if page == "1. Run Config":
-    st.title("Run Configuration")
-    st.caption("Set parameters for a new L3 run. Changes take effect immediately.")
+if page == "1. 运行配置":
+    st.title("运行配置")
+    st.caption("设置 L3 运行参数，修改即时生效。")
 
     col1, col2 = st.columns(2)
     with col1:
-        st.text_input("Run ID", key="run_id")
-        st.text_input("Dataset root", key="dataset_root")
+        st.text_input("运行 ID", key="run_id")
+        st.text_input("数据集根目录", key="dataset_root")
     with col2:
-        st.text_input("Provider base URL", key="provider_base_url")
-        st.selectbox("Mode", ["l3-preflight"], key="mode", disabled=True,
-                     help="Preflight only from UI. Real L3: see command below.")
+        st.text_input("Provider 接口地址", key="provider_base_url")
+        st.selectbox("模式", ["l3-preflight"], key="mode", disabled=True,
+                     help="UI 仅支持预检模式。真实 L3 请执行下方命令。")
 
-    st.text_input("DeepSeek API key", type="password", key="api_key")
+    st.text_input("DeepSeek API Key", type="password", key="api_key")
     if st.session_state.api_key:
-        st.caption("API key is held in memory only — never displayed, logged, or written to disk.")
+        st.caption("API Key 仅保存在内存中 — 不会显示、不会记录、不会写入磁盘。")
 
     st.markdown("---")
-    st.subheader("Equivalent command")
+    st.subheader("等效命令行")
     cmd = (
         f"uv run autoad stage3-acceptance "
         f"--run-id {st.session_state.run_id} "
@@ -85,33 +82,33 @@ if page == "1. Run Config":
         f"--json"
     )
     st.code(cmd, language="bash")
-    st.caption("Copy this to run manually, or use the Preflight Runner tab.")
+    st.caption("可复制此命令在终端手动运行，或使用预检执行器页。")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 2: Preflight Runner
+# 页面 2: 预检执行器
 # ═══════════════════════════════════════════════════════════════════════════
-elif page == "2. Preflight Runner":
-    st.title("Preflight Runner")
-    st.caption("Executes `stage3-acceptance --mode l3-preflight` (no API calls, no real execution).")
+elif page == "2. 预检执行器":
+    st.title("预检执行器")
+    st.caption("执行 `stage3-acceptance --mode l3-preflight`（不会调用 LLM，不会真实执行 GPU）。")
 
     if not st.session_state.api_key:
-        st.warning("Set an API key in Run Config first.")
+        st.warning("请先在「运行配置」中填写 API Key。")
 
     col1, col2 = st.columns([1, 3])
     with col1:
         run_btn = st.button(
-            "Run Preflight",
+            "执行预检",
             disabled=not st.session_state.api_key or st.session_state.preflight_running,
             type="primary",
         )
     with col2:
         if st.session_state.preflight_running:
-            st.info("Running preflight... (up to 60 s)")
+            st.info("正在执行预检…（最长约 60 秒）")
 
     if run_btn:
         st.session_state.preflight_running = True
         st.session_state.preflight_result = None
-        with st.spinner("Running preflight..."):
+        with st.spinner("正在执行预检…"):
             result = run_preflight(
                 run_id=st.session_state.run_id,
                 provider_base_url=st.session_state.provider_base_url,
@@ -126,25 +123,25 @@ elif page == "2. Preflight Runner":
         result = st.session_state.preflight_result
         status = result.get("status", "unknown")
         if status == "subprocess_failed":
-            st.error(f"Subprocess failed (rc={result.get('returncode')})")
+            st.error(f"子进程失败 (返回码={result.get('returncode')})")
             if result.get("stderr"):
                 st.code(result["stderr"], language="text")
             if result.get("stdout"):
                 st.code(result["stdout"], language="json")
         elif status == "timeout":
-            st.error("Preflight timed out after 300 s.")
+            st.error("预检超时（超过 300 秒）。")
         elif status == "error":
-            st.error(f"Error: {result.get('error')}")
+            st.error(f"错误: {result.get('error')}")
         else:
-            st.success("Preflight completed.")
+            st.success("预检完成。")
             st.json(result)
 
     if not st.session_state.preflight_result and not run_btn:
-        st.info("Click **Run Preflight** to start.")
+        st.info("点击 **执行预检** 开始。")
 
     st.markdown("---")
-    st.subheader("Real L3 Execution")
-    st.warning("This UI does NOT trigger real L3 execution. Run manually:")
+    st.subheader("真实 L3 执行")
+    st.warning("本 UI 不会触发真实 L3 执行。请在终端手动运行：")
     real_cmd = (
         f"AUTOAD_L3_REAL_EXECUTION_ALLOWED=1 \\\n"
         f"uv run autoad stage3-acceptance "
@@ -156,152 +153,148 @@ elif page == "2. Preflight Runner":
     st.code(real_cmd, language="bash")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 3: Artifact Explorer
+# 页面 3: 制品浏览器
 # ═══════════════════════════════════════════════════════════════════════════
-elif page == "3. Artifact Explorer":
-    st.title("Artifact Explorer")
+elif page == "3. 制品浏览器":
+    st.title("制品浏览器")
     try:
         run_dir = run_dir_path("runs", st.session_state.run_id)
     except ValueError as exc:
-        st.error(f"Invalid run_id: {exc}")
+        st.error(f"无效的 run_id: {exc}")
         run_dir = None
 
     if run_dir is None or not run_dir.is_dir():
-        st.warning(f"Run directory not found: `{run_dir}`")
+        st.warning(f"运行目录未找到: `{run_dir}`")
     else:
         stages = list_stage_dirs(run_dir)
         for s in stages:
             with st.expander(f"{'✅' if s['exists'] else '⏳'} **{s['name']}**", expanded=s['exists']):
                 if not s['exists']:
-                    st.caption("Not found / not generated yet.")
+                    st.caption("尚未生成。")
                 else:
                     files = list_artifact_files(run_dir, s['name'])
                     if files:
-                        rows = [{"name": f["name"], "size": f"{f['size']:,} B", "path": f["path"]} for f in files]
+                        rows = [{"文件名": f["name"], "大小": f"{f['size']:,} B", "路径": f["path"]} for f in files]
                         st.dataframe(rows, use_container_width=True)
                     else:
-                        st.caption("Empty directory.")
+                        st.caption("空目录。")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 4: Execution Monitor
+# 页面 4: 执行监控
 # ═══════════════════════════════════════════════════════════════════════════
-elif page == "4. Execution Monitor":
-    st.title("Execution Monitor")
+elif page == "4. 执行监控":
+    st.title("执行监控")
     try:
         run_dir = run_dir_path("runs", st.session_state.run_id)
     except ValueError as exc:
-        st.error(f"Invalid run_id: {exc}")
+        st.error(f"无效的 run_id: {exc}")
         run_dir = None
 
     if run_dir is None or not run_dir.is_dir():
-        st.warning(f"Run directory not found: `{run_dir}`")
+        st.warning(f"运行目录未找到: `{run_dir}`")
     else:
         col_refresh, _ = st.columns([1, 5])
         with col_refresh:
-            st.button("Refresh", key="_refresh_monitor")
+            st.button("刷新", key="_refresh_monitor")
 
         manifest = get_execution_manifest(run_dir)
         intake = get_runner_intake_report(run_dir)
         gpu = get_gpu_evidence(run_dir)
 
-        tabs = st.tabs(["Execution Manifest", "Intake Report", "GPU Evidence", "Events"])
+        tabs = st.tabs(["执行清单", "准入报告", "GPU 证据", "事件日志"])
         with tabs[0]:
             if manifest:
                 st.json(manifest)
             else:
-                st.caption("Not found / not generated yet.")
+                st.caption("尚未生成。")
         with tabs[1]:
             if intake:
                 st.json(intake)
             else:
-                st.caption("Not found / not generated yet.")
+                st.caption("尚未生成。")
         with tabs[2]:
             if gpu:
                 st.json(gpu)
             else:
-                st.caption("Not found / not generated yet.")
+                st.caption("尚未生成。")
         with tabs[3]:
             events = get_events_tail(run_dir)
             if events:
                 st.code("\n".join(events), language="json")
             else:
-                st.caption("No events found.")
+                st.caption("未找到事件记录。")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PAGE 5: Final Review
+# 页面 5: 最终审阅
 # ═══════════════════════════════════════════════════════════════════════════
-elif page == "5. Final Review":
-    st.title("Final Review")
+elif page == "5. 最终审阅":
+    st.title("最终审阅")
     try:
         run_dir = run_dir_path("runs", st.session_state.run_id)
     except ValueError as exc:
-        st.error(f"Invalid run_id: {exc}")
+        st.error(f"无效的 run_id: {exc}")
         run_dir = None
 
     if run_dir is None or not run_dir.is_dir():
-        st.warning(f"Run directory not found: `{run_dir}`")
+        st.warning(f"运行目录未找到: `{run_dir}`")
     else:
         col_refresh, _ = st.columns([1, 5])
         with col_refresh:
-            st.button("Refresh", key="_refresh_review")
+            st.button("刷新", key="_refresh_review")
 
         final_facts = get_final_facts(run_dir)
         manifest = get_execution_manifest(run_dir)
         summary = summarize_final_status(final_facts, manifest)
 
-        # ── Three-panel status ────────────────────────────────────────────
         col1, col2, col3 = st.columns(3)
 
         with col1:
             eng = summary["engineering_success"]
             if eng is True:
-                st.success("✅ Engineering\nPipeline completed,\nreal patch applied")
+                st.success("✅ 工程管线\n管线完成，真实补丁已应用")
             elif eng is False:
-                st.error("❌ Engineering\nNoop patch or\npipeline incomplete")
+                st.error("❌ 工程管线\n空补丁或管线未完成")
             else:
-                st.info("⏳ Engineering\nNot available yet")
+                st.info("⏳ 工程管线\n数据尚未生成")
 
         with col2:
             exc = summary["execution_success"]
             if exc is True:
-                st.success("✅ GPU Execution\nGPU verified,\n3/0/0 units")
+                st.success("✅ GPU 执行\nGPU 已验证，3/0/0 单元")
             elif exc is False:
-                st.error("❌ GPU Execution\nNot verified or\nunits failed")
+                st.error("❌ GPU 执行\n未验证或单元失败")
             else:
-                st.info("⏳ GPU Execution\nNot available yet")
+                st.info("⏳ GPU 执行\n数据尚未生成")
 
         with col3:
             sci = summary["scientific_success"]
             claim = summary["scientific_claim"] or "—"
             if sci is True:
-                st.success(f"✅ Scientific\nImprovement demonstrated\n({claim})")
+                st.success(f"✅ 科学改进\n已证明改进\n({claim})")
             elif sci is False:
-                st.error(f"❌ Scientific\nNot demonstrated\n({claim})")
+                st.error(f"❌ 科学改进\n未证明改进\n({claim})")
             else:
-                st.info(f"⏳ Scientific\nNot available yet\n({claim})")
+                st.info(f"⏳ 科学改进\n数据尚未生成\n({claim})")
 
-        # ── Artifact chain ────────────────────────────────────────────────
         st.markdown("---")
-        st.subheader("Artifact Chain")
+        st.subheader("制品链")
         chain = get_artifact_chain(run_dir)
         rows = []
         for c in chain:
             icon = "✅" if c["handoff_sha"] != "—" and c["exists"] else "⏳"
-            rows.append({"stage": icon + " " + c["stage"], "handoff SHA": c["handoff_sha"]})
+            rows.append({"阶段": icon + " " + c["stage"], "handoff SHA": c["handoff_sha"]})
         st.dataframe(rows, use_container_width=True)
 
-        # ── Final facts JSON ──────────────────────────────────────────────
         st.markdown("---")
-        st.subheader("Final Report Facts")
+        st.subheader("最终报告事实")
         if final_facts:
             st.json(final_facts)
         else:
-            st.caption("Not found / not generated yet.")
+            st.caption("尚未生成。")
 
-        # ── Final report markdown ─────────────────────────────────────────
-        st.subheader("Final Report (Markdown)")
+        st.subheader("最终报告 (Markdown)")
         md = get_final_report_md(run_dir)
         if md:
             st.markdown(md)
         else:
-            st.caption("Not found / not generated yet.")
+            st.caption("尚未生成。")
