@@ -1,11 +1,19 @@
 """Sanitised chat transcript persistence — UI audit material, not pipeline evidence."""
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 TRANSCRIPT_DIR = "ui_chat"
 TRANSCRIPT_FILE = "chat_transcript.jsonl"
+
+_SK_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
+
+
+def redact_secrets(text: str) -> str:
+    """Replace API-key-like strings in free-form text."""
+    return _SK_PATTERN.sub("sk-***REDACTED***", text)
 
 
 def save_transcript(
@@ -19,7 +27,7 @@ def save_transcript(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
         "role": role,
-        "content": content,
+        "content": redact_secrets(content),
     }
     if context_refs:
         entry["context_refs"] = context_refs

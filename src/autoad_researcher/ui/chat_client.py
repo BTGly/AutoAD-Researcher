@@ -16,8 +16,15 @@ def call_research_chat(
 
     The return dict is always safe to display — it never contains raw
     headers, the API key, or full HTTP response bodies.
+
+    The *provider_base_url* is automatically normalised so that a
+    trailing ``/v1`` prefix is not duplicated.
     """
-    url = provider_base_url.rstrip("/") + "/v1/chat/completions"
+    base = provider_base_url.rstrip("/")
+    if base.endswith("/v1"):
+        url = base + "/chat/completions"
+    else:
+        url = base + "/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

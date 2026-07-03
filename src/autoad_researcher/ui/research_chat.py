@@ -69,6 +69,10 @@ def render_research_chat():
             st.chat_message("assistant").write(content)
 
     # ── Chat input ───────────────────────────────────────────────────────
+    if run_dir is None:
+        st.info("请先在侧边栏输入合法 Run ID，或在「运行配置」中生成新的运行 ID。")
+        st.stop()
+
     user_input = st.chat_input("输入你的问题…", key="_chat_input")
     if user_input:
         save_transcript(run_dir, mode, "user", user_input)

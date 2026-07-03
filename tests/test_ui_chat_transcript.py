@@ -4,7 +4,24 @@ import json
 import tempfile
 from pathlib import Path
 
-from autoad_researcher.ui.chat_transcript import load_transcript, save_transcript
+from autoad_researcher.ui.chat_transcript import load_transcript, redact_secrets, save_transcript
+
+
+def test_redact_sk_keys():
+    assert redact_secrets("my key is sk-abc123def456") == "my key is sk-***REDACTED***"
+
+
+def test_redact_long_keys():
+    assert redact_secrets("sk-abcdefghijklmnopqrstuvwxyz") == "sk-***REDACTED***"
+
+
+def test_redact_preserves_normal_text():
+    normal = "hello world 123"
+    assert redact_secrets(normal) == normal
+
+
+def test_redact_short_apparent_key():
+    assert redact_secrets("sk-ab") == "sk-ab"
 
 
 class TestChatTranscript:
@@ -44,6 +61,14 @@ class TestChatTranscript:
             run_dir = Path(tmp) / "runs" / "run_t"
             run_dir.joinpath("ui_chat").mkdir(parents=True)
             path = run_dir / "ui_chat" / "chat_transcript.jsonl"
-            path.write_text('{"bad":\n', encoding="utf-8")  # invalid JSON
+            path.write_text('{"bad":\n', encoding="utf-8")
             entries = load_transcript(run_dir)
             assert entries == []
+
+    def test_transcript_redacts_api_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "run_t"
+            save_transcript(run_dir, "intent_clarification", "user", "my key is sk-secret12345678")
+            entries = load_transcript(run_dir)
+            assert "sk-secret12345678" not in entries[0]["content"]
+            assert "sk-***REDACTED***" in entries[0]["content"]
