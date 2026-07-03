@@ -2,6 +2,8 @@
 
 import os
 import sys
+import hashlib
+from datetime import datetime, timezone
 
 import streamlit as st
 
@@ -29,16 +31,26 @@ st.set_page_config(
 )
 
 _DEFAULTS = {
-    "run_id": "run_l3_bottle_001",
     "dataset_root": "/root/autodl-tmp/mvtec",
     "provider_base_url": "https://api.deepseek.com",
     "mode": "l3-preflight",
     "api_key": "",
     "preflight_result": None,
     "preflight_running": False,
+    "_run_id_hash": "",
+    "_api_key_confirmed": False,
 }
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
+
+def _generate_run_id() -> str:
+    """每次页面渲染生成稳定的 run_id：时间戳 + 短哈希。"""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    h = hashlib.md5(ts.encode()).hexdigest()[:4]
+    return f"run_{ts}_{h}"
+
+if not st.session_state._run_id_hash:
+    st.session_state._run_id_hash = _generate_run_id()
 
 PAGES = [
     "1. 运行配置",
@@ -50,39 +62,68 @@ PAGES = [
 page = st.sidebar.radio("页面导航", PAGES, index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"当前运行: `{st.session_state.run_id}`")
+st.sidebar.caption(f"运行 ID: `{st.session_state._run_id_hash}`")
+st.sidebar.markdown("---")
+old_run = st.sidebar.text_input("浏览已有运行", placeholder="run_l3_bottle_001", key="_old_run_id")
+if old_run:
+    st.session_state._browse_run_id = old_run
+else:
+    st.session_state._browse_run_id = st.session_state._run_id_hash
+st.sidebar.caption(f"浏览: `{st.session_state._browse_run_id}`")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 页面 1: 运行配置
 # ═══════════════════════════════════════════════════════════════════════════
 if page == "1. 运行配置":
     st.title("运行配置")
-    st.caption("设置 L3 运行参数，修改即时生效。")
+    st.caption("填写 API Key 即可开始 — 其他参数已自动配置。")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.text_input("运行 ID", key="run_id")
+    # ── API Key 核心区 ──────────────────────────────────────────────────
+    api_placeholder = st.empty()
+    api_col, feedback_col = st.columns([3, 2])
+    with api_col:
+        new_key = st.text_input(
+            "DeepSeek API Key",
+            type="password",
+            key="api_key",
+            placeholder="sk-…",
+            on_change=lambda: setattr(st.session_state, "_api_key_just_entered", True),
+        )
+    with feedback_col:
+        if new_key and new_key != st.session_state.get("_last_api_key", ""):
+            st.session_state._last_api_key = new_key
+            st.session_state._api_key_confirmed = True
+        if st.session_state._api_key_confirmed:
+            st.success("✅ API Key 已注入")
+
+    # ── 自动生成的 Run ID ───────────────────────────────────────────────
+    st.markdown("---")
+    run_col, refresh_col = st.columns([3, 1])
+    with run_col:
+        st.text_input("运行 ID（自动生成）", value=st.session_state._run_id_hash, disabled=True)
+        st.caption("每次刷新页面会生成新的 ID，旧 ID 对应的制品不会丢失。")
+    with refresh_col:
+        if st.button("🔄 重新生成"):
+            st.session_state._run_id_hash = _generate_run_id()
+            st.rerun()
+
+    # ── 高级配置（折叠）──────────────────────────────────────────────────
+    with st.expander("高级配置（通常无需修改）"):
         st.text_input("数据集根目录", key="dataset_root")
-    with col2:
         st.text_input("Provider 接口地址", key="provider_base_url")
         st.selectbox("模式", ["l3-preflight"], key="mode", disabled=True,
                      help="UI 仅支持预检模式。真实 L3 请执行下方命令。")
 
-    st.text_input("DeepSeek API Key", type="password", key="api_key")
-    if st.session_state.api_key:
-        st.caption("API Key 仅保存在内存中 — 不会显示、不会记录、不会写入磁盘。")
-
-    st.markdown("---")
-    st.subheader("等效命令行")
-    cmd = (
-        f"uv run autoad stage3-acceptance "
-        f"--run-id {st.session_state.run_id} "
-        f"--mode {st.session_state.mode} "
-        f"--provider-base-url {st.session_state.provider_base_url} "
-        f"--json"
-    )
-    st.code(cmd, language="bash")
-    st.caption("可复制此命令在终端手动运行，或使用预检执行器页。")
+    # ── 等效命令行（折叠）────────────────────────────────────────────────
+    with st.expander("等效命令行（仅展示）"):
+        cmd = (
+            f"uv run autoad stage3-acceptance "
+            f"--run-id {st.session_state._run_id_hash} "
+            f"--mode {st.session_state.mode} "
+            f"--provider-base-url {st.session_state.provider_base_url} "
+            f"--json"
+        )
+        st.code(cmd, language="bash")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 页面 2: 预检执行器
@@ -110,7 +151,7 @@ elif page == "2. 预检执行器":
         st.session_state.preflight_result = None
         with st.spinner("正在执行预检…"):
             result = run_preflight(
-                run_id=st.session_state.run_id,
+                run_id=st.session_state._run_id_hash,
                 provider_base_url=st.session_state.provider_base_url,
                 api_key=st.session_state.api_key,
                 dataset_root=st.session_state.dataset_root,
@@ -167,7 +208,7 @@ elif page == "2. 预检执行器":
     real_cmd = (
         f"AUTOAD_L3_REAL_EXECUTION_ALLOWED=1 \\\n"
         f"uv run autoad stage3-acceptance "
-        f"--run-id {st.session_state.run_id} "
+        f"--run-id {st.session_state._run_id_hash} "
         f"--mode {st.session_state.mode} "
         f"--provider-base-url {st.session_state.provider_base_url} "
         f"--json"
@@ -180,7 +221,7 @@ elif page == "2. 预检执行器":
 elif page == "3. 制品浏览器":
     st.title("制品浏览器")
     try:
-        run_dir = run_dir_path("runs", st.session_state.run_id)
+        run_dir = run_dir_path("runs", st.session_state._browse_run_id)
     except ValueError as exc:
         st.error(f"无效的 run_id: {exc}")
         run_dir = None
@@ -207,7 +248,7 @@ elif page == "3. 制品浏览器":
 elif page == "4. 执行监控":
     st.title("执行监控")
     try:
-        run_dir = run_dir_path("runs", st.session_state.run_id)
+        run_dir = run_dir_path("runs", st.session_state._browse_run_id)
     except ValueError as exc:
         st.error(f"无效的 run_id: {exc}")
         run_dir = None
@@ -252,7 +293,7 @@ elif page == "4. 执行监控":
 elif page == "5. 最终审阅":
     st.title("最终审阅")
     try:
-        run_dir = run_dir_path("runs", st.session_state.run_id)
+        run_dir = run_dir_path("runs", st.session_state._browse_run_id)
     except ValueError as exc:
         st.error(f"无效的 run_id: {exc}")
         run_dir = None
