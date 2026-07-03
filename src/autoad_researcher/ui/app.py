@@ -1,8 +1,8 @@
 """Streamlit UI — Phase 1: 制品浏览器 + 预检执行器。"""
 
+import hashlib
 import os
 import sys
-import hashlib
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -10,17 +10,19 @@ import streamlit as st
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from autoad_researcher.ui.artifact_viewer import (
-    list_stage_dirs,
+    STAGE_DESCRIPTIONS,
+    RECOMMENDED_FILES,
+    get_artifact_chain,
+    get_events_tail,
     get_execution_manifest,
-    get_runner_intake_report,
-    get_gpu_evidence,
     get_final_facts,
     get_final_report_md,
-    get_events_tail,
-    get_artifact_chain,
+    get_gpu_evidence,
+    get_runner_intake_report,
     list_artifact_files,
-    summarize_final_status,
+    list_stage_dirs,
     run_dir_path,
+    summarize_final_status,
 )
 from autoad_researcher.ui.run_commands import run_preflight
 
@@ -42,11 +44,12 @@ _DEFAULTS = {
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
+
 def _generate_run_id() -> str:
-    """每次页面渲染生成稳定的 run_id：时间戳 + 短哈希。"""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
     h = hashlib.md5(ts.encode()).hexdigest()[:4]
     return f"run_{ts}_{h}"
+
 
 if not st.session_state._run_id_hash:
     st.session_state._run_id_hash = _generate_run_id()
@@ -62,22 +65,18 @@ page = st.sidebar.radio("页面导航", PAGES, index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"运行 ID: `{st.session_state._run_id_hash}`")
-st.sidebar.markdown("---")
 old_run = st.sidebar.text_input("浏览已有运行", placeholder="run_l3_bottle_001", key="_old_run_id")
-if old_run:
-    st.session_state._browse_run_id = old_run
-else:
-    st.session_state._browse_run_id = st.session_state._run_id_hash
+st.session_state._browse_run_id = old_run or st.session_state._run_id_hash
 st.sidebar.caption(f"浏览: `{st.session_state._browse_run_id}`")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 页面 1: 运行配置
 # ═══════════════════════════════════════════════════════════════════════════
 if page == "1. 运行配置":
     st.title("运行配置")
-    st.caption("填写 API Key 即可开始 — 其他参数已自动配置。")
+    st.info("你只需要填写 API Key 即可运行预检。系统会自动生成运行 ID 并配置好其他参数。")
 
-    # ── API Key 核心区 ──────────────────────────────────────────────────
     api_key_val = st.text_input(
         "DeepSeek API Key",
         type="password",
@@ -85,45 +84,51 @@ if page == "1. 运行配置":
         placeholder="sk-…",
     )
     if api_key_val:
-        st.success("✅ API Key 已注入")
+        st.success("✅ API Key 已注入 — 仅保存于本次会话内存，不会写入磁盘")
     else:
-        st.info("请在下方输入 API Key，按回车确认")
+        st.info("请输入 API Key，按回车确认")
 
-    # ── 自动生成的 Run ID ───────────────────────────────────────────────
     st.markdown("---")
     run_col, refresh_col = st.columns([3, 1])
     with run_col:
         st.text_input("运行 ID（自动生成）", value=st.session_state._run_id_hash, disabled=True)
-        st.caption("每次刷新页面会生成新的 ID，旧 ID 对应的制品不会丢失。")
+        st.caption("每次刷新页面生成新 ID。旧 ID 的制品不会丢失，可在侧边栏输入浏览。")
     with refresh_col:
         if st.button("🔄 重新生成"):
             st.session_state._run_id_hash = _generate_run_id()
             st.rerun()
 
-    # ── 高级配置（折叠）──────────────────────────────────────────────────
     with st.expander("高级配置（通常无需修改）"):
         st.text_input("数据集根目录", key="dataset_root")
         st.text_input("Provider 接口地址", key="provider_base_url")
-        st.selectbox("模式", ["l3-preflight"], key="mode", disabled=True,
-                     help="UI 仅支持预检模式。真实 L3 请执行下方命令。")
+        st.selectbox("模式", ["l3-preflight"], key="mode", disabled=True)
 
-    # ── 等效命令行（折叠）────────────────────────────────────────────────
-    with st.expander("等效命令行（仅展示）"):
-        cmd = (
-            f"uv run autoad stage3-acceptance "
-            f"--run-id {st.session_state._run_id_hash} "
-            f"--mode {st.session_state.mode} "
-            f"--provider-base-url {st.session_state.provider_base_url} "
-            f"--json"
+    with st.expander("终端复现命令"):
+        real_cmd = (
+            f"export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=\"{st.session_state.dataset_root}\"\n"
+            f"read -s -p \"DeepSeek API key: \" DEEPSEEK_API_KEY\n"
+            f"export DEEPSEEK_API_KEY\n\n"
+            f"uv run autoad stage3-acceptance \\\n"
+            f"  --run-id {st.session_state._run_id_hash} \\\n"
+            f"  --mode {st.session_state.mode} \\\n"
+            f"  --provider-base-url \"{st.session_state.provider_base_url}\" \\\n"
+            f"  --json"
         )
-        st.code(cmd, language="bash")
+        st.code(real_cmd, language="bash")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 页面 2: 预检执行器
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "2. 预检执行器":
     st.title("预检执行器")
-    st.caption("执行 `stage3-acceptance --mode l3-preflight`（不会调用 LLM，不会真实执行 GPU）。")
+    st.info(
+        "预检不会请求模型生成内容，也不会执行 GPU benchmark。"
+        "它只检查运行所需配置是否齐全：API Key 是否存在、数据集路径是否可达等。"
+        "执行预检**不消耗 token**，可以反复运行。"
+    )
+
+    st.markdown("**预检后你需要做什么：**")
+    st.caption("预检通过 → 复制「终端复现命令」到 SSH 终端执行真实 L3 → 回到「执行监控」和「最终审阅」查看结果")
 
     if not st.session_state.api_key:
         st.warning("请先在「运行配置」中填写 API Key。")
@@ -137,7 +142,7 @@ elif page == "2. 预检执行器":
         )
     with col2:
         if st.session_state.preflight_running:
-            st.info("正在执行预检…（最长约 60 秒）")
+            st.info("正在执行预检…（约 5-10 秒）")
 
     if run_btn:
         st.session_state.preflight_running = True
@@ -156,17 +161,14 @@ elif page == "2. 预检执行器":
     if st.session_state.preflight_result:
         result = st.session_state.preflight_result
         wrapper_status = result.get("status", "unknown")
-        orch_status = result.get("status", None) if wrapper_status not in ("subprocess_failed", "timeout", "error") else None
         failure_reason = result.get("failure_reason", "")
 
         if wrapper_status == "subprocess_failed":
             st.error("子进程返回错误", icon="❌")
             with st.expander("查看详细输出"):
                 if result.get("stderr"):
-                    st.text("stderr:")
                     st.code(result["stderr"], language="text")
                 if result.get("stdout"):
-                    st.text("stdout:")
                     st.code(result["stdout"], language="json")
         elif wrapper_status == "timeout":
             st.error("预检超时（超过 300 秒）", icon="⏰")
@@ -174,13 +176,30 @@ elif page == "2. 预检执行器":
             st.error(f"执行异常：{result.get('error')}", icon="❌")
         elif "blocked_l3_preflight_missing" in failure_reason:
             missing_items = failure_reason.replace("blocked_l3_preflight_missing: ", "")
-            st.warning(f"预检未通过 — 缺少环境变量：**{missing_items}**", icon="⚠️")
-            st.caption("请确认 API Key 已填写且 Streamlit 已拉取最新代码后重试。")
+            st.warning(f"预检未通过 — 缺少：**{missing_items}**", icon="⚠️")
+            st.caption("请确认 API Key 已填写。如果已填写但仍失败，按 Ctrl+C 重启 Streamlit 后重试。")
             with st.expander("查看原始结果"):
                 st.json(result)
         elif "blocked_l3_real_run_deferred_preflight_only" in failure_reason:
-            st.success("预检通过，环境就绪", icon="✅")
-            st.info("当前为预检模式，不会执行真实管线。若要运行真实 L3，请在终端手动执行下方命令。")
+            st.success("✅ 预检通过 — 环境已就绪", icon="✅")
+
+            checklist_col1, checklist_col2 = st.columns(2)
+            with checklist_col1:
+                st.markdown("**✅ 已完成**")
+                st.markdown("- 环境配置检查通过")
+                st.markdown("- API Key 已配置")
+                st.markdown("- Provider 连接就绪")
+            with checklist_col2:
+                st.markdown("**⏳ 待执行**")
+                st.markdown("- 真实 L3 管线（patch-plan → final-report）")
+                st.markdown("- GPU benchmark 实验")
+                st.markdown("- 结果分析和最终报告")
+
+            st.markdown("**下一步操作：**")
+            st.markdown("1. 复制下方的「终端复现命令」到 SSH 终端执行")
+            st.markdown("2. 执行完成后回到「执行监控」查看实验完成情况")
+            st.markdown("3. 最后进入「最终审阅」查看三层结论")
+
             st.metric("运行 ID", result.get("run_id", "—"))
             st.metric("制品目录", result.get("artifact_dir", "—"))
             with st.expander("查看原始结果"):
@@ -196,15 +215,17 @@ elif page == "2. 预检执行器":
         st.info("点击 **执行预检** 开始。")
 
     st.markdown("---")
-    st.subheader("真实 L3 执行")
-    st.warning("本 UI 不会触发真实 L3 执行。请在终端手动运行：")
+    st.subheader("终端复现命令")
     real_cmd = (
+        f"export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=\"{st.session_state.dataset_root}\"\n"
+        f"read -s -p \"DeepSeek API key: \" DEEPSEEK_API_KEY\n"
+        f"export DEEPSEEK_API_KEY\n\n"
         f"AUTOAD_L3_REAL_EXECUTION_ALLOWED=1 \\\n"
-        f"uv run autoad stage3-acceptance "
-        f"--run-id {st.session_state._run_id_hash} "
-        f"--mode {st.session_state.mode} "
-        f"--provider-base-url {st.session_state.provider_base_url} "
-        f"--json"
+        f"uv run autoad stage3-acceptance \\\n"
+        f"  --run-id {st.session_state._run_id_hash} \\\n"
+        f"  --mode {st.session_state.mode} \\\n"
+        f"  --provider-base-url \"{st.session_state.provider_base_url}\" \\\n"
+        f"  --json"
     )
     st.code(real_cmd, language="bash")
 
@@ -213,6 +234,8 @@ elif page == "2. 预检执行器":
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "3. 制品浏览器":
     st.title("制品浏览器")
+    st.info("每个阶段会生成对应的产物文件。阶段按执行顺序排列，已生成的标 ✅，未生成的标 ⏳。")
+
     try:
         run_dir = run_dir_path("runs", st.session_state._browse_run_id)
     except ValueError as exc:
@@ -224,13 +247,22 @@ elif page == "3. 制品浏览器":
     else:
         stages = list_stage_dirs(run_dir)
         for s in stages:
-            with st.expander(f"{'✅' if s['exists'] else '⏳'} **{s['name']}**", expanded=s['exists']):
+            desc = s.get("description", "")
+            recommended = s.get("recommended", [])
+            header = f"{'✅' if s['exists'] else '⏳'} **{s['name']}**"
+            if desc:
+                header += f" — {desc}"
+
+            with st.expander(header, expanded=s['exists']):
                 if not s['exists']:
                     st.caption("尚未生成。")
                 else:
                     files = list_artifact_files(run_dir, s['name'])
                     if files:
-                        rows = [{"文件名": f["name"], "大小": f"{f['size']:,} B", "路径": f["path"]} for f in files]
+                        rows = []
+                        for f in files:
+                            is_rec = "⭐ " if f["name"] in recommended else ""
+                            rows.append({"文件名": is_rec + f["name"], "大小": f"{f['size']:,} B", "路径": f["path"]})
                         st.dataframe(rows, use_container_width=True)
                     else:
                         st.caption("空目录。")
@@ -240,6 +272,8 @@ elif page == "3. 制品浏览器":
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "4. 执行监控":
     st.title("执行监控")
+    st.info("查看实验执行的实时状态 — 包括基线/变体实验完成情况、GPU 证据、准入报告和事件日志。")
+
     try:
         run_dir = run_dir_path("runs", st.session_state._browse_run_id)
     except ValueError as exc:
@@ -257,34 +291,72 @@ elif page == "4. 执行监控":
         intake = get_runner_intake_report(run_dir)
         gpu = get_gpu_evidence(run_dir)
 
-        tabs = st.tabs(["执行清单", "准入报告", "GPU 证据", "事件日志"])
-        with tabs[0]:
-            if manifest:
+        # ── Summary cards ─────────────────────────────────────────────────
+        if manifest:
+            st.subheader("执行摘要")
+            tot = manifest.get("total_unit_count") or len(manifest.get("unit_records", []))
+            completed = manifest.get("completed_unit_count", 0)
+            failed = manifest.get("failed_unit_count", 0)
+            blocked = manifest.get("blocked_unit_count", 0)
+
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("总单元数", tot if tot else len(manifest.get("unit_records", [])))
+            with m2:
+                st.metric("完成", completed)
+            with m3:
+                st.metric("失败", failed)
+            with m4:
+                st.metric("阻塞", blocked)
+            if completed == tot and tot > 0 and failed == 0:
+                st.success("✅ 所有实验单元已完成")
+            elif completed > 0:
+                st.info(f"⏳ {completed}/{tot} 已完成")
+            with st.expander("查看原始执行清单"):
                 st.json(manifest)
-            else:
-                st.caption("尚未生成。")
-        with tabs[1]:
-            if intake:
-                st.json(intake)
-            else:
-                st.caption("尚未生成。")
-        with tabs[2]:
-            if gpu:
+
+        if gpu:
+            st.subheader("GPU 证据")
+            device = gpu.get("device_name") or gpu.get("gpu_name", "未知")
+            used = gpu.get("gpu_used", False)
+            source = gpu.get("source", "未知")
+            g1, g2, g3 = st.columns(3)
+            with g1:
+                st.metric("GPU 状态", "✅ 已验证" if used else "❌ 未使用")
+            with g2:
+                st.metric("设备", device)
+            with g3:
+                st.metric("检测来源", source)
+            with st.expander("查看原始 GPU 证据"):
                 st.json(gpu)
-            else:
-                st.caption("尚未生成。")
-        with tabs[3]:
-            events = get_events_tail(run_dir)
-            if events:
-                st.code("\n".join(events), language="json")
-            else:
-                st.caption("未找到事件记录。")
+
+        if intake:
+            st.subheader("准入报告")
+            intake_status = intake.get("status", "unknown")
+            if intake_status == "passed":
+                st.success("✅ 准入检查通过")
+            elif intake_status == "blocked":
+                st.warning(f"⚠️ 准入受阻: {intake.get('blocked_reason', '未知原因')}")
+            with st.expander("查看原始准入报告"):
+                st.json(intake)
+
+        st.subheader("事件日志")
+        events = get_events_tail(run_dir)
+        if events:
+            st.code("\n".join(events), language="json")
+        else:
+            st.caption("未找到事件记录。")
+
+        if manifest is None and intake is None and gpu is None:
+            st.info("尚无运行时数据。请先执行预检或真实 L3 管线。")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 页面 5: 最终审阅
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "5. 最终审阅":
     st.title("最终审阅")
+    st.info("验收 L3 全链路结果：补丁是否真实、实验是否跑完、科学结论是否成立。")
+
     try:
         run_dir = run_dir_path("runs", st.session_state._browse_run_id)
     except ValueError as exc:
@@ -305,32 +377,59 @@ elif page == "5. 最终审阅":
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            eng = summary["engineering_success"]
-            if eng is True:
-                st.success("✅ 工程管线\n管线完成，真实补丁已应用")
-            elif eng is False:
-                st.error("❌ 工程管线\n空补丁或管线未完成")
+            pipe = summary["pipeline_success"]
+            noop = final_facts.get("noop_patch") if final_facts else None
+            if pipe is True:
+                st.success("✅ 补丁与管线\n管线全阶段通过\n真实补丁已应用")
+            elif pipe is False:
+                detail = "空补丁" if noop is True else "管线未全通过"
+                st.error(f"❌ 补丁与管线\n{detail}")
             else:
-                st.info("⏳ 工程管线\n数据尚未生成")
+                st.info("⏳ 补丁与管线\n数据尚未生成")
 
         with col2:
             exc = summary["execution_success"]
             if exc is True:
-                st.success("✅ GPU 执行\nGPU 已验证，3/0/0 单元")
+                st.success("✅ 执行完成度\nGPU 已验证\n全部实验单元完成")
             elif exc is False:
-                st.error("❌ GPU 执行\n未验证或单元失败")
+                st.error("❌ 执行完成度\n未验证或单元未完成")
             else:
-                st.info("⏳ GPU 执行\n数据尚未生成")
+                st.info("⏳ 执行完成度\n数据尚未生成")
 
         with col3:
             sci = summary["scientific_success"]
             claim = summary["scientific_claim"] or "—"
             if sci is True:
-                st.success(f"✅ 科学改进\n已证明改进\n({claim})")
+                st.success(f"✅ 科学结论\n已证明改进\n({claim})")
             elif sci is False:
-                st.error(f"❌ 科学改进\n未证明改进\n({claim})")
+                st.error(f"❌ 科学结论\n未证明改进\n({claim})")
             else:
-                st.info(f"⏳ 科学改进\n数据尚未生成\n({claim})")
+                st.info(f"⏳ 科学结论\n数据尚未生成\n({claim})")
+
+        st.markdown("---")
+
+        # ── Plain-language explanation ─────────────────────────────────────
+        if final_facts:
+            st.subheader("结论解读")
+            claim = final_facts.get("scientific_claim", "")
+            noop = final_facts.get("noop_patch")
+            mode = final_facts.get("execution_mode", "")
+            device = final_facts.get("gpu_device_name", "—")
+
+            if noop is True:
+                st.warning("本次运行补丁为空，仅验证了管线连通性，不涉及科学改进。")
+            elif claim == "mixed_or_inconclusive":
+                st.info(
+                    "管线运行正常，真实补丁已应用，GPU 已参与执行。"
+                    "但本次实验**未观察到统计显著的科学改进**"
+                    f"（结论：{claim}）。\n\n"
+                    "这**不是管线失败**，而是科学上的保守结论 — "
+                    "系统没有过度声称不存在的结果。"
+                )
+            elif claim == "not_established":
+                st.warning("科学结论未能成立，可能原因：无有效配对观测、补丁未生效或管线未完成。")
+            elif claim:
+                st.success(f"科学结论：{claim}")
 
         st.markdown("---")
         st.subheader("制品链")
