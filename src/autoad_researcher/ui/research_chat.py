@@ -11,7 +11,11 @@ try:
 except ModuleNotFoundError:  # UI extra is optional in CI/unit-test environments.
     st = None
 
-from autoad_researcher.ui.artifact_viewer import run_dir_path
+from autoad_researcher.ui.artifact_viewer import (
+    BLOCKED_REASON_HINTS,
+    get_approval_gate_report,
+    run_dir_path,
+)
 from autoad_researcher.ui.chat_client import call_research_chat
 from autoad_researcher.ui.chat_context import build_chat_context
 from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
@@ -26,6 +30,10 @@ from autoad_researcher.ui.intent_draft import (
     save_intent_draft,
     load_stage3_approval,
     save_stage3_approval,
+)
+from autoad_researcher.ui.intake_bridge import (
+    get_intake_bridge_status,
+    save_input_task_yaml_from_clarification,
 )
 
 _SAFETY_WARNING = "研究助手只提供解释和建议，不会修改代码，也不会执行真实 L3。"
@@ -89,6 +97,12 @@ def render_research_chat():
 
     st.markdown("---")
     _render_confirmation_panel(run_dir)
+
+    st.markdown("---")
+    _render_pipeline_input_panel(run_dir)
+
+    st.markdown("---")
+    _render_hitl_gate_status_panel(run_dir)
 
     st.markdown("---")
     _render_stage_approval_panel(run_dir)
@@ -290,6 +304,87 @@ def _render_confirmation_panel(run_dir: Path) -> None:
             save_intent_confirmation(run_dir, decision="rejected", comment=comment or None)
             st.error("已记录 rejected。")
             st.rerun()
+
+
+def _render_pipeline_input_panel(run_dir: Path) -> None:
+    st.subheader("Pipeline 输入准备")
+    st.caption("这里仅从已确认的研究意图生成 `input_task.yaml`；不会执行 pipeline。")
+
+    status = get_intake_bridge_status(run_dir)
+    rows = [
+        {"artifact": "ui_chat/clarification_input.json", "status": _yes_no(status["clarification_exists"])},
+        {
+            "artifact": "approvals/intent_confirmation.json",
+            "status": status["intent_confirmation_decision"] or _yes_no(False),
+        },
+        {"artifact": "input_task.yaml", "status": _yes_no(status["input_task_exists"])},
+    ]
+    st.table(rows)
+
+    overwrite = st.checkbox("允许覆盖已有 input_task.yaml", value=False, key="_overwrite_input_task_yaml")
+    disabled = not status["can_generate"] or (status["input_task_exists"] and not overwrite)
+    if status["reason"]:
+        st.caption(f"当前阻塞原因: `{status['reason']}`")
+    if status["input_task_exists"] and not overwrite:
+        st.caption("已有 input_task.yaml；如需重新生成，请勾选覆盖。")
+
+    if st.button("生成 input_task.yaml", type="secondary", disabled=disabled):
+        try:
+            path = save_input_task_yaml_from_clarification(run_dir, overwrite=overwrite)
+        except Exception as exc:
+            st.error(f"生成失败: {exc}")
+        else:
+            st.success(f"已写入 {path.relative_to(run_dir)}。")
+            st.rerun()
+
+
+def _render_hitl_gate_status_panel(run_dir: Path) -> None:
+    st.subheader("HITL Gate Status")
+    st.caption("状态来自 pipeline 写入的 approval_gate_report.json；本页面只读展示。")
+    st.table(build_hitl_gate_status_rows(run_dir))
+
+
+def build_hitl_gate_status_rows(run_dir: Path) -> list[dict[str, str]]:
+    rows = []
+    for stage, gate in [
+        ("patch_planner", "intent_confirmation"),
+        ("patch_applicator", "patch_approval"),
+        ("runner_execute", "run_approval"),
+    ]:
+        report = get_approval_gate_report(run_dir, stage)
+        if report:
+            blocked_reason = str(report.get("blocked_reason") or "")
+            next_action = BLOCKED_REASON_HINTS.get(blocked_reason, "查看 approval gate report。")
+            rows.append({
+                "stage": stage,
+                "gate": gate,
+                "status": str(report.get("status", "unknown")),
+                "required_artifact": str(report.get("required_artifact", "")),
+                "decision": str(report.get("decision") or ""),
+                "next_action": "已通过。" if report.get("status") == "passed" else next_action,
+            })
+        else:
+            rows.append({
+                "stage": stage,
+                "gate": gate,
+                "status": "not_checked",
+                "required_artifact": _required_gate_artifact(gate),
+                "decision": "",
+                "next_action": "运行 pipeline 到该阶段后会生成 gate report。",
+            })
+    return rows
+
+
+def _required_gate_artifact(gate: str) -> str:
+    return {
+        "intent_confirmation": "approvals/intent_confirmation.json",
+        "patch_approval": "approvals/patch_approval.json",
+        "run_approval": "approvals/run_approval.json",
+    }[gate]
+
+
+def _yes_no(value: bool) -> str:
+    return "present" if value else "missing"
 
 
 def _render_stage_approval_panel(run_dir: Path) -> None:

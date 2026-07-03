@@ -1,4 +1,4 @@
-# L3 UI Runbook — Phase 2C
+# L3 UI Runbook — Phase 2D
 
 ## Start the UI
 
@@ -26,7 +26,7 @@ Opens at `http://localhost:8501`.
 ### 5. 最终审阅
 三栏结论：补丁与管线 / 执行完成度 / 科学结论。含人话解释。
 
-### 6. 研究助手（Phase 2B）
+### 6. 研究助手（Phase 2D）
 三种模式：
 - **意图澄清**：描述研究想法，系统整理成可审计研究意图草案
 - **运行解释**：基于 artifacts 解释当前运行状态
@@ -44,13 +44,27 @@ Opens at `http://localhost:8501`.
 - 点击后写入 `runs/{run_id}/approvals/intent_confirmation.json`
 - Phase 2C 起，pipeline 在 `patch_planner` 前强制要求 `decision=approved`
 
+Pipeline 输入准备（Phase 2D）：
+- 页面显示 `clarification_input.json`、`intent_confirmation.json`、`input_task.yaml` 的状态
+- 只有 `intent_confirmation.decision=approved` 后，才能点击“生成 input_task.yaml”
+- 输出 `runs/{run_id}/input_task.yaml`
+- 同时写入审计报告 `runs/{run_id}/ui_chat/input_task_source_report.json`
+- 默认不覆盖已有 `input_task.yaml`，除非手动勾选覆盖
+- 该操作不执行 pipeline，不调用 LLM，不保存 API key
+
+HITL Gate Status（Phase 2D）：
+- 只读展示 `patch_planner`、`patch_applicator`、`runner_execute` 的 `approval_gate_report.json`
+- 将 blocked reason 映射为下一步人工动作
+- Artifact Explorer 会把 `approval_gate_report.json` 作为关键阶段推荐文件
+
 Pipeline approval gates：
 - Patch Plan Approval 写入 `runs/{run_id}/approvals/patch_approval.json`
 - Real Execution Approval 写入 `runs/{run_id}/approvals/run_approval.json`
 - UI 仍然只写 JSON，不执行 patch-plan、patch-apply、runner-execute 或 stage3-acceptance
 - `runner_execute` 仍额外要求 `AUTOAD_L3_REAL_EXECUTION_ALLOWED=1`
 
-Phase 2C enforce 行为：
+Phase 2C/2D enforce 行为：
+- 无 `input_task.yaml` → `intake` blocked
 - 无 `intent_confirmation.json` 或未 approved → `patch_planner` blocked
 - 无 `patch_approval.json` 或 `confirmed_by_user=false` → `patch_applicator` blocked
 - 无 `run_approval.json`、`confirmed_by_user=false` 或真实执行环境变量缺失 → `runner_execute` blocked
@@ -61,7 +75,7 @@ Phase 2C enforce 行为：
 - 只提供解释和建议，不修改代码，不执行 L3
 - 不声称科学提升，除非 final_facts 支持
 - 聊天记录保存在 `runs/{run_id}/ui_chat/chat_transcript.jsonl`
-- intent draft 与 confirmation 是 UI 审计材料，不进入 Stage 3 artifact chain
+- intent draft、confirmation 与 input_task source report 是 UI 审计材料，不进入 Stage 3 artifact chain
 - 不保存 API Key；误输入的 `sk-*` 样式内容会被脱敏或拒绝
 
 ## Browse an Existing Run
@@ -71,4 +85,4 @@ Phase 2C enforce 行为：
 - 研究助手不执行 pipeline，只写 approval JSON
 - Approval gate enforcement 已在 pipeline stage 入口生效
 - 真实 L3 仍需在终端手动运行，并设置 `AUTOAD_L3_REAL_EXECUTION_ALLOWED=1`
-- Web 登录、多用户、数据库和远程审批不在 Phase 2C 范围内
+- Web 登录、多用户、数据库和远程审批不在 Phase 2D 范围内

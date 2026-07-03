@@ -20,6 +20,7 @@ echo "[verify] checking project structure..."
 test -d scripts
 test -f scripts/verify.sh
 test -f scripts/verify_and_push.sh
+test -f scripts/verify_hitl_artifacts.py
 test -f .github/workflows/verify.yml
 test -f .gitignore
 
@@ -36,7 +37,7 @@ test -f spikes/deepagents_harness/runs/run_demo/paper_summary.json
 echo "[verify] DeepAgents spike files exist."
 
 echo "[verify] checking Python syntax..."
-"$UV_BIN" run python -m compileall -q spikes/deepagents_harness src tests
+"$UV_BIN" run python -m compileall -q spikes/deepagents_harness scripts src tests
 
 echo "[verify] checking AutoAD schemas..."
 "$UV_BIN" run python - <<'PY'
