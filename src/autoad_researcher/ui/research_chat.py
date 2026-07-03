@@ -1,6 +1,7 @@
 """Research Assistant Chat — Phase 2A advisory-only page."""
 
 import json
+import re
 from pathlib import Path
 
 import streamlit as st
@@ -102,9 +103,74 @@ def render_research_chat():
                             context_refs=list(context_data.keys()) if context_data else [])
             st.rerun()
 
+    # ── Intent draft button (intent_clarification only) ──────────────────
+    if mode == "intent_clarification":
+        transcript = load_transcript(run_dir)
+        last_assistant = ""
+        for e in reversed(transcript):
+            if e.get("role") == "assistant" and e.get("mode") == mode:
+                last_assistant = e.get("content", "")
+                break
+
+        if last_assistant:
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("📋 生成实验意图草案 JSON", type="secondary",
+                             help="提取 LLM 回复中的结构化字段，生成草稿 JSON（仅展示，不写入 pipeline）"):
+                    draft = _extract_intent_draft(last_assistant)
+                    st.session_state._intent_draft = draft
+
+            if st.session_state.get("_intent_draft"):
+                draft = st.session_state._intent_draft
+                with col2:
+                    st.caption("仅展示，未写入任何 pipeline artifact。Phase 2B 可转为 clarified_task.json。")
+                st.code(json.dumps(draft, ensure_ascii=False, indent=2), language="json")
+
     # ── Raw context viewer ───────────────────────────────────────────────
     with st.expander("查看发送给 LLM 的上下文"):
         if context_data:
             st.json(context_data)
         else:
             st.caption("无上下文数据。")
+
+
+# ── Intent draft extraction ─────────────────────────────────────────────
+
+def _extract_intent_draft(text: str) -> dict:
+    """Best-effort extraction of structured intent from LLM reply.
+
+    Returns a dict loosely aligned with ClarifiedTask fields.
+    This is a display-only draft — it never writes to pipeline artifacts.
+    """
+    draft = {
+        "research_goal": "",
+        "primary_metrics": [],
+        "guardrail_metrics": [],
+        "allowed_change_scope": [],
+        "forbidden_change_scope": [],
+        "success_criteria": "",
+        "constraints": [],
+        "user_idea": "",
+    }
+
+    def _lines_after(text: str, *triggers: str) -> list[str]:
+        for trigger in triggers:
+            m = re.search(rf"{trigger}[：:]?\s*\n*(.{{0,500}})", text, re.IGNORECASE | re.DOTALL)
+            if m:
+                return [l.strip("-*• ") for l in m.group(1).strip().splitlines() if l.strip()]
+        return []
+
+    def _first_line_after(text: str, *triggers: str) -> str:
+        lines = _lines_after(text, *triggers)
+        return lines[0] if lines else ""
+
+    draft["research_goal"] = _first_line_after(text, "研究目标", "核心目标", "research.goal")
+    draft["primary_metrics"] = _lines_after(text, "优化指标", "主要指标", "primary.metric")
+    draft["guardrail_metrics"] = _lines_after(text, "底线指标", "保护指标", "guardrail.metric")
+    draft["allowed_change_scope"] = _lines_after(text, "允许修改", "可修改", "allowed.change")
+    draft["forbidden_change_scope"] = _lines_after(text, "禁止修改", "不可修改", "forbidden.change")
+    draft["success_criteria"] = _first_line_after(text, "验收标准", "成功标准", "success.criteria")
+    draft["constraints"] = _lines_after(text, "约束", "限制", "constraint")
+    draft["user_idea"] = _first_line_after(text, "实验想法", "原始想法", "user.idea")
+
+    return draft
