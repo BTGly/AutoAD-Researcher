@@ -25,6 +25,7 @@ from autoad_researcher.ui.artifact_viewer import (
     summarize_final_status,
 )
 from autoad_researcher.ui.run_commands import run_preflight
+from autoad_researcher.ui.research_chat import render_research_chat
 
 _API_KEY_WIDGET_KEY = "_api_key_widget"
 _API_KEY_STATE_KEY = "_api_key_raw"
@@ -62,6 +63,7 @@ PAGES = [
     "3. 制品浏览器",
     "4. 执行监控",
     "5. 最终审阅",
+    "6. 研究助手",
 ]
 page = st.sidebar.radio("页面导航", PAGES, index=0)
 
@@ -469,3 +471,9 @@ elif page == "5. 最终审阅":
             st.markdown(md)
         else:
             st.caption("尚未生成。")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 页面 6: 研究助手
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "6. 研究助手":
+    render_research_chat()
