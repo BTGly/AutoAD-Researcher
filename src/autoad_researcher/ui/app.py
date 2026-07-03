@@ -121,20 +121,42 @@ elif page == "2. 预检执行器":
 
     if st.session_state.preflight_result:
         result = st.session_state.preflight_result
-        status = result.get("status", "unknown")
-        if status == "subprocess_failed":
-            st.error(f"子进程失败 (返回码={result.get('returncode')})")
-            if result.get("stderr"):
-                st.code(result["stderr"], language="text")
-            if result.get("stdout"):
-                st.code(result["stdout"], language="json")
-        elif status == "timeout":
-            st.error("预检超时（超过 300 秒）。")
-        elif status == "error":
-            st.error(f"错误: {result.get('error')}")
+        wrapper_status = result.get("status", "unknown")
+        orch_status = result.get("status", None) if wrapper_status not in ("subprocess_failed", "timeout", "error") else None
+        failure_reason = result.get("failure_reason", "")
+
+        if wrapper_status == "subprocess_failed":
+            st.error("子进程返回错误", icon="❌")
+            with st.expander("查看详细输出"):
+                if result.get("stderr"):
+                    st.text("stderr:")
+                    st.code(result["stderr"], language="text")
+                if result.get("stdout"):
+                    st.text("stdout:")
+                    st.code(result["stdout"], language="json")
+        elif wrapper_status == "timeout":
+            st.error("预检超时（超过 300 秒）", icon="⏰")
+        elif wrapper_status == "error":
+            st.error(f"执行异常：{result.get('error')}", icon="❌")
+        elif "blocked_l3_preflight_missing" in failure_reason:
+            missing_items = failure_reason.replace("blocked_l3_preflight_missing: ", "")
+            st.warning(f"预检未通过 — 缺少环境变量：**{missing_items}**", icon="⚠️")
+            st.caption("请确认 API Key 已填写且 Streamlit 已拉取最新代码后重试。")
+            with st.expander("查看原始结果"):
+                st.json(result)
+        elif "blocked_l3_real_run_deferred_preflight_only" in failure_reason:
+            st.success("预检通过，环境就绪", icon="✅")
+            st.info("当前为预检模式，不会执行真实管线。若要运行真实 L3，请在终端手动执行下方命令。")
+            st.metric("运行 ID", result.get("run_id", "—"))
+            st.metric("制品目录", result.get("artifact_dir", "—"))
+            with st.expander("查看原始结果"):
+                st.json(result)
         else:
-            st.success("预检完成。")
-            st.json(result)
+            st.info("预检完成", icon="✅")
+            st.metric("运行 ID", result.get("run_id", "—"))
+            st.metric("制品目录", result.get("artifact_dir", "—"))
+            with st.expander("查看原始结果"):
+                st.json(result)
 
     if not st.session_state.preflight_result and not run_btn:
         st.info("点击 **执行预检** 开始。")
