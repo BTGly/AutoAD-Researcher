@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256
+from autoad_researcher.pipeline.approval_gates import require_run_approval
 from autoad_researcher.analysis.metrics import MetricsReport, parse_metrics, MetricParseSpec
 from autoad_researcher.supervisor.validity import (ScientificValidityReport, ValidityCheck,
                                                       validate_scientific_contract)
@@ -68,6 +69,11 @@ def run_runner_execute_stage(
     produces ExperimentExecutionHandoff for 3.9.
     """
     handoff_path = stage_dir / "experiment_execution_handoff.json"
+
+    gate = require_run_approval(run_id=run_id, run_dir=run_dir, stage_dir=stage_dir)
+    if not gate.passed:
+        return gate.blocked_record
+
     if handoff_path.exists():
         handoff_sha = _sha256_file(handoff_path)
         return Stage3AcceptanceStageRecord(

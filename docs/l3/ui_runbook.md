@@ -1,4 +1,4 @@
-# L3 UI Runbook — Phase 2B
+# L3 UI Runbook — Phase 2C
 
 ## Start the UI
 
@@ -42,7 +42,20 @@ Opens at `http://localhost:8501`.
 人工确认：
 - 有 `intent_draft.json` 后，页面会显示“确认采用 / 需要修改 / 驳回”
 - 点击后写入 `runs/{run_id}/approvals/intent_confirmation.json`
-- 确认研究意图只表示用户认可该草案；不会自动执行 patch-plan、patch-apply 或真实 L3
+- Phase 2C 起，pipeline 在 `patch_planner` 前强制要求 `decision=approved`
+
+Pipeline approval gates：
+- Patch Plan Approval 写入 `runs/{run_id}/approvals/patch_approval.json`
+- Real Execution Approval 写入 `runs/{run_id}/approvals/run_approval.json`
+- UI 仍然只写 JSON，不执行 patch-plan、patch-apply、runner-execute 或 stage3-acceptance
+- `runner_execute` 仍额外要求 `AUTOAD_L3_REAL_EXECUTION_ALLOWED=1`
+
+Phase 2C enforce 行为：
+- 无 `intent_confirmation.json` 或未 approved → `patch_planner` blocked
+- 无 `patch_approval.json` 或 `confirmed_by_user=false` → `patch_applicator` blocked
+- 无 `run_approval.json`、`confirmed_by_user=false` 或真实执行环境变量缺失 → `runner_execute` blocked
+- 已存在的 resume artifact 不能绕过 approval gate
+- 每次检查都会写 `{stage_dir}/approval_gate_report.json`
 
 安全限制：
 - 只提供解释和建议，不修改代码，不执行 L3
@@ -55,7 +68,7 @@ Opens at `http://localhost:8501`.
 侧边栏输入 `run_l3_bottle_001` 等已有 Run ID 浏览历史制品。
 
 ## Limitations
-- 研究助手不执行 pipeline，不触发 patch-plan/patch-apply/runner-execute
-- `intent_confirmation.json` 在 Phase 2B 中不改变 pipeline 行为
-- 真正的 approval gate enforcement 留给 Phase 2C
-- 真实 L3 仍需在终端手动运行
+- 研究助手不执行 pipeline，只写 approval JSON
+- Approval gate enforcement 已在 pipeline stage 入口生效
+- 真实 L3 仍需在终端手动运行，并设置 `AUTOAD_L3_REAL_EXECUTION_ALLOWED=1`
+- Web 登录、多用户、数据库和远程审批不在 Phase 2C 范围内

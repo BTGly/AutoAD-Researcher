@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.core.run_id import validate_run_id
+from autoad_researcher.schemas.approvals import IntentConfirmation as UIIntentConfirmation, Stage3Approval
 from autoad_researcher.schemas.intake import InputTask
 from autoad_researcher.ui.chat_transcript import redact_secrets
 
@@ -58,27 +59,6 @@ class ResearchIntentDraft(BaseModel):
         payload = json.dumps(self.model_dump(mode="json"), ensure_ascii=False)
         if redact_secrets(payload) != payload:
             raise ValueError("intent draft must not contain API-key-like secrets")
-        return self
-
-
-class UIIntentConfirmation(BaseModel):
-    """Human checkpoint over a UI research intent draft."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str = Field(min_length=1)
-    checkpoint: Literal["intent_confirmation"] = "intent_confirmation"
-    decision: IntentDecision
-    reviewer: str = "local_user"
-    source_artifact: str = Field(default=f"{INTENT_DRAFT_DIR}/{INTENT_DRAFT_JSON}", min_length=1)
-    comment: str | None = None
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    @model_validator(mode="after")
-    def validate_no_secret_like_content(self) -> "UIIntentConfirmation":
-        payload = json.dumps(self.model_dump(mode="json"), ensure_ascii=False)
-        if redact_secrets(payload) != payload:
-            raise ValueError("intent confirmation must not contain API-key-like secrets")
         return self
 
 
@@ -295,3 +275,43 @@ def load_intent_confirmation(run_dir: Path) -> UIIntentConfirmation | None:
     if not path.is_file():
         return None
     return UIIntentConfirmation.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def save_stage3_approval(
+    run_dir: Path,
+    *,
+    decision_type: Literal["patch_approval", "run_approval"],
+    confirmed_by_user: bool,
+    user_confirmation_text: str | None = None,
+) -> Path:
+    """Save a Stage3Approval artifact from the UI without executing pipeline actions."""
+    validate_run_id(run_dir.parent, run_dir.name)
+    approval = Stage3Approval(
+        run_id=run_dir.name,
+        decision_type=decision_type,
+        confirmed_by_user=confirmed_by_user,
+        user_confirmation_text=user_confirmation_text,
+        created_at=datetime.now(timezone.utc),
+        evidence_kind="approval_artifact",
+    )
+    target_dir = run_dir / APPROVALS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = "patch_approval.json" if decision_type == "patch_approval" else "run_approval.json"
+    path = target_dir / filename
+    path.write_text(
+        json.dumps(approval.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_stage3_approval(
+    run_dir: Path,
+    *,
+    decision_type: Literal["patch_approval", "run_approval"],
+) -> Stage3Approval | None:
+    filename = "patch_approval.json" if decision_type == "patch_approval" else "run_approval.json"
+    path = run_dir / APPROVALS_DIR / filename
+    if not path.is_file():
+        return None
+    return Stage3Approval.model_validate_json(path.read_text(encoding="utf-8"))

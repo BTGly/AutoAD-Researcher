@@ -14,6 +14,7 @@ from autoad_researcher.schemas.stage3_acceptance import (
     Stage3AcceptanceStageRecord,
 )
 from autoad_researcher.schemas.transfer_design import ImplementationVariant
+from autoad_researcher.pipeline.approval_gates import require_intent_confirmation
 
 
 def run_patch_planning_stage(
@@ -28,6 +29,10 @@ def run_patch_planning_stage(
     + validation reports + ApprovalRequest.
     """
     approval_request_path = stage_dir / "patch_planner_approval_request.json"
+
+    gate = require_intent_confirmation(run_id=run_id, run_dir=run_dir, stage_dir=stage_dir)
+    if not gate.passed:
+        return gate.blocked_record
 
     # Resume check
     if approval_request_path.exists():

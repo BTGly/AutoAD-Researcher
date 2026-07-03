@@ -21,6 +21,7 @@ from autoad_researcher.schemas.patch_planning import (
     VariantWorkspaceHandoff,
     canonical_sha,
 )
+from autoad_researcher.pipeline.approval_gates import require_patch_approval
 from autoad_researcher.schemas.stage3_acceptance import (
     Stage3AcceptanceArtifactRef,
     Stage3AcceptanceStageRecord,
@@ -39,6 +40,10 @@ def run_patch_application_stage(
     applies patches → produces PatchRunnerHandoff for 3.8.
     """
     runner_handoff_path = stage_dir / "patch_runner_handoff.json"
+
+    gate = require_patch_approval(run_id=run_id, run_dir=run_dir, stage_dir=stage_dir)
+    if not gate.passed:
+        return gate.blocked_record
 
     # Resume check
     if runner_handoff_path.exists():

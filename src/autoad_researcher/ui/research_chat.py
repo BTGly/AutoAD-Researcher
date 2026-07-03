@@ -24,6 +24,8 @@ from autoad_researcher.ui.intent_draft import (
     save_clarification_input,
     save_intent_confirmation,
     save_intent_draft,
+    load_stage3_approval,
+    save_stage3_approval,
 )
 
 _SAFETY_WARNING = "研究助手只提供解释和建议，不会修改代码，也不会执行真实 L3。"
@@ -87,6 +89,9 @@ def render_research_chat():
 
     st.markdown("---")
     _render_confirmation_panel(run_dir)
+
+    st.markdown("---")
+    _render_stage_approval_panel(run_dir)
 
     with st.expander("查看发送给 LLM 的上下文"):
         if context_data:
@@ -284,6 +289,110 @@ def _render_confirmation_panel(run_dir: Path) -> None:
         if st.button("驳回"):
             save_intent_confirmation(run_dir, decision="rejected", comment=comment or None)
             st.error("已记录 rejected。")
+            st.rerun()
+
+
+def _render_stage_approval_panel(run_dir: Path) -> None:
+    st.subheader("Pipeline Approval Gates")
+    st.caption("这些按钮只写 approval JSON；不会执行 patch-plan、patch-apply、runner-execute 或 stage3-acceptance。")
+
+    _render_patch_approval_panel(run_dir)
+    st.markdown("---")
+    _render_run_approval_panel(run_dir)
+
+
+def _render_patch_approval_panel(run_dir: Path) -> None:
+    st.markdown("**Patch Plan Approval**")
+    request_path = run_dir / "patch_planner" / "patch_planner_approval_request.json"
+    diff_path = run_dir / "patch_planner" / "proposed_patch.diff"
+    validation_path = run_dir / "patch_planner" / "patch_payload_validation_report.json"
+    approval = load_stage3_approval(run_dir, decision_type="patch_approval")
+
+    if approval:
+        st.info(f"patch_approval: confirmed_by_user=`{approval.confirmed_by_user}`")
+    if not request_path.is_file():
+        st.warning("尚无 patch_planner_approval_request.json，无法审批 patch plan。")
+        return
+
+    st.caption("已生成 patch approval request。请审阅 diff、validation 和风险后再确认。")
+    if validation_path.is_file():
+        with st.expander("查看 patch payload validation report"):
+            try:
+                st.json(json.loads(validation_path.read_text(encoding="utf-8")))
+            except Exception:
+                st.code(validation_path.read_text(encoding="utf-8")[:4000])
+    if diff_path.is_file():
+        with st.expander("查看 proposed_patch.diff"):
+            st.code(diff_path.read_text(encoding="utf-8")[:8000], language="diff")
+
+    comment = st.text_area("Patch approval 备注（可选）", key="_patch_approval_comment")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("确认 patch plan", type="primary"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="patch_approval",
+                confirmed_by_user=True,
+                user_confirmation_text=comment or "I approve the proposed patch plan.",
+            )
+            st.success("已写入 approvals/patch_approval.json。")
+            st.rerun()
+    with col2:
+        if st.button("驳回 patch plan"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="patch_approval",
+                confirmed_by_user=False,
+                user_confirmation_text=comment or "I reject the proposed patch plan.",
+            )
+            st.warning("已记录 rejected patch_approval。")
+            st.rerun()
+
+
+def _render_run_approval_panel(run_dir: Path) -> None:
+    st.markdown("**Real Execution Approval**")
+    handoff_path = run_dir / "patch_applicator" / "patch_runner_handoff.json"
+    intake_path = run_dir / "runner_execute" / "runner_intake_report.json"
+    approval = load_stage3_approval(run_dir, decision_type="run_approval")
+
+    if approval:
+        st.info(f"run_approval: confirmed_by_user=`{approval.confirmed_by_user}`")
+    if not handoff_path.is_file():
+        st.warning("尚无 patch_runner_handoff.json，无法审批真实执行。")
+        return
+
+    st.warning(
+        "真实执行会运行 GPU benchmark、读取数据集并产生 baseline/variant 结果。"
+        "确认只写 approval 文件；仍需在终端设置 AUTOAD_L3_REAL_EXECUTION_ALLOWED=1 后运行 pipeline。"
+    )
+    if intake_path.is_file():
+        with st.expander("查看 runner intake report"):
+            try:
+                st.json(json.loads(intake_path.read_text(encoding="utf-8")))
+            except Exception:
+                st.code(intake_path.read_text(encoding="utf-8")[:4000])
+
+    comment = st.text_area("Run approval 备注（可选）", key="_run_approval_comment")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("确认真实执行", type="primary"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="run_approval",
+                confirmed_by_user=True,
+                user_confirmation_text=comment or "I approve real L3 execution.",
+            )
+            st.success("已写入 approvals/run_approval.json。")
+            st.rerun()
+    with col2:
+        if st.button("驳回真实执行"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="run_approval",
+                confirmed_by_user=False,
+                user_confirmation_text=comment or "I reject real L3 execution.",
+            )
+            st.warning("已记录 rejected run_approval。")
             st.rerun()
 
 

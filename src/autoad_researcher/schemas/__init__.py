@@ -4,7 +4,7 @@
 harness、pipeline、storage 等模块不应在各自目录内重复定义 schema。
 """
 
-from autoad_researcher.schemas.approvals import Stage3Approval
+from autoad_researcher.schemas.approvals import IntentConfirmation, Stage3Approval
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2, ResolvedArtifact
 from autoad_researcher.schemas.execution import (
     AttemptIdentitySnapshot,
@@ -297,6 +297,9 @@ from autoad_researcher.schemas.transfer_design import (
 )
 
 __all__ = [
+    # Approvals
+    "IntentConfirmation",
+    "Stage3Approval",
     # Artifact references
     "ArtifactReferenceV2",
     # Baseline architecture
