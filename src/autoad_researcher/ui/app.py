@@ -38,7 +38,6 @@ _DEFAULTS = {
     "preflight_result": None,
     "preflight_running": False,
     "_run_id_hash": "",
-    "_api_key_confirmed": False,
 }
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -79,22 +78,16 @@ if page == "1. 运行配置":
     st.caption("填写 API Key 即可开始 — 其他参数已自动配置。")
 
     # ── API Key 核心区 ──────────────────────────────────────────────────
-    api_placeholder = st.empty()
-    api_col, feedback_col = st.columns([3, 2])
-    with api_col:
-        new_key = st.text_input(
-            "DeepSeek API Key",
-            type="password",
-            key="api_key",
-            placeholder="sk-…",
-            on_change=lambda: setattr(st.session_state, "_api_key_just_entered", True),
-        )
-    with feedback_col:
-        if new_key and new_key != st.session_state.get("_last_api_key", ""):
-            st.session_state._last_api_key = new_key
-            st.session_state._api_key_confirmed = True
-        if st.session_state._api_key_confirmed:
-            st.success("✅ API Key 已注入")
+    api_key_val = st.text_input(
+        "DeepSeek API Key",
+        type="password",
+        key="api_key",
+        placeholder="sk-…",
+    )
+    if api_key_val:
+        st.success("✅ API Key 已注入")
+    else:
+        st.info("请在下方输入 API Key，按回车确认")
 
     # ── 自动生成的 Run ID ───────────────────────────────────────────────
     st.markdown("---")
