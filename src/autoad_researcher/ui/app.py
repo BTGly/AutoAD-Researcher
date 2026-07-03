@@ -103,7 +103,7 @@ if page == "1. 运行配置":
     run_col, refresh_col = st.columns([3, 1])
     with run_col:
         st.text_input("运行 ID（自动生成）", value=st.session_state._run_id_hash, disabled=True)
-        st.caption("每次刷新页面生成新 ID。旧 ID 的制品不会丢失，可在侧边栏输入浏览。")
+        st.caption("首次打开页面自动生成运行 ID。点击「重新生成」可创建新的 ID。旧 ID 的制品不会丢失。")
     with refresh_col:
         if st.button("🔄 重新生成"):
             st.session_state._run_id_hash = _generate_run_id()
@@ -227,7 +227,11 @@ elif page == "2. 预检执行器":
         st.info("点击 **执行预检** 开始。")
 
     st.markdown("---")
-    st.subheader("终端复现命令")
+    st.subheader("终端复现命令（真实 L3 执行）")
+    st.warning(
+        "执行此命令会调用 LLM、修改 patchcore 工作区并运行 GPU benchmark。"
+        "请确认仓库干净、数据集路径正确后再执行。"
+    )
     real_cmd = (
         f"export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=\"{st.session_state.dataset_root}\"\n"
         f"read -s -p \"DeepSeek API key: \" DEEPSEEK_API_KEY\n"
