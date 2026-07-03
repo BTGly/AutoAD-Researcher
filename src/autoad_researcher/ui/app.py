@@ -26,6 +26,9 @@ from autoad_researcher.ui.artifact_viewer import (
 )
 from autoad_researcher.ui.run_commands import run_preflight
 
+_API_KEY_WIDGET_KEY = "_api_key_widget"
+_API_KEY_STATE_KEY = "_api_key_raw"
+
 st.set_page_config(
     page_title="AutoAD Researcher — L3 控制台",
     page_icon="🔬",
@@ -79,13 +82,22 @@ if page == "1. 运行配置":
     api_key_val = st.text_input(
         "DeepSeek API Key",
         type="password",
-        key="api_key",
+        key=_API_KEY_WIDGET_KEY,
         placeholder="sk-…",
     )
     if api_key_val:
+        st.session_state[_API_KEY_STATE_KEY] = api_key_val
         st.success("✅ API Key 已注入 — 仅保存于本次会话内存，不会写入磁盘")
+    elif st.session_state.get(_API_KEY_STATE_KEY):
+        st.success("✅ API Key 已保留 — 仅保存于本次会话内存，不会写入磁盘")
     else:
         st.info("请输入 API Key，按回车确认")
+
+    if st.session_state.get(_API_KEY_STATE_KEY):
+        if st.button("清除 API Key"):
+            st.session_state.pop(_API_KEY_STATE_KEY, None)
+            st.session_state.pop(_API_KEY_WIDGET_KEY, None)
+            st.rerun()
 
     st.markdown("---")
     run_col, refresh_col = st.columns([3, 1])
@@ -129,14 +141,15 @@ elif page == "2. 预检执行器":
     st.markdown("**预检后你需要做什么：**")
     st.caption("预检通过 → 复制「终端复现命令」到 SSH 终端执行真实 L3 → 回到「执行监控」和「最终审阅」查看结果")
 
-    if not st.session_state.get("api_key"):
+    api_key = st.session_state.get(_API_KEY_STATE_KEY, "")
+    if not api_key:
         st.warning("请先在「运行配置」中填写 API Key。")
 
     col1, col2 = st.columns([1, 3])
     with col1:
         run_btn = st.button(
             "执行预检",
-            disabled=not st.session_state.get("api_key") or st.session_state.preflight_running,
+            disabled=not api_key or st.session_state.preflight_running,
             type="primary",
         )
     with col2:
@@ -150,7 +163,7 @@ elif page == "2. 预检执行器":
             result = run_preflight(
                 run_id=st.session_state._run_id_hash,
                 provider_base_url=st.session_state.provider_base_url,
-                api_key=st.session_state.get("api_key", ""),
+                api_key=api_key,
                 dataset_root=st.session_state.dataset_root,
             )
         st.session_state.preflight_result = result

@@ -15,3 +15,4 @@
 | 2026-06-19 | [2026-06-19.md](2026-06-19.md) | Step 3.10 L1/L2 acceptance schemas, orchestrator, CLI, tests, and v0.3 plan update |
 | 2026-06-20 | [2026-06-20.md](2026-06-20.md) | Stage 3.8 runner_execute: pipeline/runner_execute_stage.py + orchestrator wiring; 3.7 patch artifact audit; Stage 3.10 final_report: pipeline + CLI + audit tests (1391 passed) |
 | 2026-06-26 | [2026-06-26.md](2026-06-26.md) | P0 `repo_clean`: validate dirty diff SHA against variant workspace patch before allowing intake; 5 new tests via temp git repos; L3 full rehearsal completed; ScientificValidityReport wired; Phase 1 Streamlit UI; REFERENCES.md |
+| 2026-07-03 | [2026-07-03.md](2026-07-03.md) | Streamlit L3 UI API key session-state preservation fix + regression test |
