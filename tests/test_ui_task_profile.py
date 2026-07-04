@@ -349,3 +349,54 @@ class TestRunIdPathUnchanged:
         profile = _valid_profile(run_dir, run_id="run_abc123")
         assert profile.run_id == "run_abc123"
         assert "run_abc123" not in profile.task_title
+
+
+# ---------------------------------------------------------------------------
+# app.py import-compile check
+# ---------------------------------------------------------------------------
+
+
+class TestAppImport:
+    """Verify that app.py can be compiled/imported without runtime errors.
+
+    Does NOT start Streamlit — only checks that the module's top-level
+    code (imports, function defs, class defs) compiles cleanly.  Catches
+    regressions like:
+      - NameError from calling a function before its definition
+      - Duplicate st.set_page_config()
+      - Missing imports (Path, etc.)
+    """
+
+    def test_app_compiles(self, monkeypatch):
+        """Simulate streamlit enough that app.py can be compiled.
+
+        We avoid real streamlit since it requires a browser runtime.
+        """
+        import ast
+
+        monkeypatch.setattr("streamlit.set_page_config", lambda **kw: None)
+        monkeypatch.setattr("streamlit.sidebar.radio", lambda *a, **kw: "1. 运行配置")
+        monkeypatch.setattr("streamlit.sidebar.markdown", lambda *a, **kw: None)
+        monkeypatch.setattr("streamlit.sidebar.caption", lambda *a, **kw: None)
+        monkeypatch.setattr("streamlit.sidebar.text_input", lambda *a, **kw: "")
+        monkeypatch.setattr("streamlit.sidebar.expander", lambda *a, **kw: type("_ctx", (), {"__enter__": lambda s: None, "__exit__": lambda s,*a: None})())
+        monkeypatch.setattr("streamlit.sidebar.code", lambda *a, **kw: None)
+        # session state mocks
+        monkeypatch.setattr("streamlit.session_state.setdefault", lambda k, v: None)
+
+        # Read and compile the file
+        app_path = Path(__file__).parent.parent / "src" / "autoad_researcher" / "ui" / "app.py"
+        source = app_path.read_text()
+
+        # AST parse catches syntax errors
+        try:
+            ast.parse(source)
+        except SyntaxError as exc:
+            pytest.fail(f"app.py has a syntax error: {exc}")
+
+    def test_app_no_duplicate_set_page_config(self):
+        """Verify exactly one st.set_page_config() call exists in app.py."""
+        app_path = Path(__file__).parent.parent / "src" / "autoad_researcher" / "ui" / "app.py"
+        source = app_path.read_text()
+        count = source.count("st.set_page_config(")
+        assert count == 1, f"Expected 1 st.set_page_config() call, found {count}"

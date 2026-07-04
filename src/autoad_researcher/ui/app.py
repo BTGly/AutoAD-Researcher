@@ -4,6 +4,7 @@ import hashlib
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import streamlit as st
 
@@ -47,12 +48,6 @@ from autoad_researcher.ui.research_chat import render_research_chat
 _API_KEY_WIDGET_KEY = "_api_key_widget"
 _API_KEY_STATE_KEY = "_api_key_raw"
 
-st.set_page_config(
-    page_title="AutoAD Researcher — L3 控制台",
-    page_icon="🔬",
-    layout="wide",
-)
-
 _DEFAULTS = {
     "dataset_root": "/root/autodl-tmp/mvtec",
     "provider_base_url": "https://api.deepseek.com",
@@ -74,6 +69,35 @@ def _generate_run_id() -> str:
 if not st.session_state._run_id_hash:
     st.session_state._run_id_hash = _generate_run_id()
 
+
+# ── Helper functions (must be defined before sidebar rendering) ──
+
+def _resolve_task_run_dir() -> Path | None:
+    """Return the Path for the currently browsed run_id, or None."""
+    run_id = st.session_state.get("_browse_run_id", st.session_state.get("_run_id_hash", ""))
+    if not run_id:
+        return None
+    try:
+        return run_dir_path("runs", run_id)
+    except ValueError:
+        return None
+
+
+def _render_task_header() -> None:
+    """Render a task-context banner for operational pages (1/2/6).
+
+    Does NOT display run_id — run_id is only in the sidebar advanced-info expander.
+    """
+    run_dir = _resolve_task_run_dir()
+    if run_dir is None:
+        return
+    info = get_task_display_info(run_dir)
+    st.markdown(f"**当前任务：{info['task_title']}**")
+    st.caption(info["task_summary"])
+
+
+# ── Sidebar ──
+
 PAGES = [
     "1. 运行配置",
     "2. 预检执行器",
@@ -85,6 +109,10 @@ PAGES = [
 page = st.sidebar.radio("页面导航", PAGES, index=0)
 
 st.sidebar.markdown("---")
+
+# Determine active run_id BEFORE rendering task identity
+old_run = st.sidebar.text_input("浏览已有运行", placeholder="run_l3_bottle_001", key="_old_run_id")
+st.session_state._browse_run_id = old_run or st.session_state._run_id_hash
 
 # ── Task identity sidebar ──
 _run_dir = _resolve_task_run_dir()
@@ -103,35 +131,6 @@ if _info:
         )
 else:
     st.sidebar.caption(f"运行 ID: `{st.session_state._run_id_hash}`")
-
-old_run = st.sidebar.text_input("浏览已有运行", placeholder="run_l3_bottle_001", key="_old_run_id")
-st.session_state._browse_run_id = old_run or st.session_state._run_id_hash
-
-
-def _resolve_task_run_dir() -> Path | None:
-    """Return the Path for the currently browsed run_id, or None."""
-    run_id = st.session_state.get("_browse_run_id", st.session_state.get("_run_id_hash", ""))
-    if not run_id:
-        return None
-    try:
-        return run_dir_path("runs", run_id)
-    except ValueError:
-        return None
-
-
-def _render_task_header() -> None:
-    """Render a task-context banner for operational pages (1/2/6)."""
-    run_dir = _resolve_task_run_dir()
-    if run_dir is None:
-        return
-    info = get_task_display_info(run_dir)
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown(f"**当前任务：{info['task_title']}**")
-        st.caption(info["task_summary"])
-    with col2:
-        st.caption(f"run_id: `{info['run_id']}`")
-st.sidebar.caption(f"浏览: `{st.session_state._browse_run_id}`")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

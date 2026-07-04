@@ -6,6 +6,3 @@ base = "dark"
 
 [client]
 toolbarMode = "minimal"
-
-[server]
-enableXsrfProtection = false
