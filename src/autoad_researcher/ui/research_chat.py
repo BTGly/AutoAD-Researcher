@@ -35,6 +35,11 @@ from autoad_researcher.ui.intake_bridge import (
     get_intake_bridge_status,
     save_input_task_yaml_from_clarification,
 )
+from autoad_researcher.ui.task_profile import (
+    generate_task_profile_from_first_message,
+    load_task_profile,
+    save_task_profile,
+)
 
 _SAFETY_WARNING = "研究助手只提供解释和建议，不会修改代码，也不会执行真实 L3。"
 _MODE_LABELS = {
@@ -160,6 +165,22 @@ def _handle_chat_input(
 
     save_transcript(run_dir, mode, "user", user_input)
     st.chat_message("user").write(f"[{mode}] {user_input}")
+
+    # ── First-message task profile generation ──
+    if not st.session_state.get("_first_task_message_handled"):
+        st.session_state._first_task_message_handled = True
+        existing = load_task_profile(run_dir)
+        if existing is None:
+            try:
+                profile = generate_task_profile_from_first_message(
+                    run_dir=run_dir,
+                    api_key=api_key,
+                    provider_base_url=provider_url,
+                    first_user_message=user_input,
+                )
+                save_task_profile(run_dir, profile)
+            except Exception:
+                pass  # silently fallback — never block the chat
 
     system_prompt = MODE_PROMPTS[mode]
     context_str = json.dumps(context_data, ensure_ascii=False, default=str) if context_data else "{}"

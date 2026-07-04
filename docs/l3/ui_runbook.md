@@ -1,4 +1,4 @@
-# L3 UI Runbook — Phase 2D
+# L3 UI Runbook — Phase 2E
 
 ## Start the UI
 
@@ -9,13 +9,20 @@ uv run --extra ui streamlit run src/autoad_researcher/ui/app.py
 
 Opens at `http://localhost:8501`.
 
+## Sidebar（所有页面通用）
+
+- **当前任务**：显示人类可读任务名（首次在研究助手中对话后自动生成）
+- **任务摘要**：一句话描述
+- 若尚未生成：显示"未命名研究任务"，提示前往研究助手
+- **高级信息折叠**：run_id / 制品目录 / CLI 复现命令
+
 ## Pages
 
 ### 1. 运行配置
-填写 API Key，系统自动生成运行 ID。高级配置（数据集路径、Provider URL）折叠。
+填写 API Key，系统自动生成运行 ID。"重新生成"按钮创建新 ID。高级配置折叠。
 
 ### 2. 预检执行器
-执行 `l3-preflight`（不调用 LLM，只检查配置）。通过后显示下一步 checklist。
+执行 `l3-preflight`。通过后显示下一步 checklist 和终端复现命令。
 
 ### 3. 制品浏览器
 按 Stage 展示产物文件。每个 Stage 有中文说明和 ⭐ 推荐文件。
@@ -26,63 +33,26 @@ Opens at `http://localhost:8501`.
 ### 5. 最终审阅
 三栏结论：补丁与管线 / 执行完成度 / 科学结论。含人话解释。
 
-### 6. 研究助手（Phase 2D）
+### 6. 研究助手（Phase 2E）
 三种模式：
 - **意图澄清**：描述研究想法，系统整理成可审计研究意图草案
 - **运行解释**：基于 artifacts 解释当前运行状态
 - **下一步建议**：基于实验结果建议下一轮方向
 
-研究意图草案：
-- 在“意图澄清”模式聊完后，点击“生成研究意图草案”
-- 系统要求 LLM 返回严格 JSON，并校验为 `ResearchIntentDraft`
-- 草案保存为 `runs/{run_id}/ui_chat/intent_draft.json`
-- 可读摘要保存为 `runs/{run_id}/ui_chat/intent_draft.md`
-- clarification 桥接输入保存为 `runs/{run_id}/ui_chat/clarification_input.json`
+**自动任务命名（Phase 2E 新增）**：
+- 首次在研究助手中发送消息后，系统自动调用 LLM 生成任务名和摘要
+- 任务名要求：中文 6-14 字或英文 3-8 词，具体表达研究目标
+- 保存为 `runs/{run_id}/ui_chat/task_profile.json`
+- 不会包含 run_id、API key 或路径
+- 生成失败时自动降级为"未命名研究任务"
+- 任务名显示在侧边栏和页面 1/2/6 的顶部 banner
 
-人工确认：
-- 有 `intent_draft.json` 后，页面会显示“确认采用 / 需要修改 / 驳回”
-- 点击后写入 `runs/{run_id}/approvals/intent_confirmation.json`
-- Phase 2C 起，pipeline 在 `patch_planner` 前强制要求 `decision=approved`
-
-Pipeline 输入准备（Phase 2D）：
-- 页面显示 `clarification_input.json`、`intent_confirmation.json`、`input_task.yaml` 的状态
-- 只有 `intent_confirmation.decision=approved` 后，才能点击“生成 input_task.yaml”
-- 输出 `runs/{run_id}/input_task.yaml`
-- 同时写入审计报告 `runs/{run_id}/ui_chat/input_task_source_report.json`
-- 默认不覆盖已有 `input_task.yaml`，除非手动勾选覆盖
-- 该操作不执行 pipeline，不调用 LLM，不保存 API key
-
-HITL Gate Status（Phase 2D）：
-- 只读展示 `patch_planner`、`patch_applicator`、`runner_execute` 的 `approval_gate_report.json`
-- 将 blocked reason 映射为下一步人工动作
-- Artifact Explorer 会把 `approval_gate_report.json` 作为关键阶段推荐文件
-
-Pipeline approval gates：
-- Patch Plan Approval 写入 `runs/{run_id}/approvals/patch_approval.json`
-- Real Execution Approval 写入 `runs/{run_id}/approvals/run_approval.json`
-- UI 仍然只写 JSON，不执行 patch-plan、patch-apply、runner-execute 或 stage3-acceptance
-- `runner_execute` 仍额外要求 `AUTOAD_L3_REAL_EXECUTION_ALLOWED=1`
-
-Phase 2C/2D enforce 行为：
-- 无 `input_task.yaml` → `intake` blocked
-- 无 `intent_confirmation.json` 或未 approved → `patch_planner` blocked
-- 无 `patch_approval.json` 或 `confirmed_by_user=false` → `patch_applicator` blocked
-- 无 `run_approval.json`、`confirmed_by_user=false` 或真实执行环境变量缺失 → `runner_execute` blocked
-- 已存在的 resume artifact 不能绕过 approval gate
-- 每次检查都会写 `{stage_dir}/approval_gate_report.json`
-
-安全限制：
-- 只提供解释和建议，不修改代码，不执行 L3
-- 不声称科学提升，除非 final_facts 支持
-- 聊天记录保存在 `runs/{run_id}/ui_chat/chat_transcript.jsonl`
-- intent draft、confirmation 与 input_task source report 是 UI 审计材料，不进入 Stage 3 artifact chain
-- 不保存 API Key；误输入的 `sk-*` 样式内容会被脱敏或拒绝
+研究意图草案、确认、Pipeline 输入准备、HITL Gate Status 和 Approval Gates 功能与 Phase 2D 保持一致。
 
 ## Browse an Existing Run
 侧边栏输入 `run_l3_bottle_001` 等已有 Run ID 浏览历史制品。
 
 ## Limitations
 - 研究助手不执行 pipeline，只写 approval JSON
-- Approval gate enforcement 已在 pipeline stage 入口生效
 - 真实 L3 仍需在终端手动运行，并设置 `AUTOAD_L3_REAL_EXECUTION_ALLOWED=1`
 - Web 登录、多用户、数据库和远程审批不在 Phase 2D 范围内

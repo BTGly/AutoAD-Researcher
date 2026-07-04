@@ -1,0 +1,11 @@
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+
+[client]
+toolbarMode = "minimal"
+
+[server]
+enableXsrfProtection = false

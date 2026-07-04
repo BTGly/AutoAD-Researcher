@@ -7,6 +7,17 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
+st.set_page_config(
+    page_title="AutoAD-Researcher",
+    page_icon=None,
+    layout="wide",
+    menu_items={
+        "Get Help": None,
+        "Report a bug": None,
+        "About": "AutoAD-Researcher — 面向异常检测的文献迁移与实验闭环系统",
+    },
+)
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 from autoad_researcher.ui.artifact_viewer import (
@@ -23,6 +34,12 @@ from autoad_researcher.ui.artifact_viewer import (
     list_stage_dirs,
     run_dir_path,
     summarize_final_status,
+)
+from autoad_researcher.ui.task_profile import (
+    fallback_task_profile,
+    get_task_display_info,
+    get_task_title,
+    load_task_profile,
 )
 from autoad_researcher.ui.run_commands import run_preflight
 from autoad_researcher.ui.research_chat import render_research_chat
@@ -68,9 +85,52 @@ PAGES = [
 page = st.sidebar.radio("页面导航", PAGES, index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"运行 ID: `{st.session_state._run_id_hash}`")
+
+# ── Task identity sidebar ──
+_run_dir = _resolve_task_run_dir()
+_info = get_task_display_info(_run_dir) if _run_dir else None
+if _info:
+    st.sidebar.markdown(f"**当前任务**  \n{_info['task_title']}")
+    st.sidebar.caption(_info["task_summary"])
+    if _info["task_source"] == "fallback":
+        st.sidebar.caption("💡 在「研究助手」中描述研究目标后，系统会自动生成任务名。")
+    with st.sidebar.expander("高级信息"):
+        st.caption(f"run_id: `{_info['run_id']}`")
+        st.caption(f"制品目录: `{_info['artifact_dir']}/`")
+        st.code(
+            f"uv run autoad stage3-acceptance --run-id {_info['run_id']} --mode l3-preflight",
+            language="bash",
+        )
+else:
+    st.sidebar.caption(f"运行 ID: `{st.session_state._run_id_hash}`")
+
 old_run = st.sidebar.text_input("浏览已有运行", placeholder="run_l3_bottle_001", key="_old_run_id")
 st.session_state._browse_run_id = old_run or st.session_state._run_id_hash
+
+
+def _resolve_task_run_dir() -> Path | None:
+    """Return the Path for the currently browsed run_id, or None."""
+    run_id = st.session_state.get("_browse_run_id", st.session_state.get("_run_id_hash", ""))
+    if not run_id:
+        return None
+    try:
+        return run_dir_path("runs", run_id)
+    except ValueError:
+        return None
+
+
+def _render_task_header() -> None:
+    """Render a task-context banner for operational pages (1/2/6)."""
+    run_dir = _resolve_task_run_dir()
+    if run_dir is None:
+        return
+    info = get_task_display_info(run_dir)
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(f"**当前任务：{info['task_title']}**")
+        st.caption(info["task_summary"])
+    with col2:
+        st.caption(f"run_id: `{info['run_id']}`")
 st.sidebar.caption(f"浏览: `{st.session_state._browse_run_id}`")
 
 
@@ -79,6 +139,7 @@ st.sidebar.caption(f"浏览: `{st.session_state._browse_run_id}`")
 # ═══════════════════════════════════════════════════════════════════════════
 if page == "1. 运行配置":
     st.title("运行配置")
+    _render_task_header()
     st.info("你只需要填写 API Key 即可运行预检。系统会自动生成运行 ID 并配置好其他参数。")
 
     api_key_val = st.text_input(
@@ -104,8 +165,7 @@ if page == "1. 运行配置":
     st.markdown("---")
     run_col, refresh_col = st.columns([3, 1])
     with run_col:
-        st.text_input("运行 ID（自动生成）", value=st.session_state._run_id_hash, disabled=True)
-        st.caption("首次打开页面自动生成运行 ID。点击「重新生成」可创建新的 ID。旧 ID 的制品不会丢失。")
+        st.caption("点击「重新生成」可创建新的运行 ID。旧 ID 的制品不会丢失。")
     with refresh_col:
         if st.button("🔄 重新生成"):
             st.session_state._run_id_hash = _generate_run_id()
@@ -134,6 +194,7 @@ if page == "1. 运行配置":
 # ═══════════════════════════════════════════════════════════════════════════
 elif page == "2. 预检执行器":
     st.title("预检执行器")
+    _render_task_header()
     st.info(
         "预检不会请求模型生成内容，也不会执行 GPU benchmark。"
         "它只检查运行所需配置是否齐全：API Key 是否存在、数据集路径是否可达等。"
@@ -214,13 +275,11 @@ elif page == "2. 预检执行器":
             st.markdown("2. 执行完成后回到「执行监控」查看实验完成情况")
             st.markdown("3. 最后进入「最终审阅」查看三层结论")
 
-            st.metric("运行 ID", result.get("run_id", "—"))
             st.metric("制品目录", result.get("artifact_dir", "—"))
             with st.expander("查看原始结果"):
                 st.json(result)
         else:
             st.info("预检完成", icon="✅")
-            st.metric("运行 ID", result.get("run_id", "—"))
             st.metric("制品目录", result.get("artifact_dir", "—"))
             with st.expander("查看原始结果"):
                 st.json(result)
