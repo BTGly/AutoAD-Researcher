@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+try:
+    import streamlit as _st  # noqa: F401
+    _HAS_STREAMLIT = True
+except ModuleNotFoundError:
+    _HAS_STREAMLIT = False
+
 from autoad_researcher.ui.task_profile import (
     TaskProfile,
     fallback_task_profile,
@@ -367,13 +373,9 @@ class TestAppImport:
       - Missing imports (Path, etc.)
     """
 
+    @pytest.mark.skipif(_HAS_STREAMLIT is False, reason="streamlit is optional (ui extra)")
     def test_app_compiles(self, monkeypatch):
-        """Simulate streamlit enough that app.py can be compiled.
-
-        We avoid real streamlit since it requires a browser runtime.
-        """
-        import ast
-
+        """Simulate streamlit enough that app.py can be compiled."""
         monkeypatch.setattr("streamlit.set_page_config", lambda **kw: None)
         monkeypatch.setattr("streamlit.sidebar.radio", lambda *a, **kw: "1. 运行配置")
         monkeypatch.setattr("streamlit.sidebar.markdown", lambda *a, **kw: None)
@@ -381,14 +383,11 @@ class TestAppImport:
         monkeypatch.setattr("streamlit.sidebar.text_input", lambda *a, **kw: "")
         monkeypatch.setattr("streamlit.sidebar.expander", lambda *a, **kw: type("_ctx", (), {"__enter__": lambda s: None, "__exit__": lambda s,*a: None})())
         monkeypatch.setattr("streamlit.sidebar.code", lambda *a, **kw: None)
-        # session state mocks
         monkeypatch.setattr("streamlit.session_state.setdefault", lambda k, v: None)
 
-        # Read and compile the file
+        import ast
         app_path = Path(__file__).parent.parent / "src" / "autoad_researcher" / "ui" / "app.py"
         source = app_path.read_text()
-
-        # AST parse catches syntax errors
         try:
             ast.parse(source)
         except SyntaxError as exc:
