@@ -139,7 +139,7 @@ else:
 if page == "1. 运行配置":
     st.title("运行配置")
     _render_task_header()
-    st.info("你只需要填写 API Key 即可运行预检。系统会自动生成运行 ID 并配置好其他参数。")
+    st.info("首次使用：填入 API Key → 前往「预检执行器」→ 前往「研究助手」描述研究目标。所有结果保存在磁盘上，重启不会丢失。")
 
     api_key_val = st.text_input(
         "DeepSeek API Key",
@@ -274,17 +274,17 @@ elif page == "2. 预检执行器":
             st.markdown("2. 执行完成后回到「执行监控」查看实验完成情况")
             st.markdown("3. 最后进入「最终审阅」查看三层结论")
 
-            st.metric("制品目录", result.get("artifact_dir", "—"))
             with st.expander("查看原始结果"):
                 st.json(result)
         else:
             st.info("预检完成", icon="✅")
-            st.metric("制品目录", result.get("artifact_dir", "—"))
             with st.expander("查看原始结果"):
                 st.json(result)
 
     if not st.session_state.preflight_result and not run_btn:
         st.info("点击 **执行预检** 开始。")
+        st.markdown("**什么是制品？** 制品（artifact）是每个阶段自动保存的 JSON/日志/报告文件。你可以到「制品浏览器」查看它们。")
+        st.markdown('**怎么和 LLM 对话？** 先去「研究助手」页面，选择"意图澄清"模式，描述你的研究目标即可。首次对话后系统会自动给任务命名。')
 
     st.markdown("---")
     st.subheader("终端复现命令（真实 L3 执行）")
