@@ -10,7 +10,6 @@ from autoad_researcher.assistant import (
     get_default_prompt_registry,
 )
 from autoad_researcher.ui.chat_prompts import (
-    INTENT_CLARIFICATION_PROMPT,
     NEXT_EXPERIMENT_PROMPT,
     RUN_EXPLANATION_PROMPT,
 )
@@ -24,13 +23,27 @@ def test_default_registry_has_unique_prompt_ids():
     assert GLOBAL_INVARIANTS_PROMPT_ID in prompt_ids
 
 
-def test_existing_chat_prompts_are_mapped_into_registry():
+def test_existing_progress_chat_prompts_are_mapped_into_registry():
     registry = get_default_prompt_registry()
 
-    assert registry.require("assistant.collecting_goal.v1").system_prompt == INTENT_CLARIFICATION_PROMPT
-    assert registry.require("assistant.understanding_intent.v1").system_prompt == INTENT_CLARIFICATION_PROMPT
     assert registry.require("assistant.run_explanation.v1").system_prompt == RUN_EXPLANATION_PROMPT
     assert registry.require("assistant.next_experiment.v1").system_prompt == NEXT_EXPERIMENT_PROMPT
+
+
+def test_assistant_state_prompts_are_split_by_purpose():
+    registry = get_default_prompt_registry()
+    collecting = registry.require("assistant.collecting_goal.v1")
+    guiding = registry.require("assistant.guiding_materials.v1")
+    understanding = registry.require("assistant.understanding_intent.v1")
+    confirming = registry.require("assistant.confirming_task_draft.v1")
+
+    assert collecting.system_prompt != understanding.system_prompt
+    assert "只问 1-3 个最关键的问题" in collecting.system_prompt
+    assert "P0" in guiding.system_prompt and "P1" in guiding.system_prompt and "P2" in guiding.system_prompt
+    assert "候选参数" in understanding.system_prompt
+    assert "确认 / 需要修改 / 补充材料" in confirming.system_prompt
+    assert understanding.visibility == "internal"
+    assert collecting.visibility == "user_visible"
 
 
 def test_user_visible_prompt_rendering_inherits_global_invariants():
@@ -40,7 +53,7 @@ def test_user_visible_prompt_rendering_inherits_global_invariants():
 
     assert GLOBAL_INVARIANTS_TEXT.strip().splitlines()[0] in rendered
     assert "Do not fabricate execution results" in rendered
-    assert INTENT_CLARIFICATION_PROMPT in rendered
+    assert "你是 AutoAD-Researcher 的研究入口助手" in rendered
 
 
 def test_global_invariants_are_not_duplicated_for_global_profile():
@@ -60,7 +73,9 @@ def test_registry_selects_by_layer_and_stage():
 
     assert {profile.prompt_id for profile in state_prompts} >= {
         "assistant.collecting_goal.v1",
+        "assistant.guiding_materials.v1",
         "assistant.understanding_intent.v1",
+        "assistant.confirming_task_draft.v1",
     }
     assert [profile.prompt_id for profile in collecting] == ["assistant.collecting_goal.v1"]
     assert {profile.prompt_id for profile in progress} >= {
@@ -68,6 +83,15 @@ def test_registry_selects_by_layer_and_stage():
         "assistant.next_experiment.v1",
         "assistant.progress_digest.v1",
     }
+
+
+def test_prompt_profiles_reference_repo_docs_not_local_scratch_paths():
+    registry = get_default_prompt_registry()
+
+    for profile in registry.all_profiles():
+        for ref in profile.source_references:
+            assert not ref.startswith("参考/"), ref
+            assert ref.startswith("docs/") or ref.startswith("src/"), ref
 
 
 def test_research_task_draft_profile_separates_candidate_and_confirmed_parameters():

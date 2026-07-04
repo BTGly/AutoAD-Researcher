@@ -17,17 +17,28 @@ Layer 4: User-Facing Progress Prompts
 Prompt Registry: versioned prompt selection and contracts
 ```
 
-The design follows the project direction in the local reference drafts:
+The design follows the project direction recorded in the repository docs:
 
-- `参考/input_intent_processing_architecture_v0_2.md`
-- `参考/target_autonomous_ad_research_loop_draft_v0_3.md`
+```text
+docs/reference_provenance.md
+docs/AutoAD_参考资料汇总.md
+docs/prompts/system_prompt_reference_analysis.md
+```
 
-It also borrows mature product patterns summarized in `references/system-prompts/_INDEX.md` and the overview files:
+It also borrows mature product patterns summarized in `references/system-prompts/_INDEX.md`, the overview files, and representative full prompt references under `references/system-prompts/OPENAI`, `references/system-prompts/XAI`, `references/system-prompts/ANTHROPIC`, `references/system-prompts/CURSOR`, and `references/system-prompts/MANUS`.
 
-- major LLM products separate identity, safety, style, and tool policy;
-- coding agents separate project instructions, tool contracts, execution workflow, and safety boundaries;
-- automation agents separate event stream, planner, knowledge, and datasource concepts;
-- research/search products distinguish source evidence, synthesis, and report generation.
+The detailed reference pass is recorded in:
+
+```text
+docs/prompts/system_prompt_reference_analysis.md
+```
+
+The useful patterns are structural rather than textual:
+
+- major LLM products separate identity, safety, style, tool policy, memory, search, and output format;
+- coding agents separate project instructions, tool contracts, execution workflow, verification, and repository rules;
+- automation agents separate event stream, planner, knowledge, datasource, tool-use rules, and error handling;
+- research/search products distinguish source evidence, synthesis, progress summaries, and report generation.
 
 For AutoAD, these patterns translate into a simple rule:
 
@@ -97,8 +108,12 @@ Current registry anchors:
 
 ```text
 assistant.collecting_goal.v1
+assistant.guiding_materials.v1
 assistant.understanding_intent.v1
+assistant.confirming_task_draft.v1
 ```
+
+The first registry revision deliberately split `collecting_goal` and `understanding_intent`. The former is a user-visible exploration prompt; the latter is an internal structuring prompt that separates user raw goals, confirmed facts, candidate parameters, missing slots, and uncertainty.
 
 ## 4. Layer 2: Schema-Bound Research Task Draft Prompts
 
@@ -217,18 +232,23 @@ assistant.progress_digest.v1
 
 ## 8. Mapping Existing Prompts
 
-The current `src/autoad_researcher/ui/chat_prompts.py` prompts are mapped into the registry without changing UI behavior:
+The current `src/autoad_researcher/ui/chat_prompts.py` prompts are mapped or preserved in the registry without changing UI execution behavior:
 
 ```text
-INTENT_CLARIFICATION_PROMPT
-  -> assistant.collecting_goal.v1
-  -> assistant.understanding_intent.v1
-
 RUN_EXPLANATION_PROMPT
   -> assistant.run_explanation.v1
 
 NEXT_EXPERIMENT_PROMPT
   -> assistant.next_experiment.v1
+```
+
+The legacy intent clarification behavior has now been split into dedicated state prompts:
+
+```text
+assistant.collecting_goal.v1
+assistant.guiding_materials.v1
+assistant.understanding_intent.v1
+assistant.confirming_task_draft.v1
 ```
 
 This keeps Phase 2F UI behavior stable while introducing the architecture needed for a stateful assistant.

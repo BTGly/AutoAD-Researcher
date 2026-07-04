@@ -16,7 +16,6 @@ from autoad_researcher.assistant.prompt_profiles import (
     PromptProfile,
 )
 from autoad_researcher.ui.chat_prompts import (
-    INTENT_CLARIFICATION_PROMPT,
     NEXT_EXPERIMENT_PROMPT,
     RUN_EXPLANATION_PROMPT,
 )
@@ -63,6 +62,79 @@ class PromptRegistry:
         return GLOBAL_INVARIANTS_TEXT.rstrip() + "\n\n" + profile.system_prompt.lstrip()
 
 
+_COLLECTING_GOAL_PROMPT = """你是 AutoAD-Researcher 的研究入口助手。
+
+目标：在用户目标还模糊时，把自然语言想法整理成可继续推进的异常检测科研方向。
+
+工作方式：
+- 先复述你对用户目标的最小理解；
+- 判断用户可能属于哪些任务类型：复现、方法迁移、实验优化、失败分析、结果比较、报告生成或尚不明确；
+- 只问 1-3 个最关键的问题；
+- 如果用户不知道该给什么材料，给出最小下一步，而不是长表单；
+- 可以推荐 baseline、dataset、metric 或 budget，但必须标为候选，不得写成已确认。
+
+用户可见输出要求：
+- 中文为主，英文术语保留括号；
+- 不展示 run_id、raw path、provider、stage、schema 字段名或 artifact 文件名；
+- 不声称已经解析材料、修改代码、运行实验或生成报告。
+"""
+
+_GUIDING_MATERIALS_PROMPT = """你是 AutoAD-Researcher 的材料引导助手。
+
+目标：根据当前任务意图，告诉用户下一步最值得提供什么材料，并说明为什么。
+
+材料优先级：
+- P0：进入真实实验前通常必须确认的材料或信息，例如论文/方法描述、目标代码仓库、dataset、primary metric、是否允许真实执行、时间或算力预算；
+- P1：会显著影响实验质量但可保守继续的信息，例如 category、seed 数、是否允许改 config、是否先复现再迁移；
+- P2：影响报告表达或展示细节的信息，例如报告语言、图表偏好、引用格式。
+
+工作方式：
+- 不要求用户一次性填完表；
+- 一次只推荐 1-3 个最有价值的补充材料；
+- 明确哪些是必须补、哪些是可后补；
+- 如果用户已经提供材料，只要求补真正缺失的部分；
+- 不把内部 benchmark 或系统推荐值当成用户确认值。
+"""
+
+_UNDERSTANDING_INTENT_PROMPT = """你是 AutoAD-Researcher 的意图理解整理器。
+
+目标：基于当前对话、材料摘要、已知 artifacts 和用户纠正，形成系统对任务的结构化理解。
+
+你必须区分：
+- 用户原话：用户实际说过的目标或约束；
+- 已确认事实：用户明确提供或确认过的信息；
+- 候选参数：系统从论文、仓库、配置、日志或内部经验中识别出的可能值；
+- 缺失信息：进入后续 pipeline 前仍缺少的关键项；
+- 不确定性：证据不足、解析失败或需要用户裁决的部分。
+
+输出边界：
+- 不把候选 baseline、dataset、metric、category、budget 写成正式值；
+- 不改写用户已经确认的事实；
+- 不做实验结论，不承诺指标提升；
+- 不输出普通用户不需要看到的 raw path、run_id、provider、stage 名称或 JSON 内部字段。
+"""
+
+_CONFIRMING_TASK_DRAFT_PROMPT = """你是 AutoAD-Researcher 的研究任务书确认助手。
+
+目标：把系统理解整理成用户可以确认、纠正或补充的研究任务书草案。
+
+草案必须覆盖：
+- 用户要研究什么；
+- 当前任务类型可能包含复现、方法迁移、实验优化、失败分析、结果比较或报告生成中的哪些；
+- 哪些参数已经确认；
+- 哪些参数仍只是候选；
+- 哪些信息缺失；
+- 系统后续可以自动做什么；
+- 系统不能做什么；
+- 预算、失败处理和最终报告需要回答的问题。
+
+用户可见输出要求：
+- 用研究者能理解的话表达，不展示底层 artifact 名称；
+- 明确给出“确认 / 需要修改 / 补充材料”的选择；
+- 不把确认按钮之外的聊天内容当成执行批准；
+- 不声称 pipeline 已经开始。
+"""
+
 _RESEARCH_TASK_DRAFT_PROMPT = """你是 AutoAD-Researcher 的研究任务书草案生成器。
 
 目标：把多轮对话、输入材料摘要、候选参数、缺失项和用户纠正整理为研究任务书草案。
@@ -101,8 +173,8 @@ def _default_profiles() -> list[PromptProfile]:
             system_prompt=GLOBAL_INVARIANTS_TEXT,
             visibility="internal",
             source_references=[
-                "参考/input_intent_processing_architecture_v0_2.md#5",
-                "参考/target_autonomous_ad_research_loop_draft_v0_3.md#7",
+                "docs/prompts/system_prompt_reference_analysis.md",
+                "docs/prompts/autoad_assistant_prompt_architecture.md#2",
             ],
             changelog=["v1: initial invariant set derived from prompt architecture discussion."],
         ),
@@ -113,7 +185,7 @@ def _default_profiles() -> list[PromptProfile]:
             assistant_stage="collecting_goal",
             title="Collecting Goal",
             description="Open-ended intent exploration for vague user research goals.",
-            system_prompt=INTENT_CLARIFICATION_PROMPT,
+            system_prompt=_COLLECTING_GOAL_PROMPT,
             io=PromptIOContract(
                 input_schema="AssistantSessionContext",
                 output_schema="AssistantMessagePlan",
@@ -121,8 +193,33 @@ def _default_profiles() -> list[PromptProfile]:
                 forbidden_outputs=["raw_run_id", "raw_path", "confirmed_parameter_without_user_confirmation"],
             ),
             visibility="user_visible",
-            source_references=["src/autoad_researcher/ui/chat_prompts.py::INTENT_CLARIFICATION_PROMPT"],
-            changelog=["v1: maps existing Research Assistant intent clarification prompt."],
+            source_references=[
+                "docs/prompts/system_prompt_reference_analysis.md",
+                "docs/prompts/autoad_assistant_prompt_architecture.md#3",
+            ],
+            changelog=["v1: split from the legacy intent clarification prompt after system-prompt reference review."],
+        ),
+        PromptProfile(
+            prompt_id="assistant.guiding_materials.v1",
+            prompt_version="v1",
+            layer="assistant_state",
+            assistant_stage="guiding_materials",
+            title="Guiding Materials",
+            description="Guides users toward the minimum useful materials without forcing a full form.",
+            system_prompt=_GUIDING_MATERIALS_PROMPT,
+            io=PromptIOContract(
+                input_schema="AssistantSessionContext",
+                output_schema="MaterialGuidancePlan",
+                required_artifacts=["conversation/chat_transcript.jsonl"],
+                produced_artifacts=["conversation/assistant_understanding.jsonl"],
+                forbidden_outputs=["full_form_demand", "internal_benchmark_as_confirmed_default"],
+            ),
+            visibility="user_visible",
+            source_references=[
+                "docs/prompts/system_prompt_reference_analysis.md",
+                "docs/prompts/autoad_assistant_prompt_architecture.md#3",
+            ],
+            changelog=["v1: new material guidance prompt profile."],
         ),
         PromptProfile(
             prompt_id="assistant.understanding_intent.v1",
@@ -130,18 +227,43 @@ def _default_profiles() -> list[PromptProfile]:
             layer="assistant_state",
             assistant_stage="understanding_intent",
             title="Understanding Intent",
-            description="Builds a structured understanding from conversation and current artifacts.",
-            system_prompt=INTENT_CLARIFICATION_PROMPT,
+            description="Builds a structured understanding from conversation, material summaries, and current artifacts.",
+            system_prompt=_UNDERSTANDING_INTENT_PROMPT,
             io=PromptIOContract(
                 input_schema="AssistantSessionContext",
-                output_schema="ResearchIntentDraft",
+                output_schema="AssistantUnderstanding",
                 required_artifacts=["conversation/chat_transcript.jsonl"],
-                produced_artifacts=["ui_chat/intent_draft.json", "ui_chat/clarification_input.json"],
-                forbidden_outputs=["execution_claim", "unsupported_metric_threshold"],
+                produced_artifacts=["conversation/assistant_understanding.jsonl"],
+                forbidden_outputs=["execution_claim", "candidate_as_confirmed", "unsupported_metric_threshold"],
+            ),
+            visibility="internal",
+            source_references=[
+                "docs/prompts/system_prompt_reference_analysis.md",
+                "docs/prompts/autoad_assistant_prompt_architecture.md#3",
+            ],
+            changelog=["v1: split from the legacy intent clarification prompt after system-prompt reference review."],
+        ),
+        PromptProfile(
+            prompt_id="assistant.confirming_task_draft.v1",
+            prompt_version="v1",
+            layer="assistant_state",
+            assistant_stage="confirming_task_draft",
+            title="Confirming Task Draft",
+            description="Presents a research task draft for explicit user confirmation or correction.",
+            system_prompt=_CONFIRMING_TASK_DRAFT_PROMPT,
+            io=PromptIOContract(
+                input_schema="AssistantSessionContext",
+                output_schema="TaskDraftConfirmationMessage",
+                required_artifacts=["conversation/assistant_understanding.jsonl"],
+                produced_artifacts=["task/research_task_draft.md"],
+                forbidden_outputs=["chat_as_execution_approval", "raw_artifact_path", "pipeline_started_claim"],
             ),
             visibility="user_visible",
-            source_references=["src/autoad_researcher/ui/intent_draft.py::ResearchIntentDraft"],
-            changelog=["v1: captures current intent_draft flow without changing UI execution."],
+            source_references=[
+                "docs/prompts/system_prompt_reference_analysis.md",
+                "docs/prompts/autoad_assistant_prompt_architecture.md#4",
+            ],
+            changelog=["v1: new task draft confirmation prompt profile."],
         ),
         PromptProfile(
             prompt_id="assistant.research_task_draft.v1",
@@ -161,7 +283,7 @@ def _default_profiles() -> list[PromptProfile]:
                 forbidden_outputs=["candidate_as_confirmed", "silent_budget_default"],
             ),
             visibility="internal",
-            source_references=["参考/input_intent_processing_architecture_v0_2.md#8"],
+            source_references=["docs/prompts/autoad_assistant_prompt_architecture.md#4"],
             changelog=["v1: placeholder profile for the planned research task book layer."],
         ),
         PromptProfile(
@@ -214,7 +336,7 @@ def _default_profiles() -> list[PromptProfile]:
                 forbidden_outputs=["raw_path", "raw_run_id", "unsupported_final_claim"],
             ),
             visibility="user_visible",
-            source_references=["参考/input_intent_processing_architecture_v0_2.md#10"],
+            source_references=["docs/prompts/autoad_assistant_prompt_architecture.md#6"],
             changelog=["v1: new planned prompt for long-running task newsfeed summaries."],
         ),
     ]
