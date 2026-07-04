@@ -1,0 +1,125 @@
+"""Tests for AutoAD Assistant prompt registry foundations."""
+
+import pytest
+
+from autoad_researcher.assistant import (
+    GLOBAL_INVARIANTS_PROMPT_ID,
+    GLOBAL_INVARIANTS_TEXT,
+    PromptIOContract,
+    PromptProfile,
+    get_default_prompt_registry,
+)
+from autoad_researcher.ui.chat_prompts import (
+    INTENT_CLARIFICATION_PROMPT,
+    NEXT_EXPERIMENT_PROMPT,
+    RUN_EXPLANATION_PROMPT,
+)
+
+
+def test_default_registry_has_unique_prompt_ids():
+    registry = get_default_prompt_registry()
+    prompt_ids = [profile.prompt_id for profile in registry.all_profiles()]
+
+    assert len(prompt_ids) == len(set(prompt_ids))
+    assert GLOBAL_INVARIANTS_PROMPT_ID in prompt_ids
+
+
+def test_existing_chat_prompts_are_mapped_into_registry():
+    registry = get_default_prompt_registry()
+
+    assert registry.require("assistant.collecting_goal.v1").system_prompt == INTENT_CLARIFICATION_PROMPT
+    assert registry.require("assistant.understanding_intent.v1").system_prompt == INTENT_CLARIFICATION_PROMPT
+    assert registry.require("assistant.run_explanation.v1").system_prompt == RUN_EXPLANATION_PROMPT
+    assert registry.require("assistant.next_experiment.v1").system_prompt == NEXT_EXPERIMENT_PROMPT
+
+
+def test_user_visible_prompt_rendering_inherits_global_invariants():
+    registry = get_default_prompt_registry()
+
+    rendered = registry.build_system_prompt("assistant.collecting_goal.v1")
+
+    assert GLOBAL_INVARIANTS_TEXT.strip().splitlines()[0] in rendered
+    assert "Do not fabricate execution results" in rendered
+    assert INTENT_CLARIFICATION_PROMPT in rendered
+
+
+def test_global_invariants_are_not_duplicated_for_global_profile():
+    registry = get_default_prompt_registry()
+
+    rendered = registry.build_system_prompt(GLOBAL_INVARIANTS_PROMPT_ID)
+
+    assert rendered == GLOBAL_INVARIANTS_TEXT
+
+
+def test_registry_selects_by_layer_and_stage():
+    registry = get_default_prompt_registry()
+
+    state_prompts = registry.by_layer("assistant_state")
+    collecting = registry.by_stage("collecting_goal")
+    progress = registry.by_stage("progress_reporting")
+
+    assert {profile.prompt_id for profile in state_prompts} >= {
+        "assistant.collecting_goal.v1",
+        "assistant.understanding_intent.v1",
+    }
+    assert [profile.prompt_id for profile in collecting] == ["assistant.collecting_goal.v1"]
+    assert {profile.prompt_id for profile in progress} >= {
+        "assistant.run_explanation.v1",
+        "assistant.next_experiment.v1",
+        "assistant.progress_digest.v1",
+    }
+
+
+def test_research_task_draft_profile_separates_candidate_and_confirmed_parameters():
+    profile = get_default_prompt_registry().require("assistant.research_task_draft.v1")
+
+    assert profile.layer == "schema_bound_draft"
+    assert profile.io.output_schema == "ResearchTaskDraft"
+    assert "task/research_task_draft.json" in profile.io.produced_artifacts
+    assert "candidate_as_confirmed" in profile.io.forbidden_outputs
+    assert "confirmed_parameters" in profile.system_prompt
+    assert "candidate_parameters" in profile.system_prompt
+
+
+def test_progress_digest_profile_is_user_visible_but_hides_raw_internals():
+    profile = get_default_prompt_registry().require("assistant.progress_digest.v1")
+
+    assert profile.visibility == "user_visible"
+    assert profile.layer == "user_facing_progress"
+    assert "raw_path" in profile.io.forbidden_outputs
+    assert "raw_run_id" in profile.io.forbidden_outputs
+    assert "不展示 raw path" in profile.system_prompt
+
+
+def test_prompt_io_contract_rejects_unsafe_artifact_paths():
+    with pytest.raises(ValueError, match="run-relative"):
+        PromptIOContract(required_artifacts=["/tmp/raw.txt"])
+
+    with pytest.raises(ValueError, match="run-relative"):
+        PromptIOContract(produced_artifacts=["task/../escape.json"])
+
+
+def test_prompt_profile_rejects_bad_prompt_id_and_duplicate_registration():
+    with pytest.raises(ValueError, match="prompt_id"):
+        PromptProfile(
+            prompt_id="Assistant.Bad",
+            prompt_version="v1",
+            layer="global_invariants",
+            title="bad",
+            description="bad",
+            system_prompt="bad",
+        )
+
+    registry = get_default_prompt_registry()
+    profile = registry.require("assistant.collecting_goal.v1")
+    with pytest.raises(ValueError, match="duplicate"):
+        registry.register(profile)
+
+
+def test_user_visible_profiles_have_forbidden_outputs_or_schema_contracts():
+    registry = get_default_prompt_registry()
+
+    for profile in registry.user_visible():
+        assert profile.io.output_schema is not None
+        assert profile.io.forbidden_outputs
+        assert "执行" not in profile.description or "without" in profile.description or "Explains" in profile.description
