@@ -1,10 +1,11 @@
-"""Research Assistant Chat — advisory UI with Phase 2B intent checkpoints."""
+"""Research Assistant Chat — advisory UI with human-readable HITL flow."""
 
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 try:
     import streamlit as st
@@ -37,48 +38,71 @@ from autoad_researcher.ui.intake_bridge import (
 )
 from autoad_researcher.ui.task_profile import (
     generate_task_profile_from_first_message,
+    get_task_display_info,
     load_task_profile,
     save_task_profile,
 )
 
 _SAFETY_WARNING = "研究助手只提供解释和建议，不会修改代码，也不会执行真实 L3。"
 _MODE_LABELS = {
-    "intent_clarification": "意图澄清 — 描述研究想法，让系统整理成实验目标",
-    "run_explanation": "运行解释 — 看不懂当前结果，让系统解释",
-    "next_experiment": "下一步建议 — 跑完了，让系统建议下一轮实验",
+    "intent_clarification": "意图澄清",
+    "run_explanation": "运行解释",
+    "next_experiment": "下一步建议",
 }
+
+
+# ---------------------------------------------------------------------------
+# Main UI
+# ---------------------------------------------------------------------------
 
 
 def render_research_chat():
     if st is None:
         raise RuntimeError("streamlit is required to render the Research Assistant UI")
     st.title("研究助手")
-    st.warning(_SAFETY_WARNING, icon="🛡️")
+    st.caption(_SAFETY_WARNING)
 
     api_key = st.session_state.get("_api_key_raw")
     provider_url = st.session_state.get("provider_base_url", "https://api.deepseek.com")
+    dataset_root = st.session_state.get("dataset_root", "")
     browse_id = st.session_state.get("_browse_run_id", st.session_state.get("_run_id_hash", ""))
 
     run_dir = _resolve_run_dir(browse_id)
     context_data = build_chat_context(run_dir) if run_dir and run_dir.is_dir() else None
 
-    _render_context_banner(browse_id=browse_id, context_data=context_data)
-
     if run_dir is None:
-        st.info("请先在侧边栏输入合法 Run ID，或在「运行配置」中生成新的运行 ID。")
+        st.info("请先在侧边栏选择一个任务，或在「运行配置」中创建新任务。")
         return
+
+    overview = build_research_assistant_overview(
+        run_dir,
+        dataset_root=dataset_root,
+        provider_url=provider_url,
+        context_data=context_data,
+    )
+    _render_task_overview(overview)
+    _render_flow_steps(run_dir)
 
     if not api_key:
         st.warning("请先在「运行配置」中填写 API Key。")
+        _render_developer_info(
+            run_dir=run_dir,
+            overview=overview,
+            provider_url=provider_url,
+            dataset_root=dataset_root,
+            context_data=context_data,
+        )
         return
 
     st.markdown("---")
-    st.subheader("LLM 研究助手")
-    mode = st.selectbox(
-        "你现在想做什么？",
+    st.subheader("研究助手")
+    st.caption("请描述你想做的实验、复现目标或改进方向。")
+    mode = st.segmented_control(
+        "助手模式",
         options=list(MODE_PROMPTS.keys()),
         format_func=lambda m: _MODE_LABELS[m],
         key="_chat_mode",
+        default="intent_clarification",
     )
 
     transcript = load_transcript(run_dir)
@@ -101,22 +125,18 @@ def render_research_chat():
     )
 
     st.markdown("---")
-    _render_confirmation_panel(run_dir)
-
-    st.markdown("---")
     _render_pipeline_input_panel(run_dir)
-
-    st.markdown("---")
-    _render_hitl_gate_status_panel(run_dir)
 
     st.markdown("---")
     _render_stage_approval_panel(run_dir)
 
-    with st.expander("查看发送给 LLM 的上下文"):
-        if context_data:
-            st.json(context_data)
-        else:
-            st.caption("无上下文数据。")
+    _render_developer_info(
+        run_dir=run_dir,
+        overview=overview,
+        provider_url=provider_url,
+        dataset_root=dataset_root,
+        context_data=context_data,
+    )
 
 
 def _resolve_run_dir(browse_id: str) -> Path | None:
@@ -126,27 +146,22 @@ def _resolve_run_dir(browse_id: str) -> Path | None:
         return None
 
 
-def _render_context_banner(*, browse_id: str, context_data: dict | None) -> None:
-    st.subheader("当前运行上下文")
-    if context_data:
-        available = context_data.get("available_stages", [])
-        st.caption(
-            f"当前运行: `{browse_id}`  |  "
-            f"数据集: `{st.session_state.get('dataset_root', '—')}`  |  "
-            f"Provider: DeepSeek  |  "
-            f"可用阶段: {', '.join(available) if available else '无'}"
-        )
-    else:
-        st.caption(f"浏览: `{browse_id}` — 尚无制品数据")
+def _render_task_overview(overview: dict[str, Any]) -> None:
+    st.subheader("当前任务")
+    st.markdown(f"**{overview['task_title']}**")
+    if overview.get("task_summary"):
+        st.caption(str(overview["task_summary"]))
+    cols = st.columns(2)
+    cols[0].metric("状态", str(overview["status_label"]))
+    cols[1].metric("数据集", str(overview["dataset_status"]))
 
 
 def _render_transcript(transcript: list[dict]) -> None:
     for entry in transcript:
         role = entry.get("role", "user")
         content = entry.get("content", "")
-        entry_mode = entry.get("mode", "")
         if role == "user":
-            st.chat_message("user").write(f"[{entry_mode}] {content}")
+            st.chat_message("user").write(content)
         else:
             st.chat_message("assistant").write(content)
 
@@ -164,9 +179,8 @@ def _handle_chat_input(
         return
 
     save_transcript(run_dir, mode, "user", user_input)
-    st.chat_message("user").write(f"[{mode}] {user_input}")
+    st.chat_message("user").write(user_input)
 
-    # ── First-message task profile generation ──
     if not st.session_state.get("_first_task_message_handled"):
         st.session_state._first_task_message_handled = True
         existing = load_task_profile(run_dir)
@@ -180,7 +194,7 @@ def _handle_chat_input(
                 )
                 save_task_profile(run_dir, profile)
             except Exception:
-                pass  # silently fallback — never block the chat
+                pass  # Never block chat on title generation.
 
     system_prompt = MODE_PROMPTS[mode]
     context_str = json.dumps(context_data, ensure_ascii=False, default=str) if context_data else "{}"
@@ -213,6 +227,11 @@ def _handle_chat_input(
     st.rerun()
 
 
+# ---------------------------------------------------------------------------
+# User-facing panels
+# ---------------------------------------------------------------------------
+
+
 def _render_intent_draft_panel(
     *,
     run_dir: Path,
@@ -221,29 +240,23 @@ def _render_intent_draft_panel(
     provider_url: str,
     context_data: dict | None,
 ) -> None:
-    st.subheader("研究意图草案")
-    st.caption("草案保存在 `runs/{run_id}/ui_chat/`，属于 UI 审计材料；不会触发 pipeline。")
-
+    st.subheader("研究目标草案")
     existing = load_intent_draft(run_dir)
     transcript = load_transcript(run_dir)
     intent_messages = [entry for entry in transcript if entry.get("mode") == "intent_clarification"]
 
     if mode != "intent_clarification":
-        st.info("切换到「意图澄清」模式后，可以从聊天内容生成研究意图草案。")
+        st.info("切换到「意图澄清」后，可以把聊天内容整理成研究目标草案。")
     elif not intent_messages:
-        st.info("先在「意图澄清」模式中描述研究想法，再生成草案。")
+        st.info("先描述你的复现目标、实验想法或改进方向。")
     else:
-        if st.button(
-            "生成研究意图草案",
-            type="secondary",
-            help="调用 LLM 输出严格 JSON，保存为 ui_chat/intent_draft.json；不会执行 pipeline。",
-        ):
+        if st.button("生成研究目标草案", type="secondary"):
             messages = intent_draft_prompt_payload(
                 run_id=run_dir.name,
                 transcript_tail=intent_messages,
                 context=context_data,
             )
-            with st.spinner("正在生成结构化草案…"):
+            with st.spinner("正在整理研究目标草案…"):
                 result = call_research_chat(
                     api_key=api_key,
                     provider_base_url=provider_url,
@@ -255,114 +268,351 @@ def _render_intent_draft_panel(
                 try:
                     draft = parse_intent_draft_response(result["reply"], run_id=run_dir.name)
                 except ValueError as exc:
-                    st.error(f"草案 JSON 无法解析：{exc}")
+                    st.error(f"草案无法解析：{exc}")
                 else:
                     save_intent_draft(run_dir, draft)
                     save_clarification_input(run_dir, draft)
-                    save_transcript(
-                        run_dir,
-                        "intent_clarification",
-                        "assistant",
-                        "已生成研究意图草案：ui_chat/intent_draft.json",
-                        context_refs=["ui_chat/intent_draft.json", "ui_chat/clarification_input.json"],
-                    )
-                    st.success("已保存 intent_draft.json 和 clarification_input.json。")
+                    st.success("研究目标草案已生成，请检查后确认。")
                     st.rerun()
 
     draft = load_intent_draft(run_dir) or existing
     if draft:
-        st.markdown("**当前草案**")
-        st.write(draft.research_goal)
-        cols = st.columns(2)
-        with cols[0]:
-            st.markdown("**主要指标**")
-            st.write(draft.primary_metrics or ["none"])
-            st.markdown("**允许修改范围**")
-            st.write(draft.allowed_change_scope or ["none"])
-        with cols[1]:
-            st.markdown("**底线指标**")
-            st.write(draft.guardrail_metrics or ["none"])
-            st.markdown("**禁止修改范围**")
-            st.write(draft.forbidden_change_scope or ["none"])
-        st.markdown("**成功标准**")
-        st.write(draft.success_criteria)
-        with st.expander("查看 intent_draft.json"):
-            st.json(draft.model_dump(mode="json"))
+        st.markdown(render_intent_draft_markdown(draft))
+        _render_confirmation_panel(run_dir)
 
 
 def _render_confirmation_panel(run_dir: Path) -> None:
-    st.subheader("人工确认状态")
-    st.caption("确认研究意图只表示用户认可该草案；不会自动执行 patch-plan、patch-apply 或真实 L3。")
-
     draft = load_intent_draft(run_dir)
     confirmation = load_intent_confirmation(run_dir)
     if confirmation:
-        st.info(
-            f"当前确认状态: `{confirmation.decision}`  |  reviewer: `{confirmation.reviewer}`  |  "
-            f"created_at: `{confirmation.created_at}`"
-        )
+        label = {
+            "approved": "已确认",
+            "needs_revision": "需要修改",
+            "rejected": "已放弃",
+        }[confirmation.decision]
+        st.info(f"研究目标状态：{label}")
         if confirmation.comment:
-            st.caption(f"备注: {confirmation.comment}")
+            st.caption(f"备注：{confirmation.comment}")
 
     if not draft:
-        st.warning("尚无 intent_draft.json，无法确认。")
         return
 
     comment = st.text_area("确认备注（可选）", key="_intent_confirmation_comment")
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("确认采用", type="primary"):
+        if st.button("确认这个研究目标", type="primary"):
             save_intent_confirmation(run_dir, decision="approved", comment=comment or None)
-            st.success("已写入 approvals/intent_confirmation.json。")
+            st.success("研究目标已确认。")
             st.rerun()
     with col2:
         if st.button("需要修改"):
             save_intent_confirmation(run_dir, decision="needs_revision", comment=comment or None)
-            st.warning("已记录 needs_revision。")
+            st.warning("已标记为需要修改。")
             st.rerun()
     with col3:
-        if st.button("驳回"):
+        if st.button("放弃"):
             save_intent_confirmation(run_dir, decision="rejected", comment=comment or None)
-            st.error("已记录 rejected。")
+            st.error("已放弃当前研究目标。")
             st.rerun()
 
 
 def _render_pipeline_input_panel(run_dir: Path) -> None:
-    st.subheader("Pipeline 输入准备")
-    st.caption("这里仅从已确认的研究意图生成 `input_task.yaml`；不会执行 pipeline。")
+    action = build_pipeline_input_action(run_dir)
+    st.subheader("下一步")
+    st.write(action["message"])
 
-    status = get_intake_bridge_status(run_dir)
-    rows = [
-        {"artifact": "ui_chat/clarification_input.json", "status": _yes_no(status["clarification_exists"])},
-        {
-            "artifact": "approvals/intent_confirmation.json",
-            "status": status["intent_confirmation_decision"] or _yes_no(False),
-        },
-        {"artifact": "input_task.yaml", "status": _yes_no(status["input_task_exists"])},
-    ]
-    st.table(rows)
+    if action["button_enabled"]:
+        if st.button("生成实验输入", type="primary"):
+            try:
+                save_input_task_yaml_from_clarification(run_dir)
+            except Exception as exc:
+                st.error(f"生成失败：{exc}")
+            else:
+                st.success("实验输入已准备好。")
+                st.rerun()
 
-    overwrite = st.checkbox("允许覆盖已有 input_task.yaml", value=False, key="_overwrite_input_task_yaml")
-    disabled = not status["can_generate"] or (status["input_task_exists"] and not overwrite)
-    if status["reason"]:
-        st.caption(f"当前阻塞原因: `{status['reason']}`")
-    if status["input_task_exists"] and not overwrite:
-        st.caption("已有 input_task.yaml；如需重新生成，请勾选覆盖。")
 
-    if st.button("生成 input_task.yaml", type="secondary", disabled=disabled):
-        try:
-            path = save_input_task_yaml_from_clarification(run_dir, overwrite=overwrite)
-        except Exception as exc:
-            st.error(f"生成失败: {exc}")
-        else:
-            st.success(f"已写入 {path.relative_to(run_dir)}。")
+def _render_flow_steps(run_dir: Path) -> None:
+    st.subheader("当前流程")
+    lines = []
+    for step in build_user_flow_steps(run_dir):
+        marker = "← 当前步骤" if step["state"] == "current" else "✓" if step["state"] == "done" else ""
+        suffix = f" {marker}" if marker else ""
+        lines.append(f"{step['index']}. {step['label']}{suffix}")
+    st.markdown("\n".join(lines))
+
+
+def _render_stage_approval_panel(run_dir: Path) -> None:
+    request_path = run_dir / "patch_planner" / "patch_planner_approval_request.json"
+    handoff_path = run_dir / "patch_applicator" / "patch_runner_handoff.json"
+    has_any_approval = request_path.is_file() or handoff_path.is_file()
+
+    if not has_any_approval:
+        st.info("后续 pipeline 到达相应阶段后，会在这里请求你的审批。")
+        return
+
+    st.subheader("需要你审批")
+    if request_path.is_file():
+        _render_patch_approval_panel(run_dir)
+    if handoff_path.is_file():
+        if request_path.is_file():
+            st.markdown("---")
+        _render_run_approval_panel(run_dir)
+
+
+def _render_patch_approval_panel(run_dir: Path) -> None:
+    st.markdown("**审批代码修改方案**")
+    diff_path = run_dir / "patch_planner" / "proposed_patch.diff"
+    validation_path = run_dir / "patch_planner" / "patch_payload_validation_report.json"
+    approval = load_stage3_approval(run_dir, decision_type="patch_approval")
+
+    if approval:
+        st.info("代码修改方案已确认。" if approval.confirmed_by_user else "代码修改方案已被拒绝。")
+
+    st.caption("请审阅修改方案、diff 和风险后再确认。")
+    if validation_path.is_file():
+        with st.expander("查看修改校验报告"):
+            try:
+                st.json(json.loads(validation_path.read_text(encoding="utf-8")))
+            except Exception:
+                st.code(validation_path.read_text(encoding="utf-8")[:4000])
+    if diff_path.is_file():
+        with st.expander("查看代码差异"):
+            st.code(diff_path.read_text(encoding="utf-8")[:8000], language="diff")
+
+    comment = st.text_area("代码修改审批备注（可选）", key="_patch_approval_comment")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("确认代码修改方案", type="primary"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="patch_approval",
+                confirmed_by_user=True,
+                user_confirmation_text=comment or "I approve the proposed patch plan.",
+            )
+            st.success("代码修改方案已确认。")
+            st.rerun()
+    with col2:
+        if st.button("拒绝代码修改方案"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="patch_approval",
+                confirmed_by_user=False,
+                user_confirmation_text=comment or "I reject the proposed patch plan.",
+            )
+            st.warning("已拒绝代码修改方案。")
             st.rerun()
 
 
-def _render_hitl_gate_status_panel(run_dir: Path) -> None:
-    st.subheader("HITL Gate Status")
-    st.caption("状态来自 pipeline 写入的 approval_gate_report.json；本页面只读展示。")
-    st.table(build_hitl_gate_status_rows(run_dir))
+def _render_run_approval_panel(run_dir: Path) -> None:
+    st.markdown("**审批真实执行**")
+    intake_path = run_dir / "runner_execute" / "runner_intake_report.json"
+    approval = load_stage3_approval(run_dir, decision_type="run_approval")
+
+    if approval:
+        st.info("真实执行已确认。" if approval.confirmed_by_user else "真实执行已被拒绝。")
+
+    st.warning(
+        "真实执行会运行 GPU benchmark、读取数据集并产生实验结果。"
+        "确认后仍需在终端设置 AUTOAD_L3_REAL_EXECUTION_ALLOWED=1。"
+    )
+    if intake_path.is_file():
+        with st.expander("查看执行准入报告"):
+            try:
+                st.json(json.loads(intake_path.read_text(encoding="utf-8")))
+            except Exception:
+                st.code(intake_path.read_text(encoding="utf-8")[:4000])
+
+    comment = st.text_area("真实执行审批备注（可选）", key="_run_approval_comment")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("确认真实执行", type="primary"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="run_approval",
+                confirmed_by_user=True,
+                user_confirmation_text=comment or "I approve real L3 execution.",
+            )
+            st.success("真实执行已确认。")
+            st.rerun()
+    with col2:
+        if st.button("拒绝真实执行"):
+            save_stage3_approval(
+                run_dir,
+                decision_type="run_approval",
+                confirmed_by_user=False,
+                user_confirmation_text=comment or "I reject real L3 execution.",
+            )
+            st.warning("已拒绝真实执行。")
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Developer info and pure helpers
+# ---------------------------------------------------------------------------
+
+
+def _render_developer_info(
+    *,
+    run_dir: Path,
+    overview: dict[str, Any],
+    provider_url: str,
+    dataset_root: str,
+    context_data: dict | None,
+) -> None:
+    with st.expander("开发者信息", expanded=False):
+        st.json(build_developer_info_payload(
+            run_dir,
+            overview=overview,
+            provider_url=provider_url,
+            dataset_root=dataset_root,
+            context_data=context_data,
+        ))
+        st.markdown("**Approval gate status**")
+        st.table(build_hitl_gate_status_rows(run_dir))
+        draft = load_intent_draft(run_dir)
+        if draft:
+            with st.expander("intent_draft.json"):
+                st.json(draft.model_dump(mode="json"))
+        with st.expander("发送给 LLM 的上下文"):
+            if context_data:
+                st.json(context_data)
+            else:
+                st.caption("无上下文数据。")
+
+
+def build_research_assistant_overview(
+    run_dir: Path,
+    *,
+    dataset_root: str,
+    provider_url: str,
+    context_data: dict | None,
+) -> dict[str, Any]:
+    display = get_task_display_info(run_dir)
+    available_stages = []
+    if isinstance(context_data, dict):
+        raw_stages = context_data.get("available_stages", [])
+        if isinstance(raw_stages, list):
+            available_stages = [str(stage) for stage in raw_stages]
+    return {
+        "task_title": display["task_title"],
+        "task_summary": display["task_summary"],
+        "status_label": determine_task_status_label(run_dir),
+        "dataset_status": "已配置" if str(dataset_root).strip() else "未配置",
+        "developer": {
+            "run_id": display["run_id"],
+            "artifact_dir": display["artifact_dir"],
+            "provider": provider_url,
+            "dataset_root": dataset_root,
+            "available_stages": available_stages,
+            "raw_artifacts": [
+                "ui_chat/intent_draft.json",
+                "ui_chat/clarification_input.json",
+                "approvals/intent_confirmation.json",
+                "approvals/patch_approval.json",
+                "approvals/run_approval.json",
+                "approval_gate_report.json",
+            ],
+        },
+    }
+
+
+def determine_task_status_label(run_dir: Path) -> str:
+    if (run_dir / "final_report" / "final_report_facts.json").is_file():
+        return "可查看最终报告"
+    confirmation = load_intent_confirmation(run_dir)
+    if not confirmation or confirmation.decision != "approved":
+        return "正在确认研究目标"
+    if not (run_dir / "input_task.yaml").is_file():
+        return "等待生成实验输入"
+    patch_approval = load_stage3_approval(run_dir, decision_type="patch_approval")
+    if not patch_approval or not patch_approval.confirmed_by_user:
+        return "等待审批代码修改"
+    run_approval = load_stage3_approval(run_dir, decision_type="run_approval")
+    if not run_approval or not run_approval.confirmed_by_user:
+        return "等待审批真实执行"
+    return "可查看最终报告"
+
+
+def render_intent_draft_markdown(draft: Any) -> str:
+    return "\n".join([
+        "**目标**",
+        str(draft.research_goal),
+        "",
+        "**评价指标**",
+        *_metric_bullets(draft.primary_metrics),
+        *_section_bullets("底线指标", draft.guardrail_metrics),
+        *_section_bullets("允许修改", draft.allowed_change_scope),
+        *_section_bullets("禁止修改", draft.forbidden_change_scope),
+        "**验收标准**",
+        str(draft.success_criteria),
+    ])
+
+
+def _metric_bullets(metrics: list[str]) -> list[str]:
+    if not metrics:
+        return ["- 暂未指定"]
+    return [f"- {_metric_label(metric)}：{metric}" for metric in metrics]
+
+
+def _metric_label(metric: str) -> str:
+    mapping = {
+        "instance_auroc": "图像级 AUROC",
+        "full_pixel_auroc": "像素级 AUROC",
+        "anomaly_pixel_auroc": "异常区域像素 AUROC",
+        "wall_time_seconds": "运行时间",
+        "peak_gpu_memory_mb": "峰值显存",
+    }
+    return mapping.get(metric, "指标")
+
+
+def _section_bullets(title: str, values: list[str]) -> list[str]:
+    bullets = values or ["暂未指定"]
+    return ["", f"**{title}**", *[f"- {value}" for value in bullets]]
+
+
+def build_pipeline_input_action(run_dir: Path) -> dict[str, Any]:
+    status = get_intake_bridge_status(run_dir)
+    if not status["intent_confirmation_exists"] or status["intent_confirmation_decision"] != "approved":
+        return {
+            "message": "请先确认研究目标。确认后，系统会准备后续实验输入。",
+            "button_enabled": False,
+        }
+    if status["input_task_exists"]:
+        return {
+            "message": "实验输入已准备好。后续 pipeline 到达相应阶段后，会请求你审批代码修改方案。",
+            "button_enabled": False,
+        }
+    return {
+        "message": "研究目标已确认。下一步可以生成实验输入。",
+        "button_enabled": True,
+    }
+
+
+def build_user_flow_steps(run_dir: Path) -> list[dict[str, Any]]:
+    status = determine_task_status_label(run_dir)
+    labels = [
+        "确认研究目标",
+        "生成实验输入",
+        "审批代码修改方案",
+        "审批真实执行",
+        "查看最终报告",
+    ]
+    current_index = {
+        "正在确认研究目标": 1,
+        "等待生成实验输入": 2,
+        "等待审批代码修改": 3,
+        "等待审批真实执行": 4,
+        "可查看最终报告": 5,
+    }[status]
+    return [
+        {
+            "index": idx,
+            "label": label,
+            "state": "done" if idx < current_index else "current" if idx == current_index else "pending",
+        }
+        for idx, label in enumerate(labels, 1)
+    ]
 
 
 def build_hitl_gate_status_rows(run_dir: Path) -> list[dict[str, str]]:
@@ -396,120 +646,30 @@ def build_hitl_gate_status_rows(run_dir: Path) -> list[dict[str, str]]:
     return rows
 
 
+def build_developer_info_payload(
+    run_dir: Path,
+    *,
+    overview: dict[str, Any],
+    provider_url: str,
+    dataset_root: str,
+    context_data: dict | None,
+) -> dict[str, Any]:
+    return {
+        **overview["developer"],
+        "provider": provider_url,
+        "dataset_root": dataset_root,
+        "artifact_dir": str(run_dir),
+        "approval_gate_status": build_hitl_gate_status_rows(run_dir),
+        "llm_context_available": context_data is not None,
+    }
+
+
 def _required_gate_artifact(gate: str) -> str:
     return {
         "intent_confirmation": "approvals/intent_confirmation.json",
         "patch_approval": "approvals/patch_approval.json",
         "run_approval": "approvals/run_approval.json",
     }[gate]
-
-
-def _yes_no(value: bool) -> str:
-    return "present" if value else "missing"
-
-
-def _render_stage_approval_panel(run_dir: Path) -> None:
-    st.subheader("Pipeline Approval Gates")
-    st.caption("这些按钮只写 approval JSON；不会执行 patch-plan、patch-apply、runner-execute 或 stage3-acceptance。")
-
-    _render_patch_approval_panel(run_dir)
-    st.markdown("---")
-    _render_run_approval_panel(run_dir)
-
-
-def _render_patch_approval_panel(run_dir: Path) -> None:
-    st.markdown("**Patch Plan Approval**")
-    request_path = run_dir / "patch_planner" / "patch_planner_approval_request.json"
-    diff_path = run_dir / "patch_planner" / "proposed_patch.diff"
-    validation_path = run_dir / "patch_planner" / "patch_payload_validation_report.json"
-    approval = load_stage3_approval(run_dir, decision_type="patch_approval")
-
-    if approval:
-        st.info(f"patch_approval: confirmed_by_user=`{approval.confirmed_by_user}`")
-    if not request_path.is_file():
-        st.warning("尚无 patch_planner_approval_request.json，无法审批 patch plan。")
-        return
-
-    st.caption("已生成 patch approval request。请审阅 diff、validation 和风险后再确认。")
-    if validation_path.is_file():
-        with st.expander("查看 patch payload validation report"):
-            try:
-                st.json(json.loads(validation_path.read_text(encoding="utf-8")))
-            except Exception:
-                st.code(validation_path.read_text(encoding="utf-8")[:4000])
-    if diff_path.is_file():
-        with st.expander("查看 proposed_patch.diff"):
-            st.code(diff_path.read_text(encoding="utf-8")[:8000], language="diff")
-
-    comment = st.text_area("Patch approval 备注（可选）", key="_patch_approval_comment")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("确认 patch plan", type="primary"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="patch_approval",
-                confirmed_by_user=True,
-                user_confirmation_text=comment or "I approve the proposed patch plan.",
-            )
-            st.success("已写入 approvals/patch_approval.json。")
-            st.rerun()
-    with col2:
-        if st.button("驳回 patch plan"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="patch_approval",
-                confirmed_by_user=False,
-                user_confirmation_text=comment or "I reject the proposed patch plan.",
-            )
-            st.warning("已记录 rejected patch_approval。")
-            st.rerun()
-
-
-def _render_run_approval_panel(run_dir: Path) -> None:
-    st.markdown("**Real Execution Approval**")
-    handoff_path = run_dir / "patch_applicator" / "patch_runner_handoff.json"
-    intake_path = run_dir / "runner_execute" / "runner_intake_report.json"
-    approval = load_stage3_approval(run_dir, decision_type="run_approval")
-
-    if approval:
-        st.info(f"run_approval: confirmed_by_user=`{approval.confirmed_by_user}`")
-    if not handoff_path.is_file():
-        st.warning("尚无 patch_runner_handoff.json，无法审批真实执行。")
-        return
-
-    st.warning(
-        "真实执行会运行 GPU benchmark、读取数据集并产生 baseline/variant 结果。"
-        "确认只写 approval 文件；仍需在终端设置 AUTOAD_L3_REAL_EXECUTION_ALLOWED=1 后运行 pipeline。"
-    )
-    if intake_path.is_file():
-        with st.expander("查看 runner intake report"):
-            try:
-                st.json(json.loads(intake_path.read_text(encoding="utf-8")))
-            except Exception:
-                st.code(intake_path.read_text(encoding="utf-8")[:4000])
-
-    comment = st.text_area("Run approval 备注（可选）", key="_run_approval_comment")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("确认真实执行", type="primary"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="run_approval",
-                confirmed_by_user=True,
-                user_confirmation_text=comment or "I approve real L3 execution.",
-            )
-            st.success("已写入 approvals/run_approval.json。")
-            st.rerun()
-    with col2:
-        if st.button("驳回真实执行"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="run_approval",
-                confirmed_by_user=False,
-                user_confirmation_text=comment or "I reject real L3 execution.",
-            )
-            st.warning("已记录 rejected run_approval。")
-            st.rerun()
 
 
 # ── Legacy display-only extraction kept for regression and backward compatibility.
