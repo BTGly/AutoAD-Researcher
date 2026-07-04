@@ -1,4 +1,7 @@
-# L3 UI Runbook — Phase 2E
+# L3 UI Runbook — Phase 2E ✅ Sealed
+
+> Phase 2E sealed: 2026-07-04 (c929142)
+> GitHub Actions: run 28692470181, status success
 
 ## Start the UI
 
