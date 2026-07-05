@@ -98,11 +98,13 @@ def test_research_task_draft_profile_separates_candidate_and_confirmed_parameter
     profile = get_default_prompt_registry().require("assistant.research_task_draft.v1")
 
     assert profile.layer == "schema_bound_draft"
-    assert profile.io.output_schema == "ResearchTaskDraft"
+    assert profile.io.output_schema == "ResearchTaskDraftV1"
     assert "task/research_task_draft.json" in profile.io.produced_artifacts
     assert "candidate_as_confirmed" in profile.io.forbidden_outputs
     assert "confirmed_parameters" in profile.system_prompt
     assert "candidate_parameters" in profile.system_prompt
+    assert "Do not interrogate. Propose first." in profile.system_prompt
+    assert "Goal vs Approach" in profile.system_prompt
 
 
 def test_progress_digest_profile_is_user_visible_but_hides_raw_internals():
@@ -113,6 +115,7 @@ def test_progress_digest_profile_is_user_visible_but_hides_raw_internals():
     assert "raw_path" in profile.io.forbidden_outputs
     assert "raw_run_id" in profile.io.forbidden_outputs
     assert "不展示 raw path" in profile.system_prompt
+    assert "Use WhatWeKnow when available." in profile.system_prompt
 
 
 def test_prompt_io_contract_rejects_unsafe_artifact_paths():
