@@ -15,6 +15,12 @@ from autoad_researcher.assistant.session import (
     SourceState,
     TaskControlState,
 )
+from autoad_researcher.assistant.runtime import (
+    AssistantRuntimeResult,
+    DeterministicAssistantRuntime,
+    FakeIntentAlignmentBackend,
+    route_user_text,
+)
 from autoad_researcher.assistant.session_store import (
     AssistantTransitionRecord,
     SessionStore,
@@ -37,6 +43,10 @@ from autoad_researcher.assistant.prompt_registry import (
 )
 
 __all__ = [
+    "route_user_text",
+    "FakeIntentAlignmentBackend",
+    "DeterministicAssistantRuntime",
+    "AssistantRuntimeResult",
     "silent_probe",
     "WhatWeKnow",
     "KNOWN_ARTIFACT_MAP",

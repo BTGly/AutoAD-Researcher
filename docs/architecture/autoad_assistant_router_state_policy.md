@@ -109,3 +109,33 @@ transfer_analysis  -> transfer_design/transfer_analysis.json
 
 `WhatWeKnow` intentionally excludes `preflight_passed`, because there is no stable preflight report artifact. It also does not infer `category` or `metric_direction`; those remain missing fields until user confirmation or a future stable artifact provides them.
 
+## 7. Round 4 Deterministic Runtime Skeleton
+
+Round 4 adds:
+
+```text
+src/autoad_researcher/assistant/runtime.py
+tests/test_assistant_runtime_skeleton.py
+```
+
+The deterministic runtime wires the local control path:
+
+```text
+route_user_text
+-> silent_probe
+-> TransitionPolicy
+-> PromptSelector
+-> FakeIntentAlignmentBackend
+-> SessionStore
+```
+
+The fake backend has three required behaviors:
+
+```text
+with artifacts: propose from WhatWeKnow and ask only blocking gaps
+without artifacts: guide the user toward minimal useful materials without a long form
+correction: accept the correction and return to intent_structuring
+```
+
+It still does not call a real LLM, generate confirmed tasks, approve execution, modify code, or start Stage 3 pipeline work.
+
