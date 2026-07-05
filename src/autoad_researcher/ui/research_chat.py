@@ -112,19 +112,9 @@ def render_research_chat():
     _render_task_overview(overview)
     _render_flow_steps(run_dir)
 
-    # ── P6: Source Intake (file upload) ──
+    # ── P6: Source Intake (source list + server-local developer entry) ──
     with st.expander("📎 当前资料 / Sources", expanded=False):
-        uploaded = st.file_uploader(
-            "上传论文或材料",
-            type=["pdf", "txt", "md", "markdown"],
-            key="_source_upload",
-            label_visibility="collapsed",
-        )
-        if uploaded is not None:
-            info = save_uploaded_file(run_dir, uploaded)
-            st.success(f"✅ 已保存：{uploaded.name}")
-            st.caption(f"上传后你可以在聊天框中说：读一下 {info['stored_path']}")
-            st.rerun()
+        st.caption("普通资料上传请直接使用底部聊天框附件。这里保留资料列表和服务器本地路径入口。")
 
         local_path = st.text_input(
             "服务器本地文件路径",
@@ -332,6 +322,50 @@ def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
     return {"status": "failed", "error": err}
 
 
+def normalize_chat_submission(submission: Any) -> tuple[str, list[Any]]:
+    """Normalize Streamlit chat_input return values across versions.
+
+    Streamlit 1.58 returns a ChatInputValue when files are accepted, while older
+    code paths and tests may still pass a plain string.
+    """
+    if submission is None:
+        return "", []
+    if isinstance(submission, str):
+        return submission.strip(), []
+    if isinstance(submission, dict):
+        text = str(submission.get("text") or submission.get("message") or "").strip()
+        files = submission.get("files") or []
+        return text, list(files)
+
+    text_value = getattr(submission, "text", None)
+    if text_value is None:
+        text_value = getattr(submission, "message", "")
+    files_value = getattr(submission, "files", []) or []
+    return str(text_value or "").strip(), list(files_value)
+
+
+def save_chat_attachments(run_dir: Path, uploaded_files: list[Any]) -> list[dict[str, Any]]:
+    """Save chat-input attachments to the source registry."""
+    saved: list[dict[str, Any]] = []
+    for uploaded_file in uploaded_files:
+        info = save_uploaded_file(run_dir, uploaded_file)
+        saved.append(info)
+    return saved
+
+
+def build_attachment_added_reply(sources: list[dict[str, Any]]) -> str:
+    names = [Path(str(source["stored_path"])).name for source in sources]
+    lines = ["已添加资料：", *[f"- {name}" for name in names]]
+    if any(source.get("kind") == "paper_pdf" for source in sources):
+        lines.append("需要解析时可以说：读一下这个论文。")
+    return "\n".join(lines)
+
+
+def _attachment_user_message(sources: list[dict[str, Any]]) -> str:
+    names = [Path(str(source["stored_path"])).name for source in sources]
+    return "上传资料：" + "、".join(names)
+
+
 def detect_parse_intent(user_input: str) -> bool:
     """Return True when user text asks to parse/read uploaded paper material."""
     text = user_input.strip()
@@ -345,7 +379,12 @@ def detect_parse_intent(user_input: str) -> bool:
     return has_action and has_target
 
 
-def build_pdf_parse_action(run_dir: Path, user_input: str) -> dict[str, Any]:
+def build_pdf_parse_action(
+    run_dir: Path,
+    user_input: str,
+    *,
+    recent_sources: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Resolve a user parse request into a deterministic UI action.
 
     The action is intentionally command-router output, not LLM context. Once a
@@ -364,6 +403,27 @@ def build_pdf_parse_action(run_dir: Path, user_input: str) -> dict[str, Any]:
         return {
             "action": "missing",
             "message": "没有找到这个 PDF 路径。请检查 `sources/...pdf` 是否和 SourceReferences 中的 path 完全一致。",
+        }
+
+    recent_pdf_sources = [
+        source
+        for source in (recent_sources or [])
+        if source.get("kind") == "paper_pdf" and source.get("stored_path")
+    ]
+    if len(recent_pdf_sources) == 1:
+        stored_path = str(recent_pdf_sources[0]["stored_path"])
+        entry = find_source_entry_by_stored_path(run_dir, stored_path)
+        return _pdf_parse_action_for_source(
+            run_dir,
+            stored_path=stored_path,
+            entry=entry,
+            pdf_path=run_dir / stored_path,
+        )
+    if len(recent_pdf_sources) > 1:
+        paths = "\n".join(f"- {source['stored_path']}" for source in recent_pdf_sources)
+        return {
+            "action": "choose",
+            "message": "你刚上传了多个 PDF，请指定要解析的一个：\n" + paths,
         }
 
     pdf_sources = list_pdf_source_entries(run_dir)
@@ -474,21 +534,44 @@ def _handle_chat_input(
     provider_url: str,
     context_data: dict | None,
 ) -> None:
-    user_input = st.chat_input("输入你的问题…", key="_chat_input")
-    if not user_input:
+    submission = st.chat_input(
+        "输入你的问题，或附加论文 PDF / 材料…",
+        key="_chat_input",
+        accept_file="multiple",
+        file_type=["pdf", "txt", "md", "markdown"],
+        max_upload_size=200,
+    )
+    if not submission:
+        return
+    user_input, attached_files = normalize_chat_submission(submission)
+    if not user_input and not attached_files:
         return
 
     # ── P3: Read transcript history BEFORE saving current input ──
     existing_transcript = load_transcript(run_dir)
     transcript_tail = existing_transcript[-10:]
 
-    save_transcript(run_dir, mode, "user", user_input)
-    st.chat_message("user").write(user_input)
+    attached_sources = save_chat_attachments(run_dir, attached_files)
+    user_content = user_input or _attachment_user_message(attached_sources)
+    save_transcript(run_dir, mode, "user", user_content)
+    st.chat_message("user").write(user_content)
+
+    if attached_sources and not user_input:
+        reply = build_attachment_added_reply(attached_sources)
+        st.chat_message("assistant").write(reply)
+        save_transcript(run_dir, mode, "assistant", reply)
+        return
 
     # ── P6: Parse trigger — natural language PDF parse requests ──
-    parse_action = build_pdf_parse_action(run_dir, user_input)
+    parse_action = build_pdf_parse_action(run_dir, user_input, recent_sources=attached_sources)
     if parse_action["action"] != "chat":
         reply = _execute_or_report_pdf_parse_action(run_dir, parse_action)
+        st.chat_message("assistant").write(reply)
+        save_transcript(run_dir, mode, "assistant", reply)
+        return
+
+    if attached_sources:
+        reply = build_attachment_added_reply(attached_sources)
         st.chat_message("assistant").write(reply)
         save_transcript(run_dir, mode, "assistant", reply)
         return

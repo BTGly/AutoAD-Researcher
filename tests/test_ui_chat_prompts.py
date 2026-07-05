@@ -268,6 +268,31 @@ class TestPdfParseRouting:
         assert action["action"] == "parse"
         assert action["stored_path"] == info["stored_path"]
 
+    def test_recent_uploaded_pdf_takes_parse_request_without_path(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action, save_chat_attachments
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sources = save_chat_attachments(run_dir, [_make_upload("SimpleNet.pdf")])
+
+        action = build_pdf_parse_action(run_dir, "读一下这个论文", recent_sources=sources)
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == sources[0]["stored_path"]
+
+    def test_recent_multiple_uploaded_pdfs_require_choice(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action, save_chat_attachments
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sources = save_chat_attachments(run_dir, [_make_upload("A.pdf"), _make_upload("B.pdf")])
+
+        action = build_pdf_parse_action(run_dir, "解析这个 PDF", recent_sources=sources)
+
+        assert action["action"] == "choose"
+        assert sources[0]["stored_path"] in action["message"]
+        assert sources[1]["stored_path"] in action["message"]
+
     def test_single_pending_pdf_uppercase_pdf_auto_selects(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_pdf_parse_action
         from autoad_researcher.ui.sources import save_uploaded_file
@@ -385,3 +410,77 @@ class TestPdfParseRouting:
         )
 
         assert any("do not claim you have read it" in m["content"] for m in messages)
+
+
+class TestChatInputAttachments:
+    def test_normalize_plain_string_submission(self):
+        from autoad_researcher.ui.research_chat import normalize_chat_submission
+
+        text, files = normalize_chat_submission("普通聊天")
+
+        assert text == "普通聊天"
+        assert files == []
+
+    def test_normalize_dict_like_submission(self):
+        from autoad_researcher.ui.research_chat import normalize_chat_submission
+
+        upload = _make_upload("SimpleNet.pdf")
+        text, files = normalize_chat_submission({"text": "读一下这个论文", "files": [upload]})
+
+        assert text == "读一下这个论文"
+        assert files == [upload]
+
+    def test_normalize_object_submission(self):
+        from autoad_researcher.ui.research_chat import normalize_chat_submission
+
+        class Submission:
+            text = "解析这个 PDF"
+            files = [_make_upload("SimpleNet.pdf")]
+
+        text, files = normalize_chat_submission(Submission())
+
+        assert text == "解析这个 PDF"
+        assert len(files) == 1
+
+    def test_save_chat_attachments_single_file(self, tmp_path):
+        from autoad_researcher.ui.research_chat import save_chat_attachments
+        from autoad_researcher.ui.sources import load_source_registry
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        sources = save_chat_attachments(run_dir, [_make_upload("SimpleNet.pdf")])
+
+        assert len(sources) == 1
+        assert sources[0]["kind"] == "paper_pdf"
+        assert (run_dir / sources[0]["stored_path"]).is_file()
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["source_id"] == sources[0]["source_id"]
+        assert reg["sources"][0]["status"] == "uploaded_not_parsed"
+
+    def test_save_chat_attachments_multiple_files(self, tmp_path):
+        from autoad_researcher.ui.research_chat import save_chat_attachments
+        from autoad_researcher.ui.sources import load_source_registry
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        sources = save_chat_attachments(run_dir, [_make_upload("SimpleNet.pdf"), _make_upload("notes.md")])
+
+        assert [source["kind"] for source in sources] == ["paper_pdf", "markdown"]
+        reg = load_source_registry(run_dir)
+        assert len(reg["sources"]) == 2
+
+    def test_attachment_added_reply_names_files_without_paths(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_attachment_added_reply, save_chat_attachments
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sources = save_chat_attachments(run_dir, [_make_upload("SimpleNet.pdf")])
+
+        reply = build_attachment_added_reply(sources)
+
+        assert "已添加资料" in reply
+        assert "SimpleNet.pdf" in reply
+        assert "sources/" not in reply
+        assert "读一下这个论文" in reply
