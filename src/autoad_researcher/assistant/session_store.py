@@ -1,117 +1,180 @@
-"""SessionStore for AutoAD Assistant control artifacts.
-
-The store owns only assistant control artifacts under runs/{run_id}/assistant/.
-It does not call LLMs, does not execute the pipeline, and does not accept user
-input as path components beyond the validated run_id.
-"""
+"""SessionStore — persist and restore Assistant session, events, transitions."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.assistant.events import AssistantEvent
-from autoad_researcher.assistant.session import AssistantMode, AutoADAssistantSession
-from autoad_researcher.core.run_id import run_dir_path
+from autoad_researcher.assistant.session import AutoADAssistantSession
+from autoad_researcher.core.run_id import run_dir_path, validate_run_id
 
 
-ASSISTANT_DIR = Path("assistant")
-SESSION_ARTIFACT = ASSISTANT_DIR / "session.json"
-EVENTS_ARTIFACT = ASSISTANT_DIR / "events.jsonl"
-TRANSITIONS_ARTIFACT = ASSISTANT_DIR / "transitions.jsonl"
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _assistant_dir(runs_root: str | Path, run_id: str) -> Path:
+    validate_run_id(runs_root, run_id)
+    p = run_dir_path(runs_root, run_id) / "assistant"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 class AssistantTransitionRecord(BaseModel):
-    """One persisted assistant mode transition."""
-
+    """One transition record for audit trail."""
     model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal[1] = 1
-    run_id: str = Field(min_length=1)
-    event_id: str = Field(min_length=1)
-    from_mode: AssistantMode
-    to_mode: AssistantMode
-    reason: str | None = None
-    violations: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    run_id: str
+    event_id: str
+    from_mode: str
+    to_mode: str
+    triggered_by: str = ""
+    reason: str = ""
+    recorded_at: str = Field(default_factory=_now_iso)
 
 
 class SessionStore:
-    """Persist minimal assistant session state and append-only audit streams."""
+    """Persist and restore Assistant session, events, and transitions."""
 
     def __init__(self, runs_root: str | Path = "runs") -> None:
-        self._runs_root = Path(runs_root)
+        self.runs_root = runs_root
 
-    def run_dir(self, run_id: str) -> Path:
-        return run_dir_path(self._runs_root, run_id)
+    # ── session ──
 
-    def assistant_dir(self, run_id: str) -> Path:
-        return self.run_dir(run_id) / ASSISTANT_DIR
-
-    def session_path(self, run_id: str) -> Path:
-        return self.run_dir(run_id) / SESSION_ARTIFACT
-
-    def events_path(self, run_id: str) -> Path:
-        return self.run_dir(run_id) / EVENTS_ARTIFACT
-
-    def transitions_path(self, run_id: str) -> Path:
-        return self.run_dir(run_id) / TRANSITIONS_ARTIFACT
+    def load_session(self, run_id: str) -> AutoADAssistantSession | None:
+        path = self.session_path(run_id)
+        if not path.is_file():
+            return None
+        return AutoADAssistantSession.model_validate_json(path.read_text(encoding="utf-8"))
 
     def save_session(self, session: AutoADAssistantSession) -> Path:
         path = self.session_path(session.run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(session.model_dump_json(indent=2), encoding="utf-8")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(session.model_dump_json(indent=2), encoding="utf-8")
+        tmp.replace(path)
         return path
-
-    def load_session(self, run_id: str) -> AutoADAssistantSession | None:
-        path = self.session_path(run_id)
-        if not path.exists():
-            return None
-        return AutoADAssistantSession.model_validate_json(path.read_text(encoding="utf-8"))
 
     def require_session(self, run_id: str) -> AutoADAssistantSession:
         session = self.load_session(run_id)
         if session is None:
-            raise FileNotFoundError(f"assistant session not found for run_id: {run_id}")
+            raise FileNotFoundError(f"assistant session not found: run_id={run_id}")
         return session
 
+    # ── events ──
+
     def append_event(self, run_id: str, event: AssistantEvent) -> Path:
-        return self._append_jsonl(self.events_path(run_id), event.model_dump(mode="json"))
-
-    def read_events(self, run_id: str) -> list[AssistantEvent]:
-        return [AssistantEvent.model_validate(item) for item in self._read_jsonl(self.events_path(run_id))]
-
-    def append_transition(self, record: AssistantTransitionRecord) -> Path:
-        return self._append_jsonl(self.transitions_path(record.run_id), record.model_dump(mode="json"))
-
-    def read_transitions(self, run_id: str) -> list[AssistantTransitionRecord]:
-        return [
-            AssistantTransitionRecord.model_validate(item)
-            for item in self._read_jsonl(self.transitions_path(run_id))
-        ]
-
-    @staticmethod
-    def _append_jsonl(path: Path, payload: dict[str, object]) -> Path:
+        path = self.events_path(run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=False))
-            handle.write("\n")
+        record = event.model_dump()
+        record["_recorded_at"] = _now_iso()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         return path
 
-    @staticmethod
-    def _read_jsonl(path: Path) -> list[dict[str, object]]:
-        if not path.exists():
+    def read_events(self, run_id: str) -> list[AssistantEvent]:
+        path = self.events_path(run_id)
+        if not path.is_file():
             return []
-        records: list[dict[str, object]] = []
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        events: list[AssistantEvent] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            data = json.loads(line)
-            if not isinstance(data, dict):
-                raise ValueError(f"assistant jsonl record must be object: {path}:{lineno}")
-            records.append(data)
+            obj = json.loads(line)
+            if not isinstance(obj, dict):
+                raise ValueError("jsonl record must be object, not array")
+            obj.pop("_recorded_at", None)
+            events.append(AssistantEvent.model_validate(obj))
+        return events
+
+    # ── transitions ──
+
+    def append_transition(self, record: AssistantTransitionRecord) -> Path:
+        path = _assistant_dir(self.runs_root, record.run_id) / "transitions.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = record.model_dump()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False) + "\n")
+        return path
+
+    def read_transitions(self, run_id: str) -> list[AssistantTransitionRecord]:
+        path = _assistant_dir(self.runs_root, run_id) / "transitions.jsonl"
+        if not path.is_file():
+            return []
+        records: list[AssistantTransitionRecord] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                records.append(AssistantTransitionRecord.model_validate_json(line))
         return records
+
+    # ── paths ──
+
+    def session_path(self, run_id: str) -> Path:
+        validate_run_id(self.runs_root, run_id)
+        return run_dir_path(self.runs_root, run_id) / "assistant" / "session.json"
+
+    def events_path(self, run_id: str) -> Path:
+        validate_run_id(self.runs_root, run_id)
+        return run_dir_path(self.runs_root, run_id) / "assistant" / "events.jsonl"
+
+
+# ── standalone convenience wrappers ──
+
+
+def load_session(runs_root: str | Path, run_id: str) -> AutoADAssistantSession | None:
+    return SessionStore(runs_root).load_session(run_id)
+
+
+def save_session(runs_root: str | Path, session: AutoADAssistantSession) -> Path:
+    return SessionStore(runs_root).save_session(session)
+
+
+def append_event(runs_root: str | Path, run_id: str, event: AssistantEvent) -> Path:
+    return SessionStore(runs_root).append_event(run_id, event)
+
+
+def read_events(runs_root: str | Path, run_id: str) -> list[AssistantEvent]:
+    return SessionStore(runs_root).read_events(run_id)
+
+
+def append_transition_kw(
+    runs_root: str | Path,
+    run_id: str,
+    *,
+    event_id: str,
+    from_mode: str,
+    to_mode: str,
+    triggered_by: str,
+    reason: str = "",
+) -> Path:
+    return SessionStore(runs_root).append_transition(
+        AssistantTransitionRecord(
+            run_id=run_id,
+            event_id=event_id,
+            from_mode=from_mode,
+            to_mode=to_mode,
+            triggered_by=triggered_by,
+            reason=reason,
+        )
+    )
+
+
+def append_transition(
+    runs_root: str | Path,
+    run_id: str,
+    *,
+    event_id: str,
+    from_mode: str,
+    to_mode: str,
+    triggered_by: str,
+    reason: str = "",
+) -> Path:
+    return append_transition_kw(
+        runs_root, run_id,
+        event_id=event_id, from_mode=from_mode, to_mode=to_mode,
+        triggered_by=triggered_by, reason=reason,
+    )

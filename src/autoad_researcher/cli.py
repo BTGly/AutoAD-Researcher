@@ -151,6 +151,15 @@ def build_parser() -> argparse.ArgumentParser:
     stage3_parser.add_argument("--provider-api-key-env", default="DEEPSEEK_API_KEY", help="Environment variable name for provider API key")
     stage3_parser.add_argument("--json", action="store_true", dest="json_output", help="Print machine-readable JSON")
 
+    alpha_parser = subparsers.add_parser(
+        "assistant-alpha",
+        help="Run AutoAD Assistant manual Alpha conversation",
+    )
+    alpha_parser.add_argument("--run-id", required=True, help="Run identifier")
+    alpha_parser.add_argument("--runs-root", default="runs", help="Root directory for run artifacts")
+    alpha_parser.add_argument("--provider-url", default=None, help="Provider base URL (default: DEEPSEEK_PROVIDER_URL env or https://api.deepseek.com)")
+    alpha_parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY", help="Env var for API key")
+
     return parser
 
 
@@ -159,6 +168,23 @@ def _result_payload(result, run_dir: Path) -> dict:
     payload["run_dir"] = str(run_dir)
     payload["events_path"] = str(run_dir / "events.jsonl")
     return payload
+
+
+def run_assistant_alpha(args) -> int:
+    """Run AutoAD Assistant manual Alpha conversation."""
+    import os
+    from autoad_researcher.assistant.runtime import run_alpha
+
+    provider_url = args.provider_url or os.environ.get("DEEPSEEK_PROVIDER_URL", "https://api.deepseek.com")
+    api_key = os.environ.get(args.api_key_env, "")
+
+    run_alpha(
+        run_id=args.run_id,
+        runs_root=args.runs_root,
+        api_key=api_key,
+        provider_url=provider_url,
+    )
+    return 0
 
 
 def _print_human_result(result, run_dir: Path) -> None:
@@ -670,6 +696,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_final_report(args)
     if args.command == "stage3-acceptance":
         return run_stage3_acceptance(args)
+    if args.command == "assistant-alpha":
+        return run_assistant_alpha(args)
 
     parser.error(f"unsupported command: {args.command}")
     return 2

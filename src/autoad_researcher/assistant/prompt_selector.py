@@ -1,68 +1,73 @@
-"""Prompt selection for AutoAD Assistant modes.
+"""PromptSelector — maps AssistantMode to prompt profile IDs.
 
-PromptSelector is intentionally small: it maps the current coarse assistant mode
-to a prompt profile. It does not classify user text, read artifacts, call LLMs,
-or execute pipeline steps.
+Does NOT call an LLM, read user text, or interpret semantics.
 """
 
 from __future__ import annotations
 
 from autoad_researcher.assistant.prompt_io import AssistantStage
-from autoad_researcher.assistant.prompt_profiles import PromptProfile
-from autoad_researcher.assistant.prompt_registry import PromptRegistry, get_default_prompt_registry
+from autoad_researcher.assistant.prompt_registry import get_default_prompt_registry
 from autoad_researcher.assistant.session import AssistantMode
 
-
-MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = {
-    "goal_alignment": "collecting_goal",
-    "material_alignment": "guiding_materials",
-    "artifact_processing": "parsing_materials",
-    "intent_structuring": "understanding_intent",
-    "task_confirmation": "confirming_task_draft",
-    "pipeline_ready": "ready_for_pipeline",
-    "progress_reporting": "progress_reporting",
+_MODE_TO_PROMPT: dict[AssistantMode, str] = {
+    "goal_alignment":       "assistant.collecting_goal.v1",
+    "material_alignment":   "assistant.guiding_materials.v1",
+    "artifact_processing":  "assistant.progress_digest.v1",
+    "intent_structuring":   "assistant.understanding_intent.v1",
+    "task_confirmation":    "assistant.confirming_task_draft.v1",
+    "pipeline_ready":       "assistant.confirming_task_draft.v1",
+    "progress_reporting":   "assistant.progress_digest.v1",
 }
 
-MODE_TO_PROMPT_ID: dict[AssistantMode, str] = {
-    "goal_alignment": "assistant.collecting_goal.v1",
-    "material_alignment": "assistant.guiding_materials.v1",
-    "artifact_processing": "assistant.progress_digest.v1",
-    "intent_structuring": "assistant.understanding_intent.v1",
-    "task_confirmation": "assistant.confirming_task_draft.v1",
-    "pipeline_ready": "assistant.confirming_task_draft.v1",
-    "progress_reporting": "assistant.progress_digest.v1",
+MODE_TO_PROMPT_ID: dict[AssistantMode, str] = _MODE_TO_PROMPT
+
+_MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = {
+    "goal_alignment":       "collecting_goal",
+    "material_alignment":   "guiding_materials",
+    "artifact_processing":  "parsing_materials",
+    "intent_structuring":   "understanding_intent",
+    "task_confirmation":    "confirming_task_draft",
+    "pipeline_ready":       "ready_for_pipeline",
+    "progress_reporting":   "progress_reporting",
 }
+
+MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = _MODE_TO_STAGE
 
 RESEARCH_TASK_DRAFT_PROMPT_ID = "assistant.research_task_draft.v1"
 
 
 class PromptSelector:
-    """Select prompt profiles from coarse assistant modes."""
+    """Selects prompt profiles by assistant mode. No LLM, no semantics."""
 
-    def __init__(self, registry: PromptRegistry | None = None) -> None:
-        self._registry = registry or get_default_prompt_registry()
-
-    def stage_for_mode(self, mode: AssistantMode) -> AssistantStage:
-        return _require_mapping(MODE_TO_STAGE, mode, "stage")
+    def __init__(self) -> None:
+        self._registry = get_default_prompt_registry()
 
     def prompt_id_for_mode(self, mode: AssistantMode) -> str:
-        return _require_mapping(MODE_TO_PROMPT_ID, mode, "prompt")
+        if mode not in _MODE_TO_PROMPT:
+            raise KeyError(f"unsupported assistant mode: {mode}")
+        return _MODE_TO_PROMPT[mode]
 
-    def profile_for_mode(self, mode: AssistantMode) -> PromptProfile:
-        return self._registry.require(self.prompt_id_for_mode(mode))
+    def profile_for_mode(self, mode: AssistantMode):
+        prompt_id = self.prompt_id_for_mode(mode)
+        return self._registry.require(prompt_id)
 
-    def build_system_prompt_for_mode(self, mode: AssistantMode, *, include_global: bool = True) -> str:
-        return self._registry.build_system_prompt(self.prompt_id_for_mode(mode), include_global=include_global)
+    def build_system_prompt_for_mode(self, mode: AssistantMode) -> str:
+        prompt_id = self.prompt_id_for_mode(mode)
+        return self._registry.build_system_prompt(prompt_id)
 
-    def research_task_draft_profile(self) -> PromptProfile:
+    def research_task_draft_profile(self):
         return self._registry.require(RESEARCH_TASK_DRAFT_PROMPT_ID)
 
-    def build_research_task_draft_prompt(self, *, include_global: bool = True) -> str:
-        return self._registry.build_system_prompt(RESEARCH_TASK_DRAFT_PROMPT_ID, include_global=include_global)
+    def build_research_task_draft_prompt(self) -> str:
+        return self.build_system_prompt_for_mode("task_confirmation")
+
+    def select_prompt_id(self, mode: AssistantMode) -> str:
+        return self.prompt_id_for_mode(mode)
+
+    def select_stage(self, mode: AssistantMode) -> AssistantStage:
+        return _MODE_TO_STAGE[mode]
 
 
-def _require_mapping(mapping: dict[AssistantMode, str], mode: AssistantMode, label: str) -> str:
-    try:
-        return mapping[mode]
-    except KeyError as exc:
-        raise KeyError(f"unsupported assistant mode for {label} selection: {mode!r}") from exc
+def select_prompt_id(mode: AssistantMode) -> str:
+    """Return the prompt profile ID for the given AssistantMode."""
+    return _MODE_TO_PROMPT[mode]
