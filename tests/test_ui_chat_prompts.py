@@ -371,8 +371,9 @@ class TestPdfParseRouting:
         action = build_pdf_parse_action(run_dir, "解析这个 PDF", recent_sources=sources)
 
         assert action["action"] == "choose"
-        assert sources[0]["stored_path"] in action["message"]
-        assert sources[1]["stored_path"] in action["message"]
+        assert "A.pdf" in action["message"]
+        assert "B.pdf" in action["message"]
+        assert "sources/" not in action["message"]
 
     def test_single_pending_pdf_uppercase_pdf_auto_selects(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_pdf_parse_action
@@ -398,8 +399,9 @@ class TestPdfParseRouting:
         action = build_pdf_parse_action(run_dir, "解析刚刚上传的论文")
 
         assert action["action"] == "choose"
-        assert first["stored_path"] in action["message"]
-        assert second["stored_path"] in action["message"]
+        assert "A.pdf" in action["message"]
+        assert "B.pdf" in action["message"]
+        assert "sources/" not in action["message"]
 
     def test_no_pdf_does_not_fall_through_to_llm(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_pdf_parse_action
@@ -467,8 +469,9 @@ class TestPdfParseRouting:
         action = build_pdf_parse_action(run_dir, "再提取一次")
 
         assert action["action"] == "choose"
-        assert first["stored_path"] in action["message"]
-        assert second["stored_path"] in action["message"]
+        assert "A.pdf" in action["message"]
+        assert "B.pdf" in action["message"]
+        assert "sources/" not in action["message"]
 
     def test_parsing_pdf_does_not_start_duplicate(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_pdf_parse_action

@@ -99,6 +99,12 @@ def _safe_fallback_reply(violations: list[str], evidence_context: ResearchChatEv
         )
 
     if "paper_content_without_parsed_artifact" in violations or "artifact_answer_without_parsed_artifact" in violations:
+        if evidence_context.paper_artifact_quality == "insufficient":
+            warnings = "、".join(evidence_context.paper_artifact_warnings) or "paper artifacts 证据不足"
+            return (
+                f"当前确实生成了 paper artifacts，但质量不足（{warnings}）。"
+                "因此不能基于论文正文作可靠判断，也不能用模型记忆补全。"
+            )
         if evidence_context.uploaded_unparsed_sources:
             return (
                 "我看到资料已进入当前任务，但目前还没有可用于回答正文问题的 parsed paper artifacts。"

@@ -7,6 +7,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.intent_action import (
+    PaperArtifactQuality,
+    evaluate_paper_artifact_quality,
+)
 from autoad_researcher.assistant.probe import WhatWeKnow, silent_probe
 from autoad_researcher.ui.sources import load_source_registry
 
@@ -68,6 +72,8 @@ class ResearchChatEvidenceContext(BaseModel):
     forbidden_assumptions: list[str] = Field(default_factory=list)
     has_repo_evidence: bool = False
     has_parsed_paper_evidence: bool = False
+    paper_artifact_quality: PaperArtifactQuality = "missing"
+    paper_artifact_warnings: list[str] = Field(default_factory=list)
 
 
 def build_research_chat_evidence_context(run_dir: Path) -> ResearchChatEvidenceContext:
@@ -117,8 +123,9 @@ def build_research_chat_evidence_context(run_dir: Path) -> ResearchChatEvidenceC
             parsed_source_ids.append(source_id)
             parsed_source_labels.append(user_label)
 
+    quality, warnings = evaluate_paper_artifact_quality(run_dir)
     parsed_paper_evidence: list[ParsedPaperEvidence] = []
-    if what.has_paper_artifacts:
+    if what.has_paper_artifacts and quality == "usable":
         parsed_paper_evidence.append(
             ParsedPaperEvidence(
                 source_id=parsed_source_ids[0] if parsed_source_ids else None,
@@ -140,6 +147,8 @@ def build_research_chat_evidence_context(run_dir: Path) -> ResearchChatEvidenceC
         forbidden_assumptions=_forbidden_assumptions(),
         has_repo_evidence=what.has_repo_summary,
         has_parsed_paper_evidence=bool(parsed_paper_evidence),
+        paper_artifact_quality=quality,
+        paper_artifact_warnings=warnings,
     )
 
 

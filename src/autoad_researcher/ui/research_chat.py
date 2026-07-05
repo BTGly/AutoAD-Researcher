@@ -13,6 +13,14 @@ except ModuleNotFoundError:  # UI extra is optional in CI/unit-test environments
     st = None
 
 from autoad_researcher.assistant.probe import silent_probe
+from autoad_researcher.assistant.intent_action import (
+    ActionDecision,
+    append_action_decision,
+    build_research_context_snapshot,
+    infer_intent_signal,
+    render_response_for_decision,
+    resolve_material_auto_action,
+)
 from autoad_researcher.assistant.research_context_builder import (
     build_research_chat_evidence_context,
     render_research_chat_evidence_context,
@@ -449,116 +457,75 @@ def build_pdf_parse_action(
     *,
     recent_sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Resolve a user parse request into a deterministic UI action.
-
-    The action is intentionally command-router output, not LLM context. Once a
-    parse intent is detected, callers should not fall through to chat.
-    """
-    force_reparse = _is_force_reparse_intent(user_input)
+    """Resolve a user message into a material action through the v1.4 adapter."""
     explicit_path = resolve_source_pdf_path_safely(run_dir, user_input)
+    explicit_stored_path = explicit_path.relative_to(run_dir).as_posix() if explicit_path is not None else None
+
+    snapshot = build_research_context_snapshot(run_dir)
+    signal = infer_intent_signal(user_input, snapshot)
+    decision = resolve_material_auto_action(
+        snapshot=snapshot,
+        signal=signal,
+        explicit_stored_path=explicit_stored_path,
+        recent_sources=recent_sources,
+    )
+
     if explicit_path is not None:
-        stored_path = explicit_path.relative_to(run_dir).as_posix()
-        entry = find_source_entry_by_stored_path(run_dir, stored_path)
-        return _pdf_parse_action_for_source(
-            run_dir,
-            stored_path=stored_path,
-            entry=entry,
-            pdf_path=explicit_path,
-            force=force_reparse,
-        )
+        return _legacy_action_from_decision(run_dir, decision, pdf_path=explicit_path)
 
     if re.search(r"sources/[^ \t\r\n]+\.pdf", user_input, re.IGNORECASE):
         return {
             "action": "missing",
             "message": "没有找到这个 PDF 路径。请检查 `sources/...pdf` 是否和 SourceReferences 中的 path 完全一致。",
+            "action_decision": decision,
         }
 
-    recent_pdf_sources = [
-        source
-        for source in (recent_sources or [])
-        if source.get("kind") == "paper_pdf" and source.get("stored_path")
-    ]
-    pdf_sources = list_pdf_source_entries(run_dir)
-    pending = [source for source in pdf_sources if source.get("status") == "uploaded_not_parsed"]
-    parsed = [source for source in pdf_sources if source.get("status") == "parsed"]
-    has_single_pending_context = len(recent_pdf_sources) == 1 or len(pending) == 1
-    has_single_pdf_context = len(recent_pdf_sources) == 1 or len(pending) == 1 or len(parsed) == 1
-    should_route_parse = (
-        detect_parse_intent(user_input)
-        or _has_parse_action(user_input)
-        or (_is_short_parse_confirmation(user_input) and has_single_pending_context)
-        or (force_reparse and has_single_pdf_context)
-    )
-    if not should_route_parse:
+    if (
+        decision.selected_action == "answer_directly"
+        and decision.response_mode == "empty_run_intake"
+        and not signal.mentions_paper
+        and not signal.mentions_repo
+        and not signal.requests_execution
+        and not signal.confirms_research_task
+    ):
         return {"action": "chat"}
 
-    if len(recent_pdf_sources) == 1:
-        stored_path = str(recent_pdf_sources[0]["stored_path"])
-        entry = find_source_entry_by_stored_path(run_dir, stored_path)
-        return _pdf_parse_action_for_source(
-            run_dir,
-            stored_path=stored_path,
-            entry=entry,
-            pdf_path=run_dir / stored_path,
-            force=force_reparse,
-        )
-    if len(recent_pdf_sources) > 1:
-        paths = "\n".join(f"- {source['stored_path']}" for source in recent_pdf_sources)
-        return {
-            "action": "choose",
-            "message": "你刚上传了多个 PDF，请指定要解析的一个：\n" + paths,
-        }
+    return _legacy_action_from_decision(run_dir, decision)
 
-    if len(pending) == 1:
-        stored_path = str(pending[0]["stored_path"])
-        return _pdf_parse_action_for_source(
-            run_dir,
-            stored_path=stored_path,
-            entry=pending[0],
-            pdf_path=run_dir / stored_path,
-            force=force_reparse,
-        )
-    if len(pending) > 1:
-        paths = "\n".join(f"- {source['stored_path']}" for source in pending)
-        return {
-            "action": "choose",
-            "message": "我看到多个尚未解析的 PDF，请指定其中一个路径：\n" + paths,
-        }
 
-    parsing = [source for source in pdf_sources if source.get("status") == "parsing"]
-    if parsing:
-        paths = "\n".join(f"- {source['stored_path']}" for source in parsing)
-        return {
-            "action": "already_parsing",
-            "message": "这些 PDF 正在解析中，请等待完成后再继续：\n" + paths,
-        }
-
-    if parsed:
-        if force_reparse and len(parsed) == 1:
-            stored_path = str(parsed[0]["stored_path"])
-            return _pdf_parse_action_for_source(
-                run_dir,
-                stored_path=stored_path,
-                entry=parsed[0],
-                pdf_path=run_dir / stored_path,
-                force=True,
-            )
-        if force_reparse and len(parsed) > 1:
-            paths = "\n".join(f"- {source['stored_path']}" for source in parsed)
+def _legacy_action_from_decision(run_dir: Path, decision: ActionDecision, *, pdf_path: Path | None = None) -> dict[str, Any]:
+    """Convert the v1.4 ActionDecision to the pre-existing UI action shape."""
+    base: dict[str, Any] = {"action_decision": decision}
+    if decision.selected_action == "parse_uploaded_pdf":
+        if not decision.stored_path:
+            return {**base, "action": "missing", "message": "当前没有可解析的 PDF。请先上传 PDF。"}
+        resolved_pdf = pdf_path or (run_dir / decision.stored_path)
+        if not resolved_pdf.is_file():
             return {
-                "action": "choose",
-                "message": "我看到多个已解析 PDF，请指定要重新解析的一个路径：\n" + paths,
+                **base,
+                "action": "missing",
+                "message": "没有找到这个 PDF 文件，请重新上传或检查 SourceReferences。",
             }
-        paths = "\n".join(f"- {source['stored_path']}" for source in parsed)
         return {
-            "action": "already_parsed",
-            "message": "这些 PDF 已解析，可直接基于已生成的 paper artifacts 讨论：\n" + paths,
+            **base,
+            "action": "parse",
+            "source_id": decision.source_id,
+            "stored_path": decision.stored_path,
+            "pdf_path": resolved_pdf,
         }
-
-    return {
-        "action": "missing",
-        "message": "当前没有可解析的 PDF。请先上传 PDF，或提供 `sources/...pdf` 路径。",
-    }
+    if decision.response_mode == "select_pdf_to_parse":
+        return {**base, "action": "choose", "message": render_response_for_decision(build_research_context_snapshot(run_dir), decision)}
+    if decision.response_mode == "uploaded_not_parsed_status" and not decision.stored_path:
+        return {**base, "action": "missing", "message": render_response_for_decision(build_research_context_snapshot(run_dir), decision)}
+    if decision.response_mode == "parsing_in_progress_status":
+        return {**base, "action": "already_parsing", "message": render_response_for_decision(build_research_context_snapshot(run_dir), decision)}
+    if decision.response_mode in {"parsed_artifact_summary", "parsed_artifact_insufficient"}:
+        return {**base, "action": "already_parsed", "message": render_response_for_decision(build_research_context_snapshot(run_dir), decision)}
+    if decision.response_mode == "parsing_failed_status":
+        return {**base, "action": "parse_failed", "message": render_response_for_decision(build_research_context_snapshot(run_dir), decision)}
+    if decision.response_mode == "execution_request_blocked":
+        return {**base, "action": "blocked", "message": render_response_for_decision(build_research_context_snapshot(run_dir), decision)}
+    return {**base, "action": "message", "message": render_response_for_decision(build_research_context_snapshot(run_dir), decision)}
 
 
 def _pdf_parse_action_for_source(
@@ -595,28 +562,69 @@ def _pdf_parse_action_for_source(
 
 def _execute_or_report_pdf_parse_action(run_dir: Path, action: dict[str, Any]) -> str:
     kind = action["action"]
+    decision: ActionDecision | None = action.get("action_decision")
     if kind == "parse":
         pdf_path = Path(action["pdf_path"])
         source_id = action.get("source_id")
+        if decision is not None:
+            append_action_decision(run_dir, decision.model_copy(update={"execution_status": "planned"}))
         if source_id:
             update_source_status(run_dir, str(source_id), "parsing")
         with st.spinner(f"正在解析 {pdf_path.name}，论文解析可能需要 5-10 分钟…"):
             result = _run_paper_intelligence(run_dir.name, pdf_path)
         if result["status"] == "parsed":
+            refreshed = build_research_context_snapshot(run_dir)
+            if refreshed.paper_artifact_quality != "usable":
+                err = "paper artifacts 质量不足，不能基于论文正文回答"
+                if source_id:
+                    update_source_status(run_dir, str(source_id), "failed", error_message=err)
+                if decision is not None:
+                    append_action_decision(
+                        run_dir,
+                        decision.model_copy(update={
+                            "execution_status": "executed_failed",
+                            "source_status_after": "parsing_failed",
+                            "error_code": "PAPER_ARTIFACTS_INSUFFICIENT",
+                            "user_visible_error": err,
+                        }),
+                    )
+                reply = f"⚠️ {pdf_path.name} 解析流程已完成，但生成的 paper artifacts 证据不足。当前不能基于论文正文作可靠判断。"
+                st.warning(reply)
+                return reply
             if source_id:
                 update_source_status(run_dir, str(source_id), "parsed")
-            reply = f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。后续回答将基于已生成的论文 artifacts。"
+            if decision is not None:
+                append_action_decision(
+                    run_dir,
+                    decision.model_copy(update={
+                        "execution_status": "executed_success",
+                        "source_status_after": "parsed",
+                    }),
+                )
+            reply = f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。后续回答将只基于可用 paper artifacts。"
             st.success(reply)
             return reply
         err = result.get("error", "未知错误")
         if source_id:
             update_source_status(run_dir, str(source_id), "failed", error_message=err)
+        if decision is not None:
+            append_action_decision(
+                run_dir,
+                decision.model_copy(update={
+                    "execution_status": "executed_failed",
+                    "source_status_after": "parsing_failed",
+                    "error_code": "PAPER_PARSE_FAILED",
+                    "user_visible_error": "PDF 解析未成功，请检查文件是否完整",
+                }),
+            )
         reply = f"❌ {pdf_path.name} 解析失败：{err}"
         st.error(reply)
         return reply
 
     message = str(action["message"])
-    if kind in {"missing", "choose"}:
+    if decision is not None:
+        append_action_decision(run_dir, decision)
+    if kind in {"missing", "choose", "parse_failed", "blocked"}:
         st.warning(message)
     else:
         st.info(message)
@@ -1010,6 +1018,8 @@ def build_research_assistant_overview(
                 "approvals/patch_approval.json",
                 "approvals/run_approval.json",
                 "approval_gate_report.json",
+                "ui_chat/research_context_snapshot.json",
+                "ui_chat/action_decisions.jsonl",
             ],
         },
     }
@@ -1159,6 +1169,7 @@ def build_developer_info_payload(
         "artifact_dir": str(run_dir),
         "approval_gate_status": build_hitl_gate_status_rows(run_dir),
         "llm_context_available": context_data is not None,
+        "action_decisions": str(run_dir / "ui_chat" / "action_decisions.jsonl"),
     }
 
 
