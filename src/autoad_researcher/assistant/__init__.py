@@ -21,6 +21,17 @@ from autoad_researcher.assistant.runtime import (
     FakeIntentAlignmentBackend,
     route_user_text,
 )
+from autoad_researcher.assistant.task_artifacts import (
+    ASSISTANT_UNDERSTANDING_ARTIFACT,
+    CHAT_TRANSCRIPT_ARTIFACT,
+    TASK_CONFIRMED_JSON_ARTIFACT,
+    TASK_DRAFT_JSON_ARTIFACT,
+    TASK_DRAFT_MD_ARTIFACT,
+    USER_CORRECTIONS_ARTIFACT,
+    WHAT_WE_KNOW_ARTIFACT,
+    AssistantTaskArtifactService,
+    AssistantUnderstandingRecord,
+)
 from autoad_researcher.assistant.session_store import (
     AssistantTransitionRecord,
     SessionStore,
@@ -51,6 +62,15 @@ from autoad_researcher.assistant.prompt_registry import (
 )
 
 __all__ = [
+    "AssistantUnderstandingRecord",
+    "AssistantTaskArtifactService",
+    "WHAT_WE_KNOW_ARTIFACT",
+    "USER_CORRECTIONS_ARTIFACT",
+    "TASK_DRAFT_MD_ARTIFACT",
+    "TASK_DRAFT_JSON_ARTIFACT",
+    "TASK_CONFIRMED_JSON_ARTIFACT",
+    "CHAT_TRANSCRIPT_ARTIFACT",
+    "ASSISTANT_UNDERSTANDING_ARTIFACT",
     "StaticSchemaJSONClient",
     "SchemaBoundOutputError",
     "SchemaBoundLLMResult",

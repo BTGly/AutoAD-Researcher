@@ -159,3 +159,25 @@ ResearchTaskDraftV1
 
 A valid LLM response is only a candidate structured output. It does not write `research_task_confirmed.json`, does not set `ready_for_pipeline`, does not approve execution, and does not decide methods, algorithms, hyperparameters, patches, or variants.
 
+## 9. Round 6 Task Draft and Confirmation Artifacts
+
+Round 6 adds:
+
+```text
+src/autoad_researcher/assistant/task_artifacts.py
+tests/test_assistant_task_artifacts.py
+```
+
+The service writes the intent-alignment artifacts needed before a human Alpha:
+
+```text
+conversation/what_we_know.json
+conversation/assistant_understanding.jsonl
+conversation/user_corrections.jsonl
+task/research_task_draft.json
+task/research_task_draft.md
+task/research_task_confirmed.json
+```
+
+Confirmation means the research task boundary is accepted by the user. It sets `ready_for_pipeline=true` and writes `task/research_task_confirmed.json`, but it still sets `execution_approved=false`. Execution approval remains a separate gate outside the Assistant intent-alignment layer.
+
