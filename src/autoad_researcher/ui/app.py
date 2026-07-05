@@ -51,6 +51,11 @@ from autoad_researcher.ui.research_chat import render_research_chat
 
 _API_KEY_WIDGET_KEY = "_api_key_widget"
 _API_KEY_STATE_KEY = "_api_key_raw"
+_API_KEY_SOURCE_KEY = "_api_key_source"
+_API_KEY_ENV_DISABLED_KEY = "_api_key_env_disabled"
+_PROVIDER_API_KEY_ENV = "DEEPSEEK_API_KEY"
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_LOCAL_ENV_PATH = _PROJECT_ROOT / ".env"
 RUNS_ROOT = Path("runs")
 
 _DEFAULTS = {
@@ -64,9 +69,63 @@ _DEFAULTS = {
     "_task_create_name": "",
     "_task_rename_open": False,
     "_show_archived_tasks": False,
+    _API_KEY_SOURCE_KEY: "",
+    _API_KEY_ENV_DISABLED_KEY: False,
 }
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
+
+
+def _strip_env_value(raw: str) -> str:
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1].strip()
+    return value
+
+
+def _read_api_key_from_local_env(path: Path = _LOCAL_ENV_PATH) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator and key.strip() == _PROVIDER_API_KEY_ENV:
+            return _strip_env_value(value)
+    return ""
+
+
+def _load_api_key_from_environment() -> tuple[str, str]:
+    env_value = os.environ.get(_PROVIDER_API_KEY_ENV, "").strip()
+    if env_value:
+        return env_value, f"环境变量 {_PROVIDER_API_KEY_ENV}"
+
+    local_value = _read_api_key_from_local_env()
+    if local_value:
+        return local_value, "本地 .env"
+
+    return "", ""
+
+
+def _ensure_api_key_loaded() -> None:
+    if st.session_state.get(_API_KEY_STATE_KEY):
+        return
+    if st.session_state.get(_API_KEY_ENV_DISABLED_KEY):
+        return
+
+    api_key, source = _load_api_key_from_environment()
+    if not api_key:
+        return
+
+    st.session_state[_API_KEY_STATE_KEY] = api_key
+    st.session_state[_API_KEY_SOURCE_KEY] = source
+
+
+_ensure_api_key_loaded()
 
 
 def _generate_run_id() -> str:
@@ -275,16 +334,21 @@ if page == "1. 运行配置":
     )
     if api_key_val:
         st.session_state[_API_KEY_STATE_KEY] = api_key_val
+        st.session_state[_API_KEY_SOURCE_KEY] = "本页手动输入"
+        st.session_state[_API_KEY_ENV_DISABLED_KEY] = False
         st.success("✅ API Key 已注入 — 仅保存于本次会话内存，不会写入磁盘")
     elif st.session_state.get(_API_KEY_STATE_KEY):
-        st.success("✅ API Key 已保留 — 仅保存于本次会话内存，不会写入磁盘")
+        source = st.session_state.get(_API_KEY_SOURCE_KEY) or "本次会话"
+        st.success(f"✅ API Key 已从{source}加载 — 值不会显示，也不会写入仓库")
     else:
-        st.info("请输入 API Key，按回车确认")
+        st.info("未检测到 DEEPSEEK_API_KEY。可在本页输入，或写入本地 .env 后刷新页面。")
 
     if st.session_state.get(_API_KEY_STATE_KEY):
-        if st.button("清除 API Key"):
+        if st.button("清除本次会话 API Key"):
             st.session_state.pop(_API_KEY_STATE_KEY, None)
             st.session_state.pop(_API_KEY_WIDGET_KEY, None)
+            st.session_state[_API_KEY_SOURCE_KEY] = ""
+            st.session_state[_API_KEY_ENV_DISABLED_KEY] = True
             st.rerun()
 
     st.markdown("---")
@@ -316,9 +380,10 @@ if page == "1. 运行配置":
     with st.expander("终端复现命令"):
         active_run_id = _active_run_id()
         real_cmd = (
+            f"[ -f .env ] && set -a && source .env && set +a\n"
+            f": \"${{DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY in .env or environment}}\"\n"
             f"export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=\"{st.session_state.dataset_root}\"\n"
-            f"read -s -p \"DeepSeek API key: \" DEEPSEEK_API_KEY\n"
-            f"export DEEPSEEK_API_KEY\n\n"
+            f"\n"
             f"uv run autoad stage3-acceptance \\\n"
             f"  --run-id {active_run_id} \\\n"
             f"  --mode {st.session_state.mode} \\\n"
@@ -433,9 +498,10 @@ elif page == "2. 预检执行器":
     )
     active_run_id = _active_run_id()
     real_cmd = (
+        f"[ -f .env ] && set -a && source .env && set +a\n"
+        f": \"${{DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY in .env or environment}}\"\n"
         f"export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=\"{st.session_state.dataset_root}\"\n"
-        f"read -s -p \"DeepSeek API key: \" DEEPSEEK_API_KEY\n"
-        f"export DEEPSEEK_API_KEY\n\n"
+        f"\n"
         f"AUTOAD_L3_REAL_EXECUTION_ALLOWED=1 \\\n"
         f"uv run autoad stage3-acceptance \\\n"
         f"  --run-id {active_run_id} \\\n"

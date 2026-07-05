@@ -28,7 +28,7 @@ Opens at `http://localhost:8501`.
 ## Pages
 
 ### 1. 运行配置
-填写 API Key；可填写任务名称并创建新任务。系统仍生成内部 `run_id`，高级配置折叠。
+API Key 会优先从环境变量 `DEEPSEEK_API_KEY` 或本地 `.env` 自动加载；也可在页面手动输入作为本次会话覆盖。可填写任务名称并创建新任务。系统仍生成内部 `run_id`，高级配置折叠。
 
 ### 2. 预检执行器
 执行 `l3-preflight`。通过后显示下一步 checklist 和终端复现命令。

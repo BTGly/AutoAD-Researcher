@@ -20,8 +20,9 @@ cd workspace/repos/patchcore-inspection
 git status --short  # must be clean
 
 # 2. Set provider credentials (do not echo or commit this value)
-read -s -p "DeepSeek API key: " DEEPSEEK_API_KEY
-export DEEPSEEK_API_KEY
+# Preferred: keep DEEPSEEK_API_KEY in local .env (already gitignored), or export it in the shell.
+[ -f .env ] && set -a && source .env && set +a
+: "${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY in .env or environment}"
 
 # 3. Ensure dataset root
 export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=/root/autodl-tmp/mvtec

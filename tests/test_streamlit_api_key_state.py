@@ -21,3 +21,22 @@ def test_preflight_uses_persisted_raw_api_key_state():
     assert 'api_key = st.session_state.get(_API_KEY_STATE_KEY, "")' in source
     assert "api_key=api_key" in source
     assert "st.session_state[_API_KEY_STATE_KEY] = api_key_val" in source
+
+
+def test_ui_can_load_provider_api_key_from_environment_or_dotenv():
+    source = APP_SOURCE.read_text(encoding="utf-8")
+
+    assert '_PROVIDER_API_KEY_ENV = "DEEPSEEK_API_KEY"' in source
+    assert "_read_api_key_from_local_env" in source
+    assert "_load_api_key_from_environment" in source
+    assert "_ensure_api_key_loaded()" in source
+    assert "os.environ.get(_PROVIDER_API_KEY_ENV" in source
+    assert "_LOCAL_ENV_PATH" in source
+
+
+def test_terminal_reproduction_commands_source_dotenv_without_prompting_for_key():
+    source = APP_SOURCE.read_text(encoding="utf-8")
+
+    assert "[ -f .env ] && set -a && source .env && set +a" in source
+    assert "Set DEEPSEEK_API_KEY in .env or environment" in source
+    assert "read -s -p" not in source
