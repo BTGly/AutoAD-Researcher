@@ -8,6 +8,7 @@ import pytest
 from autoad_researcher.ui.sources import (
     append_source_ref,
     find_source_by_stored_path,
+    get_allowed_local_source_roots,
     get_source_context,
     load_source_registry,
     register_local_file_source,
@@ -74,7 +75,8 @@ class TestSaveUploadedFile:
 
 
 class TestRegisterLocalFileSource:
-    def test_registers_server_local_pdf(self, tmp_path):
+    def test_registers_server_local_pdf(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
         pdf = tmp_path / "2303.15140v2.pdf"
@@ -91,7 +93,8 @@ class TestRegisterLocalFileSource:
         assert reg["sources"][0]["source_id"] == info["source_id"]
         assert reg["sources"][0]["status"] == "uploaded_not_parsed"
 
-    def test_registers_markdown(self, tmp_path):
+    def test_registers_markdown(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
         doc = tmp_path / "notes.md"
@@ -101,7 +104,8 @@ class TestRegisterLocalFileSource:
 
         assert info["kind"] == "markdown"
 
-    def test_registers_text(self, tmp_path):
+    def test_registers_text(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
         doc = tmp_path / "notes.txt"
@@ -111,21 +115,85 @@ class TestRegisterLocalFileSource:
 
         assert info["kind"] == "text"
 
-    def test_rejects_missing_file(self, tmp_path):
+    def test_rejects_missing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
 
-        with pytest.raises(ValueError, match="does not exist"):
+        with pytest.raises(ValueError, match="不是可注册的资料文件"):
             register_local_file_source(run_dir, tmp_path / "missing.pdf")
 
-    def test_rejects_unsupported_file_type(self, tmp_path):
+    def test_rejects_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        src = tmp_path / "paper.pdf"
+        src.mkdir()
+
+        with pytest.raises(ValueError, match="不是可注册的资料文件"):
+            register_local_file_source(run_dir, src)
+
+    def test_rejects_unsupported_file_type(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
         src = tmp_path / "archive.zip"
         src.write_bytes(b"zip")
 
-        with pytest.raises(ValueError, match="unsupported"):
+        with pytest.raises(ValueError, match="仅支持"):
             register_local_file_source(run_dir, src)
+
+    def test_default_allowed_root_includes_ai4s(self, monkeypatch):
+        monkeypatch.delenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", raising=False)
+        roots = get_allowed_local_source_roots()
+        assert Path("/root/autodl-tmp/AI4S").resolve() in roots
+
+    def test_rejects_allowlist_outside_path(self, tmp_path, monkeypatch):
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        run_dir = tmp_path / "run_test"
+        allowed.mkdir()
+        outside.mkdir()
+        run_dir.mkdir()
+        pdf = outside / "paper.pdf"
+        pdf.write_bytes(b"%PDF outside")
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(allowed))
+
+        with pytest.raises(ValueError, match="不在允许的资料目录内"):
+            register_local_file_source(run_dir, pdf)
+
+    def test_rejects_symlink_escape(self, tmp_path, monkeypatch):
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        run_dir = tmp_path / "run_test"
+        allowed.mkdir()
+        outside.mkdir()
+        run_dir.mkdir()
+        target = outside / "paper.pdf"
+        target.write_bytes(b"%PDF outside")
+        link = allowed / "linked.pdf"
+        link.symlink_to(target)
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(allowed))
+
+        with pytest.raises(ValueError, match="不在允许的资料目录内"):
+            register_local_file_source(run_dir, link)
+
+    def test_env_allowed_roots_are_colon_separated(self, tmp_path, monkeypatch):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        run_dir = tmp_path / "run_test"
+        first.mkdir()
+        second.mkdir()
+        run_dir.mkdir()
+        pdf = second / "paper.pdf"
+        pdf.write_bytes(b"%PDF second")
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", f"{first}:{second}")
+
+        roots = get_allowed_local_source_roots()
+        assert first.resolve() in roots
+        assert second.resolve() in roots
+        info = register_local_file_source(run_dir, pdf)
+        assert info["kind"] == "paper_pdf"
 
 
 class TestSourceRegistry:

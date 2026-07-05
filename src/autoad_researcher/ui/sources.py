@@ -12,6 +12,7 @@ experiments.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,8 @@ SourceKind = Literal[
 
 SOURCES_DIR = "sources"
 REGISTRY_FILE = "source_references.json"
+DEFAULT_LOCAL_SOURCE_ROOT = Path("/root/autodl-tmp/AI4S")
+LOCAL_SOURCE_ROOTS_ENV = "AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS"
 
 
 def _resolve_sources_dir(run_dir: Path) -> Path:
@@ -155,7 +158,26 @@ def _source_kind_for_name(name: str) -> SourceKind:
         return "markdown"
     if ext == ".txt":
         return "text"
-    raise ValueError("unsupported source file type; expected PDF, txt, md, or markdown")
+    raise ValueError("仅支持 PDF/txt/md/markdown")
+
+
+def get_allowed_local_source_roots() -> list[Path]:
+    """Return resolved roots allowed for server-local source intake."""
+    raw = os.environ.get(LOCAL_SOURCE_ROOTS_ENV)
+    if raw:
+        roots = [Path(part).expanduser().resolve() for part in raw.split(":") if part.strip()]
+        return roots or [DEFAULT_LOCAL_SOURCE_ROOT.resolve()]
+    return [DEFAULT_LOCAL_SOURCE_ROOT.resolve()]
+
+
+def _is_under_allowed_local_source_root(path: Path, allowed_roots: list[Path]) -> bool:
+    for root in allowed_roots:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
 
 
 def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
@@ -201,8 +223,10 @@ def register_local_file_source(run_dir: Path, source_path: str | Path) -> dict[s
     it does not parse, download, clone, or execute anything.
     """
     src = Path(source_path).expanduser().resolve()
+    if not _is_under_allowed_local_source_root(src, get_allowed_local_source_roots()):
+        raise ValueError("该路径不在允许的资料目录内")
     if not src.is_file():
-        raise ValueError("local source file does not exist")
+        raise ValueError("该路径不是可注册的资料文件")
 
     name = src.name
     if not name:

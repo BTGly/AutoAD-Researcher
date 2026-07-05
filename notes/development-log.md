@@ -17,3 +17,4 @@
 | 2026-06-26 | [2026-06-26.md](2026-06-26.md) | P0 `repo_clean`: validate dirty diff SHA against variant workspace patch before allowing intake; 5 new tests via temp git repos; L3 full rehearsal completed; ScientificValidityReport wired; Phase 1 Streamlit UI; REFERENCES.md |
 | 2026-07-03 | [2026-07-03.md](2026-07-03.md) | Streamlit L3 UI API key state fix; Phase 2B intent draft/confirmation; Phase 2C approval gate enforcement |
 | 2026-07-04 | [2026-07-04.md](2026-07-04.md) | AutoAD Assistant Prompt Architecture v0.1 and prompt registry foundation |
+| 2026-07-05 | [2026-07-05.md](2026-07-05.md) | Server-local Source Intake allowlist boundary for `/root/autodl-tmp/AI4S` and `AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS` |
