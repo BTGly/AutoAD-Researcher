@@ -12,6 +12,7 @@ experiments.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -146,6 +147,17 @@ def get_source_context(run_dir: Path) -> str:
 # ── file upload ──
 
 
+def _source_kind_for_name(name: str) -> SourceKind:
+    ext = Path(name).suffix.lower()
+    if ext == ".pdf":
+        return "paper_pdf"
+    if ext in (".md", ".markdown"):
+        return "markdown"
+    if ext == ".txt":
+        return "text"
+    raise ValueError("unsupported source file type; expected PDF, txt, md, or markdown")
+
+
 def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
     """Save an uploaded file to runs/{run_id}/sources/ and record in registry.
 
@@ -155,14 +167,7 @@ def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
     name = Path(str(uploaded_file.name)).name
     if not name:
         raise ValueError("uploaded file name must not be empty")
-    kind: SourceKind
-    ext = Path(name).suffix.lower()
-    if ext == ".pdf":
-        kind = "paper_pdf"
-    elif ext in (".md", ".markdown"):
-        kind = "markdown"
-    else:
-        kind = "text"
+    kind = _source_kind_for_name(name)
 
     source_id = _generate_source_id()
     dest_dir = _resolve_sources_dir(run_dir) / source_id
@@ -173,6 +178,44 @@ def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
     dest_path.write_bytes(content)
 
     stored_path = str(dest_path.relative_to(run_dir))
+    append_source_ref(
+        run_dir,
+        kind=kind,
+        user_label=name,
+        stored_path=stored_path,
+        status="uploaded_not_parsed",
+        source_id=source_id,
+    )
+    return {
+        "source_id": source_id,
+        "stored_path": stored_path,
+        "kind": kind,
+    }
+
+
+def register_local_file_source(run_dir: Path, source_path: str | Path) -> dict[str, Any]:
+    """Copy an existing server-local source file into runs/{run_id}/sources/.
+
+    This is for remote-server workflows where the PDF already exists on disk
+    and browser upload is the wrong UX. It only registers supported local files;
+    it does not parse, download, clone, or execute anything.
+    """
+    src = Path(source_path).expanduser().resolve()
+    if not src.is_file():
+        raise ValueError("local source file does not exist")
+
+    name = src.name
+    if not name:
+        raise ValueError("local source file name must not be empty")
+    kind = _source_kind_for_name(name)
+
+    source_id = _generate_source_id()
+    dest_dir = _resolve_sources_dir(run_dir) / source_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / name
+    shutil.copyfile(src, dest_path)
+
+    stored_path = dest_path.relative_to(run_dir).as_posix()
     append_source_ref(
         run_dir,
         kind=kind,

@@ -48,6 +48,7 @@ from autoad_researcher.ui.sources import (
     find_source_entry_by_stored_path,
     get_source_context,
     list_pdf_source_entries,
+    register_local_file_source,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
     update_source_status,
@@ -124,6 +125,21 @@ def render_research_chat():
             st.success(f"✅ 已保存：{uploaded.name}")
             st.caption(f"上传后你可以在聊天框中说：读一下 {info['stored_path']}")
             st.rerun()
+
+        local_path = st.text_input(
+            "服务器本地文件路径",
+            placeholder="/root/autodl-tmp/AI4S/2303.15140v2.pdf",
+            key="_source_local_path",
+        )
+        if st.button("添加本地文件", type="secondary", disabled=not local_path.strip()):
+            try:
+                info = register_local_file_source(run_dir, local_path.strip())
+            except Exception as exc:
+                st.error(f"添加失败：{exc}")
+            else:
+                st.success(f"✅ 已添加：{info['stored_path']}")
+                st.caption(f"现在可以在聊天框中说：读一下 {info['stored_path']}")
+                st.rerun()
 
         src_ctx = get_source_context(run_dir)
         if src_ctx:

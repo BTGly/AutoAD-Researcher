@@ -10,6 +10,7 @@ from autoad_researcher.ui.sources import (
     find_source_by_stored_path,
     get_source_context,
     load_source_registry,
+    register_local_file_source,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
     update_source_status,
@@ -70,6 +71,61 @@ class TestSaveUploadedFile:
         assert reg["sources"][0]["source_id"] == info["source_id"]
         assert info["stored_path"].startswith("sources/" + info["source_id"])
         assert info["stored_path"].endswith("SimpleNet.pdf")
+
+
+class TestRegisterLocalFileSource:
+    def test_registers_server_local_pdf(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        pdf = tmp_path / "2303.15140v2.pdf"
+        pdf.write_bytes(b"%PDF fake")
+
+        info = register_local_file_source(run_dir, pdf)
+
+        assert info["kind"] == "paper_pdf"
+        assert info["stored_path"].endswith("/2303.15140v2.pdf")
+        copied = run_dir / info["stored_path"]
+        assert copied.is_file()
+        assert copied.read_bytes() == b"%PDF fake"
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["source_id"] == info["source_id"]
+        assert reg["sources"][0]["status"] == "uploaded_not_parsed"
+
+    def test_registers_markdown(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        doc = tmp_path / "notes.md"
+        doc.write_text("# Notes", encoding="utf-8")
+
+        info = register_local_file_source(run_dir, doc)
+
+        assert info["kind"] == "markdown"
+
+    def test_registers_text(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        doc = tmp_path / "notes.txt"
+        doc.write_text("notes", encoding="utf-8")
+
+        info = register_local_file_source(run_dir, str(doc))
+
+        assert info["kind"] == "text"
+
+    def test_rejects_missing_file(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        with pytest.raises(ValueError, match="does not exist"):
+            register_local_file_source(run_dir, tmp_path / "missing.pdf")
+
+    def test_rejects_unsupported_file_type(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        src = tmp_path / "archive.zip"
+        src.write_bytes(b"zip")
+
+        with pytest.raises(ValueError, match="unsupported"):
+            register_local_file_source(run_dir, src)
 
 
 class TestSourceRegistry:
