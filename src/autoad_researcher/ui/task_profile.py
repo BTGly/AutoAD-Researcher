@@ -22,6 +22,7 @@ _TASK_SUMMARY_MAX_CHARS = 200
 _SK_SECRET_PATTERN = re.compile(r"sk-[a-zA-Z0-9]{8,}")
 _RUN_ID_PREFIX_PATTERN = re.compile(r"^run_\d{8}_\d{4}", re.IGNORECASE)
 _TASK_PROFILE_FILENAME = "task_profile.json"
+_TASK_ARCHIVE_FILENAME = "task_archive.json"
 _SLUG_PATTERN = re.compile(r"[^a-z0-9_.-]+")
 
 
@@ -68,6 +69,16 @@ class TaskListItem(BaseModel):
     run_dir: Path
     source: Literal["profile", "fallback"] = "fallback"
     profile_warning: str | None = None
+    archived_at: datetime | None = None
+
+
+class TaskArchiveState(BaseModel):
+    """Non-destructive archive marker for hiding tasks from the default picker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    archived_at: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +88,10 @@ class TaskListItem(BaseModel):
 
 def _profile_path(run_dir: Path) -> Path:
     return run_dir / "ui_chat" / _TASK_PROFILE_FILENAME
+
+
+def _archive_path(run_dir: Path) -> Path:
+    return run_dir / "ui_chat" / _TASK_ARCHIVE_FILENAME
 
 
 def load_task_profile(run_dir: Path) -> TaskProfile | None:
@@ -94,6 +109,43 @@ def safe_load_task_profile(run_dir: Path) -> tuple[TaskProfile | None, str | Non
         return load_task_profile(run_dir), None
     except Exception as exc:
         return None, f"task_profile_invalid:{type(exc).__name__}"
+
+
+def load_task_archive_state(run_dir: Path) -> TaskArchiveState | None:
+    """Return the archive marker, or None if this task is not archived."""
+    path = _archive_path(run_dir)
+    if not path.is_file():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return TaskArchiveState.model_validate(raw)
+
+
+def safe_load_task_archive_state(run_dir: Path) -> tuple[TaskArchiveState | None, str | None]:
+    """Return an archive marker without raising on corrupt archive metadata."""
+    try:
+        return load_task_archive_state(run_dir), None
+    except Exception as exc:
+        return None, f"task_archive_invalid:{type(exc).__name__}"
+
+
+def archive_task(*, run_dir: Path, archived_at: datetime) -> TaskArchiveState:
+    """Hide a task from the default picker without deleting its artifacts."""
+    state = TaskArchiveState(archived_at=archived_at)
+    path = _archive_path(run_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return state
+
+
+def restore_task(*, run_dir: Path) -> None:
+    """Remove the archive marker so the task appears in the default picker."""
+    path = _archive_path(run_dir)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
 
 
 def save_task_profile(run_dir: Path, profile: TaskProfile) -> Path:
@@ -175,7 +227,7 @@ def rename_task_title(*, run_dir: Path, new_title: str, updated_at: datetime) ->
     return profile
 
 
-def list_all_tasks(*, runs_root: Path) -> list[TaskListItem]:
+def list_all_tasks(*, runs_root: Path, include_archived: bool = False) -> list[TaskListItem]:
     """Scan one-level run directories for UI task selection."""
     if not runs_root.is_dir():
         return []
@@ -186,6 +238,14 @@ def list_all_tasks(*, runs_root: Path) -> list[TaskListItem]:
             continue
         profile_path = _profile_path(run_dir)
         profile, warning = safe_load_task_profile(run_dir)
+        archive_state, archive_warning = safe_load_task_archive_state(run_dir)
+        if archive_warning and warning:
+            warning = f"{warning};{archive_warning}"
+        elif archive_warning:
+            warning = archive_warning
+        archived_at = archive_state.archived_at if archive_state else None
+        if archived_at is not None and not include_archived:
+            continue
 
         if profile is not None:
             item = TaskListItem(
@@ -197,6 +257,7 @@ def list_all_tasks(*, runs_root: Path) -> list[TaskListItem]:
                 run_dir=run_dir,
                 source="profile",
                 profile_warning=warning,
+                archived_at=archived_at,
             )
         else:
             mtime = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=timezone.utc)
@@ -209,6 +270,7 @@ def list_all_tasks(*, runs_root: Path) -> list[TaskListItem]:
                 run_dir=run_dir,
                 source="fallback",
                 profile_warning=warning,
+                archived_at=archived_at,
             )
         items.append(item)
 
@@ -220,9 +282,10 @@ def list_all_tasks(*, runs_root: Path) -> list[TaskListItem]:
 
 def format_task_list_label(item: TaskListItem) -> str:
     stamp = item.updated_at or item.created_at
+    suffix = " · 已归档" if item.archived_at is not None else ""
     if stamp is None:
-        return item.task_title
-    return f"{item.task_title} ({stamp.strftime('%Y-%m-%d %H:%M')})"
+        return f"{item.task_title}{suffix}"
+    return f"{item.task_title} ({stamp.strftime('%Y-%m-%d %H:%M')}){suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +418,11 @@ def get_task_title(run_dir: Path) -> str:
 def get_task_display_info(run_dir: Path) -> dict[str, Any]:
     """Return a dict with task_title, task_summary, run_id, and artifact_dir for UI rendering."""
     profile, warning = safe_load_task_profile(run_dir)
+    archive_state, archive_warning = safe_load_task_archive_state(run_dir)
+    if archive_warning and warning:
+        warning = f"{warning};{archive_warning}"
+    elif archive_warning:
+        warning = archive_warning
     if profile is not None:
         task_title = profile.task_title
         task_summary = profile.task_summary
@@ -372,6 +440,7 @@ def get_task_display_info(run_dir: Path) -> dict[str, Any]:
         "task_summary": task_summary,
         "task_source": task_source,
         "task_profile_warning": warning,
+        "archived_at": archive_state.archived_at if archive_state else None,
         "run_id": run_id,
         "artifact_dir": str(run_dir),
     }

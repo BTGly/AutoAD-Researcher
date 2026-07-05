@@ -15,6 +15,7 @@ except ModuleNotFoundError:
 
 from autoad_researcher.ui.task_profile import (
     TaskProfile,
+    archive_task,
     build_run_id_from_optional_name,
     create_task_profile,
     fallback_task_profile,
@@ -22,9 +23,11 @@ from autoad_researcher.ui.task_profile import (
     generate_task_profile_from_first_message,
     get_task_display_info,
     get_task_title,
+    load_task_archive_state,
     list_all_tasks,
     load_task_profile,
     rename_task_title,
+    restore_task,
     safe_load_task_profile,
     save_task_profile,
     slugify_task_name,
@@ -315,6 +318,54 @@ class TestTaskListing:
         item = list_all_tasks(runs_root=tmp_path)[0]
         assert format_task_list_label(item) == "Label Task (2026-07-05 08:00)"
 
+    def test_archived_task_hidden_by_default(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_archived")
+        archive_task(
+            run_dir=run_dir,
+            archived_at=datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc),
+        )
+
+        assert list_all_tasks(runs_root=tmp_path) == []
+        items = list_all_tasks(runs_root=tmp_path, include_archived=True)
+        assert len(items) == 1
+        assert items[0].run_id == "run_archived"
+        assert items[0].archived_at == datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
+
+    def test_restore_task_removes_archive_marker(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_restore")
+        archive_task(
+            run_dir=run_dir,
+            archived_at=datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc),
+        )
+
+        restore_task(run_dir=run_dir)
+
+        assert load_task_archive_state(run_dir) is None
+        assert list_all_tasks(runs_root=tmp_path)[0].run_id == "run_restore"
+
+    def test_archived_label_marks_task(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_archived_label")
+        archive_task(
+            run_dir=run_dir,
+            archived_at=datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc),
+        )
+
+        item = list_all_tasks(runs_root=tmp_path, include_archived=True)[0]
+
+        assert "已归档" in format_task_list_label(item)
+
+    def test_bad_archive_state_does_not_hide_or_crash(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_bad_archive")
+        archive_path = run_dir / "ui_chat" / "task_archive.json"
+        archive_path.parent.mkdir()
+        archive_path.write_text("{not json", encoding="utf-8")
+
+        items = list_all_tasks(runs_root=tmp_path)
+
+        assert len(items) == 1
+        assert items[0].run_id == "run_bad_archive"
+        assert "task_archive_invalid" in items[0].profile_warning
+
 
 # ---------------------------------------------------------------------------
 # fallback
@@ -380,6 +431,15 @@ class TestUIHelpers:
         assert info["task_title"] == "run_bad_current"
         assert info["task_source"] == "fallback"
         assert info["task_profile_warning"] == "task_profile_invalid:JSONDecodeError"
+
+    def test_get_display_info_includes_archive_state(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_archived_info")
+        archived_at = datetime(2026, 7, 5, 10, 0, tzinfo=timezone.utc)
+        archive_task(run_dir=run_dir, archived_at=archived_at)
+
+        info = get_task_display_info(run_dir)
+
+        assert info["archived_at"] == archived_at
 
     def test_legacy_run_fallback_display_matches_task_picker(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path, "run_legacy_consistent")

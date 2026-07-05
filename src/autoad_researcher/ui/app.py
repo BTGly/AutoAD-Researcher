@@ -36,12 +36,14 @@ from autoad_researcher.ui.artifact_viewer import (
     summarize_final_status,
 )
 from autoad_researcher.ui.task_profile import (
+    archive_task,
     build_run_id_from_optional_name,
     create_task_profile,
     format_task_list_label,
     get_task_display_info,
     list_all_tasks,
     rename_task_title,
+    restore_task,
 )
 from autoad_researcher.ui.run_commands import run_preflight
 from autoad_researcher.ui.research_chat import render_research_chat
@@ -60,6 +62,7 @@ _DEFAULTS = {
     "_browse_run_id": "",
     "_task_create_name": "",
     "_task_rename_open": False,
+    "_show_archived_tasks": False,
 }
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -120,6 +123,18 @@ def create_named_task(task_name: str | None = None) -> str:
     return run_id
 
 
+def select_fallback_task_after_archive(archived_run_id: str) -> None:
+    """Move the UI away from a task that was just archived."""
+    visible_tasks = [task for task in list_all_tasks(runs_root=RUNS_ROOT) if task.run_id != archived_run_id]
+    if visible_tasks:
+        switch_active_task(visible_tasks[0].run_id)
+        return
+    reset_task_scoped_session_state()
+    run_id = _generate_run_id()
+    st.session_state._browse_run_id = run_id
+    st.session_state._run_id_hash = run_id
+
+
 def _resolve_task_run_dir() -> Path | None:
     """Return the Path for the currently browsed run_id, or None."""
     run_id = _active_run_id()
@@ -159,7 +174,11 @@ page = st.sidebar.radio("页面导航", PAGES, index=0)
 st.sidebar.markdown("---")
 
 # Determine active run_id BEFORE rendering task identity
-_tasks = list_all_tasks(runs_root=RUNS_ROOT)
+st.sidebar.checkbox("显示已归档任务", key="_show_archived_tasks")
+_tasks = list_all_tasks(
+    runs_root=RUNS_ROOT,
+    include_archived=bool(st.session_state.get("_show_archived_tasks", False)),
+)
 _task_ids = [task.run_id for task in _tasks]
 _task_by_id = {task.run_id: task for task in _tasks}
 if _task_ids:
@@ -190,6 +209,8 @@ _info = get_task_display_info(_run_dir) if _run_dir else None
 if _info:
     st.sidebar.markdown(f"**当前任务**  \n{_info['task_title']}")
     st.sidebar.caption(_info["task_summary"])
+    if _info.get("archived_at") is not None:
+        st.sidebar.warning("此任务已归档。")
     if _info["task_source"] == "fallback":
         st.sidebar.caption("💡 在「研究助手」中描述研究目标后，系统会自动生成任务名。")
     if st.sidebar.button("✏️ 重命名任务", key="_open_task_rename"):
@@ -204,6 +225,18 @@ if _info:
             else:
                 st.session_state._task_rename_open = False
                 st.rerun()
+    if not _run_dir.is_dir():
+        st.sidebar.caption("当前任务尚未产生制品，无需归档。")
+    elif _info.get("archived_at") is None:
+        if st.sidebar.button("归档任务", key="_archive_task"):
+            archive_task(run_dir=_run_dir, archived_at=datetime.now(timezone.utc))
+            select_fallback_task_after_archive(_info["run_id"])
+            st.rerun()
+        st.sidebar.caption("归档只会从默认任务列表隐藏，不会删除 runs/ 制品。")
+    else:
+        if st.sidebar.button("恢复任务", key="_restore_task"):
+            restore_task(run_dir=_run_dir)
+            st.rerun()
     with st.sidebar.expander("高级信息"):
         st.caption(f"run_id: `{_info['run_id']}`")
         st.caption(f"制品目录: `{_info['artifact_dir']}/`")
