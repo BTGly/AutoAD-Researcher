@@ -189,18 +189,19 @@ def build_research_chat_messages(
     ]
 
     if mode == "intent_clarification":
+        www_json = "{}"
         try:
             www = silent_probe(run_dir.name, runs_root=run_dir.parent)
             www_json = www.model_dump_json(indent=2)
-            messages.append({
-                "role": "system",
-                "content": (
-                    "WhatWeKnow（已有 artifact 探测结果，仅作为候选/证据，不等于用户确认）:\n"
-                    + www_json
-                ),
-            })
         except Exception:
             pass
+        messages.append({
+            "role": "system",
+            "content": (
+                "WhatWeKnow（已有 artifact 探测结果，仅作为候选/证据，不等于用户确认）:\n"
+                + www_json
+            ),
+        })
 
     messages.append({"role": "system", "content": "当前运行上下文:\n" + context_str})
     messages.append({"role": "user", "content": user_input})

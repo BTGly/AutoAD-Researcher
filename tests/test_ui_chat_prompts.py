@@ -53,6 +53,13 @@ class TestIntentClarificationPrompt:
         assert "不代表允许修改代码" in INTENT_CLARIFICATION_PROMPT
         assert "不代表" in INTENT_CLARIFICATION_PROMPT
 
+    def test_no_hardcoded_benchmark_sentence_anywhere(self):
+        """Old hardcoded patterns must not return anywhere in the prompt."""
+        assert "当前项目内部 benchmark 基于" not in INTENT_CLARIFICATION_PROMPT
+        assert "数据集：MVTec AD" not in INTENT_CLARIFICATION_PROMPT
+        assert "基线模型：PatchCore" not in INTENT_CLARIFICATION_PROMPT
+        assert "评估指标：instance_auroc" not in INTENT_CLARIFICATION_PROMPT
+
 
 class TestBuildResearchChatMessages:
     """Verify that intent_clarification messages include WhatWeKnow."""
@@ -105,3 +112,5 @@ class TestBuildResearchChatMessages:
         )
 
         assert len(messages) >= 3
+        www_msgs = [m for m in messages if "已有 artifact 探测结果" in m["content"]]
+        assert len(www_msgs) == 1
