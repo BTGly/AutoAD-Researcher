@@ -26,12 +26,19 @@ def test_preflight_uses_persisted_raw_api_key_state():
 def test_ui_can_load_provider_api_key_from_environment_or_dotenv():
     source = APP_SOURCE.read_text(encoding="utf-8")
 
-    assert '_PROVIDER_API_KEY_ENV = "DEEPSEEK_API_KEY"' in source
-    assert "_read_api_key_from_local_env" in source
-    assert "_load_api_key_from_environment" in source
+    assert "PROVIDER_API_KEY_ENV" in source
+    assert "load_api_key_from_environment" in source
     assert "_ensure_api_key_loaded()" in source
-    assert "os.environ.get(_PROVIDER_API_KEY_ENV" in source
-    assert "_LOCAL_ENV_PATH" in source
+    assert "LOCAL_ENV_PATH" in source
+
+
+def test_ui_can_save_manually_entered_key_to_local_dotenv():
+    source = APP_SOURCE.read_text(encoding="utf-8")
+
+    assert "save_api_key_to_local_env" in source
+    assert "保存到本地 .env，下次自动加载" in source
+    assert "mask_api_key" in source
+    assert "os.environ[PROVIDER_API_KEY_ENV]" in source
 
 
 def test_terminal_reproduction_commands_source_dotenv_without_prompting_for_key():

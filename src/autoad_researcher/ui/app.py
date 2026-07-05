@@ -46,6 +46,13 @@ from autoad_researcher.ui.task_profile import (
     restore_task,
     delete_archived_task,
 )
+from autoad_researcher.ui.api_key_store import (
+    LOCAL_ENV_PATH,
+    PROVIDER_API_KEY_ENV,
+    load_api_key_from_environment,
+    mask_api_key,
+    save_api_key_to_local_env,
+)
 from autoad_researcher.ui.run_commands import run_preflight
 from autoad_researcher.ui.research_chat import render_research_chat
 
@@ -53,9 +60,6 @@ _API_KEY_WIDGET_KEY = "_api_key_widget"
 _API_KEY_STATE_KEY = "_api_key_raw"
 _API_KEY_SOURCE_KEY = "_api_key_source"
 _API_KEY_ENV_DISABLED_KEY = "_api_key_env_disabled"
-_PROVIDER_API_KEY_ENV = "DEEPSEEK_API_KEY"
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_LOCAL_ENV_PATH = _PROJECT_ROOT / ".env"
 RUNS_ROOT = Path("runs")
 
 _DEFAULTS = {
@@ -76,48 +80,13 @@ for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
 
-def _strip_env_value(raw: str) -> str:
-    value = raw.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1].strip()
-    return value
-
-
-def _read_api_key_from_local_env(path: Path = _LOCAL_ENV_PATH) -> str:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        key, separator, value = stripped.partition("=")
-        if separator and key.strip() == _PROVIDER_API_KEY_ENV:
-            return _strip_env_value(value)
-    return ""
-
-
-def _load_api_key_from_environment() -> tuple[str, str]:
-    env_value = os.environ.get(_PROVIDER_API_KEY_ENV, "").strip()
-    if env_value:
-        return env_value, f"环境变量 {_PROVIDER_API_KEY_ENV}"
-
-    local_value = _read_api_key_from_local_env()
-    if local_value:
-        return local_value, "本地 .env"
-
-    return "", ""
-
-
 def _ensure_api_key_loaded() -> None:
     if st.session_state.get(_API_KEY_STATE_KEY):
         return
     if st.session_state.get(_API_KEY_ENV_DISABLED_KEY):
         return
 
-    api_key, source = _load_api_key_from_environment()
+    api_key, source = load_api_key_from_environment()
     if not api_key:
         return
 
@@ -336,20 +305,36 @@ if page == "1. 运行配置":
         st.session_state[_API_KEY_STATE_KEY] = api_key_val
         st.session_state[_API_KEY_SOURCE_KEY] = "本页手动输入"
         st.session_state[_API_KEY_ENV_DISABLED_KEY] = False
-        st.success("✅ API Key 已注入 — 仅保存于本次会话内存，不会写入磁盘")
+        st.success(f"✅ API Key 已注入 — 当前使用 {mask_api_key(api_key_val)}，仅保存于本次会话内存")
     elif st.session_state.get(_API_KEY_STATE_KEY):
         source = st.session_state.get(_API_KEY_SOURCE_KEY) or "本次会话"
-        st.success(f"✅ API Key 已从{source}加载 — 值不会显示，也不会写入仓库")
+        st.success(
+            f"✅ API Key 已从{source}加载 — 当前使用 {mask_api_key(st.session_state[_API_KEY_STATE_KEY])}，值不会显示"
+        )
     else:
-        st.info("未检测到 DEEPSEEK_API_KEY。可在本页输入，或写入本地 .env 后刷新页面。")
+        st.info(f"未检测到 {PROVIDER_API_KEY_ENV}。可在本页输入，或保存到本地 .env 后下次自动加载。")
 
     if st.session_state.get(_API_KEY_STATE_KEY):
-        if st.button("清除本次会话 API Key"):
-            st.session_state.pop(_API_KEY_STATE_KEY, None)
-            st.session_state.pop(_API_KEY_WIDGET_KEY, None)
-            st.session_state[_API_KEY_SOURCE_KEY] = ""
-            st.session_state[_API_KEY_ENV_DISABLED_KEY] = True
-            st.rerun()
+        key_col1, key_col2 = st.columns(2)
+        with key_col1:
+            if st.button("保存到本地 .env，下次自动加载"):
+                try:
+                    save_api_key_to_local_env(st.session_state[_API_KEY_STATE_KEY])
+                except Exception as exc:
+                    st.error(f"保存失败：{exc}")
+                else:
+                    os.environ[PROVIDER_API_KEY_ENV] = st.session_state[_API_KEY_STATE_KEY]
+                    st.session_state[_API_KEY_SOURCE_KEY] = "本地 .env"
+                    st.session_state[_API_KEY_ENV_DISABLED_KEY] = False
+                    st.success(f"已更新 {LOCAL_ENV_PATH.name} 中的 {PROVIDER_API_KEY_ENV}，不会提交到 git。")
+                    st.rerun()
+        with key_col2:
+            if st.button("清除本次会话 API Key"):
+                st.session_state.pop(_API_KEY_STATE_KEY, None)
+                st.session_state.pop(_API_KEY_WIDGET_KEY, None)
+                st.session_state[_API_KEY_SOURCE_KEY] = ""
+                st.session_state[_API_KEY_ENV_DISABLED_KEY] = True
+                st.rerun()
 
     st.markdown("---")
     run_col, refresh_col = st.columns([3, 1])
