@@ -44,6 +44,7 @@ from autoad_researcher.ui.task_profile import (
     list_all_tasks,
     rename_task_title,
     restore_task,
+    trash_archived_task,
 )
 from autoad_researcher.ui.run_commands import run_preflight
 from autoad_researcher.ui.research_chat import render_research_chat
@@ -63,6 +64,7 @@ _DEFAULTS = {
     "_task_create_name": "",
     "_task_rename_open": False,
     "_show_archived_tasks": False,
+    "_delete_archived_task_confirm": "",
 }
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -96,6 +98,7 @@ def reset_task_scoped_session_state() -> None:
         "_patch_approval_comment",
         "_run_approval_comment",
         "_chat_input",
+        "_delete_archived_task_confirm",
     ]:
         st.session_state.pop(key, None)
     st.session_state.preflight_result = None
@@ -237,6 +240,25 @@ if _info:
         if st.sidebar.button("恢复任务", key="_restore_task"):
             restore_task(run_dir=_run_dir)
             st.rerun()
+        st.sidebar.markdown("**危险区**")
+        _delete_confirm = st.sidebar.text_input(
+            "输入 run_id 确认删除",
+            key="_delete_archived_task_confirm",
+            placeholder=_info["run_id"],
+        )
+        if st.sidebar.button(
+            "删除已归档任务",
+            key="_delete_archived_task",
+            disabled=_delete_confirm != _info["run_id"],
+        ):
+            try:
+                trash_archived_task(run_dir=_run_dir, trashed_at=datetime.now(timezone.utc))
+            except Exception as exc:
+                st.sidebar.error(f"删除失败：{exc}")
+            else:
+                select_fallback_task_after_archive(_info["run_id"])
+                st.rerun()
+        st.sidebar.caption("删除会移动到 runs/.trash/，不会直接物理销毁。")
     with st.sidebar.expander("高级信息"):
         st.caption(f"run_id: `{_info['run_id']}`")
         st.caption(f"制品目录: `{_info['artifact_dir']}/`")

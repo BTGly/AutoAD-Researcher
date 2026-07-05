@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import hashlib
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -146,6 +147,26 @@ def restore_task(*, run_dir: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         return
+
+
+def trash_archived_task(*, run_dir: Path, trashed_at: datetime) -> Path:
+    """Move an archived task directory into runs/.trash without destroying artifacts."""
+    if not run_dir.is_dir():
+        raise FileNotFoundError("task directory does not exist")
+    archive_state, archive_warning = safe_load_task_archive_state(run_dir)
+    if archive_state is None:
+        raise ValueError(archive_warning or "task must be archived before deletion")
+
+    trash_root = run_dir.parent / ".trash"
+    trash_root.mkdir(parents=True, exist_ok=True)
+    stamp = trashed_at.strftime("%Y%m%d_%H%M%S")
+    target = trash_root / f"{run_dir.name}_{stamp}"
+    suffix = 1
+    while target.exists():
+        suffix += 1
+        target = trash_root / f"{run_dir.name}_{stamp}_{suffix}"
+    shutil.move(str(run_dir), str(target))
+    return target
 
 
 def save_task_profile(run_dir: Path, profile: TaskProfile) -> Path:
