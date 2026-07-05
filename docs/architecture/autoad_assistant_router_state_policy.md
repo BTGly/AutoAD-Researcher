@@ -181,3 +181,25 @@ task/research_task_confirmed.json
 
 Confirmation means the research task boundary is accepted by the user. It sets `ready_for_pipeline=true` and writes `task/research_task_confirmed.json`, but it still sets `execution_approved=false`. Execution approval remains a separate gate outside the Assistant intent-alignment layer.
 
+## 10. Round 7 Alpha Scenario Regression
+
+Round 7 adds:
+
+```text
+docs/assistant/intent_alignment_alpha_runbook.md
+tests/test_assistant_alpha_scenarios.py
+```
+
+The automated tests are deterministic regressions for the manual Alpha scenarios. They do not prove real human usability, but they protect the intended behavior before UI and live LLM integration:
+
+```text
+existing artifacts fast path
+from-zero material guidance
+user correction recovery
+blocking gap handling
+progress question without raw path leakage
+confirmed task without execution approval
+```
+
+Real Alpha validation still requires a human to follow the runbook and judge whether the conversation feels useful rather than form-like.
+
