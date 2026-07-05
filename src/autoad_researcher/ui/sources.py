@@ -116,7 +116,8 @@ def get_source_context(run_dir: Path) -> str:
         return ""
     lines = ["SourceReferences（用户已提供但不一定已解析的资料）:"]
     for s in sources:
-        lines.append(f"  - {s['source_id']}: {s['user_label']} ({s['status']})")
+        sp = s.get("stored_path") or "—"
+        lines.append(f"  - {s['source_id']}: {s['user_label']} ({s['status']}) path={sp}")
     return "\n".join(lines)
 
 

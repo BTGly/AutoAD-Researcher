@@ -317,7 +317,7 @@ def _handle_chat_input(
             if result["status"] == "parsed":
                 if source_id:
                     update_source_status(run_dir, source_id, "parsed")
-                reply = f"✅ {pdf_path.name} 已解析完成。现在可以基于论文内容讨论了。"
+                reply = f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。后续回答将基于已生成的论文 artifacts。"
                 st.success(reply)
             else:
                 err = result.get("error", "未知错误")
