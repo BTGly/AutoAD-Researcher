@@ -12,6 +12,7 @@ try:
 except ModuleNotFoundError:  # UI extra is optional in CI/unit-test environments.
     st = None
 
+from autoad_researcher.assistant.probe import silent_probe
 from autoad_researcher.ui.artifact_viewer import (
     BLOCKED_REASON_HINTS,
     get_approval_gate_report,
@@ -166,6 +167,46 @@ def _render_transcript(transcript: list[dict]) -> None:
             st.chat_message("assistant").write(content)
 
 
+def build_research_chat_messages(
+    *,
+    run_dir: Path,
+    mode: str,
+    user_input: str,
+    context_data: dict | None,
+) -> list[dict[str, str]]:
+    """Assemble messages for a research chat LLM call.
+
+    For intent_clarification mode, injects WhatWeKnow from silent_probe
+    as a separate system message so the LLM sees known/missing artifact info.
+    """
+    from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
+
+    system_prompt = MODE_PROMPTS[mode]
+    context_str = json.dumps(context_data, ensure_ascii=False, default=str) if context_data else "{}"
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+    ]
+
+    if mode == "intent_clarification":
+        try:
+            www = silent_probe(run_dir.name, runs_root=run_dir.parent)
+            www_json = www.model_dump_json(indent=2)
+            messages.append({
+                "role": "system",
+                "content": (
+                    "WhatWeKnow（已有 artifact 探测结果，仅作为候选/证据，不等于用户确认）:\n"
+                    + www_json
+                ),
+            })
+        except Exception:
+            pass
+
+    messages.append({"role": "system", "content": "当前运行上下文:\n" + context_str})
+    messages.append({"role": "user", "content": user_input})
+    return messages
+
+
 def _handle_chat_input(
     *,
     run_dir: Path,
@@ -196,13 +237,12 @@ def _handle_chat_input(
             except Exception:
                 pass  # Never block chat on title generation.
 
-    system_prompt = MODE_PROMPTS[mode]
-    context_str = json.dumps(context_data, ensure_ascii=False, default=str) if context_data else "{}"
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "system", "content": "当前运行上下文:\n" + context_str},
-        {"role": "user", "content": user_input},
-    ]
+    messages = build_research_chat_messages(
+        run_dir=run_dir,
+        mode=mode,
+        user_input=user_input,
+        context_data=context_data,
+    )
 
     with st.spinner("思考中…"):
         result = call_research_chat(

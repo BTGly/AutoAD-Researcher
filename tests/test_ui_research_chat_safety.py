@@ -188,5 +188,4 @@ def test_missing_patch_approval_request_raw_warning_removed():
 
 def test_intent_prompt_discourages_unsupported_hard_thresholds():
     assert "不要无依据地给出硬阈值" in INTENT_CLARIFICATION_PROMPT
-    assert "instance_auroc ≥ 0.98" in INTENT_CLARIFICATION_PROMPT
-    assert "与 baseline/论文报告结果进行对比" in INTENT_CLARIFICATION_PROMPT
+    assert "只有 WhatWeKnow 或用户明确提供数值时" in INTENT_CLARIFICATION_PROMPT
