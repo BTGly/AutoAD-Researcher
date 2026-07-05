@@ -15,6 +15,7 @@ from autoad_researcher.assistant.task_artifacts import (
     WHAT_WE_KNOW_ARTIFACT,
     AssistantTaskArtifactService,
     AssistantUnderstandingRecord,
+    REQUIRED_TASK_BOUNDARY_CONSTRAINTS,
 )
 
 
@@ -54,6 +55,9 @@ def test_create_research_task_draft_writes_json_md_and_session(tmp_path):
     assert draft.baseline == "PatchCore"
     assert draft.dataset == "MVTec AD"
     assert draft.confirmation == "draft"
+    assert "不改 eval 脚本" in draft.constraints
+    for constraint in REQUIRED_TASK_BOUNDARY_CONSTRAINTS:
+        assert constraint in draft.constraints
     assert session.mode == "task_confirmation"
     assert session.task.draft_ref == TASK_DRAFT_JSON_ARTIFACT.as_posix()
     assert session.task.ready_for_pipeline is False
@@ -77,6 +81,22 @@ def test_create_research_task_draft_does_not_allow_method_fields(tmp_path):
     assert "hyperparameters" not in payload
     assert "variant_choice" not in payload
     assert draft.scope == "mixed"
+
+
+def test_create_research_task_draft_dedupes_required_boundary_constraints(tmp_path):
+    service = AssistantTaskArtifactService(runs_root=tmp_path)
+
+    draft, _ = service.create_research_task_draft(
+        session=_session(),
+        what_we_know=_what(),
+        metric_command="python eval.py",
+        metric_name="image_auroc",
+        metric_direction="maximize",
+        constraints=["当前不启动实验", "当前不启动实验"],
+    )
+
+    assert draft.constraints.count("当前不启动实验") == 1
+    assert "不修改 evaluation 逻辑" in draft.constraints
 
 
 def test_append_user_correction_and_understanding(tmp_path):

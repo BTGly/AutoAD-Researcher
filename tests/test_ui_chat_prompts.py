@@ -69,6 +69,16 @@ class TestIntentClarificationPrompt:
         assert "基线模型：PatchCore" not in INTENT_CLARIFICATION_PROMPT
         assert "评估指标：instance_auroc" not in INTENT_CLARIFICATION_PROMPT
 
+    def test_prompt_distinguishes_references_uploads_and_parsed_artifacts(self):
+        assert "Candidate References" in INTENT_CLARIFICATION_PROMPT
+        assert "uploaded_not_parsed" in INTENT_CLARIFICATION_PROMPT
+        assert "Parsed Paper Evidence" in INTENT_CLARIFICATION_PROMPT
+        assert "未看到" in INTENT_CLARIFICATION_PROMPT
+
+    def test_prompt_marks_reproduction_transfer_as_ambiguous(self):
+        assert "复现论文，看看能不能用到我的项目里" in INTENT_CLARIFICATION_PROMPT
+        assert "完整复现 vs 方法迁移 / 可用性验证" in INTENT_CLARIFICATION_PROMPT
+
 
 class TestBuildResearchChatMessages:
     """Verify that intent_clarification messages include WhatWeKnow."""
@@ -123,6 +133,26 @@ class TestBuildResearchChatMessages:
         assert len(messages) >= 3
         www_msgs = [m for m in messages if "已有 artifact 探测结果" in m["content"]]
         assert len(www_msgs) == 1
+
+    def test_intent_clarification_includes_structured_evidence_context(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_research_chat_messages
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        messages = build_research_chat_messages(
+            run_dir=run_dir,
+            mode="intent_clarification",
+            user_input="基于论文 artifacts 回答",
+            context_data={},
+        )
+
+        evidence_msgs = [m for m in messages if "ResearchChatEvidenceContext" in m["content"]]
+        assert len(evidence_msgs) == 1
+        assert "candidate_references" in evidence_msgs[0]["content"]
+        assert "uploaded_unparsed_sources" in evidence_msgs[0]["content"]
+        assert "parsed_paper_evidence" in evidence_msgs[0]["content"]
+        assert "Candidate References 不是 Known Facts" in evidence_msgs[0]["content"]
 
 
 class TestTranscriptTail:

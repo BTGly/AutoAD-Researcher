@@ -44,12 +44,62 @@ def route_user_text(text: str) -> AssistantEvent:
 
     # correction
     if any(w in text for w in ["不是", "改目标", "纠正", "不对", "错了"]):
+        labels = ["correction"]
+        if any(w in text for w in ["迁移", "用到", "用在", "方法迁移"]):
+            labels.append("method_transfer")
         return AssistantEvent(
             event_id=f"ev_correction_{event_counter}",
             event_type="user_input",
-            router_labels=["correction"],
+            router_labels=labels,
             payload={"text": text},
             confidence=0.85,
+        )
+
+    # direct execution request: must stay in intent alignment, no execution approval
+    if any(w in text for w in ["直接改代码", "直接跑", "跑实验", "运行实验", "开始执行", "执行 pipeline"]):
+        return AssistantEvent(
+            event_id=f"ev_execution_{event_counter}",
+            event_type="user_input",
+            router_labels=["execution_request"],
+            payload={"text": text},
+            confidence=0.85,
+        )
+
+    # ambiguous reproduction/transfer intent
+    if "复现" in text and any(w in text for w in ["用到", "用在", "迁移", "我的项目", "项目里"]):
+        return AssistantEvent(
+            event_id=f"ev_ambiguous_{event_counter}",
+            event_type="user_input",
+            router_labels=["ambiguous_reproduction_or_transfer"],
+            payload={"text": text},
+            confidence=0.85,
+        )
+
+    if "复现" in text and "baseline" in text_lower:
+        return AssistantEvent(
+            event_id=f"ev_baseline_repro_{event_counter}",
+            event_type="user_input",
+            router_labels=["baseline_reproduction"],
+            payload={"text": text},
+            confidence=0.80,
+        )
+
+    if "复现" in text and "论文" in text:
+        return AssistantEvent(
+            event_id=f"ev_paper_repro_{event_counter}",
+            event_type="user_input",
+            router_labels=["paper_reproduction"],
+            payload={"text": text},
+            confidence=0.75,
+        )
+
+    if any(w in text for w in ["迁移", "用到 PatchCore", "用在 PatchCore", "方法迁移"]):
+        return AssistantEvent(
+            event_id=f"ev_transfer_{event_counter}",
+            event_type="user_input",
+            router_labels=["method_transfer"],
+            payload={"text": text},
+            confidence=0.80,
         )
 
     # source input
@@ -183,9 +233,37 @@ def _fake_reply(session, www, event) -> str:
 
     if "correction" in event.router_labels:
         text = event.payload.get("text", "")
+        if "method_transfer" in event.router_labels:
+            return (
+                "我已按你的纠正更新理解。\n\n"
+                f"你提到'{text}'，当前任务应理解为方法迁移 / baseline 优化，"
+                "不是完整复现论文。当前不决定具体 hook、patch、discriminator 结构、超参数或实验执行。"
+            )
         return (
             "我已按你的纠正更新理解。\n\n"
             f"你提到'{text}'，当前任务草案将聚焦于明确指标和约束，不决定具体方法或 patch。"
+        )
+
+    if "execution_request" in event.router_labels:
+        return (
+            "当前还不能直接改代码或运行实验。\n"
+            "我只能先帮你确认研究任务边界；任务确认不等于 patch approval，也不等于 execution approval。"
+        )
+
+    if "ambiguous_reproduction_or_transfer" in event.router_labels:
+        return (
+            "当前理解有两种可能：\n"
+            "1. 完整复现论文结果；\n"
+            "2. 先验证论文中的思想是否能迁移到你的异常检测项目。\n\n"
+            "你说“看看能不能用到我的项目里”，所以我不能直接把它定为完整复现。"
+            "请确认你更偏向完整复现，还是迁移其中思想到已有 baseline。"
+        )
+
+    if "method_transfer" in event.router_labels:
+        return (
+            "当前理解：这是一个方法迁移 / baseline 优化任务，不是完整复现论文。\n"
+            "我会先确认 metric、baseline、dataset/category、ambition、constraints，"
+            "当前不决定 hook、patch、超参数或实验执行。"
         )
 
     if mode == "goal_alignment":

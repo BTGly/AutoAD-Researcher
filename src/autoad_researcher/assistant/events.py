@@ -30,6 +30,11 @@ RouterLabel = Literal[
     "status_inquiry",
     "next_step_request",
     "clarification",
+    "paper_reproduction",
+    "ambiguous_reproduction_or_transfer",
+    "method_transfer",
+    "baseline_reproduction",
+    "execution_request",
 ]
 
 

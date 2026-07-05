@@ -88,3 +88,42 @@ def test_route_user_text_is_coarse_not_behavior_enumeration():
     assert route_user_text("我上传了论文 pdf").event_type == "source_input"
     assert route_user_text("不是，我要改目标").router_labels == ["correction"]
     assert route_user_text("继续这个方向").router_labels == ["goal_update"]
+
+
+def test_route_user_text_marks_reproduction_transfer_ambiguity():
+    event = route_user_text("我想复现这篇论文，看看能不能用到我的项目里")
+
+    assert event.event_type == "user_input"
+    assert event.router_labels == ["ambiguous_reproduction_or_transfer"]
+
+
+def test_route_user_text_marks_direct_execution_request():
+    event = route_user_text("直接改代码跑实验")
+
+    assert event.event_type == "user_input"
+    assert event.router_labels == ["execution_request"]
+
+
+def test_runtime_ambiguous_reproduction_does_not_lock_full_reproduction(tmp_path):
+    _copy_fixture(tmp_path, "run_known")
+    runtime = DeterministicAssistantRuntime(runs_root=str(tmp_path))
+
+    result = runtime.handle_user_message("run_known", "我想复现这篇论文，看看能不能用到我的项目里")
+
+    assert result.event.router_labels == ["ambiguous_reproduction_or_transfer"]
+    assert "完整复现论文结果" in result.reply
+    assert "迁移到你的异常检测项目" in result.reply
+    assert "不能直接把它定为完整复现" in result.reply
+    assert result.session.task.execution_approved is False
+
+
+def test_runtime_direct_execution_request_stays_non_executing(tmp_path):
+    _copy_fixture(tmp_path, "run_known")
+    runtime = DeterministicAssistantRuntime(runs_root=str(tmp_path))
+
+    result = runtime.handle_user_message("run_known", "直接改代码跑实验")
+
+    assert result.event.router_labels == ["execution_request"]
+    assert "还不能直接改代码或运行实验" in result.reply
+    assert result.session.task.ready_for_pipeline is False
+    assert result.session.task.execution_approved is False

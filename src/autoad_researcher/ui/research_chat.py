@@ -13,6 +13,11 @@ except ModuleNotFoundError:  # UI extra is optional in CI/unit-test environments
     st = None
 
 from autoad_researcher.assistant.probe import silent_probe
+from autoad_researcher.assistant.research_context_builder import (
+    build_research_chat_evidence_context,
+    render_research_chat_evidence_context,
+)
+from autoad_researcher.assistant.response_guard import guard_research_chat_reply
 from autoad_researcher.ui.artifact_viewer import (
     BLOCKED_REASON_HINTS,
     get_approval_gate_report,
@@ -272,6 +277,15 @@ def build_research_chat_messages(
                     "paper-intelligence parse command before content-based discussion."
                 ),
             })
+        evidence_context = build_research_chat_evidence_context(run_dir)
+        messages.append({
+            "role": "system",
+            "content": (
+                "ResearchChatEvidenceContext（结构化证据上下文；Candidate References 不是 Known Facts，"
+                "uploaded_not_parsed 不是 parsed paper evidence）:\n"
+                + render_research_chat_evidence_context(evidence_context)
+            ),
+        })
 
     # Transcript history (before current user_input)
     if transcript_tail:
@@ -610,7 +624,13 @@ def _handle_chat_input(
         st.error(result["error"])
         return
 
-    reply = result["reply"]
+    evidence_context = build_research_chat_evidence_context(run_dir)
+    guarded = guard_research_chat_reply(
+        reply=result["reply"],
+        user_input=user_input,
+        evidence_context=evidence_context,
+    )
+    reply = guarded.reply
     st.chat_message("assistant").write(reply)
     save_transcript(
         run_dir,

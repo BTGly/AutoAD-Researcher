@@ -26,6 +26,15 @@ TASK_DRAFT_JSON_ARTIFACT = Path("task/research_task_draft.json")
 TASK_DRAFT_MD_ARTIFACT = Path("task/research_task_draft.md")
 TASK_CONFIRMED_JSON_ARTIFACT = Path("task/research_task_confirmed.json")
 
+REQUIRED_TASK_BOUNDARY_CONSTRAINTS = [
+    "当前不决定 hook",
+    "当前不决定具体 patch",
+    "当前不决定超参数",
+    "当前不启动实验",
+    "不修改 evaluation 逻辑",
+    "任务确认不等于代码修改批准或实验执行批准",
+]
+
 
 class AssistantUnderstandingRecord(BaseModel):
     """One structured assistant understanding entry."""
@@ -98,7 +107,7 @@ class AssistantTaskArtifactService:
             ambition=ambition,
             ambition_target=ambition_target,
             scope=scope,
-            constraints=constraints or [],
+            constraints=_merge_constraints(constraints),
             dataset=dataset or what_we_know.dataset,
             compute_budget=compute_budget,
             user_idea=user_idea,
@@ -188,6 +197,15 @@ class AssistantTaskArtifactService:
 def _draft_id(run_id: str, metric_name: str, baseline: str) -> str:
     digest = hashlib.sha256(f"{run_id}:{metric_name}:{baseline}".encode("utf-8")).hexdigest()[:12]
     return f"draft_{digest}"
+
+
+def _merge_constraints(user_constraints: list[str] | None) -> list[str]:
+    merged: list[str] = []
+    for item in [*(user_constraints or []), *REQUIRED_TASK_BOUNDARY_CONSTRAINTS]:
+        stripped = item.strip()
+        if stripped and stripped not in merged:
+            merged.append(stripped)
+    return merged
 
 
 def _draft_markdown(draft: ResearchTaskDraftV1) -> str:
