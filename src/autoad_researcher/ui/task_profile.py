@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -21,6 +22,7 @@ _TASK_SUMMARY_MAX_CHARS = 200
 _SK_SECRET_PATTERN = re.compile(r"sk-[a-zA-Z0-9]{8,}")
 _RUN_ID_PREFIX_PATTERN = re.compile(r"^run_\d{8}_\d{4}", re.IGNORECASE)
 _TASK_PROFILE_FILENAME = "task_profile.json"
+_SLUG_PATTERN = re.compile(r"[^a-z0-9_.-]+")
 
 
 class TaskProfile(BaseModel):
@@ -32,8 +34,9 @@ class TaskProfile(BaseModel):
     run_id: str = Field(min_length=1)
     task_title: str = Field(min_length=1, max_length=_TASK_TITLE_MAX_CHARS)
     task_summary: str = Field(min_length=1, max_length=_TASK_SUMMARY_MAX_CHARS)
-    source: Literal["llm_first_user_instruction", "manual", "fallback"]
+    source: Literal["llm_first_user_instruction", "manual", "fallback", "ui", "legacy_import"]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime | None = None
 
     @field_validator("task_title")
     @classmethod
@@ -50,6 +53,21 @@ class TaskProfile(BaseModel):
         if _SK_SECRET_PATTERN.search(v):
             raise ValueError("task_summary must not contain secret-like text (sk-…)")
         return v
+
+
+class TaskListItem(BaseModel):
+    """One run directory as shown in the UI task picker."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    task_title: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    profile_path: Path | None = None
+    run_dir: Path
+    source: Literal["profile", "fallback"] = "fallback"
+    profile_warning: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +100,126 @@ def save_task_profile(run_dir: Path, profile: TaskProfile) -> Path:
     )
     tmp.replace(path)
     return path
+
+
+def _write_task_profile(run_dir: Path, profile: TaskProfile) -> Path:
+    """Atomically persist *profile*, allowing overwrite."""
+    path = _profile_path(run_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def slugify_task_name(task_name: str) -> str:
+    """Return a run_id-safe slug for a human task name."""
+    slug = _SLUG_PATTERN.sub("_", task_name.strip().lower()).strip("_.-")
+    slug = re.sub(r"_+", "_", slug)
+    return slug[:48].strip("_.-") or "task"
+
+
+def build_run_id_from_optional_name(*, task_name: str | None, now: datetime) -> str:
+    """Build a canonical run_id without changing the human title."""
+    timestamp = now.strftime("%Y%m%d_%H%M")
+    digest = hashlib.md5(f"{task_name or ''}:{now.isoformat()}".encode("utf-8")).hexdigest()[:4]
+    if task_name and task_name.strip():
+        return f"{slugify_task_name(task_name)}_{now.strftime('%H%M')}_{digest}"
+    return f"run_{timestamp}_{digest}"
+
+
+def create_task_profile(
+    *,
+    run_dir: Path,
+    run_id: str,
+    task_title: str | None,
+    created_at: datetime,
+) -> TaskProfile:
+    """Create and persist a UI task profile for a new run."""
+    title = task_title.strip() if task_title and task_title.strip() else "未命名研究任务"
+    profile = TaskProfile(
+        run_id=run_id,
+        task_title=title,
+        task_summary="用户创建的研究任务。",
+        source="ui",
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    _write_task_profile(run_dir, profile)
+    return profile
+
+
+def rename_task_title(*, run_dir: Path, new_title: str, updated_at: datetime) -> TaskProfile:
+    """Rename a task profile without changing run_id or artifact paths."""
+    title = new_title.strip()
+    if not title:
+        raise ValueError("task title must not be empty")
+    existing = load_task_profile(run_dir)
+    if existing is None:
+        existing = fallback_task_profile(run_dir.name)
+    profile = existing.model_copy(update={
+        "task_title": title,
+        "updated_at": updated_at,
+        "source": "manual",
+    })
+    profile = TaskProfile.model_validate(profile.model_dump())
+    _write_task_profile(run_dir, profile)
+    return profile
+
+
+def list_all_tasks(*, runs_root: Path) -> list[TaskListItem]:
+    """Scan one-level run directories for UI task selection."""
+    if not runs_root.is_dir():
+        return []
+
+    items: list[TaskListItem] = []
+    for run_dir in sorted(runs_root.iterdir()):
+        if not run_dir.is_dir() or run_dir.name.startswith("."):
+            continue
+        profile_path = _profile_path(run_dir)
+        warning: str | None = None
+        try:
+            profile = load_task_profile(run_dir)
+        except Exception as exc:
+            profile = None
+            warning = f"task_profile_invalid:{type(exc).__name__}"
+
+        if profile is not None:
+            item = TaskListItem(
+                run_id=run_dir.name,
+                task_title=profile.task_title,
+                created_at=profile.created_at,
+                updated_at=profile.updated_at,
+                profile_path=profile_path,
+                run_dir=run_dir,
+                source="profile",
+                profile_warning=warning,
+            )
+        else:
+            mtime = datetime.fromtimestamp(run_dir.stat().st_mtime, tz=timezone.utc)
+            item = TaskListItem(
+                run_id=run_dir.name,
+                task_title=run_dir.name,
+                created_at=mtime,
+                updated_at=mtime,
+                profile_path=profile_path if profile_path.exists() else None,
+                run_dir=run_dir,
+                source="fallback",
+                profile_warning=warning,
+            )
+        items.append(item)
+
+    def sort_key(item: TaskListItem) -> datetime:
+        return item.updated_at or item.created_at or datetime.fromtimestamp(item.run_dir.stat().st_mtime, tz=timezone.utc)
+
+    return sorted(items, key=sort_key, reverse=True)
+
+
+def format_task_list_label(item: TaskListItem) -> str:
+    stamp = item.updated_at or item.created_at
+    if stamp is None:
+        return item.task_title
+    return f"{item.task_title} ({stamp.strftime('%Y-%m-%d %H:%M')})"
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,5 @@
 """Streamlit UI — Phase 1: 制品浏览器 + 预检执行器。"""
 
-import hashlib
 import os
 import sys
 from datetime import datetime, timezone
@@ -37,16 +36,19 @@ from autoad_researcher.ui.artifact_viewer import (
     summarize_final_status,
 )
 from autoad_researcher.ui.task_profile import (
-    fallback_task_profile,
+    build_run_id_from_optional_name,
+    create_task_profile,
+    format_task_list_label,
     get_task_display_info,
-    get_task_title,
-    load_task_profile,
+    list_all_tasks,
+    rename_task_title,
 )
 from autoad_researcher.ui.run_commands import run_preflight
 from autoad_researcher.ui.research_chat import render_research_chat
 
 _API_KEY_WIDGET_KEY = "_api_key_widget"
 _API_KEY_STATE_KEY = "_api_key_raw"
+RUNS_ROOT = Path("runs")
 
 _DEFAULTS = {
     "dataset_root": "/root/autodl-tmp/mvtec",
@@ -55,30 +57,76 @@ _DEFAULTS = {
     "preflight_result": None,
     "preflight_running": False,
     "_run_id_hash": "",
+    "_browse_run_id": "",
+    "_task_create_name": "",
+    "_task_rename_open": False,
 }
 for k, v in _DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
 
 def _generate_run_id() -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-    h = hashlib.md5(ts.encode()).hexdigest()[:4]
-    return f"run_{ts}_{h}"
+    return build_run_id_from_optional_name(task_name=None, now=datetime.now(timezone.utc))
 
 
 if not st.session_state._run_id_hash:
     st.session_state._run_id_hash = _generate_run_id()
+if not st.session_state._browse_run_id:
+    st.session_state._browse_run_id = st.session_state._run_id_hash
 
 
 # ── Helper functions (must be defined before sidebar rendering) ──
 
+def _active_run_id() -> str:
+    return st.session_state.get("_browse_run_id") or st.session_state.get("_run_id_hash", "")
+
+
+def reset_task_scoped_session_state() -> None:
+    """Clear UI state that belongs to the currently selected task."""
+    for key in [
+        "preflight_result",
+        "preflight_running",
+        "_first_task_message_handled",
+        "_source_upload",
+        "_source_local_path",
+        "_intent_confirmation_comment",
+        "_patch_approval_comment",
+        "_run_approval_comment",
+        "_chat_input",
+    ]:
+        st.session_state.pop(key, None)
+    st.session_state.preflight_result = None
+    st.session_state.preflight_running = False
+
+
+def switch_active_task(run_id: str) -> None:
+    if not run_id or run_id == _active_run_id():
+        return
+    reset_task_scoped_session_state()
+    st.session_state._browse_run_id = run_id
+    st.session_state._run_id_hash = run_id
+
+
+def create_named_task(task_name: str | None = None) -> str:
+    now = datetime.now(timezone.utc)
+    title = task_name.strip() if task_name and task_name.strip() else None
+    run_id = build_run_id_from_optional_name(task_name=title, now=now)
+    run_dir = RUNS_ROOT / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    create_task_profile(run_dir=run_dir, run_id=run_id, task_title=title, created_at=now)
+    reset_task_scoped_session_state()
+    st.session_state._browse_run_id = run_id
+    st.session_state._run_id_hash = run_id
+    return run_id
+
+
 def _resolve_task_run_dir() -> Path | None:
     """Return the Path for the currently browsed run_id, or None."""
-    run_id = st.session_state.get("_browse_run_id", st.session_state.get("_run_id_hash", ""))
+    run_id = _active_run_id()
     if not run_id:
         return None
     try:
-        return run_dir_path("runs", run_id)
+        return run_dir_path(RUNS_ROOT, run_id)
     except ValueError:
         return None
 
@@ -111,8 +159,30 @@ page = st.sidebar.radio("页面导航", PAGES, index=0)
 st.sidebar.markdown("---")
 
 # Determine active run_id BEFORE rendering task identity
-old_run = st.sidebar.text_input("浏览已有运行", placeholder="run_l3_bottle_001", key="_old_run_id")
-st.session_state._browse_run_id = old_run or st.session_state._run_id_hash
+_tasks = list_all_tasks(runs_root=RUNS_ROOT)
+_task_ids = [task.run_id for task in _tasks]
+_task_by_id = {task.run_id: task for task in _tasks}
+if _task_ids:
+    _active = _active_run_id()
+    _index = _task_ids.index(_active) if _active in _task_ids else 0
+    if _active in _task_ids:
+        st.session_state["_task_picker_run_id"] = _active
+    _selected_run_id = st.sidebar.selectbox(
+        "下拉选择已有任务",
+        options=_task_ids,
+        index=_index,
+        format_func=lambda rid: format_task_list_label(_task_by_id[rid]),
+        key="_task_picker_run_id",
+    )
+    if _selected_run_id != _active_run_id():
+        switch_active_task(_selected_run_id)
+        st.rerun()
+else:
+    st.sidebar.caption("暂无已有任务")
+
+if st.sidebar.button("➕ 新建任务", key="_sidebar_create_task"):
+    create_named_task(None)
+    st.rerun()
 
 # ── Task identity sidebar ──
 _run_dir = _resolve_task_run_dir()
@@ -122,6 +192,18 @@ if _info:
     st.sidebar.caption(_info["task_summary"])
     if _info["task_source"] == "fallback":
         st.sidebar.caption("💡 在「研究助手」中描述研究目标后，系统会自动生成任务名。")
+    if st.sidebar.button("✏️ 重命名任务", key="_open_task_rename"):
+        st.session_state._task_rename_open = not st.session_state.get("_task_rename_open", False)
+    if st.session_state.get("_task_rename_open"):
+        _new_title = st.sidebar.text_input("新任务名称", value=_info["task_title"], key="_task_rename_title")
+        if st.sidebar.button("保存任务名称", key="_save_task_rename"):
+            try:
+                rename_task_title(run_dir=_run_dir, new_title=_new_title, updated_at=datetime.now(timezone.utc))
+            except Exception as exc:
+                st.sidebar.error(f"重命名失败：{exc}")
+            else:
+                st.session_state._task_rename_open = False
+                st.rerun()
     with st.sidebar.expander("高级信息"):
         st.caption(f"run_id: `{_info['run_id']}`")
         st.caption(f"制品目录: `{_info['artifact_dir']}/`")
@@ -130,7 +212,7 @@ if _info:
             language="bash",
         )
 else:
-    st.sidebar.caption(f"运行 ID: `{st.session_state._run_id_hash}`")
+    st.sidebar.caption(f"运行 ID: `{_active_run_id()}`")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -164,11 +246,23 @@ if page == "1. 运行配置":
     st.markdown("---")
     run_col, refresh_col = st.columns([3, 1])
     with run_col:
-        st.caption("点击「重新生成」可创建新的运行 ID。旧 ID 的制品不会丢失。")
+        st.text_input(
+            "任务名称（可选）",
+            placeholder="SimpleNet Migration v1",
+            key="_task_create_name",
+        )
+        st.caption("创建新任务会生成新的内部 run_id。旧任务和制品不会丢失。")
     with refresh_col:
-        if st.button("🔄 重新生成"):
-            st.session_state._run_id_hash = _generate_run_id()
-            st.rerun()
+        st.write("")
+        st.write("")
+        if st.button("➕ 新建任务", type="primary", key="_run_config_create_task"):
+            try:
+                create_named_task(st.session_state.get("_task_create_name", ""))
+            except Exception as exc:
+                st.error(f"创建任务失败：{exc}")
+            else:
+                st.session_state._task_create_name = ""
+                st.rerun()
 
     with st.expander("高级配置（通常无需修改）"):
         st.text_input("数据集根目录", key="dataset_root")
@@ -176,12 +270,13 @@ if page == "1. 运行配置":
         st.selectbox("模式", ["l3-preflight"], key="mode", disabled=True)
 
     with st.expander("终端复现命令"):
+        active_run_id = _active_run_id()
         real_cmd = (
             f"export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=\"{st.session_state.dataset_root}\"\n"
             f"read -s -p \"DeepSeek API key: \" DEEPSEEK_API_KEY\n"
             f"export DEEPSEEK_API_KEY\n\n"
             f"uv run autoad stage3-acceptance \\\n"
-            f"  --run-id {st.session_state._run_id_hash} \\\n"
+            f"  --run-id {active_run_id} \\\n"
             f"  --mode {st.session_state.mode} \\\n"
             f"  --provider-base-url \"{st.session_state.provider_base_url}\" \\\n"
             f"  --json"
@@ -223,7 +318,7 @@ elif page == "2. 预检执行器":
         st.session_state.preflight_result = None
         with st.spinner("正在执行预检…"):
             result = run_preflight(
-                run_id=st.session_state._run_id_hash,
+                run_id=_active_run_id(),
                 provider_base_url=st.session_state.provider_base_url,
                 api_key=api_key,
                 dataset_root=st.session_state.dataset_root,
@@ -292,13 +387,14 @@ elif page == "2. 预检执行器":
         "执行此命令会调用 LLM、修改 patchcore 工作区并运行 GPU benchmark。"
         "请确认仓库干净、数据集路径正确后再执行。"
     )
+    active_run_id = _active_run_id()
     real_cmd = (
         f"export AUTOAD_INTERNAL_BENCHMARK_DATASET_ROOT=\"{st.session_state.dataset_root}\"\n"
         f"read -s -p \"DeepSeek API key: \" DEEPSEEK_API_KEY\n"
         f"export DEEPSEEK_API_KEY\n\n"
         f"AUTOAD_L3_REAL_EXECUTION_ALLOWED=1 \\\n"
         f"uv run autoad stage3-acceptance \\\n"
-        f"  --run-id {st.session_state._run_id_hash} \\\n"
+        f"  --run-id {active_run_id} \\\n"
         f"  --mode {st.session_state.mode} \\\n"
         f"  --provider-base-url \"{st.session_state.provider_base_url}\" \\\n"
         f"  --json"
@@ -313,7 +409,7 @@ elif page == "3. 制品浏览器":
     st.info("每个阶段会生成对应的产物文件。阶段按执行顺序排列，已生成的标 ✅，未生成的标 ⏳。")
 
     try:
-        run_dir = run_dir_path("runs", st.session_state._browse_run_id)
+        run_dir = run_dir_path(RUNS_ROOT, _active_run_id())
     except ValueError as exc:
         st.error(f"无效的 run_id: {exc}")
         run_dir = None
@@ -351,7 +447,7 @@ elif page == "4. 执行监控":
     st.info("查看实验执行的实时状态 — 包括基线/变体实验完成情况、GPU 证据、准入报告和事件日志。")
 
     try:
-        run_dir = run_dir_path("runs", st.session_state._browse_run_id)
+        run_dir = run_dir_path(RUNS_ROOT, _active_run_id())
     except ValueError as exc:
         st.error(f"无效的 run_id: {exc}")
         run_dir = None
@@ -434,7 +530,7 @@ elif page == "5. 最终审阅":
     st.info("验收 L3 全链路结果：补丁是否真实、实验是否跑完、科学结论是否成立。")
 
     try:
-        run_dir = run_dir_path("runs", st.session_state._browse_run_id)
+        run_dir = run_dir_path(RUNS_ROOT, _active_run_id())
     except ValueError as exc:
         st.error(f"无效的 run_id: {exc}")
         run_dir = None

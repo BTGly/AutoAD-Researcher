@@ -15,12 +15,18 @@ except ModuleNotFoundError:
 
 from autoad_researcher.ui.task_profile import (
     TaskProfile,
+    build_run_id_from_optional_name,
+    create_task_profile,
     fallback_task_profile,
+    format_task_list_label,
     generate_task_profile_from_first_message,
     get_task_display_info,
     get_task_title,
+    list_all_tasks,
     load_task_profile,
+    rename_task_title,
     save_task_profile,
+    slugify_task_name,
 )
 
 
@@ -146,6 +152,156 @@ class TestLoadSave:
         save_task_profile(run_dir, _valid_profile(run_dir))
         with pytest.raises(FileExistsError):
             save_task_profile(run_dir, _valid_profile(run_dir))
+
+
+class TestTaskNamingHelpers:
+    def test_slugify_task_name(self):
+        assert slugify_task_name("SimpleNet Migration v1") == "simplenet_migration_v1"
+        assert slugify_task_name("  A/B Test  ") == "a_b_test"
+
+    def test_build_run_id_without_name(self):
+        now = datetime(2026, 7, 5, 8, 19, tzinfo=timezone.utc)
+        rid = build_run_id_from_optional_name(task_name=None, now=now)
+        assert rid.startswith("run_20260705_0819_")
+
+    def test_build_run_id_with_name_uses_slug_and_time(self):
+        now = datetime(2026, 7, 5, 8, 19, tzinfo=timezone.utc)
+        rid = build_run_id_from_optional_name(task_name="SimpleNet Migration v1", now=now)
+        assert rid.startswith("simplenet_migration_v1_0819_")
+
+    def test_create_task_profile_writes_ui_profile(self, tmp_path):
+        run_id = "simplenet_migration_v1_0819_abcd"
+        run_dir = tmp_path / run_id
+        created_at = datetime(2026, 7, 5, 8, 19, tzinfo=timezone.utc)
+
+        profile = create_task_profile(
+            run_dir=run_dir,
+            run_id=run_id,
+            task_title="SimpleNet Migration v1",
+            created_at=created_at,
+        )
+
+        assert profile.task_title == "SimpleNet Migration v1"
+        assert profile.run_id == run_id
+        assert profile.source == "ui"
+        assert profile.updated_at == created_at
+        assert load_task_profile(run_dir) == profile
+
+    def test_create_task_profile_empty_title_uses_fallback_title(self, tmp_path):
+        run_id = "run_20260705_0819_abcd"
+        run_dir = tmp_path / run_id
+        profile = create_task_profile(
+            run_dir=run_dir,
+            run_id=run_id,
+            task_title=None,
+            created_at=datetime(2026, 7, 5, 8, 19, tzinfo=timezone.utc),
+        )
+
+        assert profile.task_title == "未命名研究任务"
+
+    def test_rename_task_title_does_not_change_run_id_or_dir(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_keep_id")
+        create_task_profile(
+            run_dir=run_dir,
+            run_id=run_dir.name,
+            task_title="Old Title",
+            created_at=datetime(2026, 7, 5, 8, 19, tzinfo=timezone.utc),
+        )
+        old_path = run_dir
+
+        updated = rename_task_title(
+            run_dir=run_dir,
+            new_title="New Title",
+            updated_at=datetime(2026, 7, 5, 9, 0, tzinfo=timezone.utc),
+        )
+
+        assert updated.task_title == "New Title"
+        assert updated.run_id == "run_keep_id"
+        assert run_dir == old_path
+        assert run_dir.is_dir()
+
+    def test_rename_missing_profile_creates_profile_for_existing_run(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_legacy")
+        updated = rename_task_title(
+            run_dir=run_dir,
+            new_title="Legacy Renamed",
+            updated_at=datetime(2026, 7, 5, 9, 0, tzinfo=timezone.utc),
+        )
+        assert updated.run_id == "run_legacy"
+        assert updated.task_title == "Legacy Renamed"
+        assert load_task_profile(run_dir).task_title == "Legacy Renamed"
+
+
+class TestTaskListing:
+    def test_list_all_tasks_profile_and_fallback(self, tmp_path):
+        first = _tmp_run_dir(tmp_path, "run_first")
+        second = _tmp_run_dir(tmp_path, "run_second")
+        create_task_profile(
+            run_dir=first,
+            run_id=first.name,
+            task_title="First Task",
+            created_at=datetime(2026, 7, 5, 8, 0, tzinfo=timezone.utc),
+        )
+
+        items = list_all_tasks(runs_root=tmp_path)
+        by_id = {item.run_id: item for item in items}
+
+        assert by_id["run_first"].task_title == "First Task"
+        assert by_id["run_first"].source == "profile"
+        assert by_id["run_second"].task_title == "run_second"
+        assert by_id["run_second"].source == "fallback"
+
+    def test_list_all_tasks_skips_hidden_and_files(self, tmp_path):
+        _tmp_run_dir(tmp_path, "run_visible")
+        (tmp_path / ".hidden").mkdir()
+        (tmp_path / "not_a_run.txt").write_text("x", encoding="utf-8")
+
+        items = list_all_tasks(runs_root=tmp_path)
+
+        assert [item.run_id for item in items] == ["run_visible"]
+
+    def test_list_all_tasks_bad_profile_falls_back(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_bad")
+        profile_path = run_dir / "ui_chat" / "task_profile.json"
+        profile_path.parent.mkdir()
+        profile_path.write_text("{not json", encoding="utf-8")
+
+        items = list_all_tasks(runs_root=tmp_path)
+
+        assert len(items) == 1
+        assert items[0].task_title == "run_bad"
+        assert items[0].profile_warning is not None
+
+    def test_list_all_tasks_sorts_by_updated_at_desc(self, tmp_path):
+        older = _tmp_run_dir(tmp_path, "run_older")
+        newer = _tmp_run_dir(tmp_path, "run_newer")
+        create_task_profile(
+            run_dir=older,
+            run_id=older.name,
+            task_title="Older",
+            created_at=datetime(2026, 7, 5, 8, 0, tzinfo=timezone.utc),
+        )
+        create_task_profile(
+            run_dir=newer,
+            run_id=newer.name,
+            task_title="Newer",
+            created_at=datetime(2026, 7, 5, 9, 0, tzinfo=timezone.utc),
+        )
+
+        items = list_all_tasks(runs_root=tmp_path)
+
+        assert [item.run_id for item in items] == ["run_newer", "run_older"]
+
+    def test_format_task_list_label(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_label")
+        create_task_profile(
+            run_dir=run_dir,
+            run_id=run_dir.name,
+            task_title="Label Task",
+            created_at=datetime(2026, 7, 5, 8, 0, tzinfo=timezone.utc),
+        )
+        item = list_all_tasks(runs_root=tmp_path)[0]
+        assert format_task_list_label(item) == "Label Task (2026-07-05 08:00)"
 
 
 # ---------------------------------------------------------------------------
