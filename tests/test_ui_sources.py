@@ -53,6 +53,15 @@ class TestSaveUploadedFile:
         info = save_uploaded_file(run_dir, upload)
         assert info["kind"] == "markdown"
 
+    def test_upload_name_is_basename_only(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        info = save_uploaded_file(run_dir, _make_upload("../SimpleNet.pdf"))
+
+        assert info["stored_path"].endswith("/SimpleNet.pdf")
+        assert ".." not in Path(info["stored_path"]).parts
+
     def test_returned_source_id_matches_registry(self, tmp_path):
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
@@ -103,6 +112,20 @@ class TestSourceRegistry:
         reg = load_source_registry(run_dir)
         assert reg["sources"][0]["status"] == "failed"
         assert reg["sources"][0]["error_message"] == "MinerU timeout"
+
+    def test_update_to_parsing_status(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="paper_pdf",
+            user_label="SimpleNet.pdf",
+            stored_path="sources/src_001/SimpleNet.pdf",
+            status="uploaded_not_parsed",
+        )
+        update_source_status(run_dir, sid, "parsing")
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["status"] == "parsing"
 
     def test_find_source_by_stored_path(self, tmp_path):
         run_dir = tmp_path / "run_test"

@@ -45,7 +45,9 @@ from autoad_researcher.ui.task_profile import (
 )
 from autoad_researcher.ui.sources import (
     find_source_by_stored_path,
+    find_source_entry_by_stored_path,
     get_source_context,
+    list_pdf_source_entries,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
     update_source_status,
@@ -57,6 +59,24 @@ _MODE_LABELS = {
     "run_explanation": "运行解释",
     "next_experiment": "下一步建议",
 }
+_PAPER_PARSE_TIMEOUT_SECONDS = 900
+_PARSE_ACTION_TOKENS = (
+    "读一下",
+    "读取",
+    "解析",
+    "看一下",
+    "分析一下",
+    "read",
+    "parse",
+)
+_PARSE_TARGET_TOKENS = (
+    "pdf",
+    "论文",
+    "paper",
+    "材料",
+    "文件",
+    "上传",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +257,15 @@ def build_research_chat_messages(
         src_ctx = get_source_context(run_dir)
         if src_ctx:
             messages.append({"role": "system", "content": src_ctx})
+            messages.append({
+                "role": "system",
+                "content": (
+                    "PDF parsing boundary: If the user asks to read, parse, inspect, or analyze an uploaded PDF "
+                    "and the source registry shows it is uploaded_not_parsed or parsing, do not claim you have read it "
+                    "and do not promise to read it yourself. State that the file must be parsed through the "
+                    "paper-intelligence parse command before content-based discussion."
+                ),
+            })
 
     # Transcript history (before current user_input)
     if transcript_tail:
@@ -272,10 +301,10 @@ def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
             ],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=_PAPER_PARSE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return {"status": "failed", "error": "解析超时（5 分钟）"}
+        return {"status": "failed", "error": "解析超时（15 分钟）"}
     except FileNotFoundError:
         return {"status": "failed", "error": "autoad CLI 未找到"}
     except Exception as exc:
@@ -285,6 +314,140 @@ def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
         return {"status": "parsed"}
     err = proc.stderr.strip()[:200] or f"returncode={proc.returncode}"
     return {"status": "failed", "error": err}
+
+
+def detect_parse_intent(user_input: str) -> bool:
+    """Return True when user text asks to parse/read uploaded paper material."""
+    text = user_input.strip()
+    if not text:
+        return False
+    if re.search(r"sources/((?:[^/\s]+/)*[^/\s]+\.pdf)", text, re.IGNORECASE):
+        return True
+    lowered = text.lower()
+    has_action = any(token in lowered for token in _PARSE_ACTION_TOKENS)
+    has_target = any(token in lowered for token in _PARSE_TARGET_TOKENS)
+    return has_action and has_target
+
+
+def build_pdf_parse_action(run_dir: Path, user_input: str) -> dict[str, Any]:
+    """Resolve a user parse request into a deterministic UI action.
+
+    The action is intentionally command-router output, not LLM context. Once a
+    parse intent is detected, callers should not fall through to chat.
+    """
+    if not detect_parse_intent(user_input):
+        return {"action": "chat"}
+
+    explicit_path = resolve_source_pdf_path_safely(run_dir, user_input)
+    if explicit_path is not None:
+        stored_path = explicit_path.relative_to(run_dir).as_posix()
+        entry = find_source_entry_by_stored_path(run_dir, stored_path)
+        return _pdf_parse_action_for_source(run_dir, stored_path=stored_path, entry=entry, pdf_path=explicit_path)
+
+    if re.search(r"sources/[^ \t\r\n]+\.pdf", user_input, re.IGNORECASE):
+        return {
+            "action": "missing",
+            "message": "没有找到这个 PDF 路径。请检查 `sources/...pdf` 是否和 SourceReferences 中的 path 完全一致。",
+        }
+
+    pdf_sources = list_pdf_source_entries(run_dir)
+    pending = [source for source in pdf_sources if source.get("status") == "uploaded_not_parsed"]
+    if len(pending) == 1:
+        stored_path = str(pending[0]["stored_path"])
+        return _pdf_parse_action_for_source(
+            run_dir,
+            stored_path=stored_path,
+            entry=pending[0],
+            pdf_path=run_dir / stored_path,
+        )
+    if len(pending) > 1:
+        paths = "\n".join(f"- {source['stored_path']}" for source in pending)
+        return {
+            "action": "choose",
+            "message": "我看到多个尚未解析的 PDF，请指定其中一个路径：\n" + paths,
+        }
+
+    parsing = [source for source in pdf_sources if source.get("status") == "parsing"]
+    if parsing:
+        paths = "\n".join(f"- {source['stored_path']}" for source in parsing)
+        return {
+            "action": "already_parsing",
+            "message": "这些 PDF 正在解析中，请等待完成后再继续：\n" + paths,
+        }
+
+    parsed = [source for source in pdf_sources if source.get("status") == "parsed"]
+    if parsed:
+        paths = "\n".join(f"- {source['stored_path']}" for source in parsed)
+        return {
+            "action": "already_parsed",
+            "message": "这些 PDF 已解析，可直接基于已生成的 paper artifacts 讨论：\n" + paths,
+        }
+
+    return {
+        "action": "missing",
+        "message": "当前没有可解析的 PDF。请先上传 PDF，或提供 `sources/...pdf` 路径。",
+    }
+
+
+def _pdf_parse_action_for_source(
+    run_dir: Path,
+    *,
+    stored_path: str,
+    entry: dict[str, Any] | None,
+    pdf_path: Path,
+) -> dict[str, Any]:
+    status = entry.get("status") if entry else "uploaded_not_parsed"
+    if status == "parsing":
+        return {
+            "action": "already_parsing",
+            "message": f"`{stored_path}` 正在解析中，请等待完成后再继续。",
+        }
+    if status == "parsed":
+        return {
+            "action": "already_parsed",
+            "message": f"`{stored_path}` 已解析，可直接基于已生成的 paper artifacts 讨论。",
+        }
+    if not pdf_path.is_file():
+        return {
+            "action": "missing",
+            "message": f"没有找到 `{stored_path}` 对应的 PDF 文件，请重新上传或检查 SourceReferences。",
+        }
+    return {
+        "action": "parse",
+        "source_id": entry.get("source_id") if entry else find_source_by_stored_path(run_dir, stored_path),
+        "stored_path": stored_path,
+        "pdf_path": pdf_path,
+    }
+
+
+def _execute_or_report_pdf_parse_action(run_dir: Path, action: dict[str, Any]) -> str:
+    kind = action["action"]
+    if kind == "parse":
+        pdf_path = Path(action["pdf_path"])
+        source_id = action.get("source_id")
+        if source_id:
+            update_source_status(run_dir, str(source_id), "parsing")
+        with st.spinner(f"正在解析 {pdf_path.name}，论文解析可能需要 5-10 分钟…"):
+            result = _run_paper_intelligence(run_dir.name, pdf_path)
+        if result["status"] == "parsed":
+            if source_id:
+                update_source_status(run_dir, str(source_id), "parsed")
+            reply = f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。后续回答将基于已生成的论文 artifacts。"
+            st.success(reply)
+            return reply
+        err = result.get("error", "未知错误")
+        if source_id:
+            update_source_status(run_dir, str(source_id), "failed", error_message=err)
+        reply = f"❌ {pdf_path.name} 解析失败：{err}"
+        st.error(reply)
+        return reply
+
+    message = str(action["message"])
+    if kind in {"missing", "choose"}:
+        st.warning(message)
+    else:
+        st.info(message)
+    return message
 
 
 def _handle_chat_input(
@@ -306,28 +469,13 @@ def _handle_chat_input(
     save_transcript(run_dir, mode, "user", user_input)
     st.chat_message("user").write(user_input)
 
-    # ── P6: Parse trigger — "读一下 sources/xxx.pdf" ──
-    if "读一下" in user_input and ".pdf" in user_input:
-        pdf_path = resolve_source_pdf_path_safely(run_dir, user_input)
-        if pdf_path is not None:
-            stored_path = str(pdf_path.relative_to(run_dir))
-            source_id = find_source_by_stored_path(run_dir, stored_path)
-            with st.spinner(f"正在解析 {pdf_path.name}…"):
-                result = _run_paper_intelligence(run_dir.name, pdf_path)
-            if result["status"] == "parsed":
-                if source_id:
-                    update_source_status(run_dir, source_id, "parsed")
-                reply = f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。后续回答将基于已生成的论文 artifacts。"
-                st.success(reply)
-            else:
-                err = result.get("error", "未知错误")
-                if source_id:
-                    update_source_status(run_dir, source_id, "failed", error_message=err)
-                reply = f"❌ {pdf_path.name} 解析失败：{err}"
-                st.error(reply)
-            st.chat_message("assistant").write(reply)
-            save_transcript(run_dir, mode, "assistant", reply)
-            return
+    # ── P6: Parse trigger — natural language PDF parse requests ──
+    parse_action = build_pdf_parse_action(run_dir, user_input)
+    if parse_action["action"] != "chat":
+        reply = _execute_or_report_pdf_parse_action(run_dir, parse_action)
+        st.chat_message("assistant").write(reply)
+        save_transcript(run_dir, mode, "assistant", reply)
+        return
 
     if not st.session_state.get("_first_task_message_handled"):
         st.session_state._first_task_message_handled = True

@@ -2,7 +2,7 @@
 
 UI writes source_references.json when a user uploads a file or provides a
 reference.  Status transitions are lightweight:
-  uploaded_not_parsed → parsed / failed
+  uploaded_not_parsed → parsing → parsed / failed
   user_provided_not_ingested → (future: ingested)
 
 This module does NOT call MinerU, download PDFs, clone repos, or run any
@@ -12,7 +12,6 @@ experiments.
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -20,6 +19,7 @@ from typing import Any, Literal
 SourceStatus = Literal[
     "uploaded_not_parsed",
     "user_provided_not_ingested",
+    "parsing",
     "parsed",
     "failed",
 ]
@@ -81,6 +81,26 @@ def find_source_by_stored_path(run_dir: Path, stored_path: str) -> str | None:
     return None
 
 
+def find_source_entry_by_stored_path(run_dir: Path, stored_path: str) -> dict[str, Any] | None:
+    """Return the source registry entry matching *stored_path*, or None."""
+    registry = load_source_registry(run_dir)
+    for source in registry.get("sources", []):
+        if source.get("stored_path") == stored_path:
+            return source
+    return None
+
+
+def list_pdf_source_entries(run_dir: Path) -> list[dict[str, Any]]:
+    """Return registered PDF sources with a stored run-relative path."""
+    registry = load_source_registry(run_dir)
+    entries: list[dict[str, Any]] = []
+    for source in registry.get("sources", []):
+        stored_path = source.get("stored_path")
+        if source.get("kind") == "paper_pdf" and isinstance(stored_path, str) and stored_path:
+            entries.append(source)
+    return entries
+
+
 def update_source_status(run_dir: Path, source_id: str, status: SourceStatus, *, error_message: str | None = None) -> None:
     registry = load_source_registry(run_dir)
     for s in registry["sources"]:
@@ -88,6 +108,8 @@ def update_source_status(run_dir: Path, source_id: str, status: SourceStatus, *,
             s["status"] = status
             if error_message:
                 s["error_message"] = error_message
+            elif status != "failed":
+                s.pop("error_message", None)
             break
     _save_registry(run_dir, registry)
 
@@ -130,7 +152,9 @@ def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
     *uploaded_file* must have `.name` (str) and `.getvalue()` (→ bytes).
     Returns {"source_id", "stored_path", "kind"}.
     """
-    name = uploaded_file.name
+    name = Path(str(uploaded_file.name)).name
+    if not name:
+        raise ValueError("uploaded file name must not be empty")
     kind: SourceKind
     ext = Path(name).suffix.lower()
     if ext == ".pdf":

@@ -1,5 +1,6 @@
 """Tests for Phase 2E fix: research chat prompt alignment with v0.5 intent alignment."""
 
+import io
 import json
 from pathlib import Path
 
@@ -22,6 +23,13 @@ def _must_output_text() -> str:
     if next_section != -1:
         rest = rest[:3 + next_section]
     return rest
+
+
+def _make_upload(name: str, content: bytes = b"fake pdf content"):
+    uploaded = io.BytesIO(content)
+    uploaded.name = name
+    uploaded.getvalue = lambda: content
+    return uploaded
 
 
 class TestIntentClarificationPrompt:
@@ -232,3 +240,148 @@ class TestSourceReferencesInjection:
 
         src_msgs = [m for m in messages if "SourceReferences" in m["content"]]
         assert len(src_msgs) == 0
+
+
+class TestPdfParseRouting:
+    """Verify PDF parse requests are routed before normal LLM chat."""
+
+    def test_detects_natural_language_parse_intents(self):
+        from autoad_researcher.ui.research_chat import detect_parse_intent
+
+        assert detect_parse_intent("读一下 sources/src_001/SimpleNet.pdf")
+        assert detect_parse_intent("读一下论文pdf")
+        assert detect_parse_intent("读一下这个 PDF")
+        assert detect_parse_intent("解析刚刚上传的论文")
+        assert detect_parse_intent("看一下上传的材料")
+        assert not detect_parse_intent("我想提升异常检测指标")
+
+    def test_single_pending_pdf_auto_selects_for_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+
+        action = build_pdf_parse_action(run_dir, "读一下论文pdf")
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == info["stored_path"]
+
+    def test_single_pending_pdf_uppercase_pdf_auto_selects(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+
+        action = build_pdf_parse_action(run_dir, "读一下这个 PDF")
+
+        assert action["action"] == "parse"
+
+    def test_multiple_pending_pdfs_requires_user_choice(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        first = save_uploaded_file(run_dir, _make_upload("A.pdf"))
+        second = save_uploaded_file(run_dir, _make_upload("B.pdf"))
+
+        action = build_pdf_parse_action(run_dir, "解析刚刚上传的论文")
+
+        assert action["action"] == "choose"
+        assert first["stored_path"] in action["message"]
+        assert second["stored_path"] in action["message"]
+
+    def test_no_pdf_does_not_fall_through_to_llm(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        action = build_pdf_parse_action(run_dir, "读一下论文pdf")
+
+        assert action["action"] == "missing"
+        assert "上传 PDF" in action["message"]
+
+    def test_parsed_pdf_does_not_parse_again(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file, update_source_status
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+        update_source_status(run_dir, info["source_id"], "parsed")
+
+        action = build_pdf_parse_action(run_dir, "读一下这个 PDF")
+
+        assert action["action"] == "already_parsed"
+
+    def test_parsing_pdf_does_not_start_duplicate(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file, update_source_status
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+        update_source_status(run_dir, info["source_id"], "parsing")
+
+        action = build_pdf_parse_action(run_dir, "解析刚刚上传的论文")
+
+        assert action["action"] == "already_parsing"
+
+    def test_explicit_source_path_still_routes_to_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+
+        action = build_pdf_parse_action(run_dir, f"读一下 {info['stored_path']}")
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == info["stored_path"]
+
+    def test_ordinary_chat_does_not_trigger_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        action = build_pdf_parse_action(run_dir, "我想做异常检测方法迁移")
+
+        assert action["action"] == "chat"
+
+    def test_prompt_warns_not_to_fake_pdf_reading(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_research_chat_messages
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        (run_dir / "sources").mkdir()
+        registry = {
+            "schema_version": 1,
+            "sources": [
+                {
+                    "source_id": "src_001",
+                    "kind": "paper_pdf",
+                    "user_label": "SimpleNet.pdf",
+                    "status": "uploaded_not_parsed",
+                    "stored_path": "sources/src_001/SimpleNet.pdf",
+                }
+            ],
+        }
+        (run_dir / "sources" / "source_references.json").write_text(
+            json.dumps(registry, indent=2)
+        )
+
+        messages = build_research_chat_messages(
+            run_dir=run_dir,
+            mode="intent_clarification",
+            user_input="你能看到论文内容了吗？",
+            context_data={},
+        )
+
+        assert any("do not claim you have read it" in m["content"] for m in messages)
