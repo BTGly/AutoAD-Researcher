@@ -44,7 +44,7 @@ from autoad_researcher.ui.task_profile import (
     list_all_tasks,
     rename_task_title,
     restore_task,
-    trash_archived_task,
+    delete_archived_task,
 )
 from autoad_researcher.ui.run_commands import run_preflight
 from autoad_researcher.ui.research_chat import render_research_chat
@@ -239,15 +239,15 @@ if _info:
             restore_task(run_dir=_run_dir)
             st.rerun()
         st.sidebar.markdown("**危险区**")
-        if st.sidebar.button("移到回收站", key="_delete_archived_task"):
+        if st.sidebar.button("删除已归档任务", key="_delete_archived_task"):
             try:
-                trash_archived_task(run_dir=_run_dir, trashed_at=datetime.now(timezone.utc))
+                delete_archived_task(run_dir=_run_dir)
             except Exception as exc:
                 st.sidebar.error(f"删除失败：{exc}")
             else:
                 select_fallback_task_after_archive(_info["run_id"])
                 st.rerun()
-        st.sidebar.caption("移动到 runs/.trash/，不会直接物理销毁。")
+        st.sidebar.caption("删除会物理移除 runs/ 下的任务目录。")
     with st.sidebar.expander("高级信息"):
         st.caption(f"run_id: `{_info['run_id']}`")
         st.caption(f"制品目录: `{_info['artifact_dir']}/`")

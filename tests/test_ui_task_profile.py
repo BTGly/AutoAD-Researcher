@@ -31,7 +31,7 @@ from autoad_researcher.ui.task_profile import (
     safe_load_task_profile,
     save_task_profile,
     slugify_task_name,
-    trash_archived_task,
+    delete_archived_task,
 )
 
 
@@ -367,41 +367,26 @@ class TestTaskListing:
         assert items[0].run_id == "run_bad_archive"
         assert "task_archive_invalid" in items[0].profile_warning
 
-    def test_trash_archived_task_moves_directory_to_trash(self, tmp_path):
+    def test_delete_archived_task_removes_directory(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path, "run_to_delete")
         (run_dir / "artifact.json").write_text("{}", encoding="utf-8")
-        trashed_at = datetime(2026, 7, 5, 11, 0, tzinfo=timezone.utc)
-        archive_task(run_dir=run_dir, archived_at=trashed_at)
+        archive_task(
+            run_dir=run_dir,
+            archived_at=datetime(2026, 7, 5, 11, 0, tzinfo=timezone.utc),
+        )
 
-        target = trash_archived_task(run_dir=run_dir, trashed_at=trashed_at)
+        delete_archived_task(run_dir=run_dir)
 
         assert not run_dir.exists()
-        assert target == tmp_path / ".trash" / "run_to_delete_20260705_110000"
-        assert (target / "artifact.json").is_file()
         assert list_all_tasks(runs_root=tmp_path, include_archived=True) == []
 
-    def test_trash_unarchived_task_rejected(self, tmp_path):
+    def test_delete_unarchived_task_rejected(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path, "run_not_archived")
 
         with pytest.raises(ValueError, match="archived"):
-            trash_archived_task(
-                run_dir=run_dir,
-                trashed_at=datetime(2026, 7, 5, 11, 0, tzinfo=timezone.utc),
-            )
+            delete_archived_task(run_dir=run_dir)
 
         assert run_dir.is_dir()
-
-    def test_trash_archived_task_avoids_name_collision(self, tmp_path):
-        run_dir = _tmp_run_dir(tmp_path, "run_collision")
-        trashed_at = datetime(2026, 7, 5, 11, 0, tzinfo=timezone.utc)
-        archive_task(run_dir=run_dir, archived_at=trashed_at)
-        first_target = tmp_path / ".trash" / "run_collision_20260705_110000"
-        first_target.mkdir(parents=True)
-
-        target = trash_archived_task(run_dir=run_dir, trashed_at=trashed_at)
-
-        assert target == tmp_path / ".trash" / "run_collision_20260705_110000_2"
-        assert target.is_dir()
 
 
 # ---------------------------------------------------------------------------
