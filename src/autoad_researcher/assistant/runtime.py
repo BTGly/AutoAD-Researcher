@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from autoad_researcher.assistant.events import AssistantEvent, AssistantEventType
-from autoad_researcher.assistant.probe import silent_probe
+from autoad_researcher.assistant.probe import WhatWeKnow, silent_probe
 from autoad_researcher.assistant.prompt_registry import get_default_prompt_registry
 from autoad_researcher.assistant.prompt_selector import select_prompt_id
 from autoad_researcher.assistant.session import AutoADAssistantSession
@@ -117,6 +117,7 @@ class DeterministicAssistantRuntime:
         # Apply transition
         old_mode = session.mode
         session = apply(session, event)
+        session = _apply_probe_first_mode(session, www, event)
         self._store.append_transition(
             AssistantTransitionRecord(
                 run_id=run_id,
@@ -144,6 +145,32 @@ class DeterministicAssistantRuntime:
             event=event,
             violations=violations,
         )
+
+
+def _apply_probe_first_mode(
+    session: AutoADAssistantSession,
+    what_we_know: WhatWeKnow,
+    event: AssistantEvent,
+) -> AutoADAssistantSession:
+    if session.mode != "goal_alignment":
+        return session
+    if event.event_type in {"unknown", "progress_query", "source_input"}:
+        return session
+    if not _has_probe_material(what_we_know):
+        return session
+    return session.model_copy(update={"mode": "intent_structuring"})
+
+
+def _has_probe_material(what_we_know: WhatWeKnow) -> bool:
+    return any(
+        [
+            what_we_know.has_baseline_contract,
+            what_we_know.has_paper_artifacts,
+            what_we_know.has_context_draft,
+            what_we_know.has_implementation_variants,
+            what_we_know.has_transfer_analysis,
+        ]
+    )
 
 
 def _fake_reply(session, www, event) -> str:
@@ -178,8 +205,8 @@ def _fake_reply(session, www, event) -> str:
     if mode == "intent_structuring":
         variants = www.available_variants or []
         lines = [
-            f"根据已有材料，我理解你想在 {baseline} 上继续异常检测方向。",
-            f"当前已有 {len(variants)} 个候选 variant。",
+            f"根据已有材料，我理解 baseline 是 {baseline}，你想继续异常检测方向。",
+            f"当前已有候选 variant {len(variants)} 个。",
         ]
         if www.missing_fields:
             lines.append(f"仍缺 {missing}，需要你这方面信息。")
