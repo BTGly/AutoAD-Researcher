@@ -43,6 +43,12 @@ from autoad_researcher.ui.task_profile import (
     load_task_profile,
     save_task_profile,
 )
+from autoad_researcher.ui.sources import (
+    get_source_context,
+    resolve_source_pdf_path_safely,
+    save_uploaded_file,
+    update_source_status,
+)
 
 _SAFETY_WARNING = "研究助手只提供解释和建议，不会修改代码，也不会执行真实 L3。"
 _MODE_LABELS = {
@@ -83,6 +89,26 @@ def render_research_chat():
     )
     _render_task_overview(overview)
     _render_flow_steps(run_dir)
+
+    # ── P6: Source Intake (file upload) ──
+    with st.expander("📎 当前资料 / Sources", expanded=False):
+        uploaded = st.file_uploader(
+            "上传论文或材料",
+            type=["pdf", "txt", "md", "markdown"],
+            key="_source_upload",
+            label_visibility="collapsed",
+        )
+        if uploaded is not None:
+            info = save_uploaded_file(run_dir, uploaded)
+            st.success(f"✅ 已保存：{uploaded.name}")
+            st.caption("上传后你可以在聊天框中说：读一下 sources/" + uploaded.name)
+            st.rerun()
+
+        src_ctx = get_source_context(run_dir)
+        if src_ctx:
+            st.code(src_ctx, language="text")
+        else:
+            st.caption("暂无已添加的资料。支持 PDF / txt / md 上传。")
 
     if not api_key:
         st.warning("请先在「运行配置」中填写 API Key。")
@@ -173,11 +199,13 @@ def build_research_chat_messages(
     mode: str,
     user_input: str,
     context_data: dict | None,
+    transcript_tail: list[dict] | None = None,
 ) -> list[dict[str, str]]:
     """Assemble messages for a research chat LLM call.
 
     For intent_clarification mode, injects WhatWeKnow from silent_probe
-    as a separate system message so the LLM sees known/missing artifact info.
+    and SourceReferences from the source registry as separate system messages.
+    *transcript_tail* provides recent chat history so the LLM remembers context.
     """
     from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
 
@@ -189,6 +217,7 @@ def build_research_chat_messages(
     ]
 
     if mode == "intent_clarification":
+        # WhatWeKnow
         www_json = "{}"
         try:
             www = silent_probe(run_dir.name, runs_root=run_dir.parent)
@@ -203,9 +232,58 @@ def build_research_chat_messages(
             ),
         })
 
+        # SourceReferences
+        src_ctx = get_source_context(run_dir)
+        if src_ctx:
+            messages.append({"role": "system", "content": src_ctx})
+
+    # Transcript history (before current user_input)
+    if transcript_tail:
+        for entry in transcript_tail:
+            role = entry.get("role", "user")
+            content = entry.get("content", "")
+            if role in ("user", "assistant") and content:
+                # Truncate very long messages
+                if len(content) > 2000:
+                    content = content[:2000] + "…[truncated]"
+                messages.append({"role": role, "content": content})
+
     messages.append({"role": "system", "content": "当前运行上下文:\n" + context_str})
     messages.append({"role": "user", "content": user_input})
     return messages
+
+
+def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
+    """Trigger paper-intelligence CLI for a PDF.
+
+    UI does NOT call MinerU directly — it delegates to the CLI.
+    Returns {"status": "parsed"} or {"status": "failed", "error": "..."}.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            [
+                "uv", "run", "autoad", "paper-intelligence",
+                "--run-id", run_id,
+                "--pdf", str(pdf_path),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "error": "解析超时（5 分钟）"}
+    except FileNotFoundError:
+        return {"status": "failed", "error": "autoad CLI 未找到"}
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc)[:200]}
+
+    if proc.returncode == 0:
+        return {"status": "parsed"}
+    err = proc.stderr.strip()[:200] or f"returncode={proc.returncode}"
+    return {"status": "failed", "error": err}
 
 
 def _handle_chat_input(
@@ -220,8 +298,24 @@ def _handle_chat_input(
     if not user_input:
         return
 
+    # ── P3: Read transcript history BEFORE saving current input ──
+    existing_transcript = load_transcript(run_dir)
+    transcript_tail = existing_transcript[-10:]
+
     save_transcript(run_dir, mode, "user", user_input)
     st.chat_message("user").write(user_input)
+
+    # ── P6: Parse trigger — "读一下 sources/xxx.pdf" ──
+    if "读一下" in user_input and ".pdf" in user_input:
+        pdf_path = resolve_source_pdf_path_safely(run_dir, user_input)
+        if pdf_path is not None:
+            with st.spinner(f"正在解析 {pdf_path.name}…"):
+                result = _run_paper_intelligence(run_dir.name, pdf_path)
+            if result["status"] == "parsed":
+                st.success(f"✅ {pdf_path.name} 已解析")
+            else:
+                st.error(f"❌ 解析失败：{result.get('error', '未知错误')}")
+            return
 
     if not st.session_state.get("_first_task_message_handled"):
         st.session_state._first_task_message_handled = True
@@ -243,6 +337,7 @@ def _handle_chat_input(
         mode=mode,
         user_input=user_input,
         context_data=context_data,
+        transcript_tail=transcript_tail,
     )
 
     with st.spinner("思考中…"):
