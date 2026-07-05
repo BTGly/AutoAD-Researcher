@@ -139,3 +139,23 @@ correction: accept the correction and return to intent_structuring
 
 It still does not call a real LLM, generate confirmed tasks, approve execution, modify code, or start Stage 3 pipeline work.
 
+## 8. Round 5 Schema-Bound LLM Backend Foundation
+
+Round 5 adds:
+
+```text
+src/autoad_researcher/assistant/llm_backend.py
+tests/test_assistant_schema_bound_backend.py
+```
+
+This round creates the validation boundary for future provider adapters. It does not call DeepSeek, does not read API keys, and does not require network access in CI.
+
+The backend accepts an injected `SchemaJSONClient` and validates returned JSON against concrete Pydantic models before any caller may use it. Current schemas include:
+
+```text
+AssistantTextReplyV1
+ResearchTaskDraftV1
+```
+
+A valid LLM response is only a candidate structured output. It does not write `research_task_confirmed.json`, does not set `ready_for_pipeline`, does not approve execution, and does not decide methods, algorithms, hyperparameters, patches, or variants.
+

@@ -25,6 +25,14 @@ from autoad_researcher.assistant.session_store import (
     AssistantTransitionRecord,
     SessionStore,
 )
+from autoad_researcher.assistant.llm_backend import (
+    AssistantTextReplyV1,
+    SchemaBoundAssistantBackend,
+    SchemaBoundLLMRequest,
+    SchemaBoundLLMResult,
+    SchemaBoundOutputError,
+    StaticSchemaJSONClient,
+)
 from autoad_researcher.assistant.probe import KNOWN_ARTIFACT_MAP, WhatWeKnow, silent_probe
 from autoad_researcher.assistant.prompt_io import (
     AssistantStage,
@@ -43,6 +51,12 @@ from autoad_researcher.assistant.prompt_registry import (
 )
 
 __all__ = [
+    "StaticSchemaJSONClient",
+    "SchemaBoundOutputError",
+    "SchemaBoundLLMResult",
+    "SchemaBoundLLMRequest",
+    "SchemaBoundAssistantBackend",
+    "AssistantTextReplyV1",
     "route_user_text",
     "FakeIntentAlignmentBackend",
     "DeterministicAssistantRuntime",
