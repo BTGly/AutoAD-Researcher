@@ -1,40 +1,23 @@
-"""AutoAD Assistant Runtime — manual Alpha conversation CLI + deterministic skeleton.
-
-CLI usage:
-  uv run autoad assistant-alpha --run-id run_alpha_001 [--provider-url URL]
-
-Deterministic runtime for testing (Round 4):
-  DeterministicAssistantRuntime — fake backend that probes artifacts
-  route_user_text — coarse envelope router
-"""
+"""AutoAD Assistant Runtime -- deterministic skeleton for testing (Round 4)."""
 
 from __future__ import annotations
 
 import json
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 from pydantic import BaseModel, Field
 
-from autoad_researcher.assistant.draft_schema import ResearchTaskDraftV1
 from autoad_researcher.assistant.events import AssistantEvent, AssistantEventType
 from autoad_researcher.assistant.probe import silent_probe
 from autoad_researcher.assistant.prompt_registry import get_default_prompt_registry
 from autoad_researcher.assistant.prompt_selector import select_prompt_id
-from autoad_researcher.assistant.session import (
-    AutoADAssistantSession,
-    TaskControlState,
-)
+from autoad_researcher.assistant.session import AutoADAssistantSession
 from autoad_researcher.assistant.session_store import (
     AssistantTransitionRecord,
     SessionStore,
 )
-from autoad_researcher.assistant.task_artifacts import (
-    AssistantTaskArtifactService,
-)
+from autoad_researcher.assistant.task_artifacts import AssistantTaskArtifactService
 from autoad_researcher.assistant.transition_policy import apply, validate
 from autoad_researcher.core.run_id import validate_run_id
 
@@ -45,7 +28,7 @@ from autoad_researcher.core.run_id import validate_run_id
 
 
 def route_user_text(text: str) -> AssistantEvent:
-    """Coarse envelope router — NOT behavior enumeration."""
+    """Coarse envelope router -- NOT behavior enumeration."""
     import re
 
     text_lower = text.strip().lower()
@@ -204,199 +187,3 @@ def _fake_reply(session, www, event) -> str:
         return "\n".join(lines)
 
     return "收到。我将基于已有材料继续整理任务草案。"
-
-
-# ─────────────────────────────────────────────────────────
-# Live Alpha CLI (Round 7 — manual conversation with LLM)
-# ─────────────────────────────────────────────────────────
-
-
-def _call_llm(
-    api_key: str,
-    provider_url: str,
-    system_prompt: str,
-    user_message: str,
-    model: str = "deepseek-chat",
-) -> str:
-    base = provider_url.rstrip("/")
-    if base.endswith("/v1"):
-        url = base + "/chat/completions"
-    else:
-        url = base + "/v1/chat/completions"
-    resp = httpx.post(
-        url,
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            "temperature": 0.3,
-            "max_tokens": 2048,
-        },
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        timeout=60,
-    )
-    if resp.status_code != 200:
-        return f"[LLM error: HTTP {resp.status_code}]"
-    body = resp.json()
-    return body["choices"][0]["message"]["content"]
-
-
-def run_alpha(
-    run_id: str,
-    *,
-    runs_root: str | Path = "runs",
-    api_key: str = "",
-    provider_url: str = "https://api.deepseek.com",
-) -> None:
-    """Manual Alpha conversation loop."""
-    validate_run_id(runs_root, run_id)
-    store = SessionStore(runs_root)
-    registry = get_default_prompt_registry()
-    artifacts = AssistantTaskArtifactService(runs_root, store=store)
-
-    # ── Load or create session ──
-    session = store.load_session(run_id)
-    if session is None:
-        session = AutoADAssistantSession(
-            session_id=f"s_{run_id}",
-            run_id=run_id,
-        )
-        store.save_session(session)
-        print(f"[session] created: {session.session_id} (mode={session.mode})")
-    else:
-        print(f"[session] loaded: {session.session_id} (mode={session.mode})")
-
-    # ── Silent probe ──
-    print("\n[probe] scanning artifacts...")
-    www = silent_probe(run_id, runs_root=runs_root)
-    artifacts.write_what_we_know(www)
-    print(f"  baseline={www.baseline_method or '?'}")
-    print(f"  dataset={www.dataset or '?'}")
-    print(f"  paper_methods={len(www.paper_methods)}")
-    print(f"  variants={len(www.available_variants)}")
-    print(f"  missing_fields={www.missing_fields}")
-
-    # ── Interaction loop ──
-    print("\n[alpha] start conversation (type /quit to exit, /draft to generate, /status to see session)")
-    print(f"[alpha] current mode: {session.mode}")
-
-    event_counter = 0
-    while True:
-        try:
-            user_input = input("\n[YOU] ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n[alpha] exiting")
-            break
-
-        if not user_input:
-            continue
-        if user_input == "/quit":
-            break
-        if user_input == "/draft":
-            _generate_draft(session, www, artifacts)
-            continue
-        if user_input == "/status":
-            _show_status(session)
-            continue
-
-        # ── Create event ──
-        event_counter += 1
-        event = AssistantEvent(
-            event_id=f"ev_{run_id}_{event_counter}",
-            event_type="user_input",
-            payload={"text": user_input},
-        )
-        store.append_event(run_id, event)
-
-        # ── Apply transition ──
-        old_mode = session.mode
-        session = apply(session, event)
-        new_mode = session.mode
-        store.append_transition(
-            AssistantTransitionRecord(
-                run_id=run_id,
-                event_id=event.event_id,
-                from_mode=old_mode,
-                to_mode=new_mode,
-                triggered_by=f"user_input:{event.event_id}",
-            )
-        )
-        print(f"[mode] {old_mode} → {new_mode}")
-
-        # ── Check invariants ──
-        violations = validate(session)
-        if violations:
-            for v in violations:
-                print(f"[invariant] WARNING: {v}")
-
-        # ── Call LLM ──
-        prompt_id = select_prompt_id(session.mode)
-        system_prompt = registry.build_system_prompt(prompt_id)
-        probe_text = _format_what_we_know(www)
-        full_system = f"{system_prompt}\n\n## 当前已知信息\n{probe_text}"
-
-        if not api_key:
-            print("[LLM] no API key provided — displaying system prompt instead")
-            print(f"[LLM] prompt_id={prompt_id}")
-            print(f"[LLM] --- system prompt ---\n{full_system[:500]}...")
-            reply = "[NO LLM — API key not set]"
-        else:
-            print("[LLM] thinking...")
-            reply = _call_llm(api_key, provider_url, full_system, user_input)
-            print(f"\n[ASSISTANT]\n{reply}")
-
-        # ── Save ──
-        store.save_session(session)
-        print(f"[recorded] session saved (mode={session.mode})")
-
-
-def _format_what_we_know(www) -> str:
-    lines = []
-    if www.baseline_method:
-        lines.append(f"- baseline: {www.baseline_method} (commit {www.baseline_commit})")
-    if www.dataset:
-        lines.append(f"- dataset: {www.dataset}")
-    if www.modifiable_hooks:
-        lines.append(f"- modifiable hooks: {', '.join(www.modifiable_hooks[:5])}")
-    if www.paper_methods:
-        lines.append(f"- paper methods: {', '.join(www.paper_methods[:5])}")
-    if www.available_variants:
-        lines.append(f"- available variants: {', '.join(www.available_variants[:5])}")
-    if www.missing_fields:
-        lines.append(f"- MISSING: {', '.join(www.missing_fields)}")
-    return "\n".join(lines) if lines else "(no known information)"
-
-
-def _generate_draft(session, www, artifacts):
-    print("[draft] generating ResearchTaskDraftV1 from current state...")
-    # Minimal draft from WhatWeKnow
-    draft = ResearchTaskDraftV1(
-        run_id=session.run_id,
-        draft_id=f"draft_{session.run_id}_1",
-        metric_command=www.primary_metric or "UNKNOWN — please specify",
-        metric_name=www.primary_metric or "UNKNOWN",
-        metric_direction="maximize",
-        baseline=www.baseline_method or "UNKNOWN — please specify",
-        baseline_value=None,
-        ambition="beat_baseline",
-        scope="mixed",
-        dataset=www.dataset,
-        constraints=[],
-    )
-    result = artifacts.create_research_task_draft(session, draft)
-    print(f"[draft] saved: {result['draft_path']}")
-    print(f"[draft] has_blocking_gaps={result['has_blocking_gaps']}")
-
-
-def _show_status(session):
-    print(f"  mode: {session.mode}")
-    print(f"  task.draft_ref: {session.task.draft_ref}")
-    print(f"  task.confirmed_ref: {session.task.confirmed_ref}")
-    print(f"  task.has_blocking_gaps: {session.task.has_blocking_gaps}")
-    print(f"  task.ready_for_pipeline: {session.task.ready_for_pipeline}")
-    print(f"  task.execution_approved: {session.task.execution_approved}")
