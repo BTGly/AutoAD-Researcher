@@ -1,0 +1,23 @@
+{
+  "run_id": "run_l3_bottle_001",
+  "dataset": null,
+  "metrics": {
+    "primary_metrics": [],
+    "secondary_metrics": []
+  },
+  "gaps": [
+    {
+      "gap_id": "gap_dataset",
+      "gap_type": "user_decision_required",
+      "category": "dataset_selection",
+      "severity": "blocking",
+      "question_needed": true,
+      "reason": "No dataset has been selected",
+      "downstream_impact": "Cannot proceed to experiment design without a selected dataset",
+      "related_fact_ids": [],
+      "related_evidence_ids": [],
+      "resolution_target": "3.3_context_repair",
+      "resolved_by_patch_id": null
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "title": {
+    "claim_id": "cl_0",
+    "subject": "title",
+    "predicate": "is",
+    "value": "Section",
+    "status": "confirmed",
+    "confidence": "medium",
+    "evidence_ids": [
+      "ev_src_run_l3_bottle_001_001"
+    ],
+    "rationale_summary": null
+  },
+  "proposed_method": [
+    {
+      "value": "coreset-guided memory bank with local neighborhood aggregation",
+      "text": null
+    }
+  ],
+  "core_components": [
+    {
+      "value": "WideResNet-50 backbone for patch-level feature extraction",
+      "text": null
+    },
+    {
+      "value": "greedy coreset sampling to compress memory bank",
+      "text": null
+    }
+  ]
+}

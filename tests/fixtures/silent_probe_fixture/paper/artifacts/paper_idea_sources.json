@@ -1,0 +1,10 @@
+[
+  {
+    "source_id": "patchcore_coreset_sampling",
+    "label": "Coreset-based subsampling of nominal patch features",
+    "mechanism_summary": "PatchCore extracts patch-level features from a pre-trained CNN (WideResNet-50), then constructs a coreset via greedy iterative sampling to reduce memory footprint while preserving feature distribution coverage. Anomaly scores are computed as the distance to the nearest neighbor in the coreset.",
+    "evidence_ids": [
+      "ev_paper_patchcore_method"
+    ]
+  }
+]

@@ -82,3 +82,30 @@ The mapping deliberately allows several modes to share a profile. It is not a us
 ## 5. Deferred Work
 
 Round 2 does not implement `silent_probe`, `WhatWeKnow`, runtime routing, LLM backend, UI flow, or pipeline bridge. Those remain for later rounds.
+
+## 6. Round 3 silent_probe / WhatWeKnow
+
+Round 3 adds:
+
+```text
+src/autoad_researcher/assistant/probe.py
+tests/fixtures/silent_probe_fixture/
+tests/test_assistant_probe.py
+```
+
+`silent_probe(run_id, runs_root)` uses `run_dir_path` and `KNOWN_ARTIFACT_MAP` only. It does not accept user-provided subpaths, does not call an LLM, does not run shell commands, and does not mutate run artifacts.
+
+Current stable artifact map:
+
+```text
+baseline_contract  -> baseline_architecture_contract.json
+repo_summary       -> repository_intelligence/repo_summary.json
+paper_sources      -> paper/artifacts/paper_idea_sources.json
+paper_summary      -> paper/artifacts/paper_summary.json
+context_draft      -> context/research_context_draft.json
+variants           -> transfer_design/implementation_variants.json
+transfer_analysis  -> transfer_design/transfer_analysis.json
+```
+
+`WhatWeKnow` intentionally excludes `preflight_passed`, because there is no stable preflight report artifact. It also does not infer `category` or `metric_direction`; those remain missing fields until user confirmation or a future stable artifact provides them.
+

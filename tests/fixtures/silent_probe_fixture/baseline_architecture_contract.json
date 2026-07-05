@@ -1,0 +1,12 @@
+{
+  "model_name": "PatchCore",
+  "repository_commit": "fcaa92f124fb1ad74a7acf56726decd4b27cbcad",
+  "modifiable_hooks": [
+    {
+      "hook_name": "backbone"
+    },
+    {
+      "hook_name": "coreset_sampling"
+    }
+  ]
+}
