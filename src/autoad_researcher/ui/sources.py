@@ -72,6 +72,15 @@ def _save_registry(run_dir: Path, registry: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def find_source_by_stored_path(run_dir: Path, stored_path: str) -> str | None:
+    """Return the source_id matching *stored_path*, or None."""
+    registry = load_source_registry(run_dir)
+    for s in registry.get("sources", []):
+        if s.get("stored_path") == stored_path:
+            return s["source_id"]
+    return None
+
+
 def update_source_status(run_dir: Path, source_id: str, status: SourceStatus, *, error_message: str | None = None) -> None:
     registry = load_source_registry(run_dir)
     for s in registry["sources"]:
@@ -83,10 +92,10 @@ def update_source_status(run_dir: Path, source_id: str, status: SourceStatus, *,
     _save_registry(run_dir, registry)
 
 
-def append_source_ref(run_dir: Path, *, kind: SourceKind, user_label: str, stored_path: str | None, status: SourceStatus) -> str:
-    source_id = _generate_source_id()
+def append_source_ref(run_dir: Path, *, kind: SourceKind, user_label: str, stored_path: str | None, status: SourceStatus, source_id: str | None = None) -> str:
+    sid = source_id or _generate_source_id()
     ref = {
-        "source_id": source_id,
+        "source_id": sid,
         "kind": kind,
         "user_label": user_label,
         "status": status,
@@ -96,7 +105,7 @@ def append_source_ref(run_dir: Path, *, kind: SourceKind, user_label: str, store
     registry = load_source_registry(run_dir)
     registry["sources"].append(ref)
     _save_registry(run_dir, registry)
-    return source_id
+    return sid
 
 
 def get_source_context(run_dir: Path) -> str:
@@ -118,7 +127,7 @@ def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
     """Save an uploaded file to runs/{run_id}/sources/ and record in registry.
 
     *uploaded_file* must have `.name` (str) and `.getvalue()` (→ bytes).
-    Returns the registry entry dict.
+    Returns {"source_id", "stored_path", "kind"}.
     """
     name = uploaded_file.name
     kind: SourceKind
@@ -145,6 +154,7 @@ def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
         user_label=name,
         stored_path=stored_path,
         status="uploaded_not_parsed",
+        source_id=source_id,
     )
     return {
         "source_id": source_id,

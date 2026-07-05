@@ -44,6 +44,7 @@ from autoad_researcher.ui.task_profile import (
     save_task_profile,
 )
 from autoad_researcher.ui.sources import (
+    find_source_by_stored_path,
     get_source_context,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
@@ -101,7 +102,7 @@ def render_research_chat():
         if uploaded is not None:
             info = save_uploaded_file(run_dir, uploaded)
             st.success(f"✅ 已保存：{uploaded.name}")
-            st.caption("上传后你可以在聊天框中说：读一下 sources/" + uploaded.name)
+            st.caption(f"上传后你可以在聊天框中说：读一下 {info['stored_path']}")
             st.rerun()
 
         src_ctx = get_source_context(run_dir)
@@ -309,12 +310,23 @@ def _handle_chat_input(
     if "读一下" in user_input and ".pdf" in user_input:
         pdf_path = resolve_source_pdf_path_safely(run_dir, user_input)
         if pdf_path is not None:
+            stored_path = str(pdf_path.relative_to(run_dir))
+            source_id = find_source_by_stored_path(run_dir, stored_path)
             with st.spinner(f"正在解析 {pdf_path.name}…"):
                 result = _run_paper_intelligence(run_dir.name, pdf_path)
             if result["status"] == "parsed":
-                st.success(f"✅ {pdf_path.name} 已解析")
+                if source_id:
+                    update_source_status(run_dir, source_id, "parsed")
+                reply = f"✅ {pdf_path.name} 已解析完成。现在可以基于论文内容讨论了。"
+                st.success(reply)
             else:
-                st.error(f"❌ 解析失败：{result.get('error', '未知错误')}")
+                err = result.get("error", "未知错误")
+                if source_id:
+                    update_source_status(run_dir, source_id, "failed", error_message=err)
+                reply = f"❌ {pdf_path.name} 解析失败：{err}"
+                st.error(reply)
+            st.chat_message("assistant").write(reply)
+            save_transcript(run_dir, mode, "assistant", reply)
             return
 
     if not st.session_state.get("_first_task_message_handled"):

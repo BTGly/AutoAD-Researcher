@@ -7,6 +7,7 @@ import pytest
 
 from autoad_researcher.ui.sources import (
     append_source_ref,
+    find_source_by_stored_path,
     get_source_context,
     load_source_registry,
     resolve_source_pdf_path_safely,
@@ -52,6 +53,15 @@ class TestSaveUploadedFile:
         info = save_uploaded_file(run_dir, upload)
         assert info["kind"] == "markdown"
 
+    def test_returned_source_id_matches_registry(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["source_id"] == info["source_id"]
+        assert info["stored_path"].startswith("sources/" + info["source_id"])
+        assert info["stored_path"].endswith("SimpleNet.pdf")
+
 
 class TestSourceRegistry:
     def test_load_empty_registry(self, tmp_path):
@@ -93,6 +103,18 @@ class TestSourceRegistry:
         reg = load_source_registry(run_dir)
         assert reg["sources"][0]["status"] == "failed"
         assert reg["sources"][0]["error_message"] == "MinerU timeout"
+
+    def test_find_source_by_stored_path(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+        found = find_source_by_stored_path(run_dir, info["stored_path"])
+        assert found == info["source_id"]
+
+    def test_find_source_nonexistent(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        assert find_source_by_stored_path(run_dir, "sources/nonexistent.pdf") is None
 
 
 class TestSourceContext:

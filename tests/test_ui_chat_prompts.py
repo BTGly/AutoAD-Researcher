@@ -1,5 +1,6 @@
 """Tests for Phase 2E fix: research chat prompt alignment with v0.5 intent alignment."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -160,12 +161,8 @@ class TestTranscriptTail:
         )
 
         user_msgs = [m for m in messages if m["role"] == "user"]
-        for msg in user_msgs:
-            if "不是完整复现" in msg["content"]:
-                # Current user_input should appear exactly once as user role
-                pass
-
-        assert len(user_msgs) >= 1
+        contents = [m["content"] for m in user_msgs]
+        assert contents.count("不是完整复现，是迁移") == 1
 
     def test_transcript_none_does_not_crash(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_research_chat_messages
@@ -191,6 +188,22 @@ class TestSourceReferencesInjection:
 
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
+        (run_dir / "sources").mkdir()
+        registry = {
+            "schema_version": 1,
+            "sources": [
+                {
+                    "source_id": "src_001",
+                    "kind": "paper_pdf",
+                    "user_label": "SimpleNet.pdf",
+                    "status": "uploaded_not_parsed",
+                    "stored_path": "sources/src_001/SimpleNet.pdf",
+                }
+            ],
+        }
+        (run_dir / "sources" / "source_references.json").write_text(
+            json.dumps(registry, indent=2)
+        )
 
         messages = build_research_chat_messages(
             run_dir=run_dir,
@@ -199,8 +212,10 @@ class TestSourceReferencesInjection:
             context_data={},
         )
 
-        # SourceReferences injected even if empty (no crash)
-        assert len(messages) >= 3
+        src_msgs = [m for m in messages if "SourceReferences" in m["content"]]
+        assert len(src_msgs) == 1
+        assert "SimpleNet.pdf" in src_msgs[0]["content"]
+        assert "uploaded_not_parsed" in src_msgs[0]["content"]
 
     def test_run_explanation_skips_source_references(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_research_chat_messages
