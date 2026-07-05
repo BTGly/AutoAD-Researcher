@@ -88,6 +88,14 @@ def load_task_profile(run_dir: Path) -> TaskProfile | None:
     return TaskProfile.model_validate(raw)
 
 
+def safe_load_task_profile(run_dir: Path) -> tuple[TaskProfile | None, str | None]:
+    """Return a task profile for UI display without raising on corrupt files."""
+    try:
+        return load_task_profile(run_dir), None
+    except Exception as exc:
+        return None, f"task_profile_invalid:{type(exc).__name__}"
+
+
 def save_task_profile(run_dir: Path, profile: TaskProfile) -> Path:
     """Atomically persist *profile*, refusing to overwrite an existing file."""
     path = _profile_path(run_dir)
@@ -154,7 +162,7 @@ def rename_task_title(*, run_dir: Path, new_title: str, updated_at: datetime) ->
     title = new_title.strip()
     if not title:
         raise ValueError("task title must not be empty")
-    existing = load_task_profile(run_dir)
+    existing, _warning = safe_load_task_profile(run_dir)
     if existing is None:
         existing = fallback_task_profile(run_dir.name)
     profile = existing.model_copy(update={
@@ -177,12 +185,7 @@ def list_all_tasks(*, runs_root: Path) -> list[TaskListItem]:
         if not run_dir.is_dir() or run_dir.name.startswith("."):
             continue
         profile_path = _profile_path(run_dir)
-        warning: str | None = None
-        try:
-            profile = load_task_profile(run_dir)
-        except Exception as exc:
-            profile = None
-            warning = f"task_profile_invalid:{type(exc).__name__}"
+        profile, warning = safe_load_task_profile(run_dir)
 
         if profile is not None:
             item = TaskListItem(
@@ -343,23 +346,32 @@ def generate_task_profile_from_first_message(
 
 def get_task_title(run_dir: Path) -> str:
     """Return the human-readable task title for UI display."""
-    profile = load_task_profile(run_dir)
+    profile, _warning = safe_load_task_profile(run_dir)
     if profile is not None:
         return profile.task_title
-    fallback = fallback_task_profile(run_dir.name)
-    return fallback.task_title
+    return run_dir.name
 
 
 def get_task_display_info(run_dir: Path) -> dict[str, Any]:
     """Return a dict with task_title, task_summary, run_id, and artifact_dir for UI rendering."""
-    profile = load_task_profile(run_dir)
-    if profile is None:
-        profile = fallback_task_profile(run_dir.name)
+    profile, warning = safe_load_task_profile(run_dir)
+    if profile is not None:
+        task_title = profile.task_title
+        task_summary = profile.task_summary
+        task_source = profile.source
+        run_id = profile.run_id
+    else:
+        fallback = fallback_task_profile(run_dir.name)
+        task_title = run_dir.name
+        task_summary = fallback.task_summary
+        task_source = fallback.source
+        run_id = run_dir.name
 
     return {
-        "task_title": profile.task_title,
-        "task_summary": profile.task_summary,
-        "task_source": profile.source,
-        "run_id": profile.run_id,
+        "task_title": task_title,
+        "task_summary": task_summary,
+        "task_source": task_source,
+        "task_profile_warning": warning,
+        "run_id": run_id,
         "artifact_dir": str(run_dir),
     }

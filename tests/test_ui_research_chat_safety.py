@@ -180,6 +180,24 @@ def test_overview_hides_raw_ids_but_developer_info_keeps_them(tmp_path: Path):
     assert "approval_gate_report.json" in developer["raw_artifacts"]
 
 
+def test_overview_bad_task_profile_falls_back_without_crashing(tmp_path: Path):
+    run_dir = tmp_path / "run_bad_profile"
+    profile_path = run_dir / "ui_chat" / "task_profile.json"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text("{not json", encoding="utf-8")
+
+    overview = build_research_assistant_overview(
+        run_dir,
+        dataset_root="/root/autodl-tmp/mvtec",
+        provider_url="https://api.deepseek.com",
+        context_data=None,
+    )
+
+    assert overview["task_title"] == "run_bad_profile"
+    assert overview["task_summary"]
+    assert overview["developer"]["run_id"] == "run_bad_profile"
+
+
 def test_missing_patch_approval_request_raw_warning_removed():
     source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
     assert "尚无 patch_planner_approval_request.json" not in source

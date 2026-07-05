@@ -40,7 +40,7 @@ from autoad_researcher.ui.intake_bridge import (
 from autoad_researcher.ui.task_profile import (
     generate_task_profile_from_first_message,
     get_task_display_info,
-    load_task_profile,
+    safe_load_task_profile,
     save_task_profile,
 )
 from autoad_researcher.ui.sources import (
@@ -578,7 +578,7 @@ def _handle_chat_input(
 
     if not st.session_state.get("_first_task_message_handled"):
         st.session_state._first_task_message_handled = True
-        existing = load_task_profile(run_dir)
+        existing, _warning = safe_load_task_profile(run_dir)
         if existing is None:
             try:
                 profile = generate_task_profile_from_first_message(

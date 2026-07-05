@@ -25,6 +25,7 @@ from autoad_researcher.ui.task_profile import (
     list_all_tasks,
     load_task_profile,
     rename_task_title,
+    safe_load_task_profile,
     save_task_profile,
     slugify_task_name,
 )
@@ -152,6 +153,17 @@ class TestLoadSave:
         save_task_profile(run_dir, _valid_profile(run_dir))
         with pytest.raises(FileExistsError):
             save_task_profile(run_dir, _valid_profile(run_dir))
+
+    def test_safe_load_bad_profile_returns_warning(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_bad_profile")
+        profile_path = run_dir / "ui_chat" / "task_profile.json"
+        profile_path.parent.mkdir()
+        profile_path.write_text("{not json", encoding="utf-8")
+
+        profile, warning = safe_load_task_profile(run_dir)
+
+        assert profile is None
+        assert warning == "task_profile_invalid:JSONDecodeError"
 
 
 class TestTaskNamingHelpers:
@@ -334,7 +346,7 @@ class TestUIHelpers:
 
     def test_get_task_title_without_profile(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path)
-        assert get_task_title(run_dir) == "未命名研究任务"
+        assert get_task_title(run_dir) == run_dir.name
 
     def test_get_display_info(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path)
@@ -348,13 +360,35 @@ class TestUIHelpers:
     def test_get_display_info_fallback(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path)
         info = get_task_display_info(run_dir)
-        assert info["task_title"] == "未命名研究任务"
+        assert info["task_title"] == run_dir.name
         assert info["task_source"] == "fallback"
+        assert info["task_profile_warning"] is None
 
     def test_get_display_info_includes_run_id(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path)
         info = get_task_display_info(run_dir)
         assert info["run_id"] == run_dir.name
+
+    def test_get_display_info_bad_profile_falls_back_to_run_id(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_bad_current")
+        profile_path = run_dir / "ui_chat" / "task_profile.json"
+        profile_path.parent.mkdir()
+        profile_path.write_text("{not json", encoding="utf-8")
+
+        info = get_task_display_info(run_dir)
+
+        assert info["task_title"] == "run_bad_current"
+        assert info["task_source"] == "fallback"
+        assert info["task_profile_warning"] == "task_profile_invalid:JSONDecodeError"
+
+    def test_legacy_run_fallback_display_matches_task_picker(self, tmp_path):
+        run_dir = _tmp_run_dir(tmp_path, "run_legacy_consistent")
+
+        item = list_all_tasks(runs_root=tmp_path)[0]
+        info = get_task_display_info(run_dir)
+
+        assert item.task_title == "run_legacy_consistent"
+        assert info["task_title"] == item.task_title
 
 
 # ---------------------------------------------------------------------------
