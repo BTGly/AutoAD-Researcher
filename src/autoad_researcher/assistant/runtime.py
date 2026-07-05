@@ -318,11 +318,13 @@ def run_alpha(
         session = apply(session, event)
         new_mode = session.mode
         store.append_transition(
-            run_id,
-            event_id=event.event_id,
-            from_mode=old_mode,
-            to_mode=new_mode,
-            triggered_by=f"user_input:{event.event_id}",
+            AssistantTransitionRecord(
+                run_id=run_id,
+                event_id=event.event_id,
+                from_mode=old_mode,
+                to_mode=new_mode,
+                triggered_by=f"user_input:{event.event_id}",
+            )
         )
         print(f"[mode] {old_mode} → {new_mode}")
 
