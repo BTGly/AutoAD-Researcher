@@ -105,6 +105,15 @@ class TestDraftNullable:
         d = _valid_draft(ambition="reach_target", ambition_target=0.90)
         assert d.ambition_target == 0.90
 
+
+    def test_reach_target_requires_ambition_target(self):
+        with pytest.raises(ValidationError, match="ambition_target"):
+            _valid_draft(ambition="reach_target")
+
+    def test_non_reach_target_rejects_ambition_target(self):
+        with pytest.raises(ValidationError, match="ambition_target"):
+            _valid_draft(ambition="beat_baseline", ambition_target=0.90)
+
     def test_dataset_optional(self):
         d = _valid_draft(dataset=None)
         assert d.dataset is None

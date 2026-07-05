@@ -54,7 +54,8 @@ class TestTransitions:
     def test_source_input_at_task_confirmation(self):
         s = _session("task_confirmation")
         s2 = apply(s, _event(event_type="source_input"))
-        assert s2.mode == "artifact_processing"
+        # source_input at task_confirmation stays — user is confirming a draft
+        assert s2.mode == "task_confirmation"
 
     def test_progress_query_any_mode(self):
         s = _session("intent_structuring")
@@ -64,6 +65,19 @@ class TestTransitions:
     def test_unknown_event_stays(self):
         s = _session("task_confirmation")
         s2 = apply(s, _event(event_type="unknown"))
+        assert s2.mode == "task_confirmation"
+
+
+    def test_goal_alignment_confirmation_without_draft_does_not_jump_to_task_confirmation(self):
+        s = _session("goal_alignment")
+        s2 = apply(s, _event(router_labels=["confirmation"]))
+        assert s2.mode == "goal_alignment"
+        assert s2.last_event_id == "ev_001"
+
+    def test_goal_alignment_confirmation_with_draft_can_enter_task_confirmation(self):
+        s = _session("goal_alignment")
+        s.task.draft_ref = "task/research_task_draft.json"
+        s2 = apply(s, _event(router_labels=["confirmation"]))
         assert s2.mode == "task_confirmation"
 
     def test_last_event_id_updated(self):

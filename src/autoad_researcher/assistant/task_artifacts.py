@@ -82,6 +82,7 @@ class AssistantTaskArtifactService:
         dataset: str | None = None,
         compute_budget: str | None = None,
         user_idea: str | None = None,
+        blocking_gaps: list[str] | None = None,
     ) -> tuple[ResearchTaskDraftV1, AutoADAssistantSession]:
         baseline_value_text = baseline or what_we_know.baseline_method
         if baseline_value_text is None:
@@ -110,7 +111,7 @@ class AssistantTaskArtifactService:
         updated = session.model_copy(deep=True)
         updated.mode = "task_confirmation"
         updated.task.draft_ref = TASK_DRAFT_JSON_ARTIFACT.as_posix()
-        updated.task.has_blocking_gaps = False
+        updated.task.has_blocking_gaps = bool(blocking_gaps)
         updated.task.ready_for_pipeline = False
         updated.task.execution_approved = False
         self._store.save_session(updated)
@@ -124,8 +125,13 @@ class AssistantTaskArtifactService:
         confirmation_evidence_id: str,
         confirmed_at: datetime | None = None,
     ) -> tuple[ResearchTaskDraftV1, AutoADAssistantSession]:
+        confirmation_evidence_id = confirmation_evidence_id.strip()
+        if not confirmation_evidence_id:
+            raise ValueError("confirmation_evidence_id must not be empty")
         if draft.run_id != session.run_id:
             raise ValueError("draft run_id must match session run_id")
+        if session.task.has_blocking_gaps:
+            raise ValueError("cannot confirm research task while blocking gaps remain")
         if draft.confirmation == "confirmed":
             confirmed = draft
         else:

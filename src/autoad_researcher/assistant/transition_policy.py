@@ -54,7 +54,10 @@ def apply(
     不调用 LLM。不执行 pipeline。
     返回更新后的 session（原 session 不修改）。
     """
-    new_mode = _resolve_mode(session.mode, event)
+    current_mode = session.mode
+    new_mode = _resolve_mode(session, event)
+    if not _transition_allowed(session, current_mode, new_mode):
+        new_mode = current_mode
     session = session.model_copy(
         update={
             "mode": new_mode,
@@ -97,7 +100,8 @@ def validate(session: AutoADAssistantSession) -> list[str]:
 # ──────────────────────────────────────────────────────────────
 
 
-def _resolve_mode(current: AssistantMode, event: AssistantEvent) -> AssistantMode:
+def _resolve_mode(session: AutoADAssistantSession, event: AssistantEvent) -> AssistantMode:
+    current = session.mode
     event_type: AssistantEventType = event.event_type
 
     # ── user_input ──
@@ -163,3 +167,21 @@ def _resolve_mode(current: AssistantMode, event: AssistantEvent) -> AssistantMod
         return current
 
     return current
+
+def _transition_allowed(
+    session: AutoADAssistantSession,
+    current: AssistantMode,
+    new_mode: AssistantMode,
+) -> bool:
+    if current == new_mode:
+        return True
+    if new_mode in _ALLOWED_TRANSITIONS[current]:
+        return True
+    if (
+        current == "goal_alignment"
+        and new_mode == "task_confirmation"
+        and (session.task.draft_ref is not None or session.interaction.pending_user_decision is not None)
+    ):
+        return True
+    return False
+

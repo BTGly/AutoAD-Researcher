@@ -104,6 +104,70 @@ def test_append_user_correction_and_understanding(tmp_path):
     assert correction_line["event"]["router_labels"] == ["correction"]
 
 
+
+def test_create_draft_with_blocking_gaps_keeps_session_blocked(tmp_path):
+    service = AssistantTaskArtifactService(runs_root=tmp_path)
+
+    draft, session = service.create_research_task_draft(
+        session=_session(),
+        what_we_know=_what(),
+        metric_command="python eval.py",
+        metric_name="image_auroc",
+        metric_direction="maximize",
+        blocking_gaps=["category"],
+    )
+
+    assert draft.confirmation == "draft"
+    assert session.mode == "task_confirmation"
+    assert session.task.has_blocking_gaps is True
+    assert session.task.ready_for_pipeline is False
+
+
+def test_confirm_research_task_rejects_blocking_gaps(tmp_path):
+    service = AssistantTaskArtifactService(runs_root=tmp_path)
+    draft, session = service.create_research_task_draft(
+        session=_session(),
+        what_we_know=_what(),
+        metric_command="python eval.py",
+        metric_name="image_auroc",
+        metric_direction="maximize",
+        blocking_gaps=["category"],
+    )
+
+    try:
+        service.confirm_research_task(
+            session=session,
+            draft=draft,
+            confirmation_evidence_id="ev_user_confirmed",
+        )
+    except ValueError as exc:
+        assert "blocking gaps" in str(exc)
+    else:
+        raise AssertionError("expected blocking gaps to prevent confirmation")
+
+
+def test_confirm_research_task_rejects_empty_confirmation_evidence(tmp_path):
+    service = AssistantTaskArtifactService(runs_root=tmp_path)
+    draft, session = service.create_research_task_draft(
+        session=_session(),
+        what_we_know=_what(),
+        metric_command="python eval.py",
+        metric_name="image_auroc",
+        metric_direction="maximize",
+    )
+
+    try:
+        service.confirm_research_task(
+            session=session,
+            draft=draft,
+            confirmation_evidence_id="  ",
+        )
+    except ValueError as exc:
+        assert "confirmation_evidence_id" in str(exc)
+    else:
+        raise AssertionError("expected empty confirmation evidence to be rejected")
+
+
 def test_confirm_research_task_writes_confirmed_json_and_sets_ready_only(tmp_path):
     service = AssistantTaskArtifactService(runs_root=tmp_path)
     draft, session = service.create_research_task_draft(

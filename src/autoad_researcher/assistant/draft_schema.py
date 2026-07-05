@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ResearchTaskDraftV1(BaseModel):
@@ -48,3 +48,11 @@ class ResearchTaskDraftV1(BaseModel):
     confirmation: Literal["draft", "confirmed", "rejected", "revised"] = "draft"
     confirmed_by_user_at: datetime | None = None
     confirmation_evidence_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_ambition_target(self) -> "ResearchTaskDraftV1":
+        if self.ambition == "reach_target" and self.ambition_target is None:
+            raise ValueError("ambition_target is required when ambition is reach_target")
+        if self.ambition != "reach_target" and self.ambition_target is not None:
+            raise ValueError("ambition_target must be omitted unless ambition is reach_target")
+        return self
