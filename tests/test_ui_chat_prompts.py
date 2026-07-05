@@ -281,6 +281,7 @@ class TestPdfParseRouting:
         assert detect_parse_intent("读一下 sources/src_001/SimpleNet.pdf")
         assert detect_parse_intent("读一下论文pdf")
         assert detect_parse_intent("读一下这个 PDF")
+        assert detect_parse_intent("读论文呀")
         assert detect_parse_intent("解析刚刚上传的论文")
         assert detect_parse_intent("看一下上传的材料")
         assert not detect_parse_intent("我想提升异常检测指标")
@@ -297,6 +298,55 @@ class TestPdfParseRouting:
 
         assert action["action"] == "parse"
         assert action["stored_path"] == info["stored_path"]
+
+    def test_single_pending_pdf_short_read_command_auto_selects_for_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+
+        action = build_pdf_parse_action(run_dir, "读一下")
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == info["stored_path"]
+
+    def test_single_pending_pdf_colloquial_read_paper_auto_selects_for_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+
+        action = build_pdf_parse_action(run_dir, "读论文呀")
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == info["stored_path"]
+
+    def test_single_pending_pdf_short_confirmation_after_parse_prompt_routes_to_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+
+        action = build_pdf_parse_action(run_dir, "对啊")
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == info["stored_path"]
+
+    def test_short_confirmation_without_pending_pdf_stays_chat(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        action = build_pdf_parse_action(run_dir, "对啊")
+
+        assert action["action"] == "chat"
 
     def test_recent_uploaded_pdf_takes_parse_request_without_path(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_pdf_parse_action, save_chat_attachments
