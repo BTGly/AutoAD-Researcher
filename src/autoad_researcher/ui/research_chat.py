@@ -71,6 +71,7 @@ _PARSE_ACTION_TOKENS = (
     "读一下",
     "读取",
     "解析",
+    "提取",
     "看看",
     "看一下",
     "分析一下",
@@ -97,6 +98,18 @@ _PARSE_CONFIRMATION_TOKENS = (
     "开始",
     "解析吧",
     "读吧",
+)
+_FORCE_REPARSE_TOKENS = (
+    "重新解析",
+    "重新提取",
+    "重新读",
+    "重跑解析",
+    "再解析",
+    "再提取",
+    "再读",
+    "提取一次",
+    "解析一次",
+    "读一次",
 )
 
 
@@ -400,6 +413,8 @@ def detect_parse_intent(user_input: str) -> bool:
     text = user_input.strip()
     if not text:
         return False
+    if _is_force_reparse_intent(text):
+        return True
     if re.search(r"sources/((?:[^/\s]+/)*[^/\s]+\.pdf)", text, re.IGNORECASE):
         return True
     lowered = text.lower()
@@ -423,6 +438,11 @@ def _is_short_parse_confirmation(text: str) -> bool:
     return normalized in _PARSE_CONFIRMATION_TOKENS
 
 
+def _is_force_reparse_intent(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text.strip().lower())
+    return any(token in normalized for token in _FORCE_REPARSE_TOKENS)
+
+
 def build_pdf_parse_action(
     run_dir: Path,
     user_input: str,
@@ -434,11 +454,18 @@ def build_pdf_parse_action(
     The action is intentionally command-router output, not LLM context. Once a
     parse intent is detected, callers should not fall through to chat.
     """
+    force_reparse = _is_force_reparse_intent(user_input)
     explicit_path = resolve_source_pdf_path_safely(run_dir, user_input)
     if explicit_path is not None:
         stored_path = explicit_path.relative_to(run_dir).as_posix()
         entry = find_source_entry_by_stored_path(run_dir, stored_path)
-        return _pdf_parse_action_for_source(run_dir, stored_path=stored_path, entry=entry, pdf_path=explicit_path)
+        return _pdf_parse_action_for_source(
+            run_dir,
+            stored_path=stored_path,
+            entry=entry,
+            pdf_path=explicit_path,
+            force=force_reparse,
+        )
 
     if re.search(r"sources/[^ \t\r\n]+\.pdf", user_input, re.IGNORECASE):
         return {
@@ -453,11 +480,14 @@ def build_pdf_parse_action(
     ]
     pdf_sources = list_pdf_source_entries(run_dir)
     pending = [source for source in pdf_sources if source.get("status") == "uploaded_not_parsed"]
+    parsed = [source for source in pdf_sources if source.get("status") == "parsed"]
     has_single_pending_context = len(recent_pdf_sources) == 1 or len(pending) == 1
+    has_single_pdf_context = len(recent_pdf_sources) == 1 or len(pending) == 1 or len(parsed) == 1
     should_route_parse = (
         detect_parse_intent(user_input)
         or _has_parse_action(user_input)
         or (_is_short_parse_confirmation(user_input) and has_single_pending_context)
+        or (force_reparse and has_single_pdf_context)
     )
     if not should_route_parse:
         return {"action": "chat"}
@@ -470,6 +500,7 @@ def build_pdf_parse_action(
             stored_path=stored_path,
             entry=entry,
             pdf_path=run_dir / stored_path,
+            force=force_reparse,
         )
     if len(recent_pdf_sources) > 1:
         paths = "\n".join(f"- {source['stored_path']}" for source in recent_pdf_sources)
@@ -485,6 +516,7 @@ def build_pdf_parse_action(
             stored_path=stored_path,
             entry=pending[0],
             pdf_path=run_dir / stored_path,
+            force=force_reparse,
         )
     if len(pending) > 1:
         paths = "\n".join(f"- {source['stored_path']}" for source in pending)
@@ -501,8 +533,22 @@ def build_pdf_parse_action(
             "message": "这些 PDF 正在解析中，请等待完成后再继续：\n" + paths,
         }
 
-    parsed = [source for source in pdf_sources if source.get("status") == "parsed"]
     if parsed:
+        if force_reparse and len(parsed) == 1:
+            stored_path = str(parsed[0]["stored_path"])
+            return _pdf_parse_action_for_source(
+                run_dir,
+                stored_path=stored_path,
+                entry=parsed[0],
+                pdf_path=run_dir / stored_path,
+                force=True,
+            )
+        if force_reparse and len(parsed) > 1:
+            paths = "\n".join(f"- {source['stored_path']}" for source in parsed)
+            return {
+                "action": "choose",
+                "message": "我看到多个已解析 PDF，请指定要重新解析的一个路径：\n" + paths,
+            }
         paths = "\n".join(f"- {source['stored_path']}" for source in parsed)
         return {
             "action": "already_parsed",
@@ -521,6 +567,7 @@ def _pdf_parse_action_for_source(
     stored_path: str,
     entry: dict[str, Any] | None,
     pdf_path: Path,
+    force: bool = False,
 ) -> dict[str, Any]:
     status = entry.get("status") if entry else "uploaded_not_parsed"
     if status == "parsing":
@@ -528,7 +575,7 @@ def _pdf_parse_action_for_source(
             "action": "already_parsing",
             "message": f"`{stored_path}` 正在解析中，请等待完成后再继续。",
         }
-    if status == "parsed":
+    if status == "parsed" and not force:
         return {
             "action": "already_parsed",
             "message": f"`{stored_path}` 已解析，可直接基于已生成的 paper artifacts 讨论。",

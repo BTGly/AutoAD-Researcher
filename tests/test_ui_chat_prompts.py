@@ -282,6 +282,7 @@ class TestPdfParseRouting:
         assert detect_parse_intent("读一下论文pdf")
         assert detect_parse_intent("读一下这个 PDF")
         assert detect_parse_intent("读论文呀")
+        assert detect_parse_intent("你再提取一次")
         assert detect_parse_intent("解析刚刚上传的论文")
         assert detect_parse_intent("看一下上传的材料")
         assert not detect_parse_intent("我想提升异常检测指标")
@@ -423,6 +424,51 @@ class TestPdfParseRouting:
         action = build_pdf_parse_action(run_dir, "读一下这个 PDF")
 
         assert action["action"] == "already_parsed"
+
+    def test_force_reparse_single_parsed_pdf_routes_to_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file, update_source_status
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+        update_source_status(run_dir, info["source_id"], "parsed")
+
+        action = build_pdf_parse_action(run_dir, "你再提取一次")
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == info["stored_path"]
+
+    def test_force_reparse_explicit_parsed_pdf_routes_to_parse(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file, update_source_status
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+        update_source_status(run_dir, info["source_id"], "parsed")
+
+        action = build_pdf_parse_action(run_dir, f"重新解析 {info['stored_path']}")
+
+        assert action["action"] == "parse"
+        assert action["stored_path"] == info["stored_path"]
+
+    def test_force_reparse_multiple_parsed_pdfs_requires_choice(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_pdf_parse_action
+        from autoad_researcher.ui.sources import save_uploaded_file, update_source_status
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        first = save_uploaded_file(run_dir, _make_upload("A.pdf"))
+        second = save_uploaded_file(run_dir, _make_upload("B.pdf"))
+        update_source_status(run_dir, first["source_id"], "parsed")
+        update_source_status(run_dir, second["source_id"], "parsed")
+
+        action = build_pdf_parse_action(run_dir, "再提取一次")
+
+        assert action["action"] == "choose"
+        assert first["stored_path"] in action["message"]
+        assert second["stored_path"] in action["message"]
 
     def test_parsing_pdf_does_not_start_duplicate(self, tmp_path):
         from autoad_researcher.ui.research_chat import build_pdf_parse_action
