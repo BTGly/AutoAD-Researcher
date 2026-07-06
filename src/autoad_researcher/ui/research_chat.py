@@ -406,8 +406,6 @@ def save_chat_attachments(run_dir: Path, uploaded_files: list[Any]) -> list[dict
 def build_attachment_added_reply(sources: list[dict[str, Any]]) -> str:
     names = [Path(str(source["stored_path"])).name for source in sources]
     lines = ["已添加资料：", *[f"- {name}" for name in names]]
-    if any(source.get("kind") == "paper_pdf" for source in sources):
-        lines.append("需要解析时可以说：读一下这个论文。")
     return "\n".join(lines)
 
 
@@ -601,7 +599,15 @@ def _execute_or_report_pdf_parse_action(run_dir: Path, action: dict[str, Any]) -
                         "source_status_after": "parsed",
                     }),
                 )
-            reply = f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。后续回答将只基于可用 paper artifacts。"
+            reply_parts = [f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。"]
+            if refreshed.paper_methods:
+                methods = "；".join(refreshed.paper_methods[:5])
+                reply_parts.append(f"我从 artifacts 看到：{methods}")
+            if refreshed.missing_blocking_gaps:
+                gaps = "、".join(refreshed.missing_blocking_gaps[:5])
+                reply_parts.append(f"仍缺：{gaps}")
+            reply_parts.append("后续回答将只基于可用 paper artifacts。")
+            reply = "\n\n".join(reply_parts)
             st.success(reply)
             return reply
         err = result.get("error", "未知错误")
@@ -662,6 +668,14 @@ def _handle_chat_input(
     st.chat_message("user").write(user_content)
 
     if attached_sources and not user_input:
+        pdf_sources = [s for s in attached_sources if s.get("kind") == "paper_pdf"]
+        if len(pdf_sources) == 1:
+            parse_action = build_pdf_parse_action(run_dir, user_content, recent_sources=attached_sources)
+            if parse_action["action"] != "chat":
+                reply = _execute_or_report_pdf_parse_action(run_dir, parse_action)
+                st.chat_message("assistant").write(reply)
+                save_transcript(run_dir, mode, "assistant", reply)
+                return
         reply = build_attachment_added_reply(attached_sources)
         st.chat_message("assistant").write(reply)
         save_transcript(run_dir, mode, "assistant", reply)
