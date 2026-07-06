@@ -6,3 +6,9 @@ base = "dark"
 
 [client]
 toolbarMode = "minimal"
+
+[server]
+enableCORS = true
+enableXsrfProtection = false
+enableWebsocketCompression = false
+headless = true
