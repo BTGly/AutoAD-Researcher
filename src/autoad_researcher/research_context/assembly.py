@@ -68,6 +68,7 @@ def assemble_fact_ledger(
                 value=f.get("value", ""),
                 status=f.get("status", "confirmed"),
                 evidence_ids=f.get("evidence_ids", []),
+                evidence_refs=f.get("evidence_refs", []),
                 producer_stage=f.get("producer_stage", "3.2"),
             ))
 

@@ -480,6 +480,7 @@ class TestOrchestratorBehavior:
             for line in lines:
                 rec = json.loads(line)
                 ev = rec["evidence"]
+                assert rec["parse_attempt_id"] == ev["parse_attempt_id"]
                 assert ev["evidence_id"].startswith("ev_")
                 assert len(ev["content_sha256"]) == 64
                 assert ev["source_pdf_sha256"]
@@ -496,10 +497,57 @@ class TestOrchestratorBehavior:
             assert ctx_path.exists(), "research_context_draft.json missing"
             ctx = json.loads(ctx_path.read_text())
             assert "facts" in ctx
+            assert "source_evidence" in ctx
+            assert "evidence_boundary" in ctx
+            assert ctx["source_evidence"], "source_evidence must not be empty"
+            assert ctx["evidence_boundary"]["unparsed_sources"] == []
+            assert ctx["evidence_boundary"]["failed_parse_attempts"] == []
+            facts_with_evidence = [fact for fact in ctx["facts"] if fact.get("evidence_ids")]
+            assert facts_with_evidence, "context draft must include evidence-backed facts"
+            for fact in facts_with_evidence:
+                assert fact["evidence_refs"], "key fact missing source evidence refs"
+                for ref in fact["evidence_refs"]:
+                    assert ref["source_id"] == "src_test_run"
+                    assert ref["parse_attempt_id"] == "pa_000001"
+                    assert ref["artifact"] == "paper/parse/attempts/pa_000001"
+                    assert ref["evidence_type"] == "parsed_full_text"
 
             # context_readiness_report.json must exist
             cr_path = Path("runs/test_run/context/context_readiness_report.json")
             assert cr_path.exists(), "context_readiness_report.json missing"
+
+        _chdir_tmp(tmp_path, work)
+
+    def test_context_draft_key_facts_have_evidence_refs(self, tmp_path):
+        from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
+        from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
+        from autoad_researcher.paper_intelligence.agent import budget_for_profile
+
+        def work():
+            pdf = Path("test.pdf")
+            _make_valid_pdf(pdf)
+            req = PaperIntelligenceRequest(
+                schema_version=1, request_id="req_t", run_id="test_context_refs",
+                user_goal="Test paper evidence refs",
+                paper_pdf_path="test.pdf",
+                parser_profile_id="mineru_pipeline_v1",
+                web_context_allowed=False, alpha_xiv_allowed=False,
+                user_confirmation_policy="never",
+                budget_profile="standard", budget=budget_for_profile("standard"),
+            )
+
+            result = PaperIntelligenceOrchestrator(Path("runs")).run(req)
+
+            assert result["status"] in ("success", "partial_success")
+            ctx_path = Path("runs/test_context_refs/context/research_context_draft.json")
+            ctx = json.loads(ctx_path.read_text())
+            facts = [fact for fact in ctx["facts"] if fact.get("evidence_ids")]
+            assert facts
+            for fact in facts:
+                assert fact["evidence_refs"]
+                for ref in fact["evidence_refs"]:
+                    assert ref["source_id"] == "src_test_context_refs"
+                    assert ref["parse_attempt_id"] == "pa_000001"
 
         _chdir_tmp(tmp_path, work)
 
@@ -606,11 +654,77 @@ class TestOrchestratorBehavior:
             assert quality["not_usable_for"] == []
             active_quality = json.loads(Path("runs/test_attempts/paper/parse/parse_quality_report.json").read_text())
             assert active_quality["parse_attempt_id"] == "pa_000002"
+            ctx = json.loads(Path("runs/test_attempts/context/research_context_draft.json").read_text())
+            facts_with_evidence = [fact for fact in ctx["facts"] if fact.get("evidence_ids")]
+            assert facts_with_evidence
+            for fact in facts_with_evidence:
+                assert fact["evidence_refs"]
+                for ref in fact["evidence_refs"]:
+                    assert ref["source_id"] == "src_ui"
+                    assert ref["parse_attempt_id"] == "pa_000002"
+            assert ctx["source_evidence"]
+            assert {ref["parse_attempt_id"] for ref in ctx["source_evidence"]} == {"pa_000002"}
             reg = load_source_registry(run_dir)
             attempts = reg["sources"][0]["parse_attempts"]
             assert [attempt["parse_attempt_id"] for attempt in attempts] == ["pa_000001", "pa_000002"]
 
         _chdir_tmp(tmp_path, work)
+
+    def test_evidence_boundary_records_unparsed_partial_and_failed_attempts(self, tmp_path):
+        from autoad_researcher.paper_intelligence.orchestrator import _build_evidence_boundary
+        from autoad_researcher.ui.sources import append_source_ref, append_source_parse_attempt
+
+        run_dir = tmp_path / "run_boundary"
+        run_dir.mkdir()
+        append_source_ref(
+            run_dir,
+            source_id="src_unparsed",
+            kind="paper_pdf",
+            user_label="unparsed.pdf",
+            stored_path="sources/src_unparsed/unparsed.pdf",
+            status="uploaded_not_parsed",
+        )
+        append_source_ref(
+            run_dir,
+            source_id="src_attempts",
+            kind="paper_pdf",
+            user_label="attempts.pdf",
+            stored_path="sources/src_attempts/attempts.pdf",
+            status="failed",
+        )
+        append_source_parse_attempt(
+            run_dir,
+            "src_attempts",
+            {
+                "parse_attempt_id": "pa_000001",
+                "source_id": "src_attempts",
+                "parser": "mineru_pipeline_v1",
+                "status": "partial",
+                "output_dir": "paper/parse/attempts/pa_000001",
+                "quality_report": "paper/parse/attempts/pa_000001/parse_quality_report.json",
+            },
+            make_active=True,
+        )
+        append_source_parse_attempt(
+            run_dir,
+            "src_attempts",
+            {
+                "parse_attempt_id": "pa_000002",
+                "source_id": "src_attempts",
+                "parser": "mineru_pipeline_v1",
+                "status": "failed",
+                "output_dir": "paper/parse/attempts/pa_000002",
+                "quality_report": "paper/parse/attempts/pa_000002/parse_quality_report.json",
+            },
+            make_active=True,
+        )
+
+        boundary = _build_evidence_boundary(run_dir, ["cl_unsupported"])
+
+        assert boundary.unparsed_sources == ["src_unparsed"]
+        assert boundary.partial_parse_attempts == ["pa_000001"]
+        assert boundary.failed_parse_attempts == ["pa_000002"]
+        assert boundary.claims_not_supported == ["cl_unsupported"]
 
     def test_parse_attempt_id_collision_rejected(self, tmp_path):
         from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator

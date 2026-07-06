@@ -123,6 +123,39 @@ class IdeaSourceContext(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Source evidence and boundary
+# ---------------------------------------------------------------------------
+
+
+class SourceEvidenceRef(BaseModel):
+    """Evidence item tying a context fact back to a concrete source attempt."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    source_id: str = Field(pattern=IdentifierPattern)
+    parse_attempt_id: str = Field(pattern=IdentifierPattern)
+    artifact: str = Field(min_length=1)
+    evidence_type: Literal[
+        "parsed_full_text",
+        "parse_quality",
+        "repo_map",
+        "user_text",
+        "intake_error",
+    ]
+
+
+class EvidenceBoundary(BaseModel):
+    """Known limits of the evidence available to the context draft."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    unparsed_sources: list[str] = Field(default_factory=list)
+    partial_parse_attempts: list[str] = Field(default_factory=list)
+    failed_parse_attempts: list[str] = Field(default_factory=list)
+    claims_not_supported: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # ContextFact
 # ---------------------------------------------------------------------------
 
@@ -150,6 +183,7 @@ class ContextFact(BaseModel):
     value: Any
     status: Literal["confirmed", "inferred", "conflicting", "unknown"]
     evidence_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[SourceEvidenceRef] = Field(default_factory=list)
     producer_stage: str = Field(min_length=1)
 
 
@@ -328,6 +362,7 @@ class ResearchContext(BaseModel):
     constraints: ConstraintContext = Field(default_factory=ConstraintContext)
     user_preferences: UserPreferenceContext = Field(default_factory=UserPreferenceContext)
     idea_sources: list[IdeaSourceContext] = Field(default_factory=list)
+    source_evidence: list[SourceEvidenceRef] = Field(default_factory=list)
 
     facts: list[ContextFact] = Field(default_factory=list)
     gaps: list[InformationGap] = Field(default_factory=list)
@@ -335,6 +370,7 @@ class ResearchContext(BaseModel):
     readiness: ContextReadiness
 
     evidence_index_refs: list[str] = Field(default_factory=list)
+    evidence_boundary: EvidenceBoundary = Field(default_factory=EvidenceBoundary)
     previous_context_id: str | None = None
     context_sha256: str = Field(pattern=Sha256Pattern)
 

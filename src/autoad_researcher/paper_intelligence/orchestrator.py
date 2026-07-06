@@ -56,7 +56,14 @@ from autoad_researcher.research_context.assembly import (
     compute_readiness,
     build_unified_context_result,
 )
-from autoad_researcher.research_context.models import TaskContext, ResearchContext, SourceContext, IdeaTransferHandoff
+from autoad_researcher.research_context.models import (
+    EvidenceBoundary,
+    IdeaTransferHandoff,
+    ResearchContext,
+    SourceContext,
+    SourceEvidenceRef,
+    TaskContext,
+)
 from autoad_researcher.ui.sources import (
     append_source_parse_attempt,
     load_source_registry,
@@ -349,9 +356,16 @@ class PaperIntelligenceOrchestrator:
             # ============================================================
             # 10. Unified Research Context
             # ============================================================
+            paper_evidence_refs = _load_source_evidence_refs(evidence_writer.path)
+            claims_not_supported = [
+                c.claim_id
+                for c in claims
+                if c.status in ("confirmed", "inferred") and not c.evidence_ids
+            ]
             paper_facts = [
                 {"fact_id": f"f_p_{c.claim_id}", "subject": c.subject, "predicate": c.predicate,
                  "value": str(c.value), "status": c.status, "evidence_ids": c.evidence_ids,
+                 "evidence_refs": _fact_source_evidence_refs(c.evidence_ids, paper_evidence_refs),
                  "producer_stage": "3.2_paper_intelligence"}
                 for c in claims if c.status in ("confirmed", "inferred") and c.evidence_ids
             ]
@@ -372,6 +386,8 @@ class PaperIntelligenceOrchestrator:
                 readiness=readiness,
                 evidence_index_path=str(evidence_writer.path) if evidence_writer else None,
                 context_dir=context_dir,
+                source_evidence=list(paper_evidence_refs.values()),
+                evidence_boundary=_build_evidence_boundary(run_dir, claims_not_supported),
             )
 
             uc_result = build_unified_context_result(
@@ -425,6 +441,8 @@ def emit_context_artifacts(
     readiness,
     evidence_index_path: str | None,
     context_dir: Path,
+    source_evidence: list[SourceEvidenceRef] | None = None,
+    evidence_boundary: EvidenceBoundary | None = None,
 ) -> dict:
     """Write all context artifacts to disk and return their paths.
 
@@ -437,6 +455,8 @@ def emit_context_artifacts(
     """
     context_dir.mkdir(parents=True, exist_ok=True)
     evidence_refs = [evidence_index_path] if evidence_index_path else []
+    source_evidence = source_evidence or []
+    evidence_boundary = evidence_boundary or EvidenceBoundary()
 
     draft_path = context_dir / "research_context_draft.json"
     draft_ctx = ResearchContext(
@@ -451,6 +471,8 @@ def emit_context_artifacts(
         conflicts=conflicts,
         readiness=readiness,
         evidence_index_refs=evidence_refs,
+        source_evidence=source_evidence,
+        evidence_boundary=evidence_boundary,
         context_sha256="0" * 64,
     )
     _write_atomic_json(draft_path, draft_ctx.model_dump())
@@ -490,6 +512,108 @@ def emit_context_artifacts(
         "stable_path": stable_path,
         "handoff_path": handoff_path,
     }
+
+
+def _load_source_evidence_refs(evidence_index_path: Path) -> dict[str, SourceEvidenceRef]:
+    refs: dict[str, SourceEvidenceRef] = {}
+    if not evidence_index_path.is_file():
+        return refs
+    with open(evidence_index_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            evidence = record.get("evidence")
+            if not isinstance(evidence, dict):
+                continue
+            evidence_id = evidence.get("evidence_id")
+            source_id = evidence.get("source_id")
+            parse_attempt_id = record.get("parse_attempt_id") or evidence.get("parse_attempt_id")
+            if not (
+                isinstance(evidence_id, str)
+                and isinstance(source_id, str)
+                and isinstance(parse_attempt_id, str)
+            ):
+                continue
+            refs[evidence_id] = SourceEvidenceRef(
+                source_id=source_id,
+                parse_attempt_id=parse_attempt_id,
+                artifact=f"paper/parse/attempts/{parse_attempt_id}",
+                evidence_type=_source_evidence_type(evidence.get("source_kind")),
+            )
+    return refs
+
+
+def _source_evidence_type(source_kind: Any) -> str:
+    if source_kind in {"paper_text", "paper_table", "paper_figure", "paper_reference"}:
+        return "parsed_full_text"
+    if source_kind in {"web_page", "alpha_xiv_page", "arxiv_html"}:
+        return "parsed_full_text"
+    return "parsed_full_text"
+
+
+def _fact_source_evidence_refs(
+    evidence_ids: list[str],
+    evidence_refs_by_id: dict[str, SourceEvidenceRef],
+) -> list[SourceEvidenceRef]:
+    refs: list[SourceEvidenceRef] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for evidence_id in evidence_ids:
+        ref = evidence_refs_by_id.get(evidence_id)
+        if ref is None:
+            continue
+        key = (ref.source_id, ref.parse_attempt_id, ref.artifact, ref.evidence_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(ref)
+    return refs
+
+
+def _build_evidence_boundary(run_dir: Path, claims_not_supported: list[str]) -> EvidenceBoundary:
+    try:
+        registry = load_source_registry(run_dir)
+    except Exception:
+        return EvidenceBoundary(claims_not_supported=claims_not_supported)
+
+    unparsed_sources: list[str] = []
+    partial_parse_attempts: list[str] = []
+    failed_parse_attempts: list[str] = []
+    for source in registry.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        source_id = source.get("source_id")
+        attempts = source.get("parse_attempts", [])
+        active_parse_attempt_id = source.get("active_parse_attempt_id")
+        if (
+            isinstance(source_id, str)
+            and source.get("status") in {"uploaded_not_parsed", "user_provided_not_ingested", "parsing"}
+            and not active_parse_attempt_id
+        ):
+            unparsed_sources.append(source_id)
+        if not isinstance(attempts, list):
+            continue
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            parse_attempt_id = attempt.get("parse_attempt_id")
+            if not isinstance(parse_attempt_id, str):
+                continue
+            if attempt.get("status") == "failed":
+                failed_parse_attempts.append(parse_attempt_id)
+            elif attempt.get("status") == "partial":
+                partial_parse_attempts.append(parse_attempt_id)
+
+    return EvidenceBoundary(
+        unparsed_sources=unparsed_sources,
+        partial_parse_attempts=partial_parse_attempts,
+        failed_parse_attempts=failed_parse_attempts,
+        claims_not_supported=claims_not_supported,
+    )
 
 
 def _analyze_paper_content(

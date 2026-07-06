@@ -117,4 +117,5 @@ class EvidenceIndexRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1]
+    parse_attempt_id: str | None = Field(default=None, pattern=IdentifierPattern)
     evidence: PaperEvidenceRef

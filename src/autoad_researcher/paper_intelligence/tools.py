@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from autoad_researcher.paper_intelligence.evidence_models import PaperTextEvidenceRef
+from autoad_researcher.paper_intelligence.evidence_models import EvidenceIndexRecord, PaperTextEvidenceRef
 
 
 @dataclass
@@ -65,7 +65,11 @@ class EvidenceWriter:
 
     def append(self, evidence: PaperTextEvidenceRef) -> None:
         """Append a single evidence ref to the evidence index."""
-        record = {"schema_version": 1, "evidence": evidence.model_dump()}
+        record = EvidenceIndexRecord(
+            schema_version=1,
+            parse_attempt_id=evidence.parse_attempt_id,
+            evidence=evidence,
+        ).model_dump()
         with open(self._index_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
