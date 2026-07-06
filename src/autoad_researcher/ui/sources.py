@@ -75,7 +75,12 @@ def _now_iso() -> str:
 
 
 def _generate_source_id() -> str:
-    return f"src_{_now_iso().replace(':','-').replace('.','-')}"
+    """Generate a source_id safe for all IdentifierPattern consumers.
+
+    Uses UTC time with ':' replaced by '-', '.' replaced by '-', and '+'
+    timezone offset stripped to avoid characters outside the IdentifierPattern
+    character class."""
+    return f"src_{_now_iso().replace('+00:00','Z').replace(':','-').replace('.','-')}"
 
 
 # ── registry ──

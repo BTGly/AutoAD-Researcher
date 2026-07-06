@@ -646,6 +646,24 @@ def _execute_or_report_pdf_parse_action(
         source_id = action.get("source_id")
         if decision is not None:
             append_action_decision(run_dir, decision.model_copy(update={"execution_status": "planned"}))
+
+        force_reparse = any(
+            kw in str(user_input).lower()
+            for kw in ("强制重新解析", "强制解析", "重新解析", "reparse", "force reparse")
+        )
+        if source_id and not force_reparse:
+            registry = load_source_registry(run_dir)
+            for src in registry.get("sources", []):
+                if isinstance(src, dict) and src.get("source_id") == source_id:
+                    if src.get("status") == "failed":
+                        prev_err = src.get("error_message", "")
+                        if prev_err:
+                            return (
+                                "该 PDF 上次解析已经失败，错误相同；我没有重复触发解析。"
+                                "需要强制重试请说：强制重新解析。"
+                            )
+                    break
+
         if source_id:
             update_source_status(run_dir, str(source_id), "parsing")
         with st.spinner(f"正在解析 {pdf_path.name}，论文解析可能需要 5-10 分钟…"):
@@ -736,7 +754,7 @@ def _sanitize_response_context_for_llm(ctx: dict[str, Any]) -> dict[str, Any]:
             for a in attempts:
                 if isinstance(a, dict) and a.get("parser") == "unknown_legacy":
                     a.pop("parser", None)
-                    a.setdefault("legacy_parse_attempt", True)
+                    a.pop("legacy_parse_attempt", None)
     return clean
 
 

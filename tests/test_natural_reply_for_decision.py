@@ -43,7 +43,7 @@ def test_sanitize_removes_unknown_legacy_parser():
     clean = _sanitize_response_context_for_llm(ctx)
     attempts = clean["facts"]["parse_attempts"]
     assert "parser" not in attempts[0]
-    assert attempts[0].get("legacy_parse_attempt") is True
+    assert "legacy_parse_attempt" not in attempts[0]
     assert attempts[1]["parser"] == "mineru"
 
 

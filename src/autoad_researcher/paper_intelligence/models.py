@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from autoad_researcher.paper_intelligence.evidence_models import PaperEvidenceRef
-from autoad_researcher.paper_intelligence.ids import IdentifierPattern, Sha256Pattern, validate_workspace_path
+from autoad_researcher.paper_intelligence.ids import IdentifierPattern, LegacyPaperSourceIdPattern, Sha256Pattern, validate_workspace_path
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ class PaperSource(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     schema_version: Literal[1]
-    source_id: str = Field(pattern=IdentifierPattern)
+    source_id: str = Field(pattern=LegacyPaperSourceIdPattern)
     source_kind: Literal["user_pdf", "arxiv_pdf", "local_pdf"]
     original_filename_label: str = Field(min_length=1)
     storage_path_label: str

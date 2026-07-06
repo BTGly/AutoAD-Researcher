@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from autoad_researcher.paper_intelligence.ids import IdentifierPattern, Sha256Pattern, validate_workspace_path
+from autoad_researcher.paper_intelligence.ids import IdentifierPattern, LegacyPaperSourceIdPattern, Sha256Pattern, validate_workspace_path
 
 
 class PageRange(BaseModel):
@@ -22,7 +22,7 @@ class DocumentParseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     schema_version: Literal[1]
-    source_id: str = Field(pattern=IdentifierPattern)
+    source_id: str = Field(pattern=LegacyPaperSourceIdPattern)
     source_pdf_path: str
     parser_profile_id: str = Field(pattern=IdentifierPattern)
     page_range: PageRange | None = None
@@ -44,7 +44,7 @@ class DocumentParseResult(BaseModel):
 
     schema_version: Literal[1]
     parse_attempt_id: str = Field(pattern=IdentifierPattern)
-    source_id: str = Field(pattern=IdentifierPattern)
+    source_id: str = Field(pattern=LegacyPaperSourceIdPattern)
     parser_manifest_path: str
     canonical_output_path: str
     parse_quality_report_path: str
@@ -85,7 +85,7 @@ class ParseQualityReport(BaseModel):
     schema_version: Literal[1]
     status: Literal["success", "partial_success", "failed"]
     parse_attempt_id: str | None = Field(default=None, pattern=IdentifierPattern)
-    source_id: str | None = Field(default=None, pattern=IdentifierPattern)
+    source_id: str | None = Field(default=None, pattern=LegacyPaperSourceIdPattern)
     parser: str | None = Field(default=None, pattern=IdentifierPattern)
     quality_level: Literal["usable", "partial", "unusable"] | None = None
     usable_for: list[str] = Field(default_factory=list)
