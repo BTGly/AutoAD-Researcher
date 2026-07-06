@@ -34,12 +34,32 @@ SourceKind = Literal[
     "arxiv_id",
     "doi",
     "url",
+    "webpage",
+    "user_text",
+    "local_repo",
+]
+
+IntakeStatus = Literal[
+    "pending",
+    "running",
+    "ok",
+    "failed",
+    "skipped",
+]
+
+ParseAttemptStatus = Literal[
+    "running",
+    "ok",
+    "partial",
+    "failed",
+    "cancelled",
 ]
 
 SOURCES_DIR = "sources"
 REGISTRY_FILE = "source_references.json"
 DEFAULT_LOCAL_SOURCE_ROOT = Path("/root/autodl-tmp/AI4S")
 LOCAL_SOURCE_ROOTS_ENV = "AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS"
+LEGACY_PARSE_ATTEMPT_ID = "legacy_active"
 
 
 def _resolve_sources_dir(run_dir: Path) -> Path:
@@ -65,14 +85,16 @@ def load_source_registry(run_dir: Path) -> dict[str, Any]:
     path = _registry_path(run_dir)
     if not path.is_file():
         return {"schema_version": 1, "sources": []}
-    return json.loads(path.read_text(encoding="utf-8"))
+    registry = json.loads(path.read_text(encoding="utf-8"))
+    return _registry_with_read_compat(run_dir, registry)
 
 
 def _save_registry(run_dir: Path, registry: dict[str, Any]) -> None:
     path = _registry_path(run_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(registry, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload = _registry_for_disk(registry)
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -118,7 +140,19 @@ def update_source_status(run_dir: Path, source_id: str, status: SourceStatus, *,
     _save_registry(run_dir, registry)
 
 
-def append_source_ref(run_dir: Path, *, kind: SourceKind, user_label: str, stored_path: str | None, status: SourceStatus, source_id: str | None = None) -> str:
+def append_source_ref(
+    run_dir: Path,
+    *,
+    kind: SourceKind,
+    user_label: str,
+    stored_path: str | None,
+    status: SourceStatus,
+    source_id: str | None = None,
+    intake_status: IntakeStatus | None = None,
+    intake_error: dict[str, Any] | None = None,
+    active_parse_attempt_id: str | None = None,
+    parse_attempts: list[dict[str, Any]] | None = None,
+) -> str:
     sid = source_id or _generate_source_id()
     ref = {
         "source_id": sid,
@@ -127,11 +161,42 @@ def append_source_ref(run_dir: Path, *, kind: SourceKind, user_label: str, store
         "status": status,
         "stored_path": stored_path,
         "created_at": _now_iso(),
+        "intake_status": intake_status or _default_intake_status(status),
+        "intake_error": intake_error,
+        "active_parse_attempt_id": active_parse_attempt_id,
+        "parse_attempts": list(parse_attempts or []),
     }
     registry = load_source_registry(run_dir)
     registry["sources"].append(ref)
     _save_registry(run_dir, registry)
     return sid
+
+
+def append_source_parse_attempt(
+    run_dir: Path,
+    source_id: str,
+    attempt: dict[str, Any],
+    *,
+    make_active: bool = False,
+) -> None:
+    """Append one parse attempt to a source registry entry.
+
+    This helper only appends; it never replaces existing attempts.
+    """
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("source_id") == source_id:
+            attempts = [
+                item
+                for item in source.get("parse_attempts", [])
+                if item.get("parse_attempt_id") != LEGACY_PARSE_ATTEMPT_ID
+            ]
+            attempts.append(dict(attempt))
+            source["parse_attempts"] = attempts
+            if make_active:
+                source["active_parse_attempt_id"] = attempt.get("parse_attempt_id")
+            break
+    _save_registry(run_dir, registry)
 
 
 def get_source_context(run_dir: Path) -> str:
@@ -145,6 +210,80 @@ def get_source_context(run_dir: Path) -> str:
         sp = s.get("stored_path") or "—"
         lines.append(f"  - {s['source_id']}: {s['user_label']} ({s['status']}) path={sp}")
     return "\n".join(lines)
+
+
+def _registry_with_read_compat(run_dir: Path, registry: dict[str, Any]) -> dict[str, Any]:
+    sources = registry.get("sources", [])
+    if not isinstance(sources, list):
+        return {"schema_version": registry.get("schema_version", 1), "sources": []}
+    normalized = dict(registry)
+    normalized["sources"] = [_source_with_read_compat(run_dir, source) for source in sources if isinstance(source, dict)]
+    return normalized
+
+
+def _source_with_read_compat(run_dir: Path, source: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(source)
+    status = normalized.get("status")
+    normalized.setdefault("intake_status", _default_intake_status(status if isinstance(status, str) else None))
+    normalized.setdefault("intake_error", None)
+
+    attempts = normalized.get("parse_attempts")
+    if isinstance(attempts, list):
+        normalized["parse_attempts"] = [dict(item) for item in attempts if isinstance(item, dict)]
+        normalized.setdefault("active_parse_attempt_id", None)
+        return normalized
+
+    if status == "parsed":
+        normalized["parse_attempts"] = [_legacy_parse_attempt(run_dir)]
+        normalized.setdefault("active_parse_attempt_id", LEGACY_PARSE_ATTEMPT_ID)
+    else:
+        normalized["parse_attempts"] = []
+        normalized.setdefault("active_parse_attempt_id", None)
+    return normalized
+
+
+def _registry_for_disk(registry: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(registry)
+    sources = payload.get("sources", [])
+    if not isinstance(sources, list):
+        payload["sources"] = []
+        return payload
+    payload["sources"] = [_source_for_disk(source) for source in sources if isinstance(source, dict)]
+    return payload
+
+
+def _source_for_disk(source: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(source)
+    attempts = payload.get("parse_attempts")
+    if isinstance(attempts, list):
+        payload["parse_attempts"] = [
+            dict(item)
+            for item in attempts
+            if isinstance(item, dict) and item.get("parse_attempt_id") != LEGACY_PARSE_ATTEMPT_ID
+        ]
+    if payload.get("active_parse_attempt_id") == LEGACY_PARSE_ATTEMPT_ID:
+        payload["active_parse_attempt_id"] = None
+    return payload
+
+
+def _legacy_parse_attempt(run_dir: Path) -> dict[str, Any]:
+    return {
+        "parse_attempt_id": LEGACY_PARSE_ATTEMPT_ID,
+        "parser": "unknown_legacy",
+        "status": "ok",
+        "output_dir": "paper/parse/",
+        "quality_report": "paper/parse/parse_quality_report.json",
+    }
+
+
+def _default_intake_status(status: str | None) -> IntakeStatus:
+    if status in {"uploaded_not_parsed", "parsing", "parsed"}:
+        return "ok"
+    if status == "failed":
+        return "failed"
+    if status == "user_provided_not_ingested":
+        return "pending"
+    return "pending"
 
 
 # ── file upload ──
