@@ -525,3 +525,50 @@ def resolve_source_pdf_path_safely(run_dir: Path, user_text: str) -> Path | None
     if not resolved.is_file():
         return None
     return resolved
+
+
+# ── URL / text source intake ──
+
+
+def _detect_source_kind_from_url(url: str) -> SourceKind:
+    if "github.com" in url.lower():
+        return "github_repo"
+    return "webpage"
+
+
+def register_url_source(run_dir: Path, url: str) -> dict[str, Any]:
+    kind = _detect_source_kind_from_url(url)
+    sid = append_source_ref(
+        run_dir,
+        kind=kind,
+        user_label=url,
+        stored_path=None,
+        status="user_provided_not_ingested",
+        intake_status="pending",
+    )
+    return {"source_id": sid, "kind": kind, "intake_status": "pending", "status": "user_provided_not_ingested"}
+
+
+def register_user_text_source(run_dir: Path, text: str) -> dict[str, Any]:
+    import hashlib
+    sid = append_source_ref(
+        run_dir,
+        kind="user_text",
+        user_label=f"用户文本 ({text[:30]}...)",
+        stored_path=None,
+        status="parsed",
+        intake_status="ok",
+    )
+    src_dir = _resolve_sources_dir(run_dir) / sid
+    src_dir.mkdir(parents=True, exist_ok=True)
+    md_path = src_dir / "user_text.md"
+    md_path.write_text(text, encoding="utf-8")
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    stored_ref = str(md_path.relative_to(run_dir))
+    _registry = load_source_registry(run_dir)
+    for s in _registry.get("sources", []):
+        if s.get("source_id") == sid:
+            s["stored_path"] = stored_ref
+            break
+    _save_registry(run_dir, _registry)
+    return {"source_id": sid, "stored_path": stored_ref, "sha256": content_hash}

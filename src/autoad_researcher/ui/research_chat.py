@@ -176,6 +176,38 @@ def render_research_chat():
                 st.caption(f"现在可以在聊天框中说：读一下 {info['stored_path']}")
                 st.rerun()
 
+        st.caption("— 添加链接 / 仓库 / 文字 —")
+        url_input = st.text_input(
+            "网页或 GitHub 地址",
+            placeholder="https://github.com/amazon-science/patchcore-inspection",
+            key="_source_url_input",
+        )
+        if st.button("添加链接", type="secondary", disabled=not url_input.strip()):
+            try:
+                from autoad_researcher.ui.sources import register_url_source
+                info = register_url_source(run_dir, url_input.strip())
+            except Exception as exc:
+                st.error(f"添加失败：{exc}")
+            else:
+                st.success(f"✅ 已登记：{info['source_id']}（{info['kind']}）")
+                st.caption("source 已记录，intake 待触发。")
+                st.rerun()
+
+        user_text = st.text_area(
+            "手写研究说明",
+            placeholder="目标数据集为 MVTec AD，关注纹理类异常检测...",
+            key="_source_user_text_input",
+        )
+        if st.button("保存文字", type="secondary", disabled=not user_text.strip()):
+            try:
+                from autoad_researcher.ui.sources import register_user_text_source
+                info = register_user_text_source(run_dir, user_text.strip())
+            except Exception as exc:
+                st.error(f"保存失败：{exc}")
+            else:
+                st.success(f"✅ 已保存：{info['source_id']}")
+                st.rerun()
+
         src_ctx = get_source_context(run_dir)
         if src_ctx:
             st.code(src_ctx, language="text")
