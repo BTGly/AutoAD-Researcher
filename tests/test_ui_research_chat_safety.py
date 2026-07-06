@@ -199,6 +199,13 @@ def test_research_chat_messages_include_identity_and_approval_role(tmp_path: Pat
     assert "git_clone" in system_text
 
 
+def test_research_chat_uses_prompt_selector_for_system_prompt():
+    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
+
+    assert "build_system_prompt_for_research_chat_mode" in source
+    assert "BASE_RESEARCH_ASSISTANT_PROMPT + \"\\n\\n\" + MODE_PROMPTS" not in source
+
+
 def test_user_friendly_intent_draft_markdown_has_no_json_indices():
     markdown = render_intent_draft_markdown(_draft())
 

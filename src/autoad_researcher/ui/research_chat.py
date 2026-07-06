@@ -14,6 +14,7 @@ except ModuleNotFoundError:  # UI extra is optional in CI/unit-test environments
     st = None
 
 from autoad_researcher.assistant.probe import silent_probe
+from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.intent_action import (
     ActionDecision,
     append_action_decision,
@@ -38,7 +39,7 @@ from autoad_researcher.ui.artifact_viewer import (
 )
 from autoad_researcher.ui.chat_client import call_research_chat
 from autoad_researcher.ui.chat_context import build_chat_context
-from autoad_researcher.ui.chat_prompts import BASE_RESEARCH_ASSISTANT_PROMPT, MODE_PROMPTS
+from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
 from autoad_researcher.ui.chat_transcript import load_transcript, save_transcript
 from autoad_researcher.ui.intent_draft import (
     load_intent_confirmation,
@@ -347,9 +348,7 @@ def build_research_chat_messages(
     and SourceReferences from the source registry as separate system messages.
     *transcript_tail* provides recent chat history so the LLM remembers context.
     """
-    from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
-
-    system_prompt = BASE_RESEARCH_ASSISTANT_PROMPT + "\n\n" + MODE_PROMPTS[mode]
+    system_prompt = PromptSelector().build_system_prompt_for_research_chat_mode(mode)
     context_str = json.dumps(context_data, ensure_ascii=False, default=str) if context_data else "{}"
 
     messages: list[dict[str, str]] = [
@@ -883,7 +882,7 @@ def _natural_reply_for_decision(
 
     try:
         system = (
-            BASE_RESEARCH_ASSISTANT_PROMPT
+            PromptSelector().build_system_prompt_for_research_chat_mode("intent_clarification")
             + '\n\n'
             '回复不超过 4 行，除非用户明确要求详细说明。'
             '不要以你好开头。'

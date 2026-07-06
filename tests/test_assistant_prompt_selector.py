@@ -9,6 +9,7 @@ from autoad_researcher.assistant.prompt_selector import (
     MODE_TO_PROMPT_ID,
     MODE_TO_STAGE,
     PromptSelector,
+    RESEARCH_CHAT_MODE_TO_PROMPT_ID,
     RESEARCH_TASK_DRAFT_PROMPT_ID,
 )
 from autoad_researcher.assistant.session import AssistantMode
@@ -36,7 +37,7 @@ def test_mode_to_stage_mapping_is_explicit_for_v05_mismatch():
 def test_mode_to_prompt_mapping_uses_coarse_profiles_not_user_behaviors():
     assert MODE_TO_PROMPT_ID == {
         "goal_alignment": "assistant.collecting_goal.v1",
-        "material_alignment": "assistant.guiding_materials.v1",
+        "material_alignment": "assistant.material_alignment.v1",
         "artifact_processing": "assistant.progress_digest.v1",
         "intent_structuring": "assistant.understanding_intent.v1",
         "task_confirmation": "assistant.confirming_task_draft.v1",
@@ -50,6 +51,7 @@ def test_selector_returns_registered_profiles():
     selector = PromptSelector()
 
     assert selector.profile_for_mode("goal_alignment").prompt_id == "assistant.collecting_goal.v1"
+    assert selector.profile_for_mode("material_alignment").prompt_id == "assistant.material_alignment.v1"
     assert selector.profile_for_mode("intent_structuring").prompt_id == "assistant.understanding_intent.v1"
     assert selector.profile_for_mode("pipeline_ready").prompt_id == "assistant.confirming_task_draft.v1"
 
@@ -84,6 +86,26 @@ def test_selector_rejects_unsupported_mode_at_runtime():
 
     with pytest.raises(KeyError, match="unsupported assistant mode"):
         selector.prompt_id_for_mode("user_uploaded_pdf")  # type: ignore[arg-type]
+
+
+def test_selector_routes_research_chat_modes_through_registry():
+    selector = PromptSelector()
+
+    assert RESEARCH_CHAT_MODE_TO_PROMPT_ID == {
+        "intent_clarification": "assistant.material_alignment.v1",
+        "run_explanation": "assistant.run_explanation.v1",
+        "next_experiment": "assistant.next_experiment.v1",
+    }
+    assert selector.prompt_id_for_research_chat_mode("intent_clarification") == "assistant.material_alignment.v1"
+
+    rendered = selector.build_system_prompt_for_research_chat_mode("intent_clarification")
+    assert "AutoAD Assistant global invariants" in rendered
+    assert "AutoAD Research Assistant" in rendered
+    assert "资料对齐助手" in rendered
+    assert "web_search" in rendered and "web_fetch" in rendered and "git_clone" in rendered
+
+    with pytest.raises(KeyError, match="unsupported research chat mode"):
+        selector.prompt_id_for_research_chat_mode("unknown")
 
 
 def test_prompt_selector_excludes_execution_tools():

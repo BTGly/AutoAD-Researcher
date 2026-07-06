@@ -11,7 +11,7 @@ from autoad_researcher.assistant.session import AssistantMode
 
 _MODE_TO_PROMPT: dict[AssistantMode, str] = {
     "goal_alignment":       "assistant.collecting_goal.v1",
-    "material_alignment":   "assistant.guiding_materials.v1",
+    "material_alignment":   "assistant.material_alignment.v1",
     "artifact_processing":  "assistant.progress_digest.v1",
     "intent_structuring":   "assistant.understanding_intent.v1",
     "task_confirmation":    "assistant.confirming_task_draft.v1",
@@ -35,6 +35,14 @@ MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = _MODE_TO_STAGE
 
 RESEARCH_TASK_DRAFT_PROMPT_ID = "assistant.research_task_draft.v1"
 
+_RESEARCH_CHAT_MODE_TO_PROMPT: dict[str, str] = {
+    "intent_clarification": "assistant.material_alignment.v1",
+    "run_explanation": "assistant.run_explanation.v1",
+    "next_experiment": "assistant.next_experiment.v1",
+}
+
+RESEARCH_CHAT_MODE_TO_PROMPT_ID: dict[str, str] = _RESEARCH_CHAT_MODE_TO_PROMPT
+
 
 class PromptSelector:
     """Selects prompt profiles by assistant mode. No LLM, no semantics."""
@@ -53,6 +61,15 @@ class PromptSelector:
 
     def build_system_prompt_for_mode(self, mode: AssistantMode) -> str:
         prompt_id = self.prompt_id_for_mode(mode)
+        return self._registry.build_system_prompt(prompt_id)
+
+    def prompt_id_for_research_chat_mode(self, mode: str) -> str:
+        if mode not in _RESEARCH_CHAT_MODE_TO_PROMPT:
+            raise KeyError(f"unsupported research chat mode: {mode}")
+        return _RESEARCH_CHAT_MODE_TO_PROMPT[mode]
+
+    def build_system_prompt_for_research_chat_mode(self, mode: str) -> str:
+        prompt_id = self.prompt_id_for_research_chat_mode(mode)
         return self._registry.build_system_prompt(prompt_id)
 
     def research_task_draft_profile(self):

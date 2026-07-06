@@ -34,12 +34,19 @@ def test_assistant_state_prompts_are_split_by_purpose():
     registry = get_default_prompt_registry()
     collecting = registry.require("assistant.collecting_goal.v1")
     guiding = registry.require("assistant.guiding_materials.v1")
+    read_only = registry.require("assistant.read_only_exploration.v1")
+    exploration = registry.require("assistant.material_exploration.v1")
+    alignment = registry.require("assistant.material_alignment.v1")
     understanding = registry.require("assistant.understanding_intent.v1")
     confirming = registry.require("assistant.confirming_task_draft.v1")
 
     assert collecting.system_prompt != understanding.system_prompt
     assert "只问 1-3 个最关键的问题" in collecting.system_prompt
     assert "P0" in guiding.system_prompt and "P1" in guiding.system_prompt and "P2" in guiding.system_prompt
+    assert "只读资料探索助手" in read_only.system_prompt
+    assert "资料探索助手" in exploration.system_prompt
+    assert "AutoAD Research Assistant" in alignment.system_prompt
+    assert "资料对齐助手" in alignment.system_prompt
     assert "候选参数" in understanding.system_prompt
     assert "确认 / 需要修改 / 补充材料" in confirming.system_prompt
     assert understanding.visibility == "internal"
@@ -74,6 +81,9 @@ def test_registry_selects_by_layer_and_stage():
     assert {profile.prompt_id for profile in state_prompts} >= {
         "assistant.collecting_goal.v1",
         "assistant.guiding_materials.v1",
+        "assistant.read_only_exploration.v1",
+        "assistant.material_exploration.v1",
+        "assistant.material_alignment.v1",
         "assistant.understanding_intent.v1",
         "assistant.confirming_task_draft.v1",
     }
