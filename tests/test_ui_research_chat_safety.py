@@ -122,7 +122,17 @@ def test_research_chat_ui_keeps_upload_button_primary_and_path_advanced():
     assert "添加到当前任务" in source
     assert "accept_file" in source
     assert "高级：从服务器路径添加" in source
+    assert "st.checkbox" in source
     assert source.index("st.file_uploader") < source.index("服务器本地文件路径")
+
+
+def test_sources_expander_does_not_nest_expanders():
+    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
+    start = source.index('with st.expander("📎 当前资料 / Sources", expanded=False):')
+    end = source.index("    _render_source_cards_panel(run_dir)")
+    sources_block = source[start:end]
+
+    assert sources_block.count("with st.expander(") == 1
 
 
 def test_chat_input_file_support_is_signature_compatible(monkeypatch):

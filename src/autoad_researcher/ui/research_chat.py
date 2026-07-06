@@ -219,7 +219,12 @@ def render_research_chat():
         else:
             st.caption("暂无已添加的资料。支持 PDF / txt / md 上传。")
 
-        with st.expander("高级：从服务器路径添加", expanded=False):
+        show_local_path = st.checkbox(
+            "高级：从服务器路径添加",
+            value=False,
+            key="_show_source_local_path",
+        )
+        if show_local_path:
             local_path = st.text_input(
                 "服务器本地文件路径",
                 placeholder="/root/autodl-tmp/AI4S/2303.15140v2.pdf",
