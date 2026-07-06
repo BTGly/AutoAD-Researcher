@@ -194,6 +194,11 @@ def test_natural_reply_for_decision_prompt_uses_readable_artifacts_and_does_not_
     system_text = " ".join(m["content"] for m in captured if m["role"] == "system")
     assert "has_readable_paper_artifact_content" in system_text
     assert "paper_artifact_content_preview" in system_text
+    assert "readable_artifacts" in system_text
+    assert "paper_summary.json" in system_text
+    assert "paper_reader_result.json" in system_text
+    assert "sections.json" in system_text
+    assert "blocks.jsonl" in system_text and "跳过" in system_text
     assert "不要说" in system_text and "没有可读正文" in system_text
     assert "web_search" in system_text
     assert "web_fetch" in system_text

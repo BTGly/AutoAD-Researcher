@@ -99,6 +99,7 @@ class ResearchContextSnapshot(BaseModel):
     paper_methods: list[str] = Field(default_factory=list)
     paper_artifact_refs: list[str] = Field(default_factory=list)
     available_artifacts: list[str] = Field(default_factory=list)
+    readable_artifacts: list[str] = Field(default_factory=list)
     has_readable_paper_artifact_content: bool = False
     paper_artifact_content_preview: dict[str, Any] = Field(default_factory=dict)
     missing_blocking_gaps: list[str] = Field(default_factory=list)
@@ -152,6 +153,7 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
     sources = [_source_snapshot(source) for source in registry.get("sources", []) if isinstance(source, dict)]
     quality, warnings = evaluate_paper_artifact_quality(run_dir)
     available_artifacts = list_available_paper_artifacts(run_dir)
+    readable_artifacts = list_readable_paper_artifacts(run_dir)
     has_readable_content = has_readable_paper_artifact_content(run_dir)
     confirmation = load_intent_confirmation(run_dir)
 
@@ -167,6 +169,7 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
         paper_methods=what.paper_methods if quality == "usable" else [],
         paper_artifact_refs=[ref for ref in what.evidence_artifacts if ref.startswith("paper/")],
         available_artifacts=available_artifacts,
+        readable_artifacts=readable_artifacts,
         has_readable_paper_artifact_content=has_readable_content,
         paper_artifact_content_preview=build_paper_artifact_content_preview(run_dir),
         missing_blocking_gaps=_select_blocking_gaps(what.missing_fields),
@@ -495,6 +498,31 @@ def list_available_paper_artifacts(run_dir: Path) -> list[str]:
     return sorted(_dedupe(paths))
 
 
+def list_readable_paper_artifacts(run_dir: Path) -> list[str]:
+    """Return preferred structured paper artifacts with readable content."""
+    candidates = [
+        run_dir / "paper" / "artifacts" / "paper_summary.json",
+        run_dir / "paper" / "artifacts" / "paper_reader_result.json",
+        run_dir / "paper" / "parse" / "sections.json",
+    ]
+    parse_dir = run_dir / "paper" / "parse"
+    if parse_dir.exists():
+        candidates.extend(sorted(parse_dir.rglob("sections.json")))
+
+    readable: list[str] = []
+    for path in candidates:
+        if not path.is_file():
+            continue
+        if path.name == "paper_summary.json":
+            payload = _load_json(path)
+            if isinstance(payload, dict) and _paper_summary_has_content(payload):
+                readable.append(path.relative_to(run_dir).as_posix())
+            continue
+        if _text_file_has_content(path):
+            readable.append(path.relative_to(run_dir).as_posix())
+    return sorted(_dedupe(readable))
+
+
 def has_readable_paper_artifact_content(run_dir: Path) -> bool:
     """True when parse outputs contain textual paper content despite weak metadata."""
     summary = _load_json(run_dir / "paper" / "artifacts" / "paper_summary.json")
@@ -701,6 +729,7 @@ def _response_context_facts(snapshot: ResearchContextSnapshot, decision: ActionD
         "paper_artifact_quality": snapshot.paper_artifact_quality,
         "paper_artifact_refs": list(snapshot.paper_artifact_refs),
         "available_artifacts": list(snapshot.available_artifacts),
+        "readable_artifacts": list(snapshot.readable_artifacts),
         "has_readable_paper_artifact_content": snapshot.has_readable_paper_artifact_content,
         "paper_artifact_content_preview": dict(snapshot.paper_artifact_content_preview),
         "paper_methods": list(snapshot.paper_methods),

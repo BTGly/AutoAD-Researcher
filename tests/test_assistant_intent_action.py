@@ -272,6 +272,44 @@ def test_available_artifacts_include_artifacts_and_parse_outputs(tmp_path):
     assert signal.asks_for_paper_content is True
 
 
+def test_readable_artifacts_prioritize_structured_outputs_over_blocks(tmp_path):
+    run_dir = tmp_path / "run_readable_artifacts"
+    run_dir.mkdir()
+    artifacts_dir = run_dir / "paper" / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    (artifacts_dir / "paper_summary.json").write_text(
+        json.dumps({
+            "title": {"value": "SimpleNet"},
+            "abstract": "A paper about anomaly detection.",
+            "proposed_method": [{"text": "Use a simple model for industrial anomaly detection."}],
+        }),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "paper_reader_result.json").write_text(
+        json.dumps({"summary": "Readable reader output"}),
+        encoding="utf-8",
+    )
+    parse_dir = run_dir / "paper" / "parse"
+    parse_dir.mkdir(parents=True)
+    (parse_dir / "sections.json").write_text(
+        json.dumps({"sections": [{"title": "Method", "text": "Readable method section"}]}),
+        encoding="utf-8",
+    )
+    (parse_dir / "blocks.jsonl").write_text(
+        json.dumps({"page": 1, "text": "x 350P A]#cS S G"}) + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot, _signal, decision = _snapshot_and_signal(run_dir, "读论文")
+    context = build_response_context_for_decision(snapshot, decision)
+
+    assert "paper/artifacts/paper_summary.json" in context["facts"]["readable_artifacts"]
+    assert "paper/artifacts/paper_reader_result.json" in context["facts"]["readable_artifacts"]
+    assert "paper/parse/sections.json" in context["facts"]["readable_artifacts"]
+    assert "paper/parse/blocks.jsonl" in context["facts"]["available_artifacts"]
+    assert "paper/parse/blocks.jsonl" not in context["facts"]["readable_artifacts"]
+
+
 def test_readable_parse_content_does_not_require_usable_metadata(tmp_path):
     run_dir = tmp_path / "run_partial_parse"
     run_dir.mkdir()
