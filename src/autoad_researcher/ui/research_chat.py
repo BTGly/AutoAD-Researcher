@@ -726,6 +726,20 @@ def _execute_or_report_pdf_parse_action(
     return message
 
 
+def _sanitize_response_context_for_llm(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Remove internal placeholder values before sending to LLM."""
+    clean = json.loads(json.dumps(ctx, default=str))
+    facts = clean.get("facts", {})
+    if isinstance(facts, dict):
+        attempts = facts.get("available_parse_attempts") or facts.get("parse_attempts") or []
+        if isinstance(attempts, list):
+            for a in attempts:
+                if isinstance(a, dict) and a.get("parser") == "unknown_legacy":
+                    a.pop("parser", None)
+                    a.setdefault("legacy_parse_attempt", True)
+    return clean
+
+
 def _natural_reply_for_decision(
     *,
     run_dir: Path,
@@ -733,28 +747,44 @@ def _natural_reply_for_decision(
     api_key: str,
     provider_url: str,
     user_input: str,
+    history_tail: list[dict[str, str]] | None = None,
 ) -> str:
     """Use LLM to generate a natural response from the ResponseContext.
 
     Falls back to the deterministic template if the LLM is unavailable.
     """
     snapshot = build_research_context_snapshot(run_dir)
-    response_ctx = build_response_context_for_decision(snapshot, decision)
+    response_ctx = _sanitize_response_context_for_llm(
+        build_response_context_for_decision(snapshot, decision)
+    )
 
     try:
         system = (
-            "你是 AutoAD Research Source Alignment Assistant。"
-            "根据下面提供的 facts、evidence_boundary、allowed_actions 和 forbidden_actions，"
-            "自然友好地回答用户。不要固定模板腔调。"
-            "如果解析失败，说明具体原因并建议恢复路径。"
-            "如果已有旧解析成功，提示用户可复用。"
-            "不要声称读过未解析正文。不要建议运行 benchmark 或修改代码。"
+            '回复不超过 4 行，除非用户明确要求详细说明。'
+            '不要以你好开头。'
+            '不要重复已经在最近对话中说过的诊断、背景和排查过程。'
+            '优先给当前结论和下一步命令。'
+            '不得声称读过未解析资料，不得承诺执行 patch、runner、benchmark 或真实实验。'
         )
-        context_text = json.dumps(response_ctx, ensure_ascii=False, indent=2)
-        messages = [
+        ctx_text = json.dumps(response_ctx, ensure_ascii=False, indent=2)
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
-            {"role": "user", "content": f"用户说：{user_input}\n\n当前系统状态（ResponseContext）:\n{context_text}\n\n请基于 ResponseContext 自然回复用户。"},
+            {"role": "system", "content": f"ResponseContext:\n{ctx_text}"},
         ]
+        if history_tail is None:
+            try:
+                transcript = load_transcript(run_dir)
+                history_tail = [
+                    {"role": entry.get("role", "user"), "content": str(entry.get("content", ""))[:1200]}
+                    for entry in transcript[-6:]
+                    if entry.get("role") in {"user", "assistant"} and entry.get("content")
+                ]
+            except Exception:
+                history_tail = []
+        if history_tail:
+            messages.extend(history_tail)
+        messages.append({"role": "user", "content": user_input})
+
         result = call_research_chat(
             api_key=api_key,
             provider_base_url=provider_url,
