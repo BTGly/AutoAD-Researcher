@@ -17,6 +17,7 @@ from autoad_researcher.assistant.intent_action import (
     ActionDecision,
     append_action_decision,
     build_research_context_snapshot,
+    build_response_context_for_decision,
     infer_intent_signal,
     render_response_for_decision,
     resolve_material_auto_action,
@@ -632,7 +633,10 @@ _RESEARCH_CHAT_ALLOWED_ACTIONS = {
 }
 
 
-def _execute_or_report_pdf_parse_action(run_dir: Path, action: dict[str, Any]) -> str:
+def _execute_or_report_pdf_parse_action(
+    run_dir: Path, action: dict[str, Any],
+    *, api_key: str = "", provider_url: str = "", user_input: str = "",
+) -> str:
     kind = str(action.get("action", ""))
     if kind not in _RESEARCH_CHAT_ALLOWED_ACTIONS:
         return _reject_research_chat_action(run_dir, kind, action)
@@ -704,13 +708,64 @@ def _execute_or_report_pdf_parse_action(run_dir: Path, action: dict[str, Any]) -
         return reply
 
     message = str(action["message"])
+    # For non-parse actions with a user-visible message, try LLM natural reply first
     if decision is not None:
         append_action_decision(run_dir, decision)
+    if api_key and user_input and kind in {"message", "already_parsed", "already_parsing", "parse_failed", "missing", "choose", "blocked"}:
+        natural = _natural_reply_for_decision(
+            run_dir=run_dir, decision=decision, api_key=api_key,
+            provider_url=provider_url, user_input=user_input,
+        )
+        st.chat_message("assistant").write(natural)
+        return natural
+
     if kind in {"missing", "choose", "parse_failed", "blocked"}:
         st.warning(message)
     else:
         st.info(message)
     return message
+
+
+def _natural_reply_for_decision(
+    *,
+    run_dir: Path,
+    decision: ActionDecision,
+    api_key: str,
+    provider_url: str,
+    user_input: str,
+) -> str:
+    """Use LLM to generate a natural response from the ResponseContext.
+
+    Falls back to the deterministic template if the LLM is unavailable.
+    """
+    snapshot = build_research_context_snapshot(run_dir)
+    response_ctx = build_response_context_for_decision(snapshot, decision)
+
+    try:
+        system = (
+            "你是 AutoAD Research Source Alignment Assistant。"
+            "根据下面提供的 facts、evidence_boundary、allowed_actions 和 forbidden_actions，"
+            "自然友好地回答用户。不要固定模板腔调。"
+            "如果解析失败，说明具体原因并建议恢复路径。"
+            "如果已有旧解析成功，提示用户可复用。"
+            "不要声称读过未解析正文。不要建议运行 benchmark 或修改代码。"
+        )
+        context_text = json.dumps(response_ctx, ensure_ascii=False, indent=2)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"用户说：{user_input}\n\n当前系统状态（ResponseContext）:\n{context_text}\n\n请基于 ResponseContext 自然回复用户。"},
+        ]
+        result = call_research_chat(
+            api_key=api_key,
+            provider_base_url=provider_url,
+            messages=messages,
+        )
+        if result.get("reply") and not result.get("error"):
+            return result["reply"]
+    except Exception:
+        pass
+
+    return render_response_for_decision(snapshot, decision)
 
 
 def _reject_research_chat_action(run_dir: Path, kind: str, action: dict[str, Any]) -> str:
@@ -763,7 +818,10 @@ def _handle_chat_input(
         if len(pdf_sources) == 1:
             parse_action = build_pdf_parse_action(run_dir, user_content, recent_sources=attached_sources)
             if parse_action["action"] != "chat":
-                reply = _execute_or_report_pdf_parse_action(run_dir, parse_action)
+                reply = _execute_or_report_pdf_parse_action(
+                    run_dir, parse_action,
+                    api_key=api_key, provider_url=provider_url, user_input=user_content,
+                )
                 st.chat_message("assistant").write(reply)
                 save_transcript(run_dir, mode, "assistant", reply)
                 return
@@ -775,7 +833,10 @@ def _handle_chat_input(
     # ── P6: Parse trigger — natural language PDF parse requests ──
     parse_action = build_pdf_parse_action(run_dir, user_input, recent_sources=attached_sources)
     if parse_action["action"] != "chat":
-        reply = _execute_or_report_pdf_parse_action(run_dir, parse_action)
+        reply = _execute_or_report_pdf_parse_action(
+            run_dir, parse_action,
+            api_key=api_key, provider_url=provider_url, user_input=user_input,
+        )
         st.chat_message("assistant").write(reply)
         save_transcript(run_dir, mode, "assistant", reply)
         return
