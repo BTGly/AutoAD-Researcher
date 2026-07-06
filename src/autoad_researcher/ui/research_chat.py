@@ -1274,11 +1274,11 @@ def _render_developer_info(
         st.table(build_hitl_gate_status_rows(run_dir))
         draft = load_intent_draft(run_dir)
         if draft:
-            with st.expander("intent_draft.json"):
-                st.json(draft.model_dump(mode="json"))
-        with st.expander("发送给 LLM 的上下文"):
-            if context_data:
-                st.json(context_data)
+            st.markdown("**intent_draft.json**")
+            st.json(draft.model_dump(mode="json"))
+        st.markdown("**发送给 LLM 的上下文**")
+        if context_data:
+            st.json(context_data)
             else:
                 st.caption("无上下文数据。")
 
