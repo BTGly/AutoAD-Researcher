@@ -742,9 +742,6 @@ def _handle_chat_input(
     submission = st.chat_input(
         "输入你的问题，或附加论文 PDF / 材料…",
         key="_chat_input",
-        accept_file="multiple",
-        file_type=["pdf", "txt", "md", "markdown"],
-        max_upload_size=200,
     )
     if not submission:
         return
