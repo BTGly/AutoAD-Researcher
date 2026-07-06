@@ -183,6 +183,7 @@ def render_research_chat():
             st.caption("暂无已添加的资料。支持 PDF / txt / md 上传。")
 
     _render_source_cards_panel(run_dir)
+    _render_evidence_boundary_panel(run_dir)
     _render_freeze_panel(run_dir)
 
     if not api_key:
@@ -375,7 +376,23 @@ def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
 
     if proc.returncode == 0:
         return {"status": "parsed"}
-    err = proc.stderr.strip()[:200] or f"returncode={proc.returncode}"
+    try:
+        import json
+        out = json.loads(proc.stdout)
+        parts = []
+        if (s := out.get("status")):
+            parts.append(f"status={s}")
+        if (s := out.get("stage")):
+            parts.append(f"stage={s}")
+        if (s := out.get("error")):
+            parts.append(f"error={s}")
+        if (ws := out.get("warnings")):
+            parts.append(f"warnings={ws[:2]}")
+        if (e := out.get("post_validation_errors")):
+            parts.append(f"post_validation_errors={e}")
+        err = "; ".join(parts)
+    except Exception:
+        err = proc.stderr.strip()[:200] or f"returncode={proc.returncode}"
     return {"status": "failed", "error": err}
 
 
@@ -859,26 +876,112 @@ def _render_source_cards_panel(run_dir: Path) -> None:
             for row in rows
         ])
         for row in rows:
-            attempts = row["attempts"]
-            if not attempts:
-                continue
-            with st.expander(f"{row['label']} · parse attempts", expanded=False):
-                for attempt in attempts:
-                    marker = "当前" if attempt["active"] else "可切换"
-                    st.write(f"{attempt['parse_attempt_id']} · {attempt['status']} · {marker}")
-                    if not attempt["active"] and attempt["parse_attempt_id"]:
-                        if st.button(
-                            f"设为 active：{attempt['parse_attempt_id']}",
-                            key=f"_active_attempt_{row['source_id']}_{attempt['parse_attempt_id']}",
-                        ):
-                            set_active_parse_attempt(
-                                run_dir,
-                                str(row["source_id"]),
-                                str(attempt["parse_attempt_id"]),
-                                reason="ui_source_card_switch",
-                            )
-                            st.success("已切换 active parse attempt。")
-                            st.rerun()
+            _render_attempt_timeline(run_dir, row)
+
+def _render_attempt_timeline(run_dir: Path, row: dict[str, Any]) -> None:
+    """Render parse attempt timeline for a single source with switch controls."""
+    attempts = row.get("attempts", [])
+    if not attempts:
+        return
+
+    active_id = row.get("active_parse_attempt_id")
+    has_ok_attempt = any(
+        a.get("status") == "ok" for a in attempts
+    )
+
+    with st.expander(
+        f"📋 {row.get('label', row.get('source_id', ''))} · 解析记录",
+        expanded=False,
+    ):
+        for idx, attempt in enumerate(attempts):
+            pa_id = attempt.get("parse_attempt_id", "—")
+            status = attempt.get("status", "—")
+            parser = attempt.get("parser", "—")
+            is_active = bool(attempt.get("active"))
+
+            status_icon = {
+                "ok": "✅",
+                "partial": "⚠️",
+                "failed": "❌",
+                "running": "🔄",
+            }.get(status, "⬜")
+
+            cols = st.columns([0.6, 1.4, 1.0, 1.4])
+            with cols[0]:
+                st.caption(f"{status_icon} {pa_id}")
+            with cols[1]:
+                st.caption(f"parser: {parser} | 状态: {status}")
+            with cols[2]:
+                if is_active:
+                    st.success("当前使用", icon="")
+                elif status == "ok":
+                    st.info("可切换")
+                elif status == "failed":
+                    st.caption("失败")
+
+            with cols[3]:
+                if not is_active and attempt.get("parse_attempt_id"):
+                    disabled = status == "failed" and has_ok_attempt
+                    if st.button(
+                        "设为当前",
+                        key=f"_active_attempt_{row['source_id']}_{pa_id}_{idx}",
+                        disabled=disabled,
+                    ):
+                        set_active_parse_attempt(
+                            run_dir,
+                            str(row["source_id"]),
+                            str(pa_id),
+                            reason="ui_source_card_switch",
+                        )
+                        st.success("已切换")
+                        st.rerun()
+
+            if status == "failed":
+                reason = attempt.get("reason") or row.get("error_message") or ""
+                if reason:
+                    st.caption(f"失败原因: {reason}")
+
+            quality = attempt.get("quality_report")
+            if quality:
+                st.caption(f"质量报告: {quality}")
+
+
+def _render_evidence_boundary_panel(run_dir: Path) -> None:
+    """Show what the system can and cannot answer based on available evidence."""
+    rows = build_source_card_rows(run_dir)
+    if not rows:
+        return
+
+    parsed = [r for r in rows if r["status"] == "parsed"]
+    failed = [r for r in rows if r["status"] == "failed"]
+    unparsed = [r for r in rows if r["status"] in {"uploaded_not_parsed", "user_provided_not_ingested", "parsing"}]
+    user_text = [r for r in rows if r["kind"] == "user_text"]
+
+    with st.expander("证据边界", expanded=False):
+        if parsed:
+            st.success(f"可引用（{len(parsed)} 个来源）")
+            for src in parsed:
+                st.caption(f"  {src['label'] or src['source_id']} · {src['active_parse_attempt_id'] or 'legacy'}")
+        else:
+            st.caption("暂无已解析来源。")
+
+        if user_text:
+            st.info(f"用户提供（{len(user_text)} 个来源）")
+
+        if unparsed:
+            st.warning(f"未解析（{len(unparsed)} 个来源）")
+            for src in unparsed:
+                st.caption(f"  {src['label'] or src['source_id']}")
+
+        if failed:
+            st.error(f"解析失败（{len(failed)} 个来源）")
+            for src in failed:
+                err = src.get("error_message") or ""
+                st.caption(f"  {src['label'] or src['source_id']}{' · ' + err if err else ''}")
+
+        freeze_state = build_freeze_panel_state(run_dir)
+        if freeze_state.get("active_freeze_version"):
+            st.caption(f"当前冻结版本: {freeze_state['active_freeze_version']}（后续实验 agents 将读取此版本）")
 
 
 def _render_freeze_panel(run_dir: Path) -> None:
