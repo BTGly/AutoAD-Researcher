@@ -56,6 +56,12 @@ from autoad_researcher.ui.intake_bridge import (
     get_intake_bridge_status,
     save_input_task_yaml_from_clarification,
 )
+from autoad_researcher.ui.material_requests import (
+    append_material_request,
+    build_material_request_reply,
+    build_material_request_rows,
+    detect_material_request_intent,
+)
 from autoad_researcher.ui.task_profile import (
     generate_task_profile_from_first_message,
     get_task_display_info,
@@ -242,6 +248,7 @@ def render_research_chat():
                     st.rerun()
 
     _render_source_cards_panel(run_dir)
+    _render_material_request_panel(run_dir)
     _render_evidence_boundary_panel(run_dir)
     _render_freeze_panel(run_dir)
 
@@ -391,6 +398,16 @@ def build_research_chat_messages(
                 "ResearchChatEvidenceContext（结构化证据上下文；Candidate References 不是 Known Facts，"
                 "uploaded_not_parsed 不是 parsed paper evidence）:\n"
                 + render_research_chat_evidence_context(evidence_context)
+            ),
+        })
+        messages.append({
+            "role": "system",
+            "content": (
+                "Material acquisition boundary: Research Chat has no background worker and cannot proactively "
+                "send a later message after web_search/web_fetch/git_clone. If the user asks to search, find latest "
+                "methods, collect papers, or discover repositories, do not say that you have started searching or "
+                "that you will reply in 5-10 minutes. Such requests must be recorded as material_requests and later "
+                "handled by discovery/acquisition agents that write artifacts."
             ),
         })
 
@@ -1038,6 +1055,14 @@ def _handle_chat_input(
         save_transcript(run_dir, mode, "assistant", reply)
         return
 
+    if detect_material_request_intent(user_input):
+        request = append_material_request(run_dir, user_message=user_input)
+        reply = build_material_request_reply(request)
+        st.chat_message("assistant").write(reply)
+        save_transcript(run_dir, mode, "assistant", reply)
+        st.rerun()
+        return
+
     if not st.session_state.get("_first_task_message_handled"):
         st.session_state._first_task_message_handled = True
         existing, _warning = safe_load_task_profile(run_dir)
@@ -1280,6 +1305,17 @@ def _render_evidence_boundary_panel(run_dir: Path) -> None:
         freeze_state = build_freeze_panel_state(run_dir)
         if freeze_state.get("active_freeze_version"):
             st.caption(f"当前冻结版本: {freeze_state['active_freeze_version']}（后续实验 agents 将读取此版本）")
+
+
+def _render_material_request_panel(run_dir: Path) -> None:
+    rows = build_material_request_rows(run_dir)
+    if not rows:
+        return
+    with st.expander("资料搜集请求", expanded=True):
+        pending = [row for row in rows if row.get("status") == "pending"]
+        if pending:
+            st.info(f"有 {len(pending)} 个待处理资料搜集请求；当前聊天不会后台执行搜索。")
+        st.table(rows[-8:])
 
 
 def _render_freeze_panel(run_dir: Path) -> None:

@@ -35,6 +35,9 @@ def guard_research_chat_reply(
     if _promises_execution(reply) and not execution_approved:
         violations.append("execution_promise_without_approval")
 
+    if _promises_background_material_acquisition(reply):
+        violations.append("background_material_acquisition_promise")
+
     if _contains_prompt_injection_obedience(reply):
         violations.append("prompt_injection_instruction_obedience")
 
@@ -92,6 +95,20 @@ def _promises_execution(text: str) -> bool:
         r"确认后.*(patch|runner|benchmark|打补丁|基准测试)",
         r"直接.*(跑实验|运行实验|改代码|patch|runner|benchmark|打补丁|基准测试)",
     ]
+    return _matches_any(patterns, text)
+
+
+def _promises_background_material_acquisition(text: str) -> bool:
+    patterns = [
+        r"我(现在|马上|会|来|将).*?(搜索|搜集|查找|查一下|web_search|web_fetch|git_clone)",
+        r"(正在|开始).*?(搜索|搜集|查找|web_search|web_fetch|git_clone)",
+        r"(搜索|搜集|查找).*?(完成后|结束后).*?(回复|告诉|总结)",
+        r"(预计|大概|需要).{0,12}\d+\s*[-到~]?\s*\d*\s*(分钟|min).*?(完成|回复|总结)",
+        r"(完成后|稍后|等我).*?(主动)?(回复|告诉|总结)",
+    ]
+    material_tokens = ("搜索", "搜集", "查找", "资料", "论文", "方法", "SOTA", "web_search", "web_fetch", "git_clone")
+    if not any(token.lower() in text.lower() for token in material_tokens):
+        return False
     return _matches_any(patterns, text)
 
 
@@ -219,6 +236,12 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def _safe_fallback_reply(violations: list[str], evidence_context: ResearchChatEvidenceContext) -> str:
+    if "background_material_acquisition_promise" in violations:
+        return (
+            "当前 Research Chat 不能在后台执行网络搜索，也不能承诺几分钟后主动发新消息。"
+            "我可以把这个诉求登记为资料搜集请求；后续 discovery/acquisition agents 产出 artifacts 后，我再基于 artifacts 汇总。"
+        )
+
     if "execution_promise_without_approval" in violations:
         return (
             "当前只能确认研究任务边界，不能开始修改代码或运行实验。"
