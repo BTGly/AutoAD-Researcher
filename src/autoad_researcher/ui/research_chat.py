@@ -1277,10 +1277,10 @@ def _render_developer_info(
             st.markdown("**intent_draft.json**")
             st.json(draft.model_dump(mode="json"))
         st.markdown("**发送给 LLM 的上下文**")
-        if context_data:
-            st.json(context_data)
-            else:
-                st.caption("无上下文数据。")
+    if context_data:
+        st.json(context_data)
+    else:
+        st.caption("无上下文数据。")
 
 
 def build_research_assistant_overview(
