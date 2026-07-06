@@ -944,7 +944,7 @@ def _render_attempt_timeline(run_dir: Path, row: dict[str, Any]) -> None:
                 st.caption(f"parser: {parser} | 状态: {status}")
             with cols[2]:
                 if is_active:
-                    st.success("当前使用", icon="")
+                    st.success("当前使用")
                 elif status == "ok":
                     st.info("可切换")
                 elif status == "failed":
