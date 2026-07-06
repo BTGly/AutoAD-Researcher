@@ -10,6 +10,7 @@ from autoad_researcher.schemas.stage3_acceptance import (
     Stage3AcceptanceArtifactRef,
     Stage3AcceptanceStageRecord,
 )
+from autoad_researcher.research_context.freeze import active_freeze_context_path, load_active_freeze_manifest
 from autoad_researcher.transfer.orchestrator import (
     StepStatus,
     finalize_transfer_design,
@@ -52,7 +53,7 @@ def run_transfer_design_stage(
         )
 
     # Load upstream artifacts
-    research_context_path = run_dir / "context" / "research_context_draft.json"
+    research_context_path = active_freeze_context_path(run_dir) or run_dir / "context" / "research_context_draft.json"
     if not research_context_path.exists():
         return Stage3AcceptanceStageRecord(
             stage="transfer_design",
@@ -72,6 +73,11 @@ def run_transfer_design_stage(
 
     # Build context handoff data, possibly with user_idea_label from approval
     handoff_data = _read_context_as_dict(research_context_path)
+    freeze_manifest = load_active_freeze_manifest(run_dir)
+    active_freeze_version = freeze_manifest.get("active_freeze_version") if freeze_manifest else None
+    handoff_data["origin_research_run_id"] = run_id
+    if isinstance(active_freeze_version, str):
+        handoff_data["origin_freeze_version"] = active_freeze_version
     if idea_confirmed and idea_approval and idea_approval.user_idea_label:
         handoff_data["user_idea_label"] = idea_approval.user_idea_label
 

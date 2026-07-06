@@ -502,6 +502,8 @@ def emit_context_artifacts(
             readiness=readiness,
             paper_source_id=source_id,
             evidence_index_refs=evidence_refs,
+            origin_research_run_id=run_id,
+            origin_freeze_version=None,
         )
         handoff_path = str(context_dir / "idea_transfer_handoff.json")
         _write_atomic_json(Path(handoff_path), handoff.model_dump())

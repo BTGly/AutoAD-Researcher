@@ -449,3 +449,5 @@ class IdeaTransferHandoff(BaseModel):
     paper_source_id: str | None = None
     repository_source_id: str | None = None
     evidence_index_refs: list[str] = Field(default_factory=list)
+    origin_research_run_id: str | None = Field(default=None, pattern=IdentifierPattern)
+    origin_freeze_version: str | None = Field(default=None, pattern=IdentifierPattern)

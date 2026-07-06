@@ -803,6 +803,8 @@ class TestOrchestratorBehavior:
             assert ho["schema_version"] == 1
             assert ho["context_id"].startswith("ctx_")
             assert ho["readiness"]["status"] == "ready_for_idea_transfer_design"
+            assert ho["origin_research_run_id"] == "test_ready"
+            assert ho["origin_freeze_version"] is None
 
         _chdir_tmp(tmp_path, work)
 

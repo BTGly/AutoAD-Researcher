@@ -8,6 +8,11 @@ from autoad_researcher.research_context.assembly import (
     detect_conflicts,
     finalize_research_context,
 )
+from autoad_researcher.research_context.freeze import (
+    active_freeze_context_path,
+    freeze_context,
+    load_active_freeze_manifest,
+)
 from autoad_researcher.research_context.models import (
     BaselineContext,
     CandidateDecision,
