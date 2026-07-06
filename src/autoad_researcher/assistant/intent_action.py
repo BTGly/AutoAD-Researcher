@@ -80,6 +80,8 @@ class SourceSnapshot(BaseModel):
     stored_path: str | None = None
     reference_value: str | None = None
     error_message: str | None = None
+    active_parse_attempt_id: str | None = None
+    parse_attempts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ResearchContextSnapshot(BaseModel):
@@ -361,6 +363,7 @@ def append_action_decision(run_dir: Path, decision: ActionDecision, *, user_mess
 
 def render_response_for_decision(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> str:
     """Render deterministic user-facing text for non-LLM response modes."""
+    build_response_context_for_decision(snapshot, decision)
     if decision.user_visible_message:
         return decision.user_visible_message
     if decision.response_mode == "empty_run_intake":
@@ -391,6 +394,23 @@ def render_response_for_decision(snapshot: ResearchContextSnapshot, decision: Ac
     if decision.response_mode == "research_task_confirmed":
         return "研究任务边界已确认，但这不代表已经批准代码修改或实验执行。"
     return "我先基于当前材料状态整理候选理解；不启动代码修改或实验执行。"
+
+
+def build_response_context_for_decision(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> dict[str, Any]:
+    """Build the structured response context used by assistant rendering."""
+    return {
+        "mode": decision.response_mode,
+        "facts": _response_context_facts(snapshot, decision),
+        "evidence_boundary": _response_context_evidence_boundary(snapshot),
+        "allowed_actions": _allowed_actions_for_decision(snapshot, decision),
+        "forbidden_actions": _forbidden_actions_for_decision(snapshot, decision),
+        "suggested_next_steps": _suggested_next_steps_for_decision(decision),
+        "style_constraints": [
+            "do_not_claim_unparsed_pdf_content",
+            "do_not_imply_code_or_experiment_execution_approval",
+            "state_material_limits_when_evidence_is_incomplete",
+        ],
+    }
 
 
 def snapshot_sha256(snapshot: ResearchContextSnapshot) -> str:
@@ -442,6 +462,7 @@ def evaluate_paper_artifact_quality(run_dir: Path) -> tuple[PaperArtifactQuality
 def _source_snapshot(source: dict[str, Any]) -> SourceSnapshot:
     status = _clean_str(source.get("status")) or "user_provided_not_ingested"
     kind = _clean_str(source.get("kind")) or "url"
+    parse_attempts = source.get("parse_attempts")
     return SourceSnapshot(
         source_id=_clean_str(source.get("source_id")) or "unknown_source",
         kind=kind,
@@ -451,7 +472,114 @@ def _source_snapshot(source: dict[str, Any]) -> SourceSnapshot:
         stored_path=_clean_str(source.get("stored_path")),
         reference_value=_clean_str(source.get("reference_value")),
         error_message=_clean_str(source.get("error_message")),
+        active_parse_attempt_id=_clean_str(source.get("active_parse_attempt_id")),
+        parse_attempts=[dict(item) for item in parse_attempts if isinstance(item, dict)] if isinstance(parse_attempts, list) else [],
     )
+
+
+def _response_context_facts(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> dict[str, Any]:
+    return {
+        "run_id": snapshot.run_id,
+        "selected_action": decision.selected_action,
+        "execution_status": decision.execution_status,
+        "reason": decision.reason,
+        "source_id": decision.source_id,
+        "stored_path": decision.stored_path,
+        "sources": [_source_snapshot_fact(source) for source in snapshot.sources],
+        "paper_artifact_quality": snapshot.paper_artifact_quality,
+        "paper_artifact_refs": list(snapshot.paper_artifact_refs),
+        "paper_methods": list(snapshot.paper_methods),
+        "missing_blocking_gaps": list(snapshot.missing_blocking_gaps),
+        "task_confirmed": snapshot.task_confirmed,
+        "ready_for_pipeline": snapshot.ready_for_pipeline,
+    }
+
+
+def _source_snapshot_fact(source: SourceSnapshot) -> dict[str, Any]:
+    return {
+        "source_id": source.source_id,
+        "kind": source.kind,
+        "user_label": source.user_label,
+        "source_status": source.source_status,
+        "derived_status": source.derived_status,
+        "stored_path": source.stored_path,
+        "active_parse_attempt_id": source.active_parse_attempt_id,
+        "parse_attempts": list(source.parse_attempts),
+    }
+
+
+def _response_context_evidence_boundary(snapshot: ResearchContextSnapshot) -> dict[str, list[str]]:
+    unparsed_sources = [
+        source.source_id
+        for source in snapshot.sources
+        if source.derived_status in {"reference_identifier", "uploaded_not_parsed", "parsing_in_progress"}
+    ]
+    failed_parse_attempts: list[str] = []
+    partial_parse_attempts: list[str] = []
+    for source in snapshot.sources:
+        for attempt in source.parse_attempts:
+            parse_attempt_id = attempt.get("parse_attempt_id")
+            if not isinstance(parse_attempt_id, str):
+                continue
+            if attempt.get("status") == "failed":
+                failed_parse_attempts.append(parse_attempt_id)
+            elif attempt.get("status") == "partial":
+                partial_parse_attempts.append(parse_attempt_id)
+    return {
+        "unparsed_sources": _dedupe(unparsed_sources),
+        "partial_parse_attempts": _dedupe(partial_parse_attempts),
+        "failed_parse_attempts": _dedupe(failed_parse_attempts),
+        "claims_not_supported": [],
+    }
+
+
+def _allowed_actions_for_decision(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> list[str]:
+    actions = ["answer_directly", "ask_clarifying_question"]
+    if decision.selected_action == "parse_uploaded_pdf" or _sources_with(snapshot, "uploaded_not_parsed"):
+        actions.append("parse_uploaded_pdf")
+    if snapshot.has_parsed_artifact:
+        actions.append("summarize_parsed_artifacts")
+    if decision.selected_action == "confirm_research_task" or snapshot.ready_for_pipeline:
+        actions.append("confirm_research_task")
+    return _dedupe(actions)
+
+
+def _forbidden_actions_for_decision(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> list[str]:
+    forbidden = [
+        "runner_execute",
+        "patch_apply",
+        "benchmark_run",
+        "experiment_execution",
+        "claim_unparsed_pdf_content",
+    ]
+    if not snapshot.execution_approved:
+        forbidden.extend(["modify_code", "run_pipeline"])
+    if decision.response_mode in {
+        "empty_run_intake",
+        "reference_only_status",
+        "uploaded_not_parsed_status",
+        "uploaded_status_then_auto_parse",
+        "material_auto_parse_started",
+        "select_pdf_to_parse",
+        "parsing_in_progress_status",
+        "parsing_failed_status",
+    }:
+        forbidden.append("summarize_unparsed_pdf_body")
+    return _dedupe(forbidden)
+
+
+def _suggested_next_steps_for_decision(decision: ActionDecision) -> list[str]:
+    if decision.selected_action == "parse_uploaded_pdf":
+        return ["parse_selected_pdf", "wait_for_parse_artifacts", "answer_from_artifacts_after_parse"]
+    if decision.response_mode == "select_pdf_to_parse":
+        return ["ask_user_to_select_pdf"]
+    if decision.response_mode == "parsed_artifact_summary":
+        return ["summarize_parsed_artifacts", "draft_research_task"]
+    if decision.response_mode == "execution_request_blocked":
+        return ["confirm_research_task_before_any_execution"]
+    if decision.response_mode == "research_task_confirmed":
+        return ["prepare_freeze_context"]
+    return ["collect_or_parse_research_material"]
 
 
 def _derive_status(kind: str, status: str) -> SourceDerivedStatus:

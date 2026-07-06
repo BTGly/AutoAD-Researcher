@@ -10,6 +10,7 @@ from shutil import copytree
 from autoad_researcher.assistant.intent_action import (
     ActionDecision,
     append_action_decision,
+    build_response_context_for_decision,
     build_research_context_snapshot,
     evaluate_paper_artifact_quality,
     infer_intent_signal,
@@ -330,6 +331,67 @@ def test_parse_success_reply_includes_candidate_understanding_or_gaps(tmp_path):
     assert "异常检测" in reply
     assert "dataset" in reply or "primary_metric" in reply
     assert "仍缺" in reply
+
+
+def test_build_response_context_for_decision_contains_policy_fields(tmp_path):
+    run_dir = tmp_path / "run_response_context"
+    run_dir.mkdir()
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+        status="uploaded_not_parsed",
+    )
+    snapshot = build_research_context_snapshot(run_dir)
+    signal = infer_intent_signal("读一下论文", snapshot)
+    decision = resolve_material_auto_action(snapshot=snapshot, signal=signal)
+
+    context = build_response_context_for_decision(snapshot, decision)
+
+    assert context["mode"] == decision.response_mode
+    assert set(context) == {
+        "mode",
+        "facts",
+        "evidence_boundary",
+        "allowed_actions",
+        "forbidden_actions",
+        "suggested_next_steps",
+        "style_constraints",
+    }
+    assert context["facts"]["source_id"] == "src_pdf"
+    assert context["evidence_boundary"]["unparsed_sources"] == ["src_pdf"]
+    assert "parse_uploaded_pdf" in context["allowed_actions"]
+    assert "runner_execute" in context["forbidden_actions"]
+    assert "patch_apply" in context["forbidden_actions"]
+    assert "summarize_unparsed_pdf_body" in context["forbidden_actions"]
+    assert "parse_selected_pdf" in context["suggested_next_steps"]
+    assert "do_not_claim_unparsed_pdf_content" in context["style_constraints"]
+
+
+def test_render_response_for_decision_preserves_user_visible_return_or_has_fallback(tmp_path):
+    from autoad_researcher.assistant.intent_action import ResearchContextSnapshot
+
+    snapshot = ResearchContextSnapshot(run_id="run_render")
+    decision = ActionDecision(
+        snapshot_sha256="aa" * 32,
+        selected_action="answer_directly",
+        response_mode="execution_request_blocked",
+        reason="test",
+        execution_status="blocked_by_policy",
+        user_visible_message="blocked visible message",
+    )
+
+    assert render_response_for_decision(snapshot, decision) == "blocked visible message"
+
+    fallback = render_response_for_decision(
+        snapshot,
+        decision.model_copy(update={"user_visible_message": None}),
+    )
+    assert isinstance(fallback, str)
+    assert fallback
+    assert "代码修改" in fallback or "实验执行" in fallback
 
 
 def test_ready_for_task_draft_requires_no_blocking_gaps(tmp_path):
