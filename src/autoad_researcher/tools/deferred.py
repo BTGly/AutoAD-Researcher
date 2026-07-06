@@ -23,7 +23,7 @@ STAGE_ALLOWED_TOOLS: dict[str, set[str]] = {
     "discovery": {"web_search", "web_fetch", "github_read"},
     "candidate_verification": {"web_fetch"},
     "resolution": {"github_read"},
-    "acquisition": {"github_read", "filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat", "process"},
+    "acquisition": {"github_read", "git_clone", "filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat", "process"},
     "analysis": {"filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat", "process"},
     "repair": {"filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat"},
     "synthesis": set(),

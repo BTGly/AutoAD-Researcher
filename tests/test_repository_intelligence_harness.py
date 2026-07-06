@@ -233,6 +233,7 @@ def test_default_registry_contains_required_repository_tools():
         "filesystem_read",
         "filesystem_search",
         "filesystem_stat",
+        "git_clone",
         "github_read",
         "process",
         "web_fetch",

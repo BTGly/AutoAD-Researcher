@@ -28,8 +28,11 @@ from autoad_researcher.tools import (
     ToolSpec,
     default_repository_permission_engine,
     filesystem_tool_spec,
+    git_clone_tool_spec,
     load_stage_tool_specs,
     process_tool_spec,
+    web_fetch_tool_spec,
+    web_search_tool_spec,
 )
 
 REQUIRED_ANALYSIS_COVERAGE = {
@@ -232,8 +235,9 @@ def default_repository_tool_registry() -> ToolRegistry:
         registry = registry.register(filesystem_tool_spec(name))
     registry = registry.register(process_tool_spec())
     for spec in [
-        _deferred_spec("web_search", "Recorded or provider-backed web search.", "web"),
-        _deferred_spec("web_fetch", "Secure HTTP(S) web fetch.", "web"),
+        web_search_tool_spec(),
+        web_fetch_tool_spec(),
+        git_clone_tool_spec(),
         _deferred_spec("github_read", "Read-only GitHub metadata, commit, and file reads.", "github"),
     ]:
         registry = registry.register(spec)

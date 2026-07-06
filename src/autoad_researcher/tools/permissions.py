@@ -128,7 +128,7 @@ def default_repository_permission_engine() -> PermissionEngine:
             ),
             "repository_acquisition": PermissionProfile(
                 name="repository_acquisition",
-                allow_tools={"github_read", "filesystem_stat", "process"},
+                allow_tools={"github_read", "git_clone", "filesystem_stat", "process"},
                 deny_tools={"repository_write"},
             ),
             "repository_analysis": PermissionProfile(

@@ -22,6 +22,7 @@ from autoad_researcher.tools.filesystem import (
     filesystem_stat,
     filesystem_tool_spec,
 )
+from autoad_researcher.tools.git_clone import git_clone_tool_spec
 from autoad_researcher.tools.permissions import (
     PermissionDecision,
     PermissionDecisionRecord,
@@ -50,6 +51,8 @@ from autoad_researcher.tools.providers import (
     WebSearchResult,
 )
 from autoad_researcher.tools.registry import ToolRegistry
+from autoad_researcher.tools.web_fetch import web_fetch_tool_spec
+from autoad_researcher.tools.web_search import web_search_tool_spec
 
 __all__ = [
     "LoadedToolRecord",
@@ -91,8 +94,11 @@ __all__ = [
     "filesystem_search",
     "filesystem_stat",
     "filesystem_tool_spec",
+    "git_clone_tool_spec",
     "initial_tool_specs",
     "load_stage_tool_specs",
     "process_tool_spec",
     "run_process_tool",
+    "web_fetch_tool_spec",
+    "web_search_tool_spec",
 ]
