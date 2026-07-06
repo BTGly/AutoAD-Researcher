@@ -405,7 +405,12 @@ def save_chat_attachments(run_dir: Path, uploaded_files: list[Any]) -> list[dict
 
 def build_attachment_added_reply(sources: list[dict[str, Any]]) -> str:
     names = [Path(str(source["stored_path"])).name for source in sources]
-    lines = ["已添加资料：", *[f"- {name}" for name in names]]
+    lines = [
+        "已添加资料：",
+        *[f"- {name}" for name in names],
+        "",
+        "下一步可以说：读一下这个论文",
+    ]
     return "\n".join(lines)
 
 
