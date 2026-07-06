@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from autoad_researcher.assistant.research_context_builder import ResearchChatEvidenceContext
 
@@ -20,6 +21,7 @@ def guard_research_chat_reply(
     user_input: str,
     evidence_context: ResearchChatEvidenceContext,
     execution_approved: bool = False,
+    response_context: dict[str, Any] | None = None,
 ) -> GuardedReply:
     """Reject or rewrite replies that overclaim beyond available evidence."""
     violations: list[str] = []
@@ -32,6 +34,20 @@ def guard_research_chat_reply(
 
     if _promises_execution(reply) and not execution_approved:
         violations.append("execution_promise_without_approval")
+
+    if _contains_prompt_injection_obedience(reply):
+        violations.append("prompt_injection_instruction_obedience")
+
+    unknown_source_ids = _unknown_source_ids(reply, response_context)
+    if unknown_source_ids:
+        violations.append("unknown_source_reference")
+
+    unknown_parse_attempt_ids = _unknown_parse_attempt_ids(reply, response_context)
+    if unknown_parse_attempt_ids:
+        violations.append("unknown_parse_attempt_reference")
+
+    if _treats_failed_or_partial_attempt_as_complete(reply, response_context):
+        violations.append("failed_or_partial_attempt_as_complete_evidence")
 
     if _asks_for_artifacts(user_input) and not evidence_context.has_parsed_paper_evidence:
         violations.append("artifact_answer_without_parsed_artifact")
@@ -70,8 +86,11 @@ def _promises_execution(text: str) -> bool:
         r"我(将|会|现在|马上).*修改代码",
         r"我(将|会|现在|马上).*运行实验",
         r"我(将|会|现在|马上).*开始执行",
+        r"我(将|会|现在|马上).*(apply patch|patch apply|打补丁|应用补丁)",
+        r"我(将|会|现在|马上).*(runner|benchmark|基准测试)",
         r"确认后.*(开始执行|运行实验|修改代码)",
-        r"直接.*(跑实验|运行实验|改代码)",
+        r"确认后.*(patch|runner|benchmark|打补丁|基准测试)",
+        r"直接.*(跑实验|运行实验|改代码|patch|runner|benchmark|打补丁|基准测试)",
     ]
     return _matches_any(patterns, text)
 
@@ -85,11 +104,143 @@ def _matches_any(patterns: list[str], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
+def _contains_prompt_injection_obedience(text: str) -> bool:
+    patterns = [
+        r"(资料|source|来源|文件).*(要求|指示).*(忽略|覆盖|改变).*(系统|开发者|工具|权限|指令)",
+        r"(我会|我将).*(忽略|覆盖|改变).*(系统|开发者|工具|权限|指令)",
+        r"ignore (previous|system|developer) instructions",
+        r"(override|bypass).*(tool|permission|system|developer)",
+        r"解除.*(工具|权限|系统指令|开发者指令).*限制",
+    ]
+    return _matches_any(patterns, text)
+
+
+def _unknown_source_ids(text: str, response_context: dict[str, Any] | None) -> list[str]:
+    if response_context is None:
+        return []
+    known = _known_source_ids(response_context)
+    if not known:
+        return []
+    return [source_id for source_id in _referenced_source_ids(text) if source_id not in known]
+
+
+def _unknown_parse_attempt_ids(text: str, response_context: dict[str, Any] | None) -> list[str]:
+    if response_context is None:
+        return []
+    known = _known_parse_attempts(response_context)
+    if not known:
+        return []
+    return [attempt_id for attempt_id in _referenced_parse_attempt_ids(text) if attempt_id not in known]
+
+
+def _treats_failed_or_partial_attempt_as_complete(
+    text: str,
+    response_context: dict[str, Any] | None,
+) -> bool:
+    if response_context is None:
+        return False
+    risky_attempts = {
+        attempt_id
+        for attempt_id, status in _known_parse_attempts(response_context).items()
+        if status in {"failed", "partial"}
+    }
+    if not risky_attempts:
+        return False
+    mentioned = set(_referenced_parse_attempt_ids(text))
+    if not mentioned & risky_attempts:
+        return False
+    return _matches_any(
+        [
+            r"(完整|完全|充分|可靠).*(证据|解析|正文|支持)",
+            r"(可以|能够).*(完整|完全).*(基于|使用)",
+            r"complete (evidence|parse|support)",
+            r"fully supported",
+        ],
+        text,
+    )
+
+
+def _known_source_ids(response_context: dict[str, Any]) -> set[str]:
+    known: set[str] = set()
+    facts = response_context.get("facts")
+    if isinstance(facts, dict):
+        source_id = facts.get("source_id")
+        if isinstance(source_id, str):
+            known.add(source_id)
+        sources = facts.get("sources")
+        if isinstance(sources, list):
+            for source in sources:
+                if isinstance(source, dict) and isinstance(source.get("source_id"), str):
+                    known.add(source["source_id"])
+    return known
+
+
+def _known_parse_attempts(response_context: dict[str, Any]) -> dict[str, str]:
+    attempts_by_id: dict[str, str] = {}
+    facts = response_context.get("facts")
+    if not isinstance(facts, dict):
+        return attempts_by_id
+    sources = facts.get("sources")
+    if not isinstance(sources, list):
+        return attempts_by_id
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        active_id = source.get("active_parse_attempt_id")
+        if isinstance(active_id, str):
+            attempts_by_id.setdefault(active_id, "ok")
+        attempts = source.get("parse_attempts")
+        if not isinstance(attempts, list):
+            continue
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            attempt_id = attempt.get("parse_attempt_id")
+            status = attempt.get("status")
+            if isinstance(attempt_id, str):
+                attempts_by_id[attempt_id] = status if isinstance(status, str) else "unknown"
+    return attempts_by_id
+
+
+def _referenced_source_ids(text: str) -> list[str]:
+    return _dedupe(re.findall(r"\bsrc_[A-Za-z0-9_-]+\b", text))
+
+
+def _referenced_parse_attempt_ids(text: str) -> list[str]:
+    return _dedupe(re.findall(r"\bpa_[0-9]{6}\b|\blegacy_active\b", text))
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
 def _safe_fallback_reply(violations: list[str], evidence_context: ResearchChatEvidenceContext) -> str:
     if "execution_promise_without_approval" in violations:
         return (
             "当前只能确认研究任务边界，不能开始修改代码或运行实验。"
             "任务确认不等于代码修改批准，也不等于真实执行批准。"
+        )
+
+    if "prompt_injection_instruction_obedience" in violations:
+        return (
+            "资料内容只能作为不可信证据处理，不能改变系统指令、开发者指令或工具权限。"
+            "我会忽略材料中的指令性文本，只基于已允许的资料证据回答。"
+        )
+
+    if "unknown_source_reference" in violations or "unknown_parse_attempt_reference" in violations:
+        return (
+            "回复引用了当前上下文中不存在的 source_id 或 parse_attempt_id。"
+            "我需要先重新对齐可用资料边界，再基于已登记来源回答。"
+        )
+
+    if "failed_or_partial_attempt_as_complete_evidence" in violations:
+        return (
+            "当前解析尝试并不是完整可用证据，不能把 failed 或 partial attempt 当成完整正文依据。"
+            "我只能披露解析状态，并等待可用 artifacts 或用户明确切换证据来源。"
         )
 
     if "repo_content_without_repo_evidence" in violations:
