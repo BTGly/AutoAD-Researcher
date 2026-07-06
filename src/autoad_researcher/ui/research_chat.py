@@ -889,7 +889,10 @@ def _natural_reply_for_decision(
             '不要重复已经在最近对话中说过的诊断、背景和排查过程。'
             '优先给当前结论和下一步命令。'
             '可以登记 GitHub 仓库链接作为 source，后续实验 agents 可以 clone 并分析；这不等于当前聊天会执行 runner、patch 或 benchmark。'
-            '如果 ResponseContext.facts.has_readable_paper_artifact_content 为 true，或 paper_artifact_content_preview/available_artifacts 显示有 paper_summary.json、blocks.jsonl 等内容，不要说“没有可读正文”或“无法读取论文”；应基于 preview 和 artifacts 回答，并标注 metadata 不完整的限制。'
+            '优先使用 ResponseContext.facts.paper_context；若 paper_context.can_answer_from_paper 为 true，必须基于 paper_context、paper.md、paper_summary.json 或 sections.json 自然回答论文内容，不要只说“解析成功”。'
+            '如果 paper_context.can_answer_from_paper 为 false，不得假装读过论文；应说明当前可用 artifact 仍没有可读论文文本。'
+            'ResponseContext 优先级高于 transcript；如果旧对话说“无法读取”但当前 paper_context 可回答，应把旧结论视为过期并更正。'
+            '读取论文内容时优先从 paper.md 和 paper_summary.json 取内容；blocks.jsonl 的 page 1 可能包含 PDF 二进制块，应跳过乱码块，不要因为 blocks.jsonl 局部乱码否定其它可读 artifact。'
             '不要反复要求用户提供链接；不要声称系统没有 web_search、web_fetch 或 git_clone ToolSpec。当前聊天未触发 acquisition 时，只说明可登记为待获取 source 或交给后续 discovery/acquisition agents。'
             '不得声称读过未解析资料，不得承诺执行 patch、runner、benchmark 或真实实验。'
         )
@@ -908,6 +911,7 @@ def _natural_reply_for_decision(
                 ]
             except Exception:
                 history_tail = []
+        history_tail = _filter_stale_paper_history(history_tail, response_ctx)
         if history_tail:
             messages.extend(history_tail)
         messages.append({"role": "user", "content": user_input})
@@ -923,6 +927,39 @@ def _natural_reply_for_decision(
         pass
 
     return render_response_for_decision(snapshot, decision)
+
+
+def _filter_stale_paper_history(history_tail: list[dict[str, str]], response_ctx: dict[str, Any]) -> list[dict[str, str]]:
+    facts = response_ctx.get("facts", {})
+    paper_context = facts.get("paper_context", {}) if isinstance(facts, dict) else {}
+    if not (isinstance(paper_context, dict) and paper_context.get("can_answer_from_paper") is True):
+        return history_tail
+    filtered: list[dict[str, str]] = []
+    for entry in history_tail:
+        if entry.get("role") == "assistant" and _is_stale_unreadable_paper_reply(entry.get("content", "")):
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def _is_stale_unreadable_paper_reply(content: str) -> bool:
+    text = str(content)
+    stale_tokens = (
+        "无法读取",
+        "不可读",
+        "无法提取论文内容",
+        "无法提取出可读",
+        "没有可读正文",
+        "正文块仍为乱码",
+        "乱码",
+        "arXiv HTML",
+        "可复制文本的 PDF",
+        "扫描版",
+        "编码格式异常",
+        "mineru 解析器无法",
+        "MinerU 解析器无法",
+    )
+    return any(token in text for token in stale_tokens)
 
 
 def _reject_research_chat_action(run_dir: Path, kind: str, action: dict[str, Any]) -> str:

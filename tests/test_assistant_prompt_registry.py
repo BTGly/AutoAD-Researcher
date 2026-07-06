@@ -48,8 +48,9 @@ def test_assistant_state_prompts_are_split_by_purpose():
     assert "AutoAD Research Assistant" in alignment.system_prompt
     assert "资料对齐助手" in alignment.system_prompt
     assert "readable_artifacts" in alignment.system_prompt
+    assert "paper_context" in alignment.system_prompt
     assert "paper_summary.json" in alignment.system_prompt
-    assert "paper_reader_result.json" in alignment.system_prompt
+    assert "paper.md" in alignment.system_prompt
     assert "sections.json" in alignment.system_prompt
     assert "blocks.jsonl" in alignment.system_prompt and "跳过乱码块" in alignment.system_prompt
     assert "候选参数" in understanding.system_prompt

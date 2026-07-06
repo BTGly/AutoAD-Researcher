@@ -16,6 +16,7 @@ from autoad_researcher.assistant.intent_action import (
     evaluate_paper_artifact_quality,
     has_readable_paper_artifact_content,
     infer_intent_signal,
+    load_readable_paper_context,
     render_response_for_decision,
     resolve_material_auto_action,
 )
@@ -285,10 +286,6 @@ def test_readable_artifacts_prioritize_structured_outputs_over_blocks(tmp_path):
         }),
         encoding="utf-8",
     )
-    (artifacts_dir / "paper_reader_result.json").write_text(
-        json.dumps({"summary": "Readable reader output"}),
-        encoding="utf-8",
-    )
     parse_dir = run_dir / "paper" / "parse"
     parse_dir.mkdir(parents=True)
     (parse_dir / "sections.json").write_text(
@@ -296,7 +293,8 @@ def test_readable_artifacts_prioritize_structured_outputs_over_blocks(tmp_path):
         encoding="utf-8",
     )
     (parse_dir / "blocks.jsonl").write_text(
-        json.dumps({"page": 1, "text": "x 350P A]#cS S G"}) + "\n",
+        json.dumps({"page": 1, "text": "x 350P A]#cS S G"}) + "\n"
+        + json.dumps({"page": 2, "text": "The method uses a simple anomaly detection model."}) + "\n",
         encoding="utf-8",
     )
 
@@ -304,10 +302,14 @@ def test_readable_artifacts_prioritize_structured_outputs_over_blocks(tmp_path):
     context = build_response_context_for_decision(snapshot, decision)
 
     assert "paper/artifacts/paper_summary.json" in context["facts"]["readable_artifacts"]
-    assert "paper/artifacts/paper_reader_result.json" in context["facts"]["readable_artifacts"]
+    assert "paper/parse/paper.md" in context["facts"]["readable_artifacts"]
     assert "paper/parse/sections.json" in context["facts"]["readable_artifacts"]
     assert "paper/parse/blocks.jsonl" in context["facts"]["available_artifacts"]
     assert "paper/parse/blocks.jsonl" not in context["facts"]["readable_artifacts"]
+    assert "paper/parse/blocks.jsonl" in context["facts"]["unreadable_artifacts"]
+    assert context["facts"]["paper_context"]["can_answer_from_paper"] is True
+    assert "SimpleNet" in json.dumps(context["facts"]["paper_context"], ensure_ascii=False)
+    assert (parse_dir / "paper.md").exists()
 
 
 def test_readable_parse_content_does_not_require_usable_metadata(tmp_path):
@@ -329,8 +331,38 @@ def test_readable_parse_content_does_not_require_usable_metadata(tmp_path):
     assert has_readable_paper_artifact_content(run_dir) is True
 
     preview = build_paper_artifact_content_preview(run_dir)
-    assert "parse_block_snippets" in preview
-    assert "anomaly detection method" in preview["parse_block_snippets"][0]
+    assert "paper_markdown_excerpt" in preview
+    assert "anomaly detection method" in preview["paper_markdown_excerpt"]
+    context = load_readable_paper_context(run_dir)
+    assert context["can_answer_from_paper"] is True
+    assert "anomaly detection method" in context["markdown_excerpt"]
+
+
+def test_garbled_artifacts_do_not_become_readable_paper_context(tmp_path):
+    run_dir = tmp_path / "run_garbled_parse"
+    run_dir.mkdir()
+    _write_empty_paper_artifacts(run_dir)
+    parse_dir = run_dir / "paper" / "parse"
+    parse_dir.mkdir(parents=True)
+    (parse_dir / "sections.json").write_text(
+        json.dumps([
+            {"section_id": "s_0", "title": ")  W #  p  4&  v  |   V \t  kRLUbC}", "block_ids": ["b_0_0"]},
+        ]),
+        encoding="utf-8",
+    )
+    (parse_dir / "blocks.jsonl").write_text(
+        json.dumps({"block_id": "b_0_0", "text": "x 350P A]#cS S G", "physical_page_index": 0}) + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot, _signal, decision = _snapshot_and_signal(run_dir, "读论文")
+    context = build_response_context_for_decision(snapshot, decision)
+
+    assert has_readable_paper_artifact_content(run_dir) is False
+    assert context["facts"]["paper_context"]["can_answer_from_paper"] is False
+    assert context["facts"]["readable_artifacts"] == []
+    assert "paper/parse/blocks.jsonl" in context["facts"]["unreadable_artifacts"]
+    assert not (parse_dir / "paper.md").exists()
 
 
 def test_failed_source_with_readable_artifacts_summarizes_instead_of_failed_status(tmp_path):

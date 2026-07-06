@@ -38,6 +38,7 @@ from autoad_researcher.paper_intelligence.mineru_provider import (
     FixtureMinerUProvider,
     MINERU_PIPELINE_V1_PROFILE,
 )
+from autoad_researcher.paper_intelligence.markdown import blocks_jsonl_to_paper_markdown
 from autoad_researcher.paper_intelligence.parser_models import (
     DocumentParseRequest,
     ParseQualityReport,
@@ -185,6 +186,7 @@ class PaperIntelligenceOrchestrator:
             )
 
             parse_result = provider.parse(parse_req, attempt.attempt_dir)
+            blocks_jsonl_to_paper_markdown(attempt.attempt_dir)
             parse_result = parse_result.model_copy(
                 update={
                     "parse_attempt_id": attempt.parse_attempt_id,

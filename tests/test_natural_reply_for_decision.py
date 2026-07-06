@@ -194,12 +194,71 @@ def test_natural_reply_for_decision_prompt_uses_readable_artifacts_and_does_not_
     system_text = " ".join(m["content"] for m in captured if m["role"] == "system")
     assert "has_readable_paper_artifact_content" in system_text
     assert "paper_artifact_content_preview" in system_text
+    assert "paper_context" in system_text
     assert "readable_artifacts" in system_text
     assert "paper_summary.json" in system_text
-    assert "paper_reader_result.json" in system_text
+    assert "paper.md" in system_text
     assert "sections.json" in system_text
     assert "blocks.jsonl" in system_text and "跳过" in system_text
-    assert "不要说" in system_text and "没有可读正文" in system_text
+    assert "can_answer_from_paper" in system_text
     assert "web_search" in system_text
     assert "web_fetch" in system_text
     assert "git_clone" in system_text
+
+
+def test_natural_reply_filters_stale_unreadable_history_when_paper_context_is_readable(monkeypatch, tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "ui_chat").mkdir(parents=True)
+    artifacts = run_dir / "paper" / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "paper_summary.json").write_text(
+        json.dumps({
+            "title": {"value": "SimpleNet"},
+            "proposed_method": [{"text": "Use a simple model for anomaly detection."}],
+        }),
+        encoding="utf-8",
+    )
+    transcript_path = run_dir / "ui_chat" / "chat_transcript.jsonl"
+    transcript = [
+        {"role": "user", "content": "读论文"},
+        {"role": "assistant", "content": "无法读取该 PDF，请提供 arXiv HTML 链接。"},
+        {"role": "user", "content": "再读论文"},
+    ]
+    transcript_path.write_text(
+        "\n".join(json.dumps(entry, ensure_ascii=False) for entry in transcript) + "\n",
+        encoding="utf-8",
+    )
+
+    captured: list = []
+
+    def fake_call(api_key=None, provider_base_url=None, messages=None):
+        captured.extend(messages)
+        return FakeResult()
+
+    import autoad_researcher.ui.research_chat as mod
+    original = getattr(mod, "call_research_chat", None)
+    mod.call_research_chat = fake_call
+    try:
+        _natural_reply_for_decision(
+            run_dir=run_dir,
+            decision=ActionDecision(
+                selected_action="summarize_parsed_artifacts",
+                response_mode="parsed_artifact_summary",
+                snapshot_sha256="abc123",
+                reason="test",
+            ),
+            api_key="sk-test",
+            provider_url="https://test",
+            user_input="再读论文",
+        )
+    finally:
+        if original:
+            mod.call_research_chat = original
+
+    joined = "\n".join(m["content"] for m in captured if m["role"] in {"user", "assistant"})
+    system_text = "\n".join(m["content"] for m in captured if m["role"] == "system")
+    assert "无法读取该 PDF" not in joined
+    assert "arXiv HTML" not in joined
+    assert "ResponseContext 优先级高于 transcript" in system_text
+    assert "SimpleNet" in system_text

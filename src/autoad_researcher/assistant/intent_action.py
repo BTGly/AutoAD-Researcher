@@ -18,6 +18,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.assistant.probe import silent_probe
+from autoad_researcher.paper_intelligence.markdown import (
+    blocks_jsonl_to_paper_markdown,
+    has_readable_paper_block_text,
+    looks_garbled_text,
+)
 from autoad_researcher.ui.intent_draft import load_intent_confirmation, load_intent_draft
 from autoad_researcher.ui.sources import load_source_registry
 
@@ -100,8 +105,10 @@ class ResearchContextSnapshot(BaseModel):
     paper_artifact_refs: list[str] = Field(default_factory=list)
     available_artifacts: list[str] = Field(default_factory=list)
     readable_artifacts: list[str] = Field(default_factory=list)
+    unreadable_artifacts: list[str] = Field(default_factory=list)
     has_readable_paper_artifact_content: bool = False
     paper_artifact_content_preview: dict[str, Any] = Field(default_factory=dict)
+    paper_context: dict[str, Any] = Field(default_factory=dict)
     missing_blocking_gaps: list[str] = Field(default_factory=list)
     intent_draft_exists: bool = False
     task_confirmed: bool = False
@@ -148,12 +155,14 @@ class ActionDecision(BaseModel):
 
 def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
     """Build a read-only adapter snapshot from existing UI/artifact files."""
+    _ensure_paper_markdown_artifacts(run_dir)
     registry = _load_registry_or_empty(run_dir)
     what = _probe_or_empty(run_dir)
     sources = [_source_snapshot(source) for source in registry.get("sources", []) if isinstance(source, dict)]
     quality, warnings = evaluate_paper_artifact_quality(run_dir)
     available_artifacts = list_available_paper_artifacts(run_dir)
     readable_artifacts = list_readable_paper_artifacts(run_dir)
+    unreadable_artifacts = list_unreadable_paper_artifacts(run_dir)
     has_readable_content = has_readable_paper_artifact_content(run_dir)
     confirmation = load_intent_confirmation(run_dir)
 
@@ -170,8 +179,10 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
         paper_artifact_refs=[ref for ref in what.evidence_artifacts if ref.startswith("paper/")],
         available_artifacts=available_artifacts,
         readable_artifacts=readable_artifacts,
+        unreadable_artifacts=unreadable_artifacts,
         has_readable_paper_artifact_content=has_readable_content,
         paper_artifact_content_preview=build_paper_artifact_content_preview(run_dir),
+        paper_context=load_readable_paper_context(run_dir),
         missing_blocking_gaps=_select_blocking_gaps(what.missing_fields),
         intent_draft_exists=load_intent_draft(run_dir) is not None,
         task_confirmed=bool(confirmation and confirmation.decision == "approved"),
@@ -500,13 +511,15 @@ def list_available_paper_artifacts(run_dir: Path) -> list[str]:
 
 def list_readable_paper_artifacts(run_dir: Path) -> list[str]:
     """Return preferred structured paper artifacts with readable content."""
+    _ensure_paper_markdown_artifacts(run_dir)
     candidates = [
         run_dir / "paper" / "artifacts" / "paper_summary.json",
-        run_dir / "paper" / "artifacts" / "paper_reader_result.json",
+        run_dir / "paper" / "parse" / "paper.md",
         run_dir / "paper" / "parse" / "sections.json",
     ]
     parse_dir = run_dir / "paper" / "parse"
     if parse_dir.exists():
+        candidates.extend(sorted(parse_dir.rglob("paper.md")))
         candidates.extend(sorted(parse_dir.rglob("sections.json")))
 
     readable: list[str] = []
@@ -518,13 +531,29 @@ def list_readable_paper_artifacts(run_dir: Path) -> list[str]:
             if isinstance(payload, dict) and _paper_summary_has_content(payload):
                 readable.append(path.relative_to(run_dir).as_posix())
             continue
+        if path.name == "sections.json":
+            if _sections_file_has_content(path):
+                readable.append(path.relative_to(run_dir).as_posix())
+            continue
         if _text_file_has_content(path):
             readable.append(path.relative_to(run_dir).as_posix())
     return sorted(_dedupe(readable))
 
 
+def list_unreadable_paper_artifacts(run_dir: Path) -> list[str]:
+    parse_dir = run_dir / "paper" / "parse"
+    if not parse_dir.exists():
+        return []
+    unreadable: list[str] = []
+    for path in sorted(parse_dir.rglob("blocks.jsonl")):
+        if _blocks_file_has_garbled_content(path):
+            unreadable.append(path.relative_to(run_dir).as_posix())
+    return sorted(_dedupe(unreadable))
+
+
 def has_readable_paper_artifact_content(run_dir: Path) -> bool:
     """True when parse outputs contain textual paper content despite weak metadata."""
+    _ensure_paper_markdown_artifacts(run_dir)
     summary = _load_json(run_dir / "paper" / "artifacts" / "paper_summary.json")
     if isinstance(summary, dict) and _paper_summary_has_content(summary):
         return True
@@ -532,43 +561,133 @@ def has_readable_paper_artifact_content(run_dir: Path) -> bool:
     parse_dir = run_dir / "paper" / "parse"
     if not parse_dir.exists():
         return False
-    for path in parse_dir.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in {".json", ".jsonl", ".md", ".txt"}:
-            continue
-        if _text_file_has_content(path):
-            return True
-    return False
+    if any(_text_file_has_content(path) for path in parse_dir.rglob("paper.md")):
+        return True
+    if any(_sections_file_has_content(path) for path in parse_dir.rglob("sections.json")):
+        return True
+    return bool(_read_parse_block_snippets(parse_dir, limit=1))
 
 
 def build_paper_artifact_content_preview(run_dir: Path) -> dict[str, Any]:
+    _ensure_paper_markdown_artifacts(run_dir)
     preview: dict[str, Any] = {}
-    summary = _load_json(run_dir / "paper" / "artifacts" / "paper_summary.json")
-    if isinstance(summary, dict):
-        summary_preview: dict[str, Any] = {}
-        for key in (
-            "title",
-            "abstract",
-            "research_problem",
-            "proposed_method",
-            "core_components",
-            "training_objective",
-            "data_assumptions",
-            "label_assumptions",
-            "inference_procedure",
-            "contributions",
-            "stated_limitations",
-            "potential_transfer_points",
-        ):
-            compact = _compact_artifact_value(summary.get(key), limit=900)
-            if compact:
-                summary_preview[key] = compact
-        if summary_preview:
-            preview["paper_summary"] = summary_preview
+    summary_preview = _paper_summary_preview(run_dir / "paper" / "artifacts" / "paper_summary.json", limit=900)
+    if summary_preview:
+        preview["paper_summary"] = summary_preview
 
-    block_snippets = _read_parse_block_snippets(run_dir / "paper" / "parse", limit=5)
+    paper_md = _read_text_preview(run_dir / "paper" / "parse" / "paper.md", limit=1800)
+    if paper_md:
+        preview["paper_markdown_excerpt"] = paper_md
+
+    sections_preview = _sections_preview(run_dir / "paper" / "parse" / "sections.json", limit=12)
+    if sections_preview:
+        preview["sections"] = sections_preview
+
+    if not preview:
+        block_snippets = _read_parse_block_snippets(run_dir / "paper" / "parse", limit=5)
+    else:
+        block_snippets = []
     if block_snippets:
         preview["parse_block_snippets"] = block_snippets
     return preview
+
+
+def load_readable_paper_context(run_dir: Path) -> dict[str, Any]:
+    """Return compact paper content for LLM replies, not just artifact status."""
+    _ensure_paper_markdown_artifacts(run_dir)
+    context: dict[str, Any] = {"can_answer_from_paper": False}
+    summary = _paper_summary_preview(run_dir / "paper" / "artifacts" / "paper_summary.json", limit=1200)
+    if summary:
+        context["summary"] = summary
+    paper_md = _read_text_preview(run_dir / "paper" / "parse" / "paper.md", limit=2400)
+    if paper_md:
+        context["markdown_excerpt"] = paper_md
+    sections = _sections_preview(run_dir / "paper" / "parse" / "sections.json", limit=20)
+    if sections:
+        context["sections"] = sections
+    context["can_answer_from_paper"] = any(key in context for key in ("summary", "markdown_excerpt", "sections"))
+    if not context["can_answer_from_paper"]:
+        context["reason"] = "no_readable_paper_text_artifact"
+    return context
+
+
+def _ensure_paper_markdown_artifacts(run_dir: Path) -> None:
+    parse_dir = run_dir / "paper" / "parse"
+    if not parse_dir.exists():
+        return
+    for blocks_path in sorted(parse_dir.rglob("blocks.jsonl")):
+        blocks_jsonl_to_paper_markdown(blocks_path.parent)
+
+
+def _paper_summary_preview(path: Path, *, limit: int) -> dict[str, Any]:
+    summary = _load_json(path)
+    if not isinstance(summary, dict):
+        return {}
+    return _paper_summary_payload_preview(summary, limit=limit)
+
+
+def _paper_summary_payload_preview(summary: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    summary_preview: dict[str, Any] = {}
+    for key in (
+        "title",
+        "abstract",
+        "research_problem",
+        "proposed_method",
+        "core_components",
+        "training_objective",
+        "data_assumptions",
+        "label_assumptions",
+        "inference_procedure",
+        "contributions",
+        "stated_limitations",
+        "potential_transfer_points",
+    ):
+        compact = _compact_artifact_value(summary.get(key), limit=limit)
+        if compact:
+            summary_preview[key] = compact
+    return summary_preview
+
+
+def _read_text_preview(path: Path, *, limit: int) -> str | None:
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    text = text.strip()
+    if not text or _looks_garbled(text[:2000]):
+        return None
+    return text[:limit]
+
+
+def _sections_preview(path: Path, *, limit: int) -> list[dict[str, Any]]:
+    payload = _load_json(path)
+    if isinstance(payload, dict):
+        raw_sections = payload.get("sections")
+    else:
+        raw_sections = payload
+    if not isinstance(raw_sections, list):
+        return []
+    sections: list[dict[str, Any]] = []
+    for item in raw_sections:
+        if not isinstance(item, dict):
+            continue
+        title = _clean_readable_section_title(item.get("title"))
+        text = _clean_readable_text(item.get("text") or item.get("content") or item.get("summary"))
+        if not title and not text:
+            continue
+        if title and not text and not _is_known_section_heading(title):
+            continue
+        entry: dict[str, Any] = {}
+        if title:
+            entry["title"] = title[:180]
+        if text:
+            entry["text"] = text[:500]
+        sections.append(entry)
+        if len(sections) >= limit:
+            break
+    return sections
 
 
 def _compact_artifact_value(value: Any, *, limit: int) -> Any:
@@ -581,6 +700,8 @@ def _compact_artifact_value(value: Any, *, limit: int) -> Any:
         text = _claim_text(value)
         if text and not _looks_garbled(text):
             return text[:limit]
+        if any(key in value for key in ("claim_id", "subject", "predicate", "evidence_ids", "confidence")):
+            return None
         nested: dict[str, Any] = {}
         for key, item in value.items():
             compact = _compact_artifact_value(item, limit=limit)
@@ -620,7 +741,76 @@ def _jsonl_text_snippet(line: str) -> str | None:
         text = line.strip()
         return text if text and not _looks_garbled(text) else None
     text = _first_text_from_json(payload)
-    return text[:500] if text and not _looks_garbled(text) else None
+    return text[:500] if text and has_readable_paper_block_text(text) else None
+
+
+def _sections_file_has_content(path: Path) -> bool:
+    return bool(_sections_preview(path, limit=1))
+
+
+def _blocks_file_has_garbled_content(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            text = line.strip()
+        else:
+            text = _first_text_from_json(payload) or ""
+        if text and _looks_garbled(text):
+            return True
+    return False
+
+
+def _clean_readable_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r"\s+", " ", value.strip())
+    if not text or _looks_garbled(text):
+        return None
+    return text
+
+
+def _clean_readable_section_title(value: Any) -> str | None:
+    text = _clean_readable_text(value)
+    if not text:
+        return None
+    if text.lower() == "section":
+        return None
+    if not re.search(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}", text):
+        return None
+    return text
+
+
+def _is_known_section_heading(text: str) -> bool:
+    normalized = re.sub(r"[^a-z]+", " ", text.lower()).strip()
+    headings = {
+        "abstract",
+        "introduction",
+        "background",
+        "related work",
+        "method",
+        "methods",
+        "methodology",
+        "approach",
+        "experiments",
+        "experiment",
+        "results",
+        "discussion",
+        "conclusion",
+        "conclusions",
+        "limitations",
+        "references",
+        "appendix",
+    }
+    return normalized in headings
 
 
 def _first_text_from_json(value: Any) -> str | None:
@@ -644,21 +834,7 @@ def _first_text_from_json(value: Any) -> str | None:
 
 
 def _paper_summary_has_content(summary: dict[str, Any]) -> bool:
-    content_keys = (
-        "title",
-        "abstract",
-        "research_problem",
-        "proposed_method",
-        "core_components",
-        "training_objective",
-        "data_assumptions",
-        "label_assumptions",
-        "inference_procedure",
-        "contributions",
-        "stated_limitations",
-        "potential_transfer_points",
-    )
-    return any(_json_has_nonempty_text(summary.get(key)) for key in content_keys)
+    return bool(_paper_summary_payload_preview(summary, limit=1200))
 
 
 def _json_has_nonempty_text(value: Any) -> bool:
@@ -730,8 +906,10 @@ def _response_context_facts(snapshot: ResearchContextSnapshot, decision: ActionD
         "paper_artifact_refs": list(snapshot.paper_artifact_refs),
         "available_artifacts": list(snapshot.available_artifacts),
         "readable_artifacts": list(snapshot.readable_artifacts),
+        "unreadable_artifacts": list(snapshot.unreadable_artifacts),
         "has_readable_paper_artifact_content": snapshot.has_readable_paper_artifact_content,
         "paper_artifact_content_preview": dict(snapshot.paper_artifact_content_preview),
+        "paper_context": dict(snapshot.paper_context),
         "paper_methods": list(snapshot.paper_methods),
         "missing_blocking_gaps": list(snapshot.missing_blocking_gaps),
         "task_confirmed": snapshot.task_confirmed,
@@ -1021,11 +1199,7 @@ def _iter_dicts(value: Any) -> list[dict[str, Any]]:
 
 
 def _looks_garbled(text: str) -> bool:
-    stripped = text.strip()
-    if len(stripped) < 12:
-        return False
-    meaningful = sum(1 for ch in stripped if ch.isalnum() or "\u4e00" <= ch <= "\u9fff")
-    return meaningful / max(len(stripped), 1) < 0.35
+    return looks_garbled_text(text)
 
 
 def _clean_str(value: Any) -> str | None:
