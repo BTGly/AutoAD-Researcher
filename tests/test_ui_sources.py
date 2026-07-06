@@ -305,6 +305,34 @@ class TestSourceRegistry:
         after_read = registry_path.read_text(encoding="utf-8")
         assert "legacy_active" not in after_read
 
+    def test_read_legacy_source_references(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        source_dir = run_dir / "sources"
+        source_dir.mkdir(parents=True)
+        registry_path = source_dir / "source_references.json"
+        registry_path.write_text(
+            """{
+  "schema_version": 1,
+  "sources": [
+    {
+      "source_id": "src_legacy",
+      "kind": "paper_pdf",
+      "user_label": "legacy.pdf",
+      "status": "parsed",
+      "stored_path": "sources/src_legacy/legacy.pdf",
+      "created_at": "2026-07-05T00:00:00+00:00"
+    }
+  ]
+}
+""",
+            encoding="utf-8",
+        )
+
+        source = load_source_registry(run_dir)["sources"][0]
+
+        assert source["active_parse_attempt_id"] == LEGACY_PARSE_ATTEMPT_ID
+        assert source["parse_attempts"][0]["parse_attempt_id"] == LEGACY_PARSE_ATTEMPT_ID
+
     def test_legacy_virtual_attempt_is_not_written_on_status_update(self, tmp_path):
         run_dir = tmp_path / "run_test"
         source_dir = run_dir / "sources"
@@ -365,6 +393,23 @@ class TestSourceRegistry:
         source = reg["sources"][0]
         assert [attempt["parse_attempt_id"] for attempt in source["parse_attempts"]] == ["pa_000001", "pa_000002"]
         assert source["active_parse_attempt_id"] == "pa_000002"
+
+    def test_multiple_parse_attempts_do_not_overwrite(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="paper_pdf",
+            user_label="SimpleNet.pdf",
+            stored_path="sources/src_001/SimpleNet.pdf",
+            status="uploaded_not_parsed",
+        )
+
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000001", "status": "failed"})
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000002", "status": "ok"}, make_active=True)
+
+        attempts = load_source_registry(run_dir)["sources"][0]["parse_attempts"]
+        assert [attempt["parse_attempt_id"] for attempt in attempts] == ["pa_000001", "pa_000002"]
 
     def test_failed_attempt_does_not_replace_active_success(self, tmp_path):
         run_dir = tmp_path / "run_test"

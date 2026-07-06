@@ -27,6 +27,7 @@ from autoad_researcher.assistant.research_context_builder import (
 )
 from autoad_researcher.assistant.response_guard import guard_research_chat_reply
 from autoad_researcher.core.events import EventStore
+from autoad_researcher.research_context.freeze import freeze_context, load_active_freeze_manifest
 from autoad_researcher.ui.artifact_viewer import (
     BLOCKED_REASON_HINTS,
     get_approval_gate_report,
@@ -62,9 +63,11 @@ from autoad_researcher.ui.sources import (
     find_source_entry_by_stored_path,
     get_source_context,
     list_pdf_source_entries,
+    load_source_registry,
     register_local_file_source,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
+    set_active_parse_attempt,
     update_source_status,
 )
 
@@ -178,6 +181,9 @@ def render_research_chat():
             st.code(src_ctx, language="text")
         else:
             st.caption("暂无已添加的资料。支持 PDF / txt / md 上传。")
+
+    _render_source_cards_panel(run_dir)
+    _render_freeze_panel(run_dir)
 
     if not api_key:
         st.warning("请先在「运行配置」中填写 API Key。")
@@ -788,6 +794,112 @@ def _handle_chat_input(
 # ---------------------------------------------------------------------------
 # User-facing panels
 # ---------------------------------------------------------------------------
+
+
+def build_source_card_rows(run_dir: Path) -> list[dict[str, Any]]:
+    registry = load_source_registry(run_dir)
+    rows: list[dict[str, Any]] = []
+    for source in registry.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        attempts = source.get("parse_attempts", [])
+        attempts = attempts if isinstance(attempts, list) else []
+        active = source.get("active_parse_attempt_id")
+        rows.append({
+            "source_id": source.get("source_id"),
+            "kind": source.get("kind"),
+            "label": source.get("user_label"),
+            "status": source.get("status"),
+            "intake_status": source.get("intake_status"),
+            "stored_path": source.get("stored_path"),
+            "active_parse_attempt_id": active,
+            "parse_attempt_count": len([item for item in attempts if isinstance(item, dict)]),
+            "attempts": [
+                {
+                    "parse_attempt_id": attempt.get("parse_attempt_id"),
+                    "status": attempt.get("status"),
+                    "parser": attempt.get("parser"),
+                    "quality_report": attempt.get("quality_report"),
+                    "active": bool(active and attempt.get("parse_attempt_id") == active),
+                }
+                for attempt in attempts
+                if isinstance(attempt, dict)
+            ],
+        })
+    return rows
+
+
+def build_freeze_panel_state(run_dir: Path) -> dict[str, Any]:
+    manifest = load_active_freeze_manifest(run_dir)
+    draft_exists = (run_dir / "context" / "research_context_draft.json").is_file()
+    active = manifest.get("active_freeze_version") if isinstance(manifest, dict) else None
+    freezes = manifest.get("freezes") if isinstance(manifest, dict) else []
+    return {
+        "draft_exists": draft_exists,
+        "active_freeze_version": active if isinstance(active, str) else None,
+        "freezes": freezes if isinstance(freezes, list) else [],
+        "button_enabled": draft_exists,
+    }
+
+
+def _render_source_cards_panel(run_dir: Path) -> None:
+    rows = build_source_card_rows(run_dir)
+    with st.expander("资料状态与解析版本", expanded=False):
+        if not rows:
+            st.caption("暂无资料。")
+            return
+        st.table([
+            {
+                "source_id": row["source_id"],
+                "类型": row["kind"],
+                "状态": row["status"],
+                "active attempt": row["active_parse_attempt_id"] or "—",
+                "attempts": row["parse_attempt_count"],
+            }
+            for row in rows
+        ])
+        for row in rows:
+            attempts = row["attempts"]
+            if not attempts:
+                continue
+            with st.expander(f"{row['label']} · parse attempts", expanded=False):
+                for attempt in attempts:
+                    marker = "当前" if attempt["active"] else "可切换"
+                    st.write(f"{attempt['parse_attempt_id']} · {attempt['status']} · {marker}")
+                    if not attempt["active"] and attempt["parse_attempt_id"]:
+                        if st.button(
+                            f"设为 active：{attempt['parse_attempt_id']}",
+                            key=f"_active_attempt_{row['source_id']}_{attempt['parse_attempt_id']}",
+                        ):
+                            set_active_parse_attempt(
+                                run_dir,
+                                str(row["source_id"]),
+                                str(attempt["parse_attempt_id"]),
+                                reason="ui_source_card_switch",
+                            )
+                            st.success("已切换 active parse attempt。")
+                            st.rerun()
+
+
+def _render_freeze_panel(run_dir: Path) -> None:
+    state = build_freeze_panel_state(run_dir)
+    with st.expander("冻结研究上下文", expanded=False):
+        if state["active_freeze_version"]:
+            st.info(f"当前冻结版本：{state['active_freeze_version']}")
+        elif state["draft_exists"]:
+            st.caption("已有 ResearchContextDraft，可以冻结当前资料与证据边界。")
+        else:
+            st.caption("尚无 ResearchContextDraft，暂不能冻结。")
+        if st.button("冻结当前研究上下文", type="primary", disabled=not state["button_enabled"]):
+            try:
+                result = freeze_context(run_dir)
+            except Exception as exc:
+                st.error(f"冻结失败：{exc}")
+            else:
+                st.success(f"已生成 {result['freeze_version']}")
+                st.rerun()
+        if state["freezes"]:
+            st.table(state["freezes"])
 
 
 def _render_intent_draft_panel(

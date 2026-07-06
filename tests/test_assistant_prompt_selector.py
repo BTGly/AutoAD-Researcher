@@ -84,3 +84,15 @@ def test_selector_rejects_unsupported_mode_at_runtime():
 
     with pytest.raises(KeyError, match="unsupported assistant mode"):
         selector.prompt_id_for_mode("user_uploaded_pdf")  # type: ignore[arg-type]
+
+
+def test_prompt_selector_excludes_execution_tools():
+    selector = PromptSelector()
+    blocked = {"runner_execute", "patch_apply", "benchmark_run", "experiment_execution"}
+
+    for mode in get_args(AssistantMode):
+        profile = selector.profile_for_mode(mode)
+        rendered = selector.build_system_prompt_for_mode(mode)
+        forbidden_outputs = set(profile.io.forbidden_outputs)
+        assert blocked.isdisjoint(forbidden_outputs)
+        assert blocked.isdisjoint(set(rendered.split()))

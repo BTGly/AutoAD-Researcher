@@ -551,6 +551,33 @@ class TestOrchestratorBehavior:
 
         _chdir_tmp(tmp_path, work)
 
+    def test_parse_quality_report_has_source_and_attempt_id(self, tmp_path):
+        from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
+        from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
+        from autoad_researcher.paper_intelligence.agent import budget_for_profile
+
+        def work():
+            pdf = Path("test.pdf")
+            _make_valid_pdf(pdf)
+            req = PaperIntelligenceRequest(
+                schema_version=1, request_id="req_t", run_id="test_quality_ids",
+                user_goal="Test quality ids",
+                paper_pdf_path="test.pdf",
+                parser_profile_id="mineru_pipeline_v1",
+                web_context_allowed=False, alpha_xiv_allowed=False,
+                user_confirmation_policy="never",
+                budget_profile="standard", budget=budget_for_profile("standard"),
+            )
+
+            result = PaperIntelligenceOrchestrator(Path("runs")).run(req)
+
+            assert result["parse_attempt_id"] == "pa_000001"
+            quality = json.loads(Path("runs/test_quality_ids/paper/parse/attempts/pa_000001/parse_quality_report.json").read_text())
+            assert quality["source_id"] == "src_test_quality_ids"
+            assert quality["parse_attempt_id"] == "pa_000001"
+
+        _chdir_tmp(tmp_path, work)
+
     def test_e2e_fails_on_non_pdf(self, tmp_path):
         from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
         from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
@@ -725,6 +752,39 @@ class TestOrchestratorBehavior:
         assert boundary.partial_parse_attempts == ["pa_000001"]
         assert boundary.failed_parse_attempts == ["pa_000002"]
         assert boundary.claims_not_supported == ["cl_unsupported"]
+
+    def test_partial_attempt_creates_partially_supported_evidence(self, tmp_path):
+        from autoad_researcher.paper_intelligence.orchestrator import _build_evidence_boundary
+        from autoad_researcher.ui.sources import append_source_ref, append_source_parse_attempt
+
+        run_dir = tmp_path / "run_partial_boundary"
+        run_dir.mkdir()
+        append_source_ref(
+            run_dir,
+            source_id="src_partial",
+            kind="paper_pdf",
+            user_label="partial.pdf",
+            stored_path="sources/src_partial/partial.pdf",
+            status="failed",
+        )
+        append_source_parse_attempt(
+            run_dir,
+            "src_partial",
+            {
+                "parse_attempt_id": "pa_000001",
+                "source_id": "src_partial",
+                "parser": "mineru_pipeline_v1",
+                "status": "partial",
+                "output_dir": "paper/parse/attempts/pa_000001",
+                "quality_report": "paper/parse/attempts/pa_000001/parse_quality_report.json",
+            },
+            make_active=True,
+        )
+
+        boundary = _build_evidence_boundary(run_dir, [])
+
+        assert boundary.partial_parse_attempts == ["pa_000001"]
+        assert boundary.failed_parse_attempts == []
 
     def test_parse_attempt_id_collision_rejected(self, tmp_path):
         from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator

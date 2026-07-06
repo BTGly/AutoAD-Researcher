@@ -394,6 +394,24 @@ def test_render_response_for_decision_preserves_user_visible_return_or_has_fallb
     assert "代码修改" in fallback or "实验执行" in fallback
 
 
+def test_render_response_for_decision_fallback_works(tmp_path):
+    from autoad_researcher.assistant.intent_action import ResearchContextSnapshot
+
+    snapshot = ResearchContextSnapshot(run_id="run_render_fallback")
+    decision = ActionDecision(
+        snapshot_sha256="aa" * 32,
+        selected_action="answer_directly",
+        response_mode="empty_run_intake",
+        reason="test",
+        execution_status="skipped_by_idempotency",
+    )
+
+    reply = render_response_for_decision(snapshot, decision)
+
+    assert isinstance(reply, str)
+    assert reply
+
+
 def test_ready_for_task_draft_requires_no_blocking_gaps(tmp_path):
     run_dir = tmp_path / "run_draft"
     run_dir.mkdir()

@@ -144,3 +144,14 @@ def test_freeze_refuses_to_overwrite_existing_version(tmp_path: Path):
 
     with pytest.raises(FileExistsError, match="freeze already exists"):
         freeze_context(run_dir, freeze_version="fv_001")
+
+
+def test_existing_freeze_dir_refuses_overwrite(tmp_path: Path):
+    run_dir = tmp_path / "run_existing_freeze"
+    run_dir.mkdir()
+    _write_draft(run_dir)
+    _register_source(run_dir)
+    freeze_context(run_dir, freeze_version="fv_001")
+
+    with pytest.raises(FileExistsError, match="freeze already exists"):
+        freeze_context(run_dir, freeze_version="fv_001")

@@ -15,14 +15,18 @@ from autoad_researcher.ui.research_chat import (
     _SAFETY_WARNING,
     _execute_or_report_pdf_parse_action,
     _extract_intent_draft,
+    build_freeze_panel_state,
     build_developer_info_payload,
     build_pipeline_input_action,
     build_research_assistant_overview,
+    build_source_card_rows,
     build_user_flow_steps,
     render_intent_draft_markdown,
 )
 from autoad_researcher.ui.task_profile import TaskProfile, save_task_profile
 from autoad_researcher.core.events import EventStore
+from autoad_researcher.research_context.freeze import freeze_context
+from autoad_researcher.ui.sources import append_source_ref
 
 
 def test_safety_warning_not_empty():
@@ -231,3 +235,58 @@ def test_research_chat_action_guard_rejects_non_whitelisted_execution(tmp_path: 
     events = EventStore(runs_root=tmp_path).read_events("run_guard")
     assert events[-1].event_type == "tool_guard_rejected"
     assert events[-1].payload["action"] == "runner_execute"
+
+
+def test_source_cards_show_status_and_parse_attempts(tmp_path: Path):
+    run_dir = tmp_path / "run_source_cards"
+    run_dir.mkdir()
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+        status="parsed",
+        active_parse_attempt_id="pa_000001",
+        parse_attempts=[
+            {"parse_attempt_id": "pa_000001", "status": "ok", "parser": "mineru_pipeline_v1"},
+            {"parse_attempt_id": "pa_000002", "status": "failed", "parser": "mineru_pipeline_v1"},
+        ],
+    )
+
+    rows = build_source_card_rows(run_dir)
+
+    assert rows[0]["source_id"] == "src_pdf"
+    assert rows[0]["active_parse_attempt_id"] == "pa_000001"
+    assert rows[0]["parse_attempt_count"] == 2
+    assert rows[0]["attempts"][0]["active"] is True
+
+
+def test_freeze_panel_shows_active_freeze_version(tmp_path: Path):
+    run_dir = tmp_path / "run_freeze_panel"
+    run_dir.mkdir()
+    (run_dir / "context").mkdir()
+    (run_dir / "context" / "research_context_draft.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "run_id": run_dir.name,
+            "context_id": f"ctx_{run_dir.name}_0",
+            "context_version": 0,
+            "task": {"task_id": f"task_{run_dir.name}", "goal": "test"},
+            "sources": {},
+            "facts": [],
+            "gaps": [],
+            "conflicts": [],
+            "readiness": {"status": "needs_clarification", "next_stage": "3.3_context_repair"},
+            "context_sha256": "0" * 64,
+        }),
+        encoding="utf-8",
+    )
+
+    before = build_freeze_panel_state(run_dir)
+    freeze_context(run_dir)
+    after = build_freeze_panel_state(run_dir)
+
+    assert before["button_enabled"] is True
+    assert after["active_freeze_version"] == "fv_001"
+    assert after["freezes"][0]["freeze_version"] == "fv_001"
