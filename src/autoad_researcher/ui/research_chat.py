@@ -921,10 +921,9 @@ def _render_attempt_timeline(run_dir: Path, row: dict[str, Any]) -> None:
         a.get("status") == "ok" for a in attempts
     )
 
-    with st.expander(
-        f"📋 {row.get('label', row.get('source_id', ''))} · 解析记录",
-        expanded=False,
-    ):
+    with st.container():
+        st.markdown(f"---")
+        st.caption(f"📋 {row.get('label', row.get('source_id', ''))} · 解析记录")
         for idx, attempt in enumerate(attempts):
             pa_id = attempt.get("parse_attempt_id", "—")
             status = attempt.get("status", "—")
