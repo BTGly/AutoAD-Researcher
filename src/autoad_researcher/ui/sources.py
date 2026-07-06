@@ -193,7 +193,7 @@ def append_source_parse_attempt(
             ]
             attempts.append(dict(attempt))
             source["parse_attempts"] = attempts
-            if make_active:
+            if make_active and attempt.get("status") == "ok":
                 source["active_parse_attempt_id"] = attempt.get("parse_attempt_id")
             break
     _save_registry(run_dir, registry)
@@ -215,12 +215,42 @@ def update_source_parse_attempt(
         for attempt in source.get("parse_attempts", []):
             if attempt.get("parse_attempt_id") == parse_attempt_id:
                 attempt.update(updates)
-                if make_active:
+                if make_active and _can_auto_activate_attempt(source, parse_attempt_id):
                     source["active_parse_attempt_id"] = parse_attempt_id
                 _save_registry(run_dir, registry)
                 return
         break
     raise KeyError(f"parse attempt not found: {source_id}/{parse_attempt_id}")
+
+
+def set_active_parse_attempt(
+    run_dir: Path,
+    source_id: str,
+    parse_attempt_id: str,
+    *,
+    reason: str = "user_switch",
+) -> None:
+    """Set the active parse attempt and record an audit event."""
+    registry = load_source_registry(run_dir)
+    old_active: str | None = None
+    for source in registry["sources"]:
+        if source.get("source_id") != source_id:
+            continue
+        attempts = source.get("parse_attempts", [])
+        if not any(isinstance(item, dict) and item.get("parse_attempt_id") == parse_attempt_id for item in attempts):
+            raise KeyError(f"parse attempt not found: {source_id}/{parse_attempt_id}")
+        old_active = source.get("active_parse_attempt_id")
+        source["active_parse_attempt_id"] = parse_attempt_id
+        _save_registry(run_dir, registry)
+        _record_active_parse_attempt_changed(
+            run_dir,
+            source_id=source_id,
+            old_active_parse_attempt_id=old_active,
+            new_active_parse_attempt_id=parse_attempt_id,
+            reason=reason,
+        )
+        return
+    raise KeyError(f"source not found: {source_id}")
 
 
 def get_source_context(run_dir: Path) -> str:
@@ -288,6 +318,58 @@ def _source_for_disk(source: dict[str, Any]) -> dict[str, Any]:
     if payload.get("active_parse_attempt_id") == LEGACY_PARSE_ATTEMPT_ID:
         payload["active_parse_attempt_id"] = None
     return payload
+
+
+def _can_auto_activate_attempt(source: dict[str, Any], parse_attempt_id: str) -> bool:
+    target = _find_parse_attempt(source, parse_attempt_id)
+    if target is None:
+        return False
+    status = target.get("status")
+    if status == "ok":
+        return True
+    if status == "partial":
+        return not _active_attempt_is_ok(source)
+    return False
+
+
+def _active_attempt_is_ok(source: dict[str, Any]) -> bool:
+    active_id = source.get("active_parse_attempt_id")
+    if not isinstance(active_id, str):
+        return False
+    active = _find_parse_attempt(source, active_id)
+    return bool(active and active.get("status") == "ok")
+
+
+def _find_parse_attempt(source: dict[str, Any], parse_attempt_id: str) -> dict[str, Any] | None:
+    attempts = source.get("parse_attempts", [])
+    if not isinstance(attempts, list):
+        return None
+    for attempt in attempts:
+        if isinstance(attempt, dict) and attempt.get("parse_attempt_id") == parse_attempt_id:
+            return attempt
+    return None
+
+
+def _record_active_parse_attempt_changed(
+    run_dir: Path,
+    *,
+    source_id: str,
+    old_active_parse_attempt_id: str | None,
+    new_active_parse_attempt_id: str,
+    reason: str,
+) -> None:
+    from autoad_researcher.core.events import EventStore
+
+    EventStore(runs_root=run_dir.parent).append(
+        run_dir.name,
+        "active_parse_attempt_changed",
+        {
+            "source_id": source_id,
+            "old_active_parse_attempt_id": old_active_parse_attempt_id,
+            "new_active_parse_attempt_id": new_active_parse_attempt_id,
+            "reason": reason,
+        },
+    )
 
 
 def _legacy_parse_attempt(run_dir: Path) -> dict[str, Any]:

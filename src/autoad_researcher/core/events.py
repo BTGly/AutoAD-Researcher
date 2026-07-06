@@ -21,6 +21,7 @@ ALLOWED_EVENT_TYPES = {
     "stage_failed",
     "artifact_written",
     "artifact_read",
+    "active_parse_attempt_changed",
 }
 
 

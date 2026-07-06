@@ -16,8 +16,11 @@ from autoad_researcher.ui.sources import (
     register_local_file_source,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
+    set_active_parse_attempt,
     update_source_status,
+    update_source_parse_attempt,
 )
+from autoad_researcher.core.events import EventStore
 
 
 def _make_upload(name: str, content: bytes = b"fake pdf content"):
@@ -362,6 +365,81 @@ class TestSourceRegistry:
         source = reg["sources"][0]
         assert [attempt["parse_attempt_id"] for attempt in source["parse_attempts"]] == ["pa_000001", "pa_000002"]
         assert source["active_parse_attempt_id"] == "pa_000002"
+
+    def test_failed_attempt_does_not_replace_active_success(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="paper_pdf",
+            user_label="SimpleNet.pdf",
+            stored_path="sources/src_001/SimpleNet.pdf",
+            status="uploaded_not_parsed",
+        )
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000001", "status": "ok"}, make_active=True)
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000002", "status": "running"}, make_active=False)
+
+        update_source_parse_attempt(run_dir, sid, "pa_000002", {"status": "failed"}, make_active=True)
+
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["active_parse_attempt_id"] == "pa_000001"
+
+    def test_partial_attempt_does_not_replace_active_ok(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="paper_pdf",
+            user_label="SimpleNet.pdf",
+            stored_path="sources/src_001/SimpleNet.pdf",
+            status="uploaded_not_parsed",
+        )
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000001", "status": "ok"}, make_active=True)
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000002", "status": "running"}, make_active=False)
+
+        update_source_parse_attempt(run_dir, sid, "pa_000002", {"status": "partial"}, make_active=True)
+
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["active_parse_attempt_id"] == "pa_000001"
+
+    def test_partial_attempt_can_be_active_without_ok_attempt(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="paper_pdf",
+            user_label="SimpleNet.pdf",
+            stored_path="sources/src_001/SimpleNet.pdf",
+            status="uploaded_not_parsed",
+        )
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000001", "status": "running"}, make_active=False)
+
+        update_source_parse_attempt(run_dir, sid, "pa_000001", {"status": "partial"}, make_active=True)
+
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["active_parse_attempt_id"] == "pa_000001"
+
+    def test_user_switch_active_parse_attempt_records_event(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="paper_pdf",
+            user_label="SimpleNet.pdf",
+            stored_path="sources/src_001/SimpleNet.pdf",
+            status="uploaded_not_parsed",
+        )
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000001", "status": "ok"}, make_active=True)
+        append_source_parse_attempt(run_dir, sid, {"parse_attempt_id": "pa_000002", "status": "ok"}, make_active=False)
+
+        set_active_parse_attempt(run_dir, sid, "pa_000002", reason="user_switch")
+
+        reg = load_source_registry(run_dir)
+        assert reg["sources"][0]["active_parse_attempt_id"] == "pa_000002"
+        events = EventStore(runs_root=tmp_path).read_events("run_test")
+        assert events[-1].event_type == "active_parse_attempt_changed"
+        assert events[-1].payload["old_active_parse_attempt_id"] == "pa_000001"
+        assert events[-1].payload["new_active_parse_attempt_id"] == "pa_000002"
 
     def test_update_with_error_message(self, tmp_path):
         run_dir = tmp_path / "run_test"

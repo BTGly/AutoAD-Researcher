@@ -240,7 +240,7 @@ class PaperIntelligenceOrchestrator:
                     attempt,
                     status="partial",
                     warnings=warnings,
-                    make_active=False,
+                    make_active=True,
                 )
                 return {
                     "status": "partial_success",
@@ -391,7 +391,7 @@ class PaperIntelligenceOrchestrator:
                 attempt,
                 status="ok" if final_status == "success" else "partial",
                 warnings=warnings,
-                make_active=final_status == "success",
+                make_active=True,
             )
             if final_status == "success":
                 _sync_active_parse_snapshot(attempt.attempt_dir, parse_dir)
