@@ -13,6 +13,7 @@ from autoad_researcher.assistant.intent_action import (
     build_response_context_for_decision,
     build_research_context_snapshot,
     evaluate_paper_artifact_quality,
+    has_readable_paper_artifact_content,
     infer_intent_signal,
     render_response_for_decision,
     resolve_material_auto_action,
@@ -249,6 +250,44 @@ def test_parse_failure_path(tmp_path):
     assert "paper_artifacts_exist_but_no_extractable_claims" in warnings
     assert snapshot.has_parsed_artifact is False
     assert decision.response_mode == "parsed_artifact_insufficient"
+
+
+def test_available_artifacts_include_artifacts_and_parse_outputs(tmp_path):
+    run_dir = tmp_path / "run_available_artifacts"
+    run_dir.mkdir()
+    _write_empty_paper_artifacts(run_dir)
+    parse_dir = run_dir / "paper" / "parse"
+    parse_dir.mkdir(parents=True)
+    (parse_dir / "blocks.jsonl").write_text('{"text":"正文 block"}\n', encoding="utf-8")
+    (parse_dir / "sections.json").write_text('{"sections":[{"title":"Method"}]}', encoding="utf-8")
+
+    snapshot, signal, decision = _snapshot_and_signal(run_dir, "基于论文 artifacts 回答")
+    context = build_response_context_for_decision(snapshot, decision)
+
+    assert "paper/artifacts/paper_summary.json" in snapshot.available_artifacts
+    assert "paper/parse/blocks.jsonl" in snapshot.available_artifacts
+    assert "paper/parse/sections.json" in snapshot.available_artifacts
+    assert context["facts"]["available_artifacts"] == snapshot.available_artifacts
+    assert signal.asks_for_paper_content is True
+
+
+def test_readable_parse_content_does_not_require_usable_metadata(tmp_path):
+    run_dir = tmp_path / "run_partial_parse"
+    run_dir.mkdir()
+    _write_empty_paper_artifacts(run_dir)
+
+    assert has_readable_paper_artifact_content(run_dir) is False
+
+    parse_dir = run_dir / "paper" / "parse"
+    parse_dir.mkdir(parents=True)
+    (parse_dir / "blocks.jsonl").write_text(
+        json.dumps({"type": "text", "text": "This paper proposes a practical anomaly detection method."}) + "\n",
+        encoding="utf-8",
+    )
+
+    quality, _warnings = evaluate_paper_artifact_quality(run_dir)
+    assert quality == "insufficient"
+    assert has_readable_paper_artifact_content(run_dir) is True
 
 
 def test_repo_no_auto_clone(tmp_path):

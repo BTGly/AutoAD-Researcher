@@ -98,6 +98,7 @@ class ResearchContextSnapshot(BaseModel):
     paper_artifact_warnings: list[str] = Field(default_factory=list)
     paper_methods: list[str] = Field(default_factory=list)
     paper_artifact_refs: list[str] = Field(default_factory=list)
+    available_artifacts: list[str] = Field(default_factory=list)
     missing_blocking_gaps: list[str] = Field(default_factory=list)
     intent_draft_exists: bool = False
     task_confirmed: bool = False
@@ -148,6 +149,7 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
     what = _probe_or_empty(run_dir)
     sources = [_source_snapshot(source) for source in registry.get("sources", []) if isinstance(source, dict)]
     quality, warnings = evaluate_paper_artifact_quality(run_dir)
+    available_artifacts = list_available_paper_artifacts(run_dir)
     confirmation = load_intent_confirmation(run_dir)
 
     snapshot = ResearchContextSnapshot(
@@ -161,6 +163,7 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
         paper_artifact_warnings=warnings,
         paper_methods=what.paper_methods if quality == "usable" else [],
         paper_artifact_refs=[ref for ref in what.evidence_artifacts if ref.startswith("paper/")],
+        available_artifacts=available_artifacts,
         missing_blocking_gaps=_select_blocking_gaps(what.missing_fields),
         intent_draft_exists=load_intent_draft(run_dir) is not None,
         task_confirmed=bool(confirmation and confirmation.decision == "approved"),
@@ -459,6 +462,92 @@ def evaluate_paper_artifact_quality(run_dir: Path) -> tuple[PaperArtifactQuality
     return "insufficient", _dedupe(warnings)
 
 
+def list_available_paper_artifacts(run_dir: Path) -> list[str]:
+    """Return run-relative artifact files the assistant can cite as available."""
+    roots = (run_dir / "paper" / "artifacts", run_dir / "paper" / "parse")
+    paths: list[str] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file():
+                paths.append(path.relative_to(run_dir).as_posix())
+    return sorted(_dedupe(paths))
+
+
+def has_readable_paper_artifact_content(run_dir: Path) -> bool:
+    """True when parse outputs contain textual paper content despite weak metadata."""
+    summary = _load_json(run_dir / "paper" / "artifacts" / "paper_summary.json")
+    if isinstance(summary, dict) and _paper_summary_has_content(summary):
+        return True
+
+    parse_dir = run_dir / "paper" / "parse"
+    if not parse_dir.exists():
+        return False
+    for path in parse_dir.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".json", ".jsonl", ".md", ".txt"}:
+            continue
+        if _text_file_has_content(path):
+            return True
+    return False
+
+
+def _paper_summary_has_content(summary: dict[str, Any]) -> bool:
+    content_keys = (
+        "title",
+        "abstract",
+        "research_problem",
+        "proposed_method",
+        "core_components",
+        "training_objective",
+        "data_assumptions",
+        "label_assumptions",
+        "inference_procedure",
+        "contributions",
+        "stated_limitations",
+        "potential_transfer_points",
+    )
+    return any(_json_has_nonempty_text(summary.get(key)) for key in content_keys)
+
+
+def _json_has_nonempty_text(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip()
+        return bool(text and not _looks_garbled(text))
+    if isinstance(value, dict):
+        return any(_json_has_nonempty_text(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_json_has_nonempty_text(item) for item in value)
+    return False
+
+
+def _text_file_has_content(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    if not text.strip():
+        return False
+    if path.suffix.lower() == ".jsonl":
+        return any(_jsonl_line_has_text(line) for line in text.splitlines())
+    if path.suffix.lower() == ".json":
+        try:
+            return _json_has_nonempty_text(json.loads(text))
+        except json.JSONDecodeError:
+            return False
+    return not _looks_garbled(text[:2000])
+
+
+def _jsonl_line_has_text(line: str) -> bool:
+    if not line.strip():
+        return False
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return not _looks_garbled(line)
+    return _json_has_nonempty_text(payload)
+
+
 def _source_snapshot(source: dict[str, Any]) -> SourceSnapshot:
     status = _clean_str(source.get("status")) or "user_provided_not_ingested"
     kind = _clean_str(source.get("kind")) or "url"
@@ -488,6 +577,7 @@ def _response_context_facts(snapshot: ResearchContextSnapshot, decision: ActionD
         "sources": [_source_snapshot_fact(source) for source in snapshot.sources],
         "paper_artifact_quality": snapshot.paper_artifact_quality,
         "paper_artifact_refs": list(snapshot.paper_artifact_refs),
+        "available_artifacts": list(snapshot.available_artifacts),
         "paper_methods": list(snapshot.paper_methods),
         "missing_blocking_gaps": list(snapshot.missing_blocking_gaps),
         "task_confirmed": snapshot.task_confirmed,

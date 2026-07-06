@@ -18,6 +18,7 @@ from autoad_researcher.assistant.intent_action import (
     append_action_decision,
     build_research_context_snapshot,
     build_response_context_for_decision,
+    has_readable_paper_artifact_content,
     infer_intent_signal,
     render_response_for_decision,
     resolve_material_auto_action,
@@ -670,58 +671,99 @@ def _execute_or_report_pdf_parse_action(
             result = _run_paper_intelligence(run_dir.name, pdf_path)
         if result["status"] == "parsed":
             refreshed = build_research_context_snapshot(run_dir)
-            if refreshed.paper_artifact_quality != "usable":
+            has_readable_content = has_readable_paper_artifact_content(run_dir)
+            if refreshed.paper_artifact_quality != "usable" and not has_readable_content:
                 err = "paper artifacts 质量不足，不能基于论文正文回答"
                 if source_id:
                     update_source_status(run_dir, str(source_id), "failed", error_message=err)
-                if decision is not None:
-                    append_action_decision(
-                        run_dir,
-                        decision.model_copy(update={
-                            "execution_status": "executed_failed",
-                            "source_status_after": "parsing_failed",
-                            "error_code": "PAPER_ARTIFACTS_INSUFFICIENT",
-                            "user_visible_error": err,
-                        }),
-                    )
-                reply = f"⚠️ {pdf_path.name} 解析流程已完成，但生成的 paper artifacts 证据不足。当前不能基于论文正文作可靠判断。"
+                final_decision = _parse_result_decision(
+                    decision,
+                    execution_status="executed_failed",
+                    response_mode="parsed_artifact_insufficient",
+                    source_status_after="parsing_failed",
+                    error_code="PAPER_ARTIFACTS_INSUFFICIENT",
+                    user_visible_error=err,
+                    fallback_message=f"⚠️ {pdf_path.name} 解析流程已完成，但生成的 paper artifacts 证据不足。当前不能基于论文正文作可靠判断。",
+                )
+                if final_decision is not None:
+                    append_action_decision(run_dir, final_decision)
+                reply = _natural_or_fallback_parse_reply(
+                    run_dir=run_dir,
+                    decision=final_decision,
+                    api_key=api_key,
+                    provider_url=provider_url,
+                    user_input=user_input,
+                    fallback=f"⚠️ {pdf_path.name} 解析流程已完成，但生成的 paper artifacts 证据不足。当前不能基于论文正文作可靠判断。",
+                )
                 st.warning(reply)
                 return reply
             if source_id:
                 update_source_status(run_dir, str(source_id), "parsed")
-            if decision is not None:
-                append_action_decision(
-                    run_dir,
-                    decision.model_copy(update={
-                        "execution_status": "executed_success",
-                        "source_status_after": "parsed",
-                    }),
+            if refreshed.paper_artifact_quality != "usable":
+                fallback_message = (
+                    f"✅ {pdf_path.name} 解析已完成，已生成可读取的 paper artifacts。"
+                    "metadata 不完整，我会在后续回答里标注这些限制。"
                 )
-            reply_parts = [f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。"]
-            if refreshed.paper_methods:
-                methods = "；".join(refreshed.paper_methods[:5])
-                reply_parts.append(f"我从 artifacts 看到：{methods}")
-            if refreshed.missing_blocking_gaps:
-                gaps = "、".join(refreshed.missing_blocking_gaps[:5])
-                reply_parts.append(f"仍缺：{gaps}")
-            reply_parts.append("后续回答将只基于可用 paper artifacts。")
-            reply = "\n\n".join(reply_parts)
-            st.success(reply)
+                response_mode = "parsed_artifact_insufficient"
+                error_code = "PAPER_ARTIFACTS_PARTIAL_METADATA"
+            else:
+                reply_parts = [f"✅ {pdf_path.name} 已完成 paper-intelligence 解析。"]
+                if refreshed.paper_methods:
+                    methods = "；".join(refreshed.paper_methods[:5])
+                    reply_parts.append(f"我从 artifacts 看到：{methods}")
+                if refreshed.missing_blocking_gaps:
+                    gaps = "、".join(refreshed.missing_blocking_gaps[:5])
+                    reply_parts.append(f"仍缺：{gaps}")
+                reply_parts.append("后续回答将只基于可用 paper artifacts。")
+                fallback_message = "\n\n".join(reply_parts)
+                response_mode = "parsed_artifact_summary"
+                error_code = None
+            final_decision = _parse_result_decision(
+                decision,
+                execution_status="executed_success",
+                response_mode=response_mode,
+                source_status_after="parsed",
+                error_code=error_code,
+                fallback_message=fallback_message,
+            )
+            if final_decision is not None:
+                append_action_decision(run_dir, final_decision)
+            reply = _natural_or_fallback_parse_reply(
+                run_dir=run_dir,
+                decision=final_decision,
+                api_key=api_key,
+                provider_url=provider_url,
+                user_input=user_input,
+                fallback=fallback_message,
+            )
+            if refreshed.paper_artifact_quality == "usable":
+                st.success(reply)
+            else:
+                st.warning(reply)
             return reply
         err = result.get("error", "未知错误")
         if source_id:
             update_source_status(run_dir, str(source_id), "failed", error_message=err)
-        if decision is not None:
-            append_action_decision(
-                run_dir,
-                decision.model_copy(update={
-                    "execution_status": "executed_failed",
-                    "source_status_after": "parsing_failed",
-                    "error_code": "PAPER_PARSE_FAILED",
-                    "user_visible_error": "PDF 解析未成功，请检查文件是否完整",
-                }),
-            )
-        reply = f"❌ {pdf_path.name} 解析失败：{err}"
+        fallback_message = f"❌ {pdf_path.name} 解析失败：{err}"
+        final_decision = _parse_result_decision(
+            decision,
+            execution_status="executed_failed",
+            response_mode="parsing_failed_status",
+            source_status_after="parsing_failed",
+            error_code="PAPER_PARSE_FAILED",
+            user_visible_error="PDF 解析未成功，请检查文件是否完整",
+            fallback_message=fallback_message,
+        )
+        if final_decision is not None:
+            append_action_decision(run_dir, final_decision)
+        reply = _natural_or_fallback_parse_reply(
+            run_dir=run_dir,
+            decision=final_decision,
+            api_key=api_key,
+            provider_url=provider_url,
+            user_input=user_input,
+            fallback=fallback_message,
+        )
         st.error(reply)
         return reply
 
@@ -758,6 +800,51 @@ def _sanitize_response_context_for_llm(ctx: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _parse_result_decision(
+    decision: ActionDecision | None,
+    *,
+    execution_status: str,
+    response_mode: str,
+    source_status_after: str,
+    fallback_message: str,
+    error_code: str | None = None,
+    user_visible_error: str | None = None,
+) -> ActionDecision | None:
+    if decision is None:
+        return None
+    return decision.model_copy(update={
+        "selected_action": "summarize_parsed_artifacts",
+        "response_mode": response_mode,
+        "execution_status": execution_status,
+        "source_status_after": source_status_after,
+        "error_code": error_code,
+        "user_visible_message": fallback_message,
+        "user_visible_error": user_visible_error,
+    })
+
+
+def _natural_or_fallback_parse_reply(
+    *,
+    run_dir: Path,
+    decision: ActionDecision | None,
+    api_key: str,
+    provider_url: str,
+    user_input: str,
+    fallback: str,
+) -> str:
+    if decision is not None and api_key and user_input:
+        return _natural_reply_for_decision(
+            run_dir=run_dir,
+            decision=decision,
+            api_key=api_key,
+            provider_url=provider_url,
+            user_input=user_input,
+        )
+    if decision is not None:
+        return render_response_for_decision(build_research_context_snapshot(run_dir), decision)
+    return fallback
+
+
 def _natural_reply_for_decision(
     *,
     run_dir: Path,
@@ -782,6 +869,7 @@ def _natural_reply_for_decision(
             '不要以你好开头。'
             '不要重复已经在最近对话中说过的诊断、背景和排查过程。'
             '优先给当前结论和下一步命令。'
+            '可以登记 GitHub 仓库链接作为 source，后续实验 agents 可以 clone 并分析；这不等于当前聊天会执行 runner、patch 或 benchmark。'
             '不得声称读过未解析资料，不得承诺执行 patch、runner、benchmark 或真实实验。'
         )
         ctx_text = json.dumps(response_ctx, ensure_ascii=False, indent=2)

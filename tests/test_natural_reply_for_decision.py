@@ -129,3 +129,36 @@ def test_natural_reply_for_decision_prompt_is_concise(monkeypatch, tmp_path):
         "no anti-repetition instruction in system prompt"
     assert "不要以你好开头" in system_text or "不以你好" in system_text, \
         "missing instruction to avoid opening salutation"
+
+
+def test_natural_reply_for_decision_prompt_mentions_github_source_registration(monkeypatch, tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "ui_chat").mkdir(parents=True)
+    (run_dir / "ui_chat" / "chat_transcript.jsonl").write_text("")
+
+    captured: list = []
+
+    def fake_call(api_key=None, provider_base_url=None, messages=None):
+        captured.extend(messages)
+        return FakeResult()
+
+    import autoad_researcher.ui.research_chat as mod
+    original = getattr(mod, "call_research_chat", None)
+    mod.call_research_chat = fake_call
+    try:
+        _natural_reply_for_decision(
+            run_dir=run_dir,
+            decision=_make_decision(),
+            api_key="sk-test",
+            provider_url="https://test",
+            user_input="这个 GitHub 仓库能看吗",
+        )
+    finally:
+        if original:
+            mod.call_research_chat = original
+
+    system_text = " ".join(m["content"] for m in captured if m["role"] == "system")
+    assert "GitHub 仓库链接" in system_text
+    assert "clone" in system_text
+    assert "作为 source" in system_text

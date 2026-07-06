@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from autoad_researcher.ui.chat_prompts import INTENT_CLARIFICATION_PROMPT
+from autoad_researcher.assistant.intent_action import ActionDecision
 from autoad_researcher.ui.intent_draft import (
     ResearchIntentDraft,
     save_clarification_input,
@@ -26,7 +27,7 @@ from autoad_researcher.ui.research_chat import (
 from autoad_researcher.ui.task_profile import TaskProfile, save_task_profile
 from autoad_researcher.core.events import EventStore
 from autoad_researcher.research_context.freeze import freeze_context
-from autoad_researcher.ui.sources import append_source_ref
+from autoad_researcher.ui.sources import append_source_ref, load_source_registry
 
 
 def test_safety_warning_not_empty():
@@ -235,6 +236,169 @@ def test_research_chat_action_guard_rejects_non_whitelisted_execution(tmp_path: 
     events = EventStore(runs_root=tmp_path).read_events("run_guard")
     assert events[-1].event_type == "tool_guard_rejected"
     assert events[-1].payload["action"] == "runner_execute"
+
+
+def test_parse_partial_artifacts_use_natural_reply_without_marking_source_failed(tmp_path: Path, monkeypatch):
+    import autoad_researcher.ui.research_chat as research_chat
+
+    class SpinnerStub:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+    class StStub:
+        def spinner(self, _message: str):
+            return SpinnerStub()
+
+        def warning(self, _message: str) -> None:
+            return None
+
+        def success(self, _message: str) -> None:
+            return None
+
+        def error(self, _message: str) -> None:
+            return None
+
+    run_dir = tmp_path / "run_partial_parse"
+    run_dir.mkdir()
+    pdf_path = run_dir / "sources" / "src_pdf" / "paper.pdf"
+    pdf_path.parent.mkdir(parents=True)
+    pdf_path.write_text("fake pdf", encoding="utf-8")
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+        status="uploaded_not_parsed",
+    )
+
+    def fake_run(_run_id, _pdf_path):
+        parse_dir = run_dir / "paper" / "parse"
+        parse_dir.mkdir(parents=True)
+        (parse_dir / "blocks.jsonl").write_text(
+            json.dumps({"type": "text", "text": "This paper proposes a practical anomaly detection method."}) + "\n",
+            encoding="utf-8",
+        )
+        return {"status": "parsed"}
+
+    captured_decisions: list[ActionDecision] = []
+
+    def fake_natural_reply(*, run_dir, decision, api_key, provider_url, user_input, history_tail=None):
+        captured_decisions.append(decision)
+        return "natural partial reply"
+
+    monkeypatch.setattr(research_chat, "st", StStub())
+    monkeypatch.setattr(research_chat, "_run_paper_intelligence", fake_run)
+    monkeypatch.setattr(research_chat, "_natural_reply_for_decision", fake_natural_reply)
+
+    decision = ActionDecision(
+        snapshot_sha256="aa" * 32,
+        selected_action="parse_uploaded_pdf",
+        response_mode="material_auto_parse_started",
+        reason="test",
+        source_id="src_pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+    )
+    reply = _execute_or_report_pdf_parse_action(
+        run_dir,
+        {
+            "action": "parse",
+            "pdf_path": str(pdf_path),
+            "source_id": "src_pdf",
+            "action_decision": decision,
+        },
+        api_key="sk-test",
+        provider_url="https://test",
+        user_input="读一下这篇论文",
+    )
+
+    registry = load_source_registry(run_dir)
+    assert reply == "natural partial reply"
+    assert registry["sources"][0]["status"] == "parsed"
+    assert "error_message" not in registry["sources"][0]
+    assert captured_decisions[-1].execution_status == "executed_success"
+    assert captured_decisions[-1].response_mode == "parsed_artifact_insufficient"
+    assert captured_decisions[-1].error_code == "PAPER_ARTIFACTS_PARTIAL_METADATA"
+
+
+def test_parse_failure_uses_natural_reply_with_history_path(tmp_path: Path, monkeypatch):
+    import autoad_researcher.ui.research_chat as research_chat
+
+    class SpinnerStub:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+    class StStub:
+        def spinner(self, _message: str):
+            return SpinnerStub()
+
+        def warning(self, _message: str) -> None:
+            return None
+
+        def success(self, _message: str) -> None:
+            return None
+
+        def error(self, _message: str) -> None:
+            return None
+
+    run_dir = tmp_path / "run_parse_failed"
+    run_dir.mkdir()
+    pdf_path = run_dir / "sources" / "src_pdf" / "paper.pdf"
+    pdf_path.parent.mkdir(parents=True)
+    pdf_path.write_text("fake pdf", encoding="utf-8")
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+        status="uploaded_not_parsed",
+    )
+
+    captured_decisions: list[ActionDecision] = []
+
+    def fake_natural_reply(*, run_dir, decision, api_key, provider_url, user_input, history_tail=None):
+        captured_decisions.append(decision)
+        return "natural failure reply"
+
+    monkeypatch.setattr(research_chat, "st", StStub())
+    monkeypatch.setattr(research_chat, "_run_paper_intelligence", lambda _run_id, _pdf_path: {"status": "failed", "error": "bad pdf"})
+    monkeypatch.setattr(research_chat, "_natural_reply_for_decision", fake_natural_reply)
+
+    decision = ActionDecision(
+        snapshot_sha256="aa" * 32,
+        selected_action="parse_uploaded_pdf",
+        response_mode="material_auto_parse_started",
+        reason="test",
+        source_id="src_pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+    )
+    reply = _execute_or_report_pdf_parse_action(
+        run_dir,
+        {
+            "action": "parse",
+            "pdf_path": str(pdf_path),
+            "source_id": "src_pdf",
+            "action_decision": decision,
+        },
+        api_key="sk-test",
+        provider_url="https://test",
+        user_input="读一下这篇论文",
+    )
+
+    registry = load_source_registry(run_dir)
+    assert reply == "natural failure reply"
+    assert registry["sources"][0]["status"] == "failed"
+    assert registry["sources"][0]["error_message"] == "bad pdf"
+    assert captured_decisions[-1].execution_status == "executed_failed"
+    assert captured_decisions[-1].response_mode == "parsing_failed_status"
+    assert captured_decisions[-1].error_code == "PAPER_PARSE_FAILED"
 
 
 def test_source_cards_show_status_and_parse_attempts(tmp_path: Path):
