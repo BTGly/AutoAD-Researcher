@@ -162,3 +162,39 @@ def test_natural_reply_for_decision_prompt_mentions_github_source_registration(m
     assert "GitHub 仓库链接" in system_text
     assert "clone" in system_text
     assert "作为 source" in system_text
+
+
+def test_natural_reply_for_decision_prompt_uses_readable_artifacts_and_does_not_deny_tools(monkeypatch, tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "ui_chat").mkdir(parents=True)
+    (run_dir / "ui_chat" / "chat_transcript.jsonl").write_text("")
+
+    captured: list = []
+
+    def fake_call(api_key=None, provider_base_url=None, messages=None):
+        captured.extend(messages)
+        return FakeResult()
+
+    import autoad_researcher.ui.research_chat as mod
+    original = getattr(mod, "call_research_chat", None)
+    mod.call_research_chat = fake_call
+    try:
+        _natural_reply_for_decision(
+            run_dir=run_dir,
+            decision=_make_decision(),
+            api_key="sk-test",
+            provider_url="https://test",
+            user_input="读论文",
+        )
+    finally:
+        if original:
+            mod.call_research_chat = original
+
+    system_text = " ".join(m["content"] for m in captured if m["role"] == "system")
+    assert "has_readable_paper_artifact_content" in system_text
+    assert "paper_artifact_content_preview" in system_text
+    assert "不要说" in system_text and "没有可读正文" in system_text
+    assert "web_search" in system_text
+    assert "web_fetch" in system_text
+    assert "git_clone" in system_text

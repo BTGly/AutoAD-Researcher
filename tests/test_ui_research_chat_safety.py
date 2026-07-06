@@ -14,8 +14,11 @@ from autoad_researcher.ui.intent_draft import (
 from autoad_researcher.ui.research_chat import (
     _MODE_LABELS,
     _SAFETY_WARNING,
+    _chat_input_submission,
     _execute_or_report_pdf_parse_action,
     _extract_intent_draft,
+    _split_visible_transcript,
+    build_research_chat_messages,
     build_freeze_panel_state,
     build_developer_info_payload,
     build_pipeline_input_action,
@@ -99,6 +102,91 @@ def test_transcript_display_helper_does_not_require_mode_label():
     source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
     assert "[{entry_mode}]" not in source
     assert "[{mode}]" not in source
+
+
+def test_transcript_display_defaults_to_recent_tail():
+    transcript = [{"role": "user", "content": f"m{i}"} for i in range(12)]
+
+    older, visible = _split_visible_transcript(transcript)
+
+    assert len(older) == 4
+    assert len(visible) == 8
+    assert visible[0]["content"] == "m4"
+    assert visible[-1]["content"] == "m11"
+
+
+def test_research_chat_ui_keeps_upload_button_primary_and_path_advanced():
+    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
+
+    assert "st.file_uploader" in source
+    assert "添加到当前任务" in source
+    assert "accept_file" in source
+    assert "高级：从服务器路径添加" in source
+    assert source.index("st.file_uploader") < source.index("服务器本地文件路径")
+
+
+def test_chat_input_file_support_is_signature_compatible(monkeypatch):
+    import autoad_researcher.ui.research_chat as research_chat
+
+    class OldSt:
+        def __init__(self):
+            self.calls = []
+
+        def chat_input(self, placeholder, *, key=None):
+            self.calls.append({"placeholder": placeholder, "key": key})
+            return "ok"
+
+    old_st = OldSt()
+    monkeypatch.setattr(research_chat, "st", old_st)
+    assert _chat_input_submission() == "ok"
+    assert old_st.calls[0]["key"] == "_chat_input"
+    assert "accept_file" not in old_st.calls[0]
+
+    class NewSt:
+        def __init__(self):
+            self.calls = []
+
+        def chat_input(self, placeholder, *, key=None, accept_file=None, file_type=None):
+            self.calls.append({
+                "placeholder": placeholder,
+                "key": key,
+                "accept_file": accept_file,
+                "file_type": file_type,
+            })
+            return {"text": "ok", "files": []}
+
+    new_st = NewSt()
+    monkeypatch.setattr(research_chat, "st", new_st)
+    assert _chat_input_submission() == {"text": "ok", "files": []}
+    assert new_st.calls[0]["accept_file"] == "multiple"
+    assert "pdf" in new_st.calls[0]["file_type"]
+
+
+def test_research_chat_ui_does_not_render_developer_info_on_main_page():
+    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
+    render_body = source[source.index("def render_research_chat():"):source.index("def _resolve_run_dir")]
+
+    assert "_render_developer_info(" not in render_body
+
+
+def test_research_chat_messages_include_identity_and_approval_role(tmp_path: Path):
+    run_dir = tmp_path / "run_identity"
+    run_dir.mkdir()
+
+    messages = build_research_chat_messages(
+        run_dir=run_dir,
+        mode="intent_clarification",
+        user_input="读论文",
+        context_data={},
+        transcript_tail=[],
+    )
+    system_text = "\n".join(m["content"] for m in messages if m["role"] == "system")
+
+    assert "AutoAD Research Assistant" in system_text
+    assert "读清楚论文" in system_text
+    assert "请求用户审批" in system_text
+    assert "web_search" in system_text
+    assert "git_clone" in system_text
 
 
 def test_user_friendly_intent_draft_markdown_has_no_json_indices():

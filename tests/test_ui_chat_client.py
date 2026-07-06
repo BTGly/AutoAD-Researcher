@@ -24,7 +24,7 @@ def test_prompts_contain_safety_rules():
 
 def test_prompts_reasonable_length():
     for name, prompt in MODE_PROMPTS.items():
-        assert 500 < len(prompt) < 2500, f"{name}: {len(prompt)} chars"
+        assert 500 < len(prompt) < 4000, f"{name}: {len(prompt)} chars"
 
 
 # ── chat_client ─────────────────────────────────────────────────────────

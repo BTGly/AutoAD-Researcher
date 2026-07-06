@@ -18,4 +18,4 @@
 | 2026-07-03 | [2026-07-03.md](2026-07-03.md) | Streamlit L3 UI API key state fix; Phase 2B intent draft/confirmation; Phase 2C approval gate enforcement |
 | 2026-07-04 | [2026-07-04.md](2026-07-04.md) | AutoAD Assistant Prompt Architecture v0.1 and prompt registry foundation |
 | 2026-07-05 | [2026-07-05.md](2026-07-05.md) | Server-local Source Intake allowlist boundary; ZG1 named task creation, rename, sidebar task picker, task profile fallback hardening, non-destructive task archive, physical archived-task deletion, UI API key auto-load/save from environment/.env, Intent Alignment Alpha grounding repair, short PDF parse command routing, and parsed PDF re-extraction routing |
-| 2026-07-06 | [2026-07-06.md](2026-07-06.md) | Research Chat parse artifact UX alignment: partial metadata handling, available artifacts in ResponseContext, GitHub repo source prompt, and natural parse replies |
+| 2026-07-06 | [2026-07-06.md](2026-07-06.md) | Research Chat UX alignment: partial/readable artifacts, natural parse replies, assistant identity/pipeline approval grounding, transcript windowing, developer-info hiding, and upload-button source intake |

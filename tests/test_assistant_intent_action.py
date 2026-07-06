@@ -10,6 +10,7 @@ from shutil import copytree
 from autoad_researcher.assistant.intent_action import (
     ActionDecision,
     append_action_decision,
+    build_paper_artifact_content_preview,
     build_response_context_for_decision,
     build_research_context_snapshot,
     evaluate_paper_artifact_quality,
@@ -288,6 +289,42 @@ def test_readable_parse_content_does_not_require_usable_metadata(tmp_path):
     quality, _warnings = evaluate_paper_artifact_quality(run_dir)
     assert quality == "insufficient"
     assert has_readable_paper_artifact_content(run_dir) is True
+
+    preview = build_paper_artifact_content_preview(run_dir)
+    assert "parse_block_snippets" in preview
+    assert "anomaly detection method" in preview["parse_block_snippets"][0]
+
+
+def test_failed_source_with_readable_artifacts_summarizes_instead_of_failed_status(tmp_path):
+    run_dir = tmp_path / "run_failed_but_readable"
+    run_dir.mkdir()
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+        status="failed",
+    )
+    _write_empty_paper_artifacts(run_dir)
+    parse_dir = run_dir / "paper" / "parse"
+    parse_dir.mkdir(parents=True)
+    (parse_dir / "blocks.jsonl").write_text(
+        json.dumps({"type": "text", "text": "The paper introduces a model for industrial anomaly detection."}) + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot, _signal, decision = _snapshot_and_signal(run_dir, "读论文")
+    context = build_response_context_for_decision(snapshot, decision)
+    reply = render_response_for_decision(snapshot, decision)
+
+    assert snapshot.has_readable_paper_artifact_content is True
+    assert decision.selected_action == "summarize_parsed_artifacts"
+    assert decision.response_mode == "parsed_artifact_insufficient"
+    assert context["facts"]["has_readable_paper_artifact_content"] is True
+    assert "paper_artifact_content_preview" in context["facts"]
+    assert "不能基于论文正文" not in reply
+    assert "可读取" in reply
 
 
 def test_repo_no_auto_clone(tmp_path):

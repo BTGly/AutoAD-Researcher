@@ -99,6 +99,8 @@ class ResearchContextSnapshot(BaseModel):
     paper_methods: list[str] = Field(default_factory=list)
     paper_artifact_refs: list[str] = Field(default_factory=list)
     available_artifacts: list[str] = Field(default_factory=list)
+    has_readable_paper_artifact_content: bool = False
+    paper_artifact_content_preview: dict[str, Any] = Field(default_factory=dict)
     missing_blocking_gaps: list[str] = Field(default_factory=list)
     intent_draft_exists: bool = False
     task_confirmed: bool = False
@@ -150,6 +152,7 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
     sources = [_source_snapshot(source) for source in registry.get("sources", []) if isinstance(source, dict)]
     quality, warnings = evaluate_paper_artifact_quality(run_dir)
     available_artifacts = list_available_paper_artifacts(run_dir)
+    has_readable_content = has_readable_paper_artifact_content(run_dir)
     confirmation = load_intent_confirmation(run_dir)
 
     snapshot = ResearchContextSnapshot(
@@ -164,6 +167,8 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
         paper_methods=what.paper_methods if quality == "usable" else [],
         paper_artifact_refs=[ref for ref in what.evidence_artifacts if ref.startswith("paper/")],
         available_artifacts=available_artifacts,
+        has_readable_paper_artifact_content=has_readable_content,
+        paper_artifact_content_preview=build_paper_artifact_content_preview(run_dir),
         missing_blocking_gaps=_select_blocking_gaps(what.missing_fields),
         intent_draft_exists=load_intent_draft(run_dir) is not None,
         task_confirmed=bool(confirmation and confirmation.decision == "approved"),
@@ -254,7 +259,7 @@ def resolve_material_auto_action(
     failed = _sources_with(snapshot, "parsing_failed")
 
     if target is not None:
-        return _decision_for_source(digest, target, signal)
+        return _decision_for_source(digest, target, signal, snapshot)
 
     recent_pending = [source for source in pending if source.source_id in recent_pdf_ids]
     if len(recent_pending) == 1 and signal.mentions_paper:
@@ -295,6 +300,19 @@ def resolve_material_auto_action(
             stored_path=parsed[0].stored_path,
             source_status_before=parsed[0].derived_status,
             source_status_after=parsed[0].derived_status,
+        )
+
+    if failed and signal.mentions_paper and snapshot.has_readable_paper_artifact_content:
+        return _decision(
+            snapshot_sha256=digest,
+            selected_action="summarize_parsed_artifacts",
+            response_mode="parsed_artifact_insufficient",
+            reason="source status is parsing_failed but readable paper artifacts exist",
+            execution_status="skipped_by_idempotency",
+            source_id=failed[0].source_id,
+            stored_path=failed[0].stored_path,
+            source_status_before=failed[0].derived_status,
+            source_status_after=failed[0].derived_status,
         )
 
     if len(pending) == 1 and (signal.asks_for_paper_content or signal.asks_source_status or signal.mentions_paper):
@@ -384,6 +402,8 @@ def render_response_for_decision(snapshot: ResearchContextSnapshot, decision: Ac
         return "上次论文解析没有成功。当前仍不能基于论文正文回答；你可以重新上传 PDF 或明确要求重新解析。"
     if decision.response_mode == "parsed_artifact_insufficient":
         warnings = "、".join(snapshot.paper_artifact_warnings) or "paper artifacts 证据不足"
+        if snapshot.has_readable_paper_artifact_content:
+            return f"已生成可读取的 paper artifacts，但 metadata 不完整（{warnings}）。我会基于现有 artifacts 回答，并标注限制。"
         return f"已生成 paper artifacts，但质量不足（{warnings}）。当前不能基于论文正文作可靠判断。"
     if decision.response_mode == "parsed_artifact_summary":
         methods = "；".join(snapshot.paper_methods[:5]) if snapshot.paper_methods else "artifacts 中未看到结构化方法摘要"
@@ -492,6 +512,109 @@ def has_readable_paper_artifact_content(run_dir: Path) -> bool:
     return False
 
 
+def build_paper_artifact_content_preview(run_dir: Path) -> dict[str, Any]:
+    preview: dict[str, Any] = {}
+    summary = _load_json(run_dir / "paper" / "artifacts" / "paper_summary.json")
+    if isinstance(summary, dict):
+        summary_preview: dict[str, Any] = {}
+        for key in (
+            "title",
+            "abstract",
+            "research_problem",
+            "proposed_method",
+            "core_components",
+            "training_objective",
+            "data_assumptions",
+            "label_assumptions",
+            "inference_procedure",
+            "contributions",
+            "stated_limitations",
+            "potential_transfer_points",
+        ):
+            compact = _compact_artifact_value(summary.get(key), limit=900)
+            if compact:
+                summary_preview[key] = compact
+        if summary_preview:
+            preview["paper_summary"] = summary_preview
+
+    block_snippets = _read_parse_block_snippets(run_dir / "paper" / "parse", limit=5)
+    if block_snippets:
+        preview["parse_block_snippets"] = block_snippets
+    return preview
+
+
+def _compact_artifact_value(value: Any, *, limit: int) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        if text and not _looks_garbled(text):
+            return text[:limit]
+        return None
+    if isinstance(value, dict):
+        text = _claim_text(value)
+        if text and not _looks_garbled(text):
+            return text[:limit]
+        nested: dict[str, Any] = {}
+        for key, item in value.items():
+            compact = _compact_artifact_value(item, limit=limit)
+            if compact:
+                nested[str(key)] = compact
+        return nested or None
+    if isinstance(value, list):
+        items = [_compact_artifact_value(item, limit=limit) for item in value[:8]]
+        return [item for item in items if item][:8] or None
+    return None
+
+
+def _read_parse_block_snippets(parse_dir: Path, *, limit: int) -> list[str]:
+    if not parse_dir.exists():
+        return []
+    snippets: list[str] = []
+    for path in sorted(parse_dir.rglob("blocks.jsonl")):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            text = _jsonl_text_snippet(line)
+            if text:
+                snippets.append(text[:500])
+            if len(snippets) >= limit:
+                return snippets
+    return snippets
+
+
+def _jsonl_text_snippet(line: str) -> str | None:
+    if not line.strip():
+        return None
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        text = line.strip()
+        return text if text and not _looks_garbled(text) else None
+    text = _first_text_from_json(payload)
+    return text[:500] if text and not _looks_garbled(text) else None
+
+
+def _first_text_from_json(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        for key in ("text", "content", "paragraph", "value"):
+            text = _first_text_from_json(value.get(key))
+            if text:
+                return text
+        for item in value.values():
+            text = _first_text_from_json(item)
+            if text:
+                return text
+    if isinstance(value, list):
+        for item in value:
+            text = _first_text_from_json(item)
+            if text:
+                return text
+    return None
+
+
 def _paper_summary_has_content(summary: dict[str, Any]) -> bool:
     content_keys = (
         "title",
@@ -578,6 +701,8 @@ def _response_context_facts(snapshot: ResearchContextSnapshot, decision: ActionD
         "paper_artifact_quality": snapshot.paper_artifact_quality,
         "paper_artifact_refs": list(snapshot.paper_artifact_refs),
         "available_artifacts": list(snapshot.available_artifacts),
+        "has_readable_paper_artifact_content": snapshot.has_readable_paper_artifact_content,
+        "paper_artifact_content_preview": dict(snapshot.paper_artifact_content_preview),
         "paper_methods": list(snapshot.paper_methods),
         "missing_blocking_gaps": list(snapshot.missing_blocking_gaps),
         "task_confirmed": snapshot.task_confirmed,
@@ -686,7 +811,12 @@ def _derive_status(kind: str, status: str) -> SourceDerivedStatus:
     return "reference_identifier"
 
 
-def _decision_for_source(digest: str, source: SourceSnapshot, signal: IntentSignal) -> ActionDecision:
+def _decision_for_source(
+    digest: str,
+    source: SourceSnapshot,
+    signal: IntentSignal,
+    snapshot: ResearchContextSnapshot,
+) -> ActionDecision:
     if source.derived_status == "parsing_in_progress":
         return _decision(
             snapshot_sha256=digest,
@@ -712,6 +842,18 @@ def _decision_for_source(digest: str, source: SourceSnapshot, signal: IntentSign
             source_status_after=source.derived_status,
         )
     if source.derived_status == "parsing_failed" and not signal.force_reparse:
+        if snapshot.has_readable_paper_artifact_content and signal.mentions_paper:
+            return _decision(
+                snapshot_sha256=digest,
+                selected_action="summarize_parsed_artifacts",
+                response_mode="parsed_artifact_insufficient",
+                reason="explicit source failed status but readable paper artifacts exist",
+                execution_status="skipped_by_idempotency",
+                source_id=source.source_id,
+                stored_path=source.stored_path,
+                source_status_before=source.derived_status,
+                source_status_after=source.derived_status,
+            )
         return _decision(
             snapshot_sha256=digest,
             selected_action="answer_directly",

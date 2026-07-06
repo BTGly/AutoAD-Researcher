@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ from autoad_researcher.ui.artifact_viewer import (
 )
 from autoad_researcher.ui.chat_client import call_research_chat
 from autoad_researcher.ui.chat_context import build_chat_context
-from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
+from autoad_researcher.ui.chat_prompts import BASE_RESEARCH_ASSISTANT_PROMPT, MODE_PROMPTS
 from autoad_researcher.ui.chat_transcript import load_transcript, save_transcript
 from autoad_researcher.ui.intent_draft import (
     load_intent_confirmation,
@@ -80,6 +81,7 @@ _MODE_LABELS = {
     "next_experiment": "下一步建议",
 }
 _PAPER_PARSE_TIMEOUT_SECONDS = 900
+_TRANSCRIPT_VISIBLE_TAIL = 8
 _PARSE_ACTION_TOKENS = (
     "读",
     "读一下",
@@ -161,21 +163,22 @@ def render_research_chat():
 
     # ── P6: Source Intake (source list + server-local developer entry) ──
     with st.expander("📎 当前资料 / Sources", expanded=False):
-        st.caption("普通资料上传请直接使用底部聊天框附件。这里保留资料列表和服务器本地路径入口。")
+        st.caption("上传 PDF / txt / md，或直接把文件拖到底部聊天框。")
 
-        local_path = st.text_input(
-            "服务器本地文件路径",
-            placeholder="/root/autodl-tmp/AI4S/2303.15140v2.pdf",
-            key="_source_local_path",
+        uploads = st.file_uploader(
+            "添加资料",
+            type=["pdf", "txt", "md", "markdown"],
+            accept_multiple_files=True,
+            key="_source_file_uploads",
         )
-        if st.button("添加本地文件", type="secondary", disabled=not local_path.strip()):
+        upload_list = list(uploads or [])
+        if st.button("添加到当前任务", type="primary", disabled=not upload_list):
             try:
-                info = register_local_file_source(run_dir, local_path.strip())
+                saved = save_chat_attachments(run_dir, upload_list)
             except Exception as exc:
                 st.error(f"添加失败：{exc}")
             else:
-                st.success(f"✅ 已添加：{info['stored_path']}")
-                st.caption(f"现在可以在聊天框中说：读一下 {info['stored_path']}")
+                st.success(build_attachment_added_reply(saved))
                 st.rerun()
 
         st.caption("— 添加链接 / 仓库 / 文字 —")
@@ -216,19 +219,28 @@ def render_research_chat():
         else:
             st.caption("暂无已添加的资料。支持 PDF / txt / md 上传。")
 
+        with st.expander("高级：从服务器路径添加", expanded=False):
+            local_path = st.text_input(
+                "服务器本地文件路径",
+                placeholder="/root/autodl-tmp/AI4S/2303.15140v2.pdf",
+                key="_source_local_path",
+            )
+            if st.button("添加本地文件", type="secondary", disabled=not local_path.strip()):
+                try:
+                    info = register_local_file_source(run_dir, local_path.strip())
+                except Exception as exc:
+                    st.error(f"添加失败：{exc}")
+                else:
+                    st.success(f"✅ 已添加：{info['stored_path']}")
+                    st.caption(f"现在可以在聊天框中说：读一下 {info['stored_path']}")
+                    st.rerun()
+
     _render_source_cards_panel(run_dir)
     _render_evidence_boundary_panel(run_dir)
     _render_freeze_panel(run_dir)
 
     if not api_key:
         st.warning("请先在「运行配置」中填写 API Key。")
-        _render_developer_info(
-            run_dir=run_dir,
-            overview=overview,
-            provider_url=provider_url,
-            dataset_root=dataset_root,
-            context_data=context_data,
-        )
         return
 
     st.markdown("---")
@@ -268,14 +280,6 @@ def render_research_chat():
     st.markdown("---")
     _render_stage_approval_panel(run_dir)
 
-    _render_developer_info(
-        run_dir=run_dir,
-        overview=overview,
-        provider_url=provider_url,
-        dataset_root=dataset_root,
-        context_data=context_data,
-    )
-
 
 def _resolve_run_dir(browse_id: str) -> Path | None:
     try:
@@ -294,8 +298,28 @@ def _render_task_overview(overview: dict[str, Any]) -> None:
     cols[1].metric("数据集", str(overview["dataset_status"]))
 
 
+def _split_visible_transcript(
+    transcript: list[dict],
+    *,
+    visible_tail: int = _TRANSCRIPT_VISIBLE_TAIL,
+) -> tuple[list[dict], list[dict]]:
+    if visible_tail <= 0 or len(transcript) <= visible_tail:
+        return [], transcript
+    return transcript[:-visible_tail], transcript[-visible_tail:]
+
+
 def _render_transcript(transcript: list[dict]) -> None:
-    for entry in transcript:
+    older, visible = _split_visible_transcript(transcript)
+    if older:
+        st.caption(f"仅显示最近 {len(visible)} 条对话，最新消息在下方。")
+        with st.expander(f"查看更早对话（{len(older)} 条）", expanded=False):
+            for entry in older:
+                _render_transcript_entry(entry)
+    for entry in visible:
+        _render_transcript_entry(entry)
+
+
+def _render_transcript_entry(entry: dict) -> None:
         role = entry.get("role", "user")
         content = entry.get("content", "")
         if role == "user":
@@ -320,7 +344,7 @@ def build_research_chat_messages(
     """
     from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
 
-    system_prompt = MODE_PROMPTS[mode]
+    system_prompt = BASE_RESEARCH_ASSISTANT_PROMPT + "\n\n" + MODE_PROMPTS[mode]
     context_str = json.dumps(context_data, ensure_ascii=False, default=str) if context_data else "{}"
 
     messages: list[dict[str, str]] = [
@@ -695,7 +719,6 @@ def _execute_or_report_pdf_parse_action(
                     user_input=user_input,
                     fallback=f"⚠️ {pdf_path.name} 解析流程已完成，但生成的 paper artifacts 证据不足。当前不能基于论文正文作可靠判断。",
                 )
-                st.warning(reply)
                 return reply
             if source_id:
                 update_source_status(run_dir, str(source_id), "parsed")
@@ -736,10 +759,6 @@ def _execute_or_report_pdf_parse_action(
                 user_input=user_input,
                 fallback=fallback_message,
             )
-            if refreshed.paper_artifact_quality == "usable":
-                st.success(reply)
-            else:
-                st.warning(reply)
             return reply
         err = result.get("error", "未知错误")
         if source_id:
@@ -764,7 +783,6 @@ def _execute_or_report_pdf_parse_action(
             user_input=user_input,
             fallback=fallback_message,
         )
-        st.error(reply)
         return reply
 
     message = str(action["message"])
@@ -776,13 +794,8 @@ def _execute_or_report_pdf_parse_action(
             run_dir=run_dir, decision=decision, api_key=api_key,
             provider_url=provider_url, user_input=user_input,
         )
-        st.chat_message("assistant").write(natural)
         return natural
 
-    if kind in {"missing", "choose", "parse_failed", "blocked"}:
-        st.warning(message)
-    else:
-        st.info(message)
     return message
 
 
@@ -865,11 +878,15 @@ def _natural_reply_for_decision(
 
     try:
         system = (
+            BASE_RESEARCH_ASSISTANT_PROMPT
+            + '\n\n'
             '回复不超过 4 行，除非用户明确要求详细说明。'
             '不要以你好开头。'
             '不要重复已经在最近对话中说过的诊断、背景和排查过程。'
             '优先给当前结论和下一步命令。'
             '可以登记 GitHub 仓库链接作为 source，后续实验 agents 可以 clone 并分析；这不等于当前聊天会执行 runner、patch 或 benchmark。'
+            '如果 ResponseContext.facts.has_readable_paper_artifact_content 为 true，或 paper_artifact_content_preview/available_artifacts 显示有 paper_summary.json、blocks.jsonl 等内容，不要说“没有可读正文”或“无法读取论文”；应基于 preview 和 artifacts 回答，并标注 metadata 不完整的限制。'
+            '不要反复要求用户提供链接；不要声称系统没有 web_search、web_fetch 或 git_clone ToolSpec。当前聊天未触发 acquisition 时，只说明可登记为待获取 source 或交给后续 discovery/acquisition agents。'
             '不得声称读过未解析资料，不得承诺执行 patch、runner、benchmark 或真实实验。'
         )
         ctx_text = json.dumps(response_ctx, ensure_ascii=False, indent=2)
@@ -930,10 +947,7 @@ def _handle_chat_input(
     provider_url: str,
     context_data: dict | None,
 ) -> None:
-    submission = st.chat_input(
-        "输入你的问题，或附加论文 PDF / 材料…",
-        key="_chat_input",
-    )
+    submission = _chat_input_submission()
     if not submission:
         return
     user_input, attached_files = normalize_chat_submission(submission)
@@ -1033,6 +1047,23 @@ def _handle_chat_input(
         context_refs=list(context_data.keys()) if context_data else [],
     )
     st.rerun()
+
+
+def _chat_input_submission() -> Any:
+    kwargs: dict[str, Any] = {
+        "key": "_chat_input",
+    }
+    try:
+        parameters = inspect.signature(st.chat_input).parameters
+    except Exception:
+        parameters = {}
+    if "accept_file" in parameters:
+        kwargs["accept_file"] = "multiple"
+        kwargs["file_type"] = ["pdf", "txt", "md", "markdown"]
+        placeholder = "输入你的问题，或附加论文 PDF / 材料…"
+    else:
+        placeholder = "输入你的问题；上传资料请用上方「当前资料」里的添加按钮…"
+    return st.chat_input(placeholder, **kwargs)
 
 
 # ---------------------------------------------------------------------------
