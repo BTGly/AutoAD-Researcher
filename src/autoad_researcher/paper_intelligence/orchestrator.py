@@ -40,6 +40,7 @@ from autoad_researcher.paper_intelligence.mineru_provider import (
 )
 from autoad_researcher.paper_intelligence.parser_models import (
     DocumentParseRequest,
+    ParseQualityReport,
 )
 from autoad_researcher.paper_intelligence.tools import CanonicalPaperStore, EvidenceWriter
 from autoad_researcher.paper_intelligence.validator import (
@@ -186,6 +187,12 @@ class PaperIntelligenceOrchestrator:
                 }
             )
             if parse_result.status == "failed":
+                quality = _quality_report_for_attempt(
+                    provider.get_quality_report(parse_result),
+                    parse_result=parse_result,
+                    parser=request.parser_profile_id,
+                )
+                _write_atomic_json(attempt.attempt_dir / "parse_quality_report.json", quality.model_dump())
                 _record_parse_attempt_result(
                     run_dir,
                     attempt,
@@ -201,14 +208,16 @@ class PaperIntelligenceOrchestrator:
                     "parse_attempt_id": attempt.parse_attempt_id,
                 }
 
-            _sync_active_parse_snapshot(attempt.attempt_dir, parse_dir)
-
             manifest = provider.get_manifest(parse_result)
             profile_sha = profile.compute_profile_sha256()
-            _write_atomic_json(parse_dir / "parser_manifest.json", manifest.model_dump())
+            _write_atomic_json(attempt.attempt_dir / "parser_manifest.json", manifest.model_dump())
 
-            quality = provider.get_quality_report(parse_result)
-            _write_atomic_json(parse_dir / "parse_quality_report.json", quality.model_dump())
+            quality = _quality_report_for_attempt(
+                provider.get_quality_report(parse_result),
+                parse_result=parse_result,
+                parser=request.parser_profile_id,
+            )
+            _write_atomic_json(attempt.attempt_dir / "parse_quality_report.json", quality.model_dump())
 
             # ============================================================
             # 3. Canonical Paper Store + Evidence Writer
@@ -384,6 +393,8 @@ class PaperIntelligenceOrchestrator:
                 warnings=warnings,
                 make_active=final_status == "success",
             )
+            if final_status == "success":
+                _sync_active_parse_snapshot(attempt.attempt_dir, parse_dir)
 
             return {
                 "status": final_status,
@@ -720,6 +731,37 @@ def _record_parse_attempt_result(
         update_source_status(run_dir, attempt.source_id, "parsed")
     elif status in {"failed", "partial"}:
         update_source_status(run_dir, attempt.source_id, "failed", error_message="; ".join(warnings) or f"parse attempt {status}")
+
+
+def _quality_report_for_attempt(
+    quality: ParseQualityReport,
+    *,
+    parse_result,
+    parser: str,
+) -> ParseQualityReport:
+    if parse_result.status == "success":
+        quality_level = "usable"
+        usable_for = ["paper_artifact_synthesis", "research_context_draft"]
+        not_usable_for: list[str] = []
+    elif parse_result.status == "partial_success":
+        quality_level = "partial"
+        usable_for = ["parse_diagnostics"]
+        not_usable_for = ["supported_research_facts"]
+    else:
+        quality_level = "unusable"
+        usable_for = []
+        not_usable_for = ["paper_content_claims", "research_context_draft"]
+
+    return quality.model_copy(
+        update={
+            "parse_attempt_id": parse_result.parse_attempt_id,
+            "source_id": parse_result.source_id,
+            "parser": parser,
+            "quality_level": quality_level,
+            "usable_for": usable_for,
+            "not_usable_for": not_usable_for,
+        }
+    )
 
 
 def _sync_active_parse_snapshot(attempt_dir: Path, parse_dir: Path) -> None:

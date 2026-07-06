@@ -84,6 +84,12 @@ class ParseQualityReport(BaseModel):
 
     schema_version: Literal[1]
     status: Literal["success", "partial_success", "failed"]
+    parse_attempt_id: str | None = Field(default=None, pattern=IdentifierPattern)
+    source_id: str | None = Field(default=None, pattern=IdentifierPattern)
+    parser: str | None = Field(default=None, pattern=IdentifierPattern)
+    quality_level: Literal["usable", "partial", "unusable"] | None = None
+    usable_for: list[str] = Field(default_factory=list)
+    not_usable_for: list[str] = Field(default_factory=list)
     page_count: int = Field(ge=0)
     empty_pages: list[int] = Field(default_factory=list)
     scanned_pages: list[int] = Field(default_factory=list)

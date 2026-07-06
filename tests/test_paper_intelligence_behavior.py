@@ -597,6 +597,15 @@ class TestOrchestratorBehavior:
             assert r2["parse_attempt_id"] == "pa_000002"
             assert Path("runs/test_attempts/paper/parse/attempts/pa_000001/parse_quality_report.json").exists()
             assert Path("runs/test_attempts/paper/parse/attempts/pa_000002/parse_quality_report.json").exists()
+            quality = json.loads(Path("runs/test_attempts/paper/parse/attempts/pa_000002/parse_quality_report.json").read_text())
+            assert quality["parse_attempt_id"] == "pa_000002"
+            assert quality["source_id"] == "src_ui"
+            assert quality["parser"] == "mineru_pipeline_v1"
+            assert quality["quality_level"] == "usable"
+            assert quality["usable_for"] == ["paper_artifact_synthesis", "research_context_draft"]
+            assert quality["not_usable_for"] == []
+            active_quality = json.loads(Path("runs/test_attempts/paper/parse/parse_quality_report.json").read_text())
+            assert active_quality["parse_attempt_id"] == "pa_000002"
             reg = load_source_registry(run_dir)
             attempts = reg["sources"][0]["parse_attempts"]
             assert [attempt["parse_attempt_id"] for attempt in attempts] == ["pa_000001", "pa_000002"]
