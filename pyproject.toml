@@ -3,7 +3,7 @@ name = "autoad-researcher"
 version = "0.1.0"
 description = "面向异常检测的文献迁移与实验闭环智能体"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 authors = [
     { name = "AI4S Team" },
