@@ -232,12 +232,13 @@ def render_research_chat():
     st.markdown("---")
     st.subheader("研究助手")
     st.caption("请描述你想做的实验、复现目标或改进方向。")
-    mode = st.segmented_control(
+    mode = st.radio(
         "助手模式",
         options=list(MODE_PROMPTS.keys()),
         format_func=lambda m: _MODE_LABELS[m],
         key="_chat_mode",
-        default="intent_clarification",
+        index=list(MODE_PROMPTS.keys()).index("intent_clarification"),
+        horizontal=True,
     )
 
     transcript = load_transcript(run_dir)
