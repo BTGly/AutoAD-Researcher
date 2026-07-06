@@ -9,7 +9,9 @@ from pydantic import ValidationError
 from autoad_researcher.tools import (
     PermissionEngine,
     PermissionProfile,
+    PermissionRequest,
     ProcessToolRequest,
+    ToolSpec,
     run_process_tool,
 )
 
@@ -107,3 +109,47 @@ def test_process_request_rejects_shell_string_and_nul(tmp_path: Path):
 
     with pytest.raises(ValidationError, match="NUL"):
         request(tmp_path, [sys.executable, "-c", "print('bad')", "bad\x00arg"])
+
+
+def test_tool_guard_rejects_runner_execute():
+    record = _research_assistant_permission_for("runner_execute")
+
+    assert record.permission_decision == "deny"
+    assert record.matched_rule == "research_assistant_tool_guard"
+
+
+def test_tool_guard_rejects_patch_apply():
+    record = _research_assistant_permission_for("patch_apply")
+
+    assert record.permission_decision == "deny"
+    assert record.matched_rule == "research_assistant_tool_guard"
+
+
+def _research_assistant_permission_for(tool_name: str):
+    engine = PermissionEngine(
+        profiles={
+            "research_assistant": PermissionProfile(
+                name="research_assistant",
+                allow_tools={tool_name},
+            ),
+        }
+    )
+    return engine.decide(
+        PermissionRequest(
+            tool_call_id="tool_001",
+            tool=ToolSpec(
+                name=tool_name,
+                description=f"{tool_name} execution tool",
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+                read_only=False,
+                destructive=True,
+                concurrency_safe=False,
+                deferred=False,
+                permission_category="execution",
+            ),
+            stage="research_assistant",
+            permission_profile="research_assistant",
+            arguments_redacted={},
+        )
+    )

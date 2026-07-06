@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from autoad_researcher.active_repository_context import ActiveRepositoryContext
 from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.repository_intelligence.evidence_models import (
     EvidenceIndexRecord,
@@ -17,9 +18,7 @@ from autoad_researcher.repository_intelligence.evidence_models import (
     WebEvidenceRef,
 )
 from autoad_researcher.repository_intelligence.ids import (
-    GitCommitPattern,
     IdentifierPattern,
-    Sha256Pattern,
     validate_relative_path,
 )
 from autoad_researcher.repository_intelligence.models import RepositorySource
@@ -27,17 +26,6 @@ from autoad_researcher.repository_intelligence.models import RepositorySource
 
 class EvidenceMiddlewareError(ValueError):
     """Raised when evidence middleware cannot produce safe evidence."""
-
-
-class ActiveRepositoryContext(BaseModel):
-    """Runtime context injected after repository attestation."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    source_id: str = Field(pattern=IdentifierPattern)
-    repository_root: Path
-    resolved_commit: str | None = Field(default=None, pattern=GitCommitPattern)
-    tree_sha: str = Field(pattern=Sha256Pattern)
 
 
 class FileEvidenceRequest(BaseModel):

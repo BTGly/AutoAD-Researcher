@@ -26,6 +26,7 @@ from autoad_researcher.assistant.research_context_builder import (
     render_research_chat_evidence_context,
 )
 from autoad_researcher.assistant.response_guard import guard_research_chat_reply
+from autoad_researcher.core.events import EventStore
 from autoad_researcher.ui.artifact_viewer import (
     BLOCKED_REASON_HINTS,
     get_approval_gate_report,
@@ -563,8 +564,22 @@ def _pdf_parse_action_for_source(
     }
 
 
+_RESEARCH_CHAT_ALLOWED_ACTIONS = {
+    "parse",
+    "missing",
+    "choose",
+    "already_parsing",
+    "already_parsed",
+    "parse_failed",
+    "blocked",
+    "message",
+}
+
+
 def _execute_or_report_pdf_parse_action(run_dir: Path, action: dict[str, Any]) -> str:
-    kind = action["action"]
+    kind = str(action.get("action", ""))
+    if kind not in _RESEARCH_CHAT_ALLOWED_ACTIONS:
+        return _reject_research_chat_action(run_dir, kind, action)
     decision: ActionDecision | None = action.get("action_decision")
     if kind == "parse":
         pdf_path = Path(action["pdf_path"])
@@ -639,6 +654,24 @@ def _execute_or_report_pdf_parse_action(run_dir: Path, action: dict[str, Any]) -
         st.warning(message)
     else:
         st.info(message)
+    return message
+
+
+def _reject_research_chat_action(run_dir: Path, kind: str, action: dict[str, Any]) -> str:
+    message = "Research Assistant 工具隔离已拒绝非白名单动作；不会启动 patch、runner、benchmark 或实验执行。"
+    EventStore(runs_root=run_dir.parent).append(
+        run_dir.name,
+        "tool_guard_rejected",
+        {
+            "stage": "research_chat",
+            "action": kind,
+            "reason": "action not allowed in research chat parse execution boundary",
+            "allowed_actions": sorted(_RESEARCH_CHAT_ALLOWED_ACTIONS),
+            "requested_keys": sorted(str(key) for key in action.keys()),
+        },
+    )
+    if st is not None:
+        st.warning(message)
     return message
 
 

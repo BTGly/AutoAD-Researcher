@@ -7,10 +7,22 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.repository_intelligence.ids import IdentifierPattern, Sha256Pattern
+from autoad_researcher.active_repository_context import IdentifierPattern, Sha256Pattern
 from autoad_researcher.tools.contracts import ToolSpec
 
 PermissionDecision = Literal["allow", "ask", "deny"]
+RESEARCH_ASSISTANT_STAGES = {"research_assistant", "research_chat"}
+RESEARCH_ASSISTANT_FORBIDDEN_TOOLS = {
+    "benchmark_run",
+    "experiment_execute",
+    "experiment_execution",
+    "patch_apply",
+    "patch_applicator",
+    "patch_planner",
+    "process",
+    "runner_execute",
+    "run_pipeline",
+}
 
 
 class PermissionProfile(BaseModel):
@@ -68,6 +80,14 @@ class PermissionEngine(BaseModel):
     def decide(self, request: PermissionRequest) -> PermissionDecisionRecord:
         """Apply global deny, profile rules, and session grants."""
         tool_name = request.tool.name
+
+        if request.stage in RESEARCH_ASSISTANT_STAGES and tool_name in RESEARCH_ASSISTANT_FORBIDDEN_TOOLS:
+            return _record(
+                request,
+                "deny",
+                "research_assistant_tool_guard",
+                "Research Assistant cannot execute runner, patch, benchmark, experiment, or process tools",
+            )
 
         if tool_name in self.global_deny_tools:
             return _record(request, "deny", "global_deny", "tool globally denied")

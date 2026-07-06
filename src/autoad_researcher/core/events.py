@@ -22,6 +22,7 @@ ALLOWED_EVENT_TYPES = {
     "artifact_written",
     "artifact_read",
     "active_parse_attempt_changed",
+    "tool_guard_rejected",
 }
 
 

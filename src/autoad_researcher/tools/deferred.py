@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256
-from autoad_researcher.repository_intelligence.ids import IdentifierPattern, Sha256Pattern
+from autoad_researcher.active_repository_context import IdentifierPattern, Sha256Pattern
 from autoad_researcher.tools.contracts import ToolSpec
 from autoad_researcher.tools.registry import ToolRegistry
 

@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from autoad_researcher.repository_intelligence.ids import IdentifierPattern, validate_relative_path
+from autoad_researcher.active_repository_context import IdentifierPattern, validate_relative_path
 from autoad_researcher.tools.contracts import ToolSpec
 from autoad_researcher.tools.permissions import PermissionDecisionRecord, PermissionEngine, PermissionRequest
 

@@ -13,6 +13,7 @@ from autoad_researcher.ui.intent_draft import (
 from autoad_researcher.ui.research_chat import (
     _MODE_LABELS,
     _SAFETY_WARNING,
+    _execute_or_report_pdf_parse_action,
     _extract_intent_draft,
     build_developer_info_payload,
     build_pipeline_input_action,
@@ -21,6 +22,7 @@ from autoad_researcher.ui.research_chat import (
     render_intent_draft_markdown,
 )
 from autoad_researcher.ui.task_profile import TaskProfile, save_task_profile
+from autoad_researcher.core.events import EventStore
 
 
 def test_safety_warning_not_empty():
@@ -207,3 +209,25 @@ def test_missing_patch_approval_request_raw_warning_removed():
 def test_intent_prompt_discourages_unsupported_hard_thresholds():
     assert "不要无依据地给出硬阈值" in INTENT_CLARIFICATION_PROMPT
     assert "只有 WhatWeKnow 或用户明确提供数值时" in INTENT_CLARIFICATION_PROMPT
+
+
+def test_research_chat_action_guard_rejects_non_whitelisted_execution(tmp_path: Path, monkeypatch):
+    import autoad_researcher.ui.research_chat as research_chat
+
+    class StStub:
+        def warning(self, _message: str) -> None:
+            return None
+
+    run_dir = tmp_path / "run_guard"
+    run_dir.mkdir()
+    monkeypatch.setattr(research_chat, "st", StStub())
+
+    reply = _execute_or_report_pdf_parse_action(
+        run_dir,
+        {"action": "runner_execute", "message": "run benchmark"},
+    )
+
+    assert "工具隔离已拒绝" in reply
+    events = EventStore(runs_root=tmp_path).read_events("run_guard")
+    assert events[-1].event_type == "tool_guard_rejected"
+    assert events[-1].payload["action"] == "runner_execute"

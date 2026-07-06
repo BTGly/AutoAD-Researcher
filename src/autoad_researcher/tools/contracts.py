@@ -4,8 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from autoad_researcher.repository_intelligence.evidence import ActiveRepositoryContext
-from autoad_researcher.repository_intelligence.ids import IdentifierPattern
+from autoad_researcher.active_repository_context import ActiveRepositoryContext, IdentifierPattern
 
 
 class ToolSpec(BaseModel):
