@@ -13,6 +13,10 @@ partial_success (never success).
 """
 
 import json
+import os
+import shutil
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +56,22 @@ from autoad_researcher.research_context.assembly import (
     build_unified_context_result,
 )
 from autoad_researcher.research_context.models import TaskContext, ResearchContext, SourceContext, IdeaTransferHandoff
+from autoad_researcher.ui.sources import (
+    append_source_parse_attempt,
+    load_source_registry,
+    update_source_parse_attempt,
+    update_source_status,
+)
+
+
+@dataclass(frozen=True)
+class ParseAttemptHandle:
+    parse_attempt_id: str
+    source_id: str
+    attempt_dir: Path
+    lock_path: Path | None
+    lock_fd: int | None
+    registry_source_id: str | None
 
 
 class PaperIntelligenceOrchestrator:
@@ -74,9 +94,10 @@ class PaperIntelligenceOrchestrator:
         """
         run_dir = self.runs_root / request.run_id
         paper_dir = run_dir / "paper"
+        registry_source_id = _find_registry_source_id(run_dir, request.paper_pdf_path)
 
         # Guard: reject re-run on same run_id
-        if (paper_dir / "evidence_index.jsonl").exists():
+        if registry_source_id is None and (paper_dir / "evidence_index.jsonl").exists():
             return {
                 "status": "blocked",
                 "stage": "preflight",
@@ -89,6 +110,7 @@ class PaperIntelligenceOrchestrator:
         artifacts_dir = paper_dir / "artifacts"
         validation_dir = paper_dir / "validation"
         context_dir = run_dir / "context"
+        attempt: ParseAttemptHandle | None = None
 
         warnings: list[str] = []
 
@@ -107,7 +129,7 @@ class PaperIntelligenceOrchestrator:
 
         source = PaperSource(
             schema_version=1,
-            source_id=f"src_{request.run_id}",
+            source_id=registry_source_id or f"src_{request.run_id}",
             source_kind="user_pdf",
             original_filename_label=request.paper_pdf_path,
             storage_path_label=request.paper_pdf_path,
@@ -121,217 +143,265 @@ class PaperIntelligenceOrchestrator:
         source_dir.mkdir(parents=True, exist_ok=True)
         _write_atomic_json(source_dir / "paper_source.json", source.model_dump())
 
+        try:
+            attempt = _ensure_parse_attempt(run_dir, source.source_id, request.parser_profile_id)
+        except RuntimeError as exc:
+            return {
+                "status": "blocked",
+                "stage": "parse_attempt",
+                "error": str(exc),
+                "run_id": request.run_id,
+            }
+
         # ============================================================
         # 2. MinerU Parse
         # ============================================================
-        profile = MINERU_PIPELINE_V1_PROFILE
-        provider = FixtureMinerUProvider(
-            profile=profile,
-            runtime_python_version="3.10",
-            runtime_platform="linux",
-            device_profile="cpu",
-        )
+        try:
+            profile = MINERU_PIPELINE_V1_PROFILE
+            provider = FixtureMinerUProvider(
+                profile=profile,
+                runtime_python_version="3.10",
+                runtime_platform="linux",
+                device_profile="cpu",
+            )
 
-        parse_req = DocumentParseRequest(
-            schema_version=1,
-            source_id=source.source_id,
-            source_pdf_path=request.paper_pdf_path,
-            parser_profile_id=request.parser_profile_id,
-            ocr_policy="auto",
-            language_hints=[],
-            max_pages=40,
-            max_runtime_seconds=600,
-        )
+            parse_req = DocumentParseRequest(
+                schema_version=1,
+                source_id=source.source_id,
+                source_pdf_path=request.paper_pdf_path,
+                parser_profile_id=request.parser_profile_id,
+                ocr_policy="auto",
+                language_hints=[],
+                max_pages=40,
+                max_runtime_seconds=600,
+            )
 
-        parse_result = provider.parse(parse_req, parse_dir)
-        if parse_result.status == "failed":
+            parse_result = provider.parse(parse_req, attempt.attempt_dir)
+            parse_result = parse_result.model_copy(
+                update={
+                    "parse_attempt_id": attempt.parse_attempt_id,
+                    "parser_manifest_path": str(attempt.attempt_dir / "parser_manifest.json"),
+                    "canonical_output_path": str(attempt.attempt_dir),
+                    "parse_quality_report_path": str(attempt.attempt_dir / "parse_quality_report.json"),
+                }
+            )
+            if parse_result.status == "failed":
+                _record_parse_attempt_result(
+                    run_dir,
+                    attempt,
+                    status="failed",
+                    warnings=parse_result.warnings,
+                    make_active=False,
+                )
+                return {
+                    "status": "parse_failed",
+                    "stage": "parse",
+                    "error": "; ".join(parse_result.warnings),
+                    "run_id": request.run_id,
+                    "parse_attempt_id": attempt.parse_attempt_id,
+                }
+
+            _sync_active_parse_snapshot(attempt.attempt_dir, parse_dir)
+
+            manifest = provider.get_manifest(parse_result)
+            profile_sha = profile.compute_profile_sha256()
+            _write_atomic_json(parse_dir / "parser_manifest.json", manifest.model_dump())
+
+            quality = provider.get_quality_report(parse_result)
+            _write_atomic_json(parse_dir / "parse_quality_report.json", quality.model_dump())
+
+            # ============================================================
+            # 3. Canonical Paper Store + Evidence Writer
+            # ============================================================
+            evidence_writer = EvidenceWriter(paper_dir)
+            store = CanonicalPaperStore(attempt.attempt_dir)
+            store.set_source_identity(
+                source_id=source.source_id,
+                source_pdf_sha256=source.source_pdf_sha256,
+                parse_attempt_id=parse_result.parse_attempt_id,
+                parser_profile_sha256=profile_sha,
+                canonical_output_sha256=manifest.canonical_output_sha256,
+            )
+            store.set_evidence_writer(evidence_writer)
+            sections = store.list_sections()
+            if not sections:
+                warnings.append("parse produced no sections")
+                _record_parse_attempt_result(
+                    run_dir,
+                    attempt,
+                    status="partial",
+                    warnings=warnings,
+                    make_active=False,
+                )
+                return {
+                    "status": "partial_success",
+                    "stage": "analysis",
+                    "error": "no sections in parse output",
+                    "run_id": request.run_id,
+                    "parse_attempt_id": attempt.parse_attempt_id,
+                    "warnings": warnings,
+                }
+
+            # ============================================================
+            # 4. Analysis: extract claims with real evidence_ids
+            # ============================================================
+            budget = request.budget or budget_for_profile(request.budget_profile)
+            claims, candidates = _analyze_paper_content(store, sections, budget)
+
+            evidence_ref_count = sum(len(c.evidence_ids) for c in claims)
+
+            # ============================================================
+            # 5. Initial Synthesis
+            # ============================================================
+            synthesizer = PaperArtifactSynthesizer(request.run_id, source.source_id, artifacts_dir)
+            synthesizer.synthesize(
+                claims=claims,
+                candidates=candidates,
+                components=[],
+                idea_sources=[],
+                repo_links=[],
+                status="success",
+                warnings=warnings,
+            )
+
+            # ============================================================
+            # 6. Validation
+            # ============================================================
+            validation_dir.mkdir(parents=True, exist_ok=True)
+            claim_issues = []
+            for c in claims:
+                claim_issues.extend(validate_claim(c))
+            cand_issues = []
+            for c in candidates:
+                cand_issues.extend(validate_candidate(c))
+
+            initial_valid = len(claim_issues) == 0 and len(cand_issues) == 0
+
+            # ============================================================
+            # 7. Repair if needed
+            # ============================================================
+            repairs_used = 0
+            if not initial_valid:
+                repaired_claims, repaired_candidates, repairs_used = run_paper_repair(
+                    claims, candidates,
+                    PaperValidationReport(valid=False, claim_issues=claim_issues, candidate_issues=cand_issues),
+                    budget,
+                )
+                claims = repaired_claims
+                candidates = repaired_candidates
+
+            # ============================================================
+            # 8. Post-repair validation
+            # ============================================================
+            post_claim_issues = []
+            for c in claims:
+                post_claim_issues.extend(validate_claim(c))
+            post_cand_issues = []
+            for c in candidates:
+                post_cand_issues.extend(validate_candidate(c))
+
+            post_error_count = len(post_claim_issues) + len(post_cand_issues)
+            post_valid = post_error_count == 0
+
+            report = PaperValidationReport(
+                valid=post_valid,
+                claim_issues=post_claim_issues,
+                candidate_issues=post_cand_issues,
+            )
+            _write_atomic_json(validation_dir / "paper_validation_report.json", {
+                "valid": report.valid,
+                "error_count": report.error_count,
+                "claim_issues": [{"claim_id": i.claim_id, "issue": i.issue, "severity": i.severity} for i in report.claim_issues],
+                "candidate_issues": [{"candidate_id": i.candidate_id, "issue": i.issue, "severity": i.severity} for i in report.candidate_issues],
+            })
+
+            # ============================================================
+            # 9. Final synthesis
+            # ============================================================
+            validated_claims = [c for c in claims if c.status == "confirmed" and c.evidence_ids]
+            unsupported_claims = [c for c in claims if c.status == "confirmed" and not c.evidence_ids]
+
+            final_status = "success" if (post_valid and not warnings) else "partial_success"
+            if post_error_count > 0:
+                warnings.append(f"post-repair validation has {post_error_count} remaining errors")
+            if unsupported_claims:
+                warnings.append(f"{len(unsupported_claims)} confirmed claims lack evidence")
+
+            synth = synthesizer.synthesize(
+                claims=claims,
+                candidates=candidates,
+                components=[],
+                idea_sources=[],
+                repo_links=[],
+                status=final_status,
+                warnings=warnings,
+            )
+
+            # ============================================================
+            # 10. Unified Research Context
+            # ============================================================
+            paper_facts = [
+                {"fact_id": f"f_p_{c.claim_id}", "subject": c.subject, "predicate": c.predicate,
+                 "value": str(c.value), "status": c.status, "evidence_ids": c.evidence_ids,
+                 "producer_stage": "3.2_paper_intelligence"}
+                for c in claims if c.status in ("confirmed", "inferred") and c.evidence_ids
+            ]
+            facts = assemble_fact_ledger(paper_facts=paper_facts)
+            task = TaskContext(task_id=f"task_{request.run_id}", goal=request.user_goal)
+            gaps = classify_gaps(facts, task)
+            conflicts = detect_conflicts(facts)
+            readiness = compute_readiness(gaps, conflicts)
+
+            # Write context artifacts
+            paths = emit_context_artifacts(
+                run_id=request.run_id,
+                task=task,
+                source_id=source.source_id,
+                facts=facts,
+                gaps=gaps,
+                conflicts=conflicts,
+                readiness=readiness,
+                evidence_index_path=str(evidence_writer.path) if evidence_writer else None,
+                context_dir=context_dir,
+            )
+
+            uc_result = build_unified_context_result(
+                run_id=request.run_id,
+                paper_status=final_status,
+                repository_status="not_requested",
+                readiness=readiness,
+                draft_path=paths["draft_path"],
+                report_path=paths["report_path"],
+                stable_path=paths["stable_path"],
+                handoff_path=paths["handoff_path"],
+                warnings=warnings,
+            )
+
+            _record_parse_attempt_result(
+                run_dir,
+                attempt,
+                status="ok" if final_status == "success" else "partial",
+                warnings=warnings,
+                make_active=final_status == "success",
+            )
+
             return {
-                "status": "parse_failed",
-                "stage": "parse",
-                "error": "; ".join(parse_result.warnings),
+                "status": final_status,
                 "run_id": request.run_id,
-            }
-
-        manifest = provider.get_manifest(parse_result)
-        profile_sha = profile.compute_profile_sha256()
-        _write_atomic_json(parse_dir / "parser_manifest.json", manifest.model_dump())
-
-        quality = provider.get_quality_report(parse_result)
-        _write_atomic_json(parse_dir / "parse_quality_report.json", quality.model_dump())
-
-        # ============================================================
-        # 3. Canonical Paper Store + Evidence Writer
-        # ============================================================
-        evidence_writer = EvidenceWriter(paper_dir)
-        store = CanonicalPaperStore(parse_dir)
-        store.set_source_identity(
-            source_id=source.source_id,
-            source_pdf_sha256=source.source_pdf_sha256,
-            parse_attempt_id=parse_result.parse_attempt_id,
-            parser_profile_sha256=profile_sha,
-            canonical_output_sha256=manifest.canonical_output_sha256,
-        )
-        store.set_evidence_writer(evidence_writer)
-        sections = store.list_sections()
-        if not sections:
-            warnings.append("parse produced no sections")
-            return {
-                "status": "partial_success",
-                "stage": "analysis",
-                "error": "no sections in parse output",
-                "run_id": request.run_id,
+                "parse_attempt_id": attempt.parse_attempt_id,
+                "claim_count": len(claims),
+                "evidence_ref_count": evidence_ref_count,
+                "validated_claim_count": len(validated_claims),
+                "unsupported_claim_count": len(unsupported_claims),
+                "candidate_count": len(candidates),
+                "repairs_used": repairs_used,
+                "post_validation_errors": post_error_count,
+                "paper_reader_result": synth.paper_reader_result.model_dump(),
+                "context_result": uc_result.model_dump(),
                 "warnings": warnings,
             }
-
-        # ============================================================
-        # 4. Analysis: extract claims with real evidence_ids
-        # ============================================================
-        budget = request.budget or budget_for_profile(request.budget_profile)
-        claims, candidates = _analyze_paper_content(store, sections, budget)
-
-        evidence_ref_count = sum(len(c.evidence_ids) for c in claims)
-
-        # ============================================================
-        # 5. Initial Synthesis
-        # ============================================================
-        synthesizer = PaperArtifactSynthesizer(request.run_id, source.source_id, artifacts_dir)
-        synthesizer.synthesize(
-            claims=claims,
-            candidates=candidates,
-            components=[],
-            idea_sources=[],
-            repo_links=[],
-            status="success",
-            warnings=warnings,
-        )
-
-        # ============================================================
-        # 6. Validation
-        # ============================================================
-        validation_dir.mkdir(parents=True, exist_ok=True)
-        claim_issues = []
-        for c in claims:
-            claim_issues.extend(validate_claim(c))
-        cand_issues = []
-        for c in candidates:
-            cand_issues.extend(validate_candidate(c))
-
-        initial_valid = len(claim_issues) == 0 and len(cand_issues) == 0
-
-        # ============================================================
-        # 7. Repair if needed
-        # ============================================================
-        repairs_used = 0
-        if not initial_valid:
-            repaired_claims, repaired_candidates, repairs_used = run_paper_repair(
-                claims, candidates,
-                PaperValidationReport(valid=False, claim_issues=claim_issues, candidate_issues=cand_issues),
-                budget,
-            )
-            claims = repaired_claims
-            candidates = repaired_candidates
-
-        # ============================================================
-        # 8. Post-repair validation
-        # ============================================================
-        post_claim_issues = []
-        for c in claims:
-            post_claim_issues.extend(validate_claim(c))
-        post_cand_issues = []
-        for c in candidates:
-            post_cand_issues.extend(validate_candidate(c))
-
-        post_error_count = len(post_claim_issues) + len(post_cand_issues)
-        post_valid = post_error_count == 0
-
-        report = PaperValidationReport(
-            valid=post_valid,
-            claim_issues=post_claim_issues,
-            candidate_issues=post_cand_issues,
-        )
-        _write_atomic_json(validation_dir / "paper_validation_report.json", {
-            "valid": report.valid,
-            "error_count": report.error_count,
-            "claim_issues": [{"claim_id": i.claim_id, "issue": i.issue, "severity": i.severity} for i in report.claim_issues],
-            "candidate_issues": [{"candidate_id": i.candidate_id, "issue": i.issue, "severity": i.severity} for i in report.candidate_issues],
-        })
-
-        # ============================================================
-        # 9. Final synthesis
-        # ============================================================
-        validated_claims = [c for c in claims if c.status == "confirmed" and c.evidence_ids]
-        unsupported_claims = [c for c in claims if c.status == "confirmed" and not c.evidence_ids]
-
-        final_status = "success" if (post_valid and not warnings) else "partial_success"
-        if post_error_count > 0:
-            warnings.append(f"post-repair validation has {post_error_count} remaining errors")
-        if unsupported_claims:
-            warnings.append(f"{len(unsupported_claims)} confirmed claims lack evidence")
-
-        synth = synthesizer.synthesize(
-            claims=claims,
-            candidates=candidates,
-            components=[],
-            idea_sources=[],
-            repo_links=[],
-            status=final_status,
-            warnings=warnings,
-        )
-
-        # ============================================================
-        # 10. Unified Research Context
-        # ============================================================
-        paper_facts = [
-            {"fact_id": f"f_p_{c.claim_id}", "subject": c.subject, "predicate": c.predicate,
-             "value": str(c.value), "status": c.status, "evidence_ids": c.evidence_ids,
-             "producer_stage": "3.2_paper_intelligence"}
-            for c in claims if c.status in ("confirmed", "inferred") and c.evidence_ids
-        ]
-        facts = assemble_fact_ledger(paper_facts=paper_facts)
-        task = TaskContext(task_id=f"task_{request.run_id}", goal=request.user_goal)
-        gaps = classify_gaps(facts, task)
-        conflicts = detect_conflicts(facts)
-        readiness = compute_readiness(gaps, conflicts)
-
-        # Write context artifacts
-        paths = emit_context_artifacts(
-            run_id=request.run_id,
-            task=task,
-            source_id=source.source_id,
-            facts=facts,
-            gaps=gaps,
-            conflicts=conflicts,
-            readiness=readiness,
-            evidence_index_path=str(evidence_writer.path) if evidence_writer else None,
-            context_dir=context_dir,
-        )
-
-        uc_result = build_unified_context_result(
-            run_id=request.run_id,
-            paper_status=final_status,
-            repository_status="not_requested",
-            readiness=readiness,
-            draft_path=paths["draft_path"],
-            report_path=paths["report_path"],
-            stable_path=paths["stable_path"],
-            handoff_path=paths["handoff_path"],
-            warnings=warnings,
-        )
-
-        return {
-            "status": final_status,
-            "run_id": request.run_id,
-            "claim_count": len(claims),
-            "evidence_ref_count": evidence_ref_count,
-            "validated_claim_count": len(validated_claims),
-            "unsupported_claim_count": len(unsupported_claims),
-            "candidate_count": len(candidates),
-            "repairs_used": repairs_used,
-            "post_validation_errors": post_error_count,
-            "paper_reader_result": synth.paper_reader_result.model_dump(),
-            "context_result": uc_result.model_dump(),
-            "warnings": warnings,
-        }
+        finally:
+            _release_parse_lock(attempt)
 
 
 def emit_context_artifacts(
@@ -503,6 +573,167 @@ def _analyze_paper_content(
             ))
 
     return claims, candidates
+
+
+def _find_registry_source_id(run_dir: Path, paper_pdf_path: str) -> str | None:
+    try:
+        registry = load_source_registry(run_dir)
+    except Exception:
+        return None
+    try:
+        requested = Path(paper_pdf_path).resolve()
+    except OSError:
+        return None
+    for source in registry.get("sources", []):
+        stored_path = source.get("stored_path")
+        if not isinstance(stored_path, str) or not stored_path:
+            continue
+        try:
+            candidate = (run_dir / stored_path).resolve()
+        except OSError:
+            continue
+        if candidate == requested:
+            source_id = source.get("source_id")
+            return source_id if isinstance(source_id, str) else None
+    return None
+
+
+def _ensure_parse_attempt(run_dir: Path, source_id: str, parser_profile_id: str) -> ParseAttemptHandle:
+    lock_path, lock_fd = _acquire_parse_lock(run_dir)
+    parse_attempt_id = _next_parse_attempt_id(run_dir)
+    attempt_dir = run_dir / "paper" / "parse" / "attempts" / parse_attempt_id
+    if attempt_dir.exists():
+        _release_parse_lock(ParseAttemptHandle(parse_attempt_id, source_id, attempt_dir, lock_path, lock_fd, source_id))
+        raise RuntimeError(f"parse attempt already exists: {parse_attempt_id}")
+    attempt_dir.mkdir(parents=True, exist_ok=False)
+
+    registry_source_id = _source_exists_in_registry(run_dir, source_id)
+    handle = ParseAttemptHandle(
+        parse_attempt_id=parse_attempt_id,
+        source_id=source_id,
+        attempt_dir=attempt_dir,
+        lock_path=lock_path,
+        lock_fd=lock_fd,
+        registry_source_id=source_id if registry_source_id else None,
+    )
+    if handle.registry_source_id is not None:
+        now = datetime.now(timezone.utc).isoformat()
+        append_source_parse_attempt(
+            run_dir,
+            source_id,
+            {
+                "parse_attempt_id": parse_attempt_id,
+                "source_id": source_id,
+                "parser": parser_profile_id,
+                "status": "running",
+                "output_dir": _relative_to_run(run_dir, attempt_dir),
+                "quality_report": _relative_to_run(run_dir, attempt_dir / "parse_quality_report.json"),
+                "created_at": now,
+            },
+            make_active=False,
+        )
+        update_source_status(run_dir, source_id, "parsing")
+    return handle
+
+
+def _acquire_parse_lock(run_dir: Path) -> tuple[Path, int]:
+    lock_dir = run_dir / "sources"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / ".parse.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise RuntimeError("parse attempt in progress for this run, retry after completion") from exc
+    os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+    return lock_path, fd
+
+
+def _release_parse_lock(handle: ParseAttemptHandle | None) -> None:
+    if handle is None:
+        return
+    if handle.lock_fd is not None:
+        try:
+            os.close(handle.lock_fd)
+        except OSError:
+            pass
+    if handle.lock_path is not None:
+        try:
+            handle.lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _next_parse_attempt_id(run_dir: Path) -> str:
+    try:
+        registry = load_source_registry(run_dir)
+    except Exception:
+        registry = {"sources": []}
+    max_seen = 0
+    for source in registry.get("sources", []):
+        attempts = source.get("parse_attempts", [])
+        if not isinstance(attempts, list):
+            continue
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            attempt_id = attempt.get("parse_attempt_id")
+            if not isinstance(attempt_id, str):
+                continue
+            if not attempt_id.startswith("pa_"):
+                continue
+            suffix = attempt_id[3:]
+            if suffix.isdigit():
+                max_seen = max(max_seen, int(suffix))
+    return f"pa_{max_seen + 1:06d}"
+
+
+def _source_exists_in_registry(run_dir: Path, source_id: str) -> bool:
+    try:
+        registry = load_source_registry(run_dir)
+    except Exception:
+        return False
+    return any(source.get("source_id") == source_id for source in registry.get("sources", []))
+
+
+def _record_parse_attempt_result(
+    run_dir: Path,
+    attempt: ParseAttemptHandle,
+    *,
+    status: str,
+    warnings: list[str],
+    make_active: bool,
+) -> None:
+    if attempt.registry_source_id is None:
+        return
+    update_source_parse_attempt(
+        run_dir,
+        attempt.source_id,
+        attempt.parse_attempt_id,
+        {
+            "status": status,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "warnings": list(warnings),
+        },
+        make_active=make_active,
+    )
+    if status == "ok":
+        update_source_status(run_dir, attempt.source_id, "parsed")
+    elif status in {"failed", "partial"}:
+        update_source_status(run_dir, attempt.source_id, "failed", error_message="; ".join(warnings) or f"parse attempt {status}")
+
+
+def _sync_active_parse_snapshot(attempt_dir: Path, parse_dir: Path) -> None:
+    parse_dir.mkdir(parents=True, exist_ok=True)
+    for path in attempt_dir.iterdir():
+        if path.is_file():
+            shutil.copy2(path, parse_dir / path.name)
+
+
+def _relative_to_run(run_dir: Path, path: Path) -> str:
+    try:
+        return path.relative_to(run_dir).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _write_atomic_json(path: Path, data: Any) -> None:

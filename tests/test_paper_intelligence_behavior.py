@@ -559,6 +559,89 @@ class TestOrchestratorBehavior:
 
         _chdir_tmp(tmp_path, work)
 
+    def test_registered_source_multiple_parse_attempts_do_not_overwrite(self, tmp_path):
+        from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
+        from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
+        from autoad_researcher.paper_intelligence.agent import budget_for_profile
+        from autoad_researcher.ui.sources import append_source_ref, load_source_registry
+
+        def work():
+            run_dir = Path("runs/test_attempts")
+            pdf_dir = run_dir / "sources" / "src_ui"
+            pdf_dir.mkdir(parents=True)
+            pdf = pdf_dir / "test.pdf"
+            _make_valid_pdf(pdf)
+            append_source_ref(
+                run_dir,
+                source_id="src_ui",
+                kind="paper_pdf",
+                user_label="test.pdf",
+                stored_path="sources/src_ui/test.pdf",
+                status="uploaded_not_parsed",
+            )
+            budget = budget_for_profile("standard")
+            req = PaperIntelligenceRequest(
+                schema_version=1, request_id="req_t", run_id="test_attempts",
+                user_goal="Test", paper_pdf_path=str(pdf),
+                parser_profile_id="mineru_pipeline_v1",
+                web_context_allowed=False, alpha_xiv_allowed=False,
+                user_confirmation_policy="never",
+                budget_profile="standard", budget=budget,
+            )
+            orch = PaperIntelligenceOrchestrator(Path("runs"))
+
+            r1 = orch.run(req)
+            r2 = orch.run(req)
+
+            assert r1["parse_attempt_id"] == "pa_000001"
+            assert r2["parse_attempt_id"] == "pa_000002"
+            assert Path("runs/test_attempts/paper/parse/attempts/pa_000001/parse_quality_report.json").exists()
+            assert Path("runs/test_attempts/paper/parse/attempts/pa_000002/parse_quality_report.json").exists()
+            reg = load_source_registry(run_dir)
+            attempts = reg["sources"][0]["parse_attempts"]
+            assert [attempt["parse_attempt_id"] for attempt in attempts] == ["pa_000001", "pa_000002"]
+
+        _chdir_tmp(tmp_path, work)
+
+    def test_parse_attempt_id_collision_rejected(self, tmp_path):
+        from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
+        from autoad_researcher.paper_intelligence.models import PaperIntelligenceRequest
+        from autoad_researcher.paper_intelligence.agent import budget_for_profile
+        from autoad_researcher.ui.sources import append_source_ref
+
+        def work():
+            run_dir = Path("runs/test_locked")
+            pdf_dir = run_dir / "sources" / "src_ui"
+            pdf_dir.mkdir(parents=True)
+            pdf = pdf_dir / "test.pdf"
+            _make_valid_pdf(pdf)
+            append_source_ref(
+                run_dir,
+                source_id="src_ui",
+                kind="paper_pdf",
+                user_label="test.pdf",
+                stored_path="sources/src_ui/test.pdf",
+                status="uploaded_not_parsed",
+            )
+            (run_dir / "sources" / ".parse.lock").write_text("locked\n", encoding="utf-8")
+            budget = budget_for_profile("standard")
+            req = PaperIntelligenceRequest(
+                schema_version=1, request_id="req_t", run_id="test_locked",
+                user_goal="Test", paper_pdf_path=str(pdf),
+                parser_profile_id="mineru_pipeline_v1",
+                web_context_allowed=False, alpha_xiv_allowed=False,
+                user_confirmation_policy="never",
+                budget_profile="standard", budget=budget,
+            )
+
+            result = PaperIntelligenceOrchestrator(Path("runs")).run(req)
+
+            assert result["status"] == "blocked"
+            assert result["stage"] == "parse_attempt"
+            assert result["error"] == "parse attempt in progress for this run, retry after completion"
+
+        _chdir_tmp(tmp_path, work)
+
     def test_ready_branch_writes_stable_context_and_handoff(self, tmp_path):
         """emit_context_artifacts must write stable context and handoff
         when readiness is ready_for_idea_transfer_design."""

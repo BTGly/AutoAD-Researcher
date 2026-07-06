@@ -199,6 +199,30 @@ def append_source_parse_attempt(
     _save_registry(run_dir, registry)
 
 
+def update_source_parse_attempt(
+    run_dir: Path,
+    source_id: str,
+    parse_attempt_id: str,
+    updates: dict[str, Any],
+    *,
+    make_active: bool = False,
+) -> None:
+    """Update one existing parse attempt without replacing the attempt list."""
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("source_id") != source_id:
+            continue
+        for attempt in source.get("parse_attempts", []):
+            if attempt.get("parse_attempt_id") == parse_attempt_id:
+                attempt.update(updates)
+                if make_active:
+                    source["active_parse_attempt_id"] = parse_attempt_id
+                _save_registry(run_dir, registry)
+                return
+        break
+    raise KeyError(f"parse attempt not found: {source_id}/{parse_attempt_id}")
+
+
 def get_source_context(run_dir: Path) -> str:
     """Return a human-readable summary of the source registry for LLM context."""
     registry = load_source_registry(run_dir)
