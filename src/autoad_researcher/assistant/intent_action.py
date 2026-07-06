@@ -381,7 +381,11 @@ def render_response_for_decision(snapshot: ResearchContextSnapshot, decision: Ac
         return f"已生成 paper artifacts，但质量不足（{warnings}）。当前不能基于论文正文作可靠判断。"
     if decision.response_mode == "parsed_artifact_summary":
         methods = "；".join(snapshot.paper_methods[:5]) if snapshot.paper_methods else "artifacts 中未看到结构化方法摘要"
-        return f"我会只基于已生成 artifacts 回答。当前从 artifacts 看到：{methods}"
+        parts = [f"我会只基于已生成 artifacts 回答。当前从 artifacts 看到：{methods}"]
+        if snapshot.missing_blocking_gaps:
+            gaps = "、".join(snapshot.missing_blocking_gaps[:5])
+            parts.append(f"仍缺：{gaps}")
+        return "\n\n".join(parts)
     if decision.response_mode == "execution_request_blocked":
         return "当前还没有代码修改或实验执行批准。我可以先整理研究目标草案；这不会启动 patch、benchmark 或真实实验。"
     if decision.response_mode == "research_task_confirmed":
@@ -555,8 +559,19 @@ def _find_explicit_source(snapshot: ResearchContextSnapshot, stored_path: str | 
 
 
 def _ready_for_task_draft(snapshot: ResearchContextSnapshot) -> bool:
-    required = {"baseline_method", "dataset", "primary_metric", "metric_direction"}
-    return required.isdisjoint(set(snapshot.missing_blocking_gaps)) and snapshot.has_parsed_artifact
+    required_absent = {
+        "baseline_method",
+        "dataset",
+        "primary_metric",
+        "metric_direction",
+    }
+    if any(field in snapshot.missing_blocking_gaps for field in required_absent):
+        return False
+    if snapshot.missing_blocking_gaps:
+        return False
+    if not snapshot.has_parsed_artifact:
+        return False
+    return True
 
 
 def _select_blocking_gaps(missing_fields: list[str]) -> list[str]:

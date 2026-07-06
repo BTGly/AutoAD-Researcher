@@ -285,3 +285,73 @@ def test_action_decisions_jsonl(tmp_path):
 
     assert payload["user_message_id"] == "msg_1"
     assert payload["selected_action"] == "answer_directly"
+
+
+def test_attachment_only_pdf_auto_parse(tmp_path):
+    run_dir = tmp_path / "run_attach"
+    run_dir.mkdir()
+    info = save_uploaded_file(run_dir, _make_upload("SimpleNet.pdf"))
+
+    attached_sources = [info]
+    user_content = f"上传资料：{Path(info['stored_path']).name}"
+    snapshot = build_research_context_snapshot(run_dir)
+    signal = infer_intent_signal(user_content, snapshot)
+    decision = resolve_material_auto_action(
+        snapshot=snapshot,
+        signal=signal,
+        recent_sources=attached_sources,
+    )
+
+    assert decision.selected_action == "parse_uploaded_pdf"
+    assert decision.stored_path == info["stored_path"]
+
+
+def test_parse_success_reply_includes_candidate_understanding_or_gaps(tmp_path):
+    run_dir = tmp_path / "run_gaps"
+    run_dir.mkdir()
+    from autoad_researcher.assistant.intent_action import ResearchContextSnapshot
+    snapshot = ResearchContextSnapshot(
+        run_id="run_gaps",
+        has_parsed_artifact=True,
+        paper_artifact_quality="usable",
+        paper_methods=["SimpleNet", "异常检测"],
+        missing_blocking_gaps=["dataset", "primary_metric"],
+    )
+    decision = ActionDecision(
+        snapshot_sha256="aa" * 32,
+        selected_action="summarize_parsed_artifacts",
+        response_mode="parsed_artifact_summary",
+        reason="test",
+        execution_status="skipped_by_idempotency",
+    )
+    reply = render_response_for_decision(snapshot, decision)
+
+    assert "SimpleNet" in reply
+    assert "异常检测" in reply
+    assert "dataset" in reply or "primary_metric" in reply
+    assert "仍缺" in reply
+
+
+def test_ready_for_task_draft_requires_no_blocking_gaps(tmp_path):
+    run_dir = tmp_path / "run_draft"
+    run_dir.mkdir()
+    from autoad_researcher.assistant.intent_action import ResearchContextSnapshot
+    snapshot = ResearchContextSnapshot(
+        run_id="run_draft",
+        has_parsed_artifact=True,
+        paper_artifact_quality="usable",
+        paper_methods=["SimpleNet"],
+        missing_blocking_gaps=["dataset", "baseline_method", "primary_metric", "metric_direction"],
+    )
+    signal = infer_intent_signal("读一下论文", snapshot)
+    assert signal.ready_for_task_draft is False
+
+    snapshot_no_gaps = ResearchContextSnapshot(
+        run_id="run_draft2",
+        has_parsed_artifact=True,
+        paper_artifact_quality="usable",
+        paper_methods=["SimpleNet"],
+        missing_blocking_gaps=[],
+    )
+    signal2 = infer_intent_signal("读一下论文", snapshot_no_gaps)
+    assert signal2.ready_for_task_draft is True
