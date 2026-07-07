@@ -13,6 +13,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.v2.need_discovery import (
+    RequiredNeedSpec,
+    canonicalize_metrics,
+    discover_required_needs,
+    validate_need_spec,
+)
+
 
 CONTRACT_DRAFT_FILE = "research_intent_contract_draft.json"
 CONTRACT_FILE = "research_intent_contract.json"
@@ -43,10 +50,40 @@ CORE_REQUIRED_FIELDS = [
     "research_goal",
     "baseline",
     "dataset",
-    "primary_metric",
+    "primary_metrics",
     "success_criteria",
     "execution_mode",
 ]
+
+
+class MetricMention(BaseModel):
+    """A metric phrase normalized to an internal metric id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw_text: str
+    canonical: str
+    role: Literal["primary_candidate", "secondary_candidate", "mentioned"] = "mentioned"
+    evidence: str | None = None
+    confidence: float | None = None
+
+
+class MetricIntent(BaseModel):
+    """Metric intent extracted from user text.
+
+    Rules only canonicalize metric names. Ambiguous multi-metric "main" phrases
+    are treated as co-primary instead of forcing a single winner by position.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mentioned_metrics: list[MetricMention] = Field(default_factory=list)
+    primary_metrics: list[str] = Field(default_factory=list)
+    secondary_metrics: list[str] = Field(default_factory=list)
+    metric_priority: str | None = None
+    needs_user_confirmation: bool = False
+    clarifying_question: str | None = None
+    extraction_source: Literal["llm", "fallback", "user_confirmed"] = "fallback"
 
 
 class ResearchIntentContract(BaseModel):
@@ -67,8 +104,11 @@ class ResearchIntentContract(BaseModel):
 
     dataset: str | None = None
     evaluation_protocol: str | None = None
+    primary_metrics: list[str] = Field(default_factory=list)
     primary_metric: str | None = None
     secondary_metrics: list[str] = Field(default_factory=list)
+    metric_priority: str | None = None
+    metric_intent: MetricIntent = Field(default_factory=MetricIntent)
     success_criteria: str | None = None
 
     compute_environment: dict[str, Any] = Field(default_factory=dict)
@@ -85,6 +125,7 @@ class ResearchIntentContract(BaseModel):
     evidence_sources: list[dict[str, Any]] = Field(default_factory=list)
     missing_required_fields: list[str] = Field(default_factory=list)
     user_confirmed_fields: list[str] = Field(default_factory=list)
+    need_spec: RequiredNeedSpec = Field(default_factory=RequiredNeedSpec)
 
     ready_for_plan: bool = False
     ready_for_repo_analysis: bool = False
@@ -103,15 +144,32 @@ def build_contract_from_context(
     confirmed = dict(llm_context.get("confirmed_from_user") or {})
     combined_user_text = _combined_user_text(user_input, transcript_tail)
     sources = _load_source_registry_sources(run_dir)
+    need_spec = discover_required_needs(
+        user_input=user_input,
+        transcript_tail=transcript_tail,
+        source_registry=sources,
+        usable_evidence=llm_context.get("usable_evidence", []) or [],
+        current_stage_goal="generate_plan",
+        answerability=llm_context.get("answerability", {}) or {},
+    )
 
-    confirmed_metrics = _listify(confirmed.get("metrics"))
-    inferred_primary_metric, inferred_secondary_metrics = _infer_metrics(combined_user_text)
+    confirmed_metrics = _canonicalize_metric_list(_listify(confirmed.get("metrics")))
+    inferred_metric_intent = _extract_metric_intent(combined_user_text)
     if confirmed_metrics:
-        primary_metric = confirmed_metrics[0]
-        secondary_metrics = [metric for metric in confirmed_metrics[1:] if metric != primary_metric]
+        metric_intent = MetricIntent(
+            mentioned_metrics=[
+                MetricMention(raw_text=metric, canonical=metric, role="primary_candidate", confidence=1.0)
+                for metric in confirmed_metrics
+            ],
+            primary_metrics=confirmed_metrics,
+            secondary_metrics=[],
+            metric_priority="user_confirmed",
+            extraction_source="user_confirmed",
+        )
     else:
-        primary_metric = inferred_primary_metric
-        secondary_metrics = inferred_secondary_metrics
+        metric_intent = inferred_metric_intent
+    primary_metrics = metric_intent.primary_metrics
+    primary_metric = primary_metrics[0] if len(primary_metrics) == 1 else None
     baseline_repo = _first_github_source(sources)
 
     contract = ResearchIntentContract(
@@ -122,9 +180,12 @@ def build_contract_from_context(
         baseline_repo=baseline_repo,
         dataset=_clean_str(confirmed.get("dataset")) or _infer_dataset(combined_user_text),
         evaluation_protocol=_infer_evaluation_protocol(combined_user_text),
+        primary_metrics=primary_metrics,
         primary_metric=primary_metric,
-        secondary_metrics=secondary_metrics,
-        success_criteria=_infer_success_criteria(combined_user_text, primary_metric),
+        secondary_metrics=metric_intent.secondary_metrics,
+        metric_priority=metric_intent.metric_priority,
+        metric_intent=metric_intent,
+        success_criteria=_infer_success_criteria(combined_user_text, primary_metrics),
         compute_environment=_infer_compute_environment(combined_user_text, confirmed),
         execution_mode=_infer_execution_mode(combined_user_text),
         user_improvement_hints=_infer_improvement_hints(combined_user_text),
@@ -132,19 +193,9 @@ def build_contract_from_context(
         preferred_method_hints=_infer_preferred_method_hints(combined_user_text),
         risk_preference=_infer_risk_preference(combined_user_text),
         evidence_sources=_contract_evidence_sources(sources, llm_context),
+        need_spec=need_spec,
     )
-    contract.user_confirmed_fields = _confirmed_fields(contract)
-    contract.missing_required_fields = _missing_core_fields(contract)
-    contract.ready_for_plan = not contract.missing_required_fields
-    contract.ready_for_repo_analysis = bool(contract.baseline_repo)
-    contract.ready_for_experiment_agents = bool(
-        contract.ready_for_plan
-        and contract.ready_for_repo_analysis
-        and contract.baseline_entrypoint
-        and contract.baseline_config
-        and contract.evaluation_protocol
-        and contract.compute_environment
-    )
+    _refresh_contract_state(contract)
     return contract
 
 
@@ -177,6 +228,7 @@ def merge_contract_draft(
         "baseline_config",
         "dataset",
         "evaluation_protocol",
+        "metric_priority",
         "primary_metric",
         "success_criteria",
         "risk_preference",
@@ -196,6 +248,7 @@ def merge_contract_draft(
 
     list_fields = [
         "secondary_metrics",
+        "primary_metrics",
         "user_improvement_hints",
         "user_target_module_hints",
         "preferred_method_hints",
@@ -205,6 +258,15 @@ def merge_contract_draft(
     ]
     for field in list_fields:
         setattr(merged, field, _merge_unique_list(getattr(merged, field), update_data.get(field)))
+
+    if update.metric_intent.mentioned_metrics:
+        merged.metric_intent = _merge_metric_intent(merged.metric_intent, update.metric_intent)
+        merged.primary_metrics = merged.metric_intent.primary_metrics
+        merged.secondary_metrics = merged.metric_intent.secondary_metrics
+        merged.metric_priority = merged.metric_intent.metric_priority
+        merged.primary_metric = merged.primary_metrics[0] if len(merged.primary_metrics) == 1 else None
+    if update.need_spec.needs:
+        merged.need_spec = update.need_spec
 
     merged.evidence_sources = _merge_evidence_sources(merged.evidence_sources, update.evidence_sources)
     _refresh_contract_state(merged)
@@ -243,7 +305,8 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
         f"- baseline：{contract.baseline or '待确认'}",
         f"- baseline repo：{contract.baseline_repo or '未提供，可后续由 repo analyzer 补'}",
         f"- dataset：{contract.dataset or '待确认'}",
-        f"- primary metric：{contract.primary_metric or '待确认'}",
+        f"- primary metrics：{', '.join(contract.primary_metrics) if contract.primary_metrics else '待确认'}",
+        f"- metric priority：{contract.metric_priority or '未指定'}",
         f"- success criteria：{contract.success_criteria or '待确认'}",
         f"- execution mode：{contract.execution_mode}",
         f"- evaluation protocol：{contract.evaluation_protocol or '可后续由 repo/实验 agents 补全'}",
@@ -369,69 +432,138 @@ def _infer_dataset(text: str) -> str | None:
 
 
 def _infer_primary_metric(text: str) -> str | None:
-    return _infer_metrics(text)[0]
+    metrics = _extract_metric_intent(text).primary_metrics
+    return metrics[0] if len(metrics) == 1 else None
 
 
 def _infer_metrics(text: str) -> tuple[str | None, list[str]]:
-    lowered = text.lower()
-    candidates: list[tuple[int, str]] = []
+    intent = _extract_metric_intent(text)
+    primary = intent.primary_metrics[0] if len(intent.primary_metrics) == 1 else None
+    return primary, intent.secondary_metrics
+
+
+def _extract_metric_intent(text: str) -> MetricIntent:
+    mentions = _find_metric_mentions(text)
+    mentioned = _unique_metrics([mention.canonical for mention in mentions])
+    if not mentioned:
+        return MetricIntent()
+
+    explicit_primary = _metrics_with_primary_cues(text, mentioned)
+    explicit_secondary = _metrics_with_secondary_cues(text, mentioned)
+
+    if explicit_primary:
+        primary_metrics = explicit_primary
+        secondary_metrics = explicit_secondary or [metric for metric in mentioned if metric not in primary_metrics]
+    elif explicit_secondary:
+        secondary_metrics = explicit_secondary
+        primary_metrics = [metric for metric in mentioned if metric not in secondary_metrics]
+        if not primary_metrics:
+            primary_metrics = mentioned
+            secondary_metrics = []
+    else:
+        primary_metrics = mentioned
+        secondary_metrics = []
+
+    primary_metrics = _unique_metrics(primary_metrics)
+    secondary_metrics = [metric for metric in _unique_metrics(secondary_metrics) if metric not in primary_metrics]
+    metric_priority = _metric_priority(primary_metrics, secondary_metrics)
+    role_by_metric = {
+        **{metric: "primary_candidate" for metric in primary_metrics},
+        **{metric: "secondary_candidate" for metric in secondary_metrics},
+    }
+    normalized_mentions = [
+        mention.model_copy(update={"role": role_by_metric.get(mention.canonical, "mentioned")})
+        for mention in mentions
+    ]
+    return MetricIntent(
+        mentioned_metrics=normalized_mentions,
+        primary_metrics=primary_metrics,
+        secondary_metrics=secondary_metrics,
+        metric_priority=metric_priority,
+        needs_user_confirmation=False,
+        extraction_source="fallback",
+    )
+
+
+def _find_metric_mentions(text: str) -> list[MetricMention]:
     patterns = [
-        ("pixel_level_auroc", r"pixel.{0,20}(auc|auroc)|pixel[-_\s]*level[-_\s]*(auc|auroc)|定位"),
-        ("image_level_auroc", r"image.{0,20}(auc|auroc)|image[-_\s]*level[-_\s]*(auc|auroc)|instance.{0,20}(auc|auroc)|auroc|auc-?roc|auc\b"),
-        ("pro", r"\bpro\b|\bau[-_\s]*pro\b"),
+        ("image_level_auroc", r"image[-_\s]*(level[-_\s]*)?(auc|auroc)|instance[-_\s]*(level[-_\s]*)?(auc|auroc)"),
+        ("pixel_level_auroc", r"pixel[-_\s]*(level[-_\s]*)?(auc|auroc)|full[-_\s]*pixel[-_\s]*(auc|auroc)|定位"),
+        ("pro", r"\bpro\b|per[-_\s]*region[-_\s]*overlap|\bau[-_\s]*pro\b"),
         ("f1", r"\bf1\b|f1[-_\s]*score"),
         ("accuracy", r"accuracy|准确率"),
-        ("inference_latency", r"速度|推理|latency|throughput|fps"),
+        ("inference_latency", r"速度|推理速度|latency|throughput|fps"),
         ("peak_vram", r"显存|memory|vram"),
     ]
-    for metric, pattern in patterns:
-        match = re.search(pattern, lowered)
-        if match:
-            candidates.append((match.start(), metric))
+    mentions: list[tuple[int, MetricMention]] = []
+    occupied_spans: list[tuple[int, int]] = []
+    for canonical, pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            start, end = match.span()
+            if any(start < used_end and end > used_start for used_start, used_end in occupied_spans):
+                continue
+            occupied_spans.append((start, end))
+            mentions.append((
+                start,
+                MetricMention(
+                    raw_text=match.group(0),
+                    canonical=canonical,
+                    evidence=_clause_containing(text, start),
+                    confidence=0.9,
+                ),
+            ))
+    return [mention for _, mention in sorted(mentions, key=lambda item: item[0])]
 
-    primary = _explicit_primary_metric(text, lowered)
-    ordered = _unique_metrics([metric for _, metric in sorted(candidates, key=lambda item: item[0])])
-    if primary is None and ordered:
-        primary = ordered[0]
-    if primary is None:
-        return None, []
-    secondary = [metric for metric in ordered if metric != primary]
-    return primary, secondary
 
-
-def _explicit_primary_metric(original_text: str, lowered: str) -> str | None:
-    clauses = re.split(r"[，,。；;\n]+", original_text)
-    for clause in clauses:
-        if "主要" not in clause:
+def _metrics_with_primary_cues(text: str, metrics: list[str]) -> list[str]:
+    primary: list[str] = []
+    for clause in _metric_clauses(text):
+        clause_metrics = _unique_metrics([mention.canonical for mention in _find_metric_mentions(clause)])
+        if not clause_metrics:
             continue
-        clause_lowered = clause.lower()
-        clause_candidates = [
-            _metric_match_position(clause_lowered, r"pixel.{0,20}(auc|auroc)|定位", "pixel_level_auroc"),
-            _metric_match_position(clause_lowered, r"image.{0,20}(auc|auroc)|auroc|auc-?roc|auc\b", "image_level_auroc"),
-            _metric_match_position(clause_lowered, r"\bpro\b", "pro"),
-            _metric_match_position(clause_lowered, r"\bf1\b", "f1"),
-            _metric_match_position(clause_lowered, r"速度|推理|latency", "inference_latency"),
-            _metric_match_position(clause_lowered, r"显存|memory|vram", "peak_vram"),
-        ]
-        present = [item for item in clause_candidates if item is not None]
-        if present:
-            return sorted(present, key=lambda item: item[0])[0][1]
+        if any(token in clause for token in ("为主", "主指标", "第一优先", "最优先", "优先", "重点")):
+            primary.extend(metric for metric in clause_metrics if metric in metrics)
+        if re.search(r"\bprimary\b", clause, flags=re.IGNORECASE):
+            primary.extend(metric for metric in clause_metrics if metric in metrics)
+    return _unique_metrics(primary)
 
-    if re.search(r"主要看.{0,30}pixel", lowered):
-        return "pixel_level_auroc"
-    if re.search(r"主要看.{0,30}image", lowered):
-        return "image_level_auroc"
+
+def _metrics_with_secondary_cues(text: str, metrics: list[str]) -> list[str]:
+    secondary: list[str] = []
+    for clause in _metric_clauses(text):
+        clause_metrics = _unique_metrics([mention.canonical for mention in _find_metric_mentions(clause)])
+        if not clause_metrics:
+            continue
+        if any(token in clause for token in ("参考", "辅助", "次要", "也记录", "也看", "guardrail")):
+            secondary.extend(metric for metric in clause_metrics if metric in metrics)
+        if re.search(r"\bsecondary\b", clause, flags=re.IGNORECASE):
+            secondary.extend(metric for metric in clause_metrics if metric in metrics)
+    return _unique_metrics(secondary)
+
+
+def _metric_clauses(text: str) -> list[str]:
+    return [clause.strip() for clause in re.split(r"[，,。；;\n]+", text) if clause.strip()]
+
+
+def _clause_containing(text: str, position: int) -> str:
+    start = max(text.rfind(separator, 0, position) for separator in ("，", ",", "。", "；", ";", "\n")) + 1
+    ends = [text.find(separator, position) for separator in ("，", ",", "。", "；", ";", "\n")]
+    valid_ends = [end for end in ends if end != -1]
+    end = min(valid_ends) if valid_ends else len(text)
+    return text[start:end].strip()
+
+
+def _metric_priority(primary_metrics: list[str], secondary_metrics: list[str]) -> str | None:
+    if len(primary_metrics) > 1 and not secondary_metrics:
+        return "co_primary"
+    if len(primary_metrics) == 1 and secondary_metrics:
+        return f"{primary_metrics[0]}_first"
+    if len(primary_metrics) == 1:
+        return "single_primary"
     return None
 
 
-def _metric_match_position(text: str, pattern: str, metric: str) -> tuple[int, str] | None:
-    match = re.search(pattern, text)
-    if not match:
-        return None
-    return match.start(), metric
-
-
-def _infer_success_criteria(text: str, primary_metric: str | None) -> str | None:
+def _infer_success_criteria(text: str, primary_metrics: list[str]) -> str | None:
     if "复现跑通" in text or ("复现" in text and "跑通" in text):
         return "baseline or target method runs reproducibly"
     if "显存" in text:
@@ -439,7 +571,7 @@ def _infer_success_criteria(text: str, primary_metric: str | None) -> str | None
     if "速度" in text or "推理" in text:
         return "reduce inference latency without weakening the evaluation protocol"
     if "提升" in text or "提高" in text or "优化" in text:
-        metric = primary_metric or "primary metric"
+        metric = ", ".join(primary_metrics) if primary_metrics else "primary metric"
         return f"improve {metric} under the same evaluation protocol"
     return None
 
@@ -516,9 +648,23 @@ def _infer_risk_preference(text: str) -> str | None:
 
 
 def _confirmed_fields(contract: ResearchIntentContract) -> list[str]:
+    if contract.need_spec.needs:
+        fields = [
+            need.name
+            for need in contract.need_spec.needs
+            if need.current_value not in (None, "", [], {})
+        ]
+        if contract.baseline_repo and "baseline_repo" not in fields:
+            fields.append("baseline_repo")
+        if contract.evaluation_protocol and "evaluation_protocol" not in fields:
+            fields.append("evaluation_protocol")
+        if contract.compute_environment and "compute_environment" not in fields:
+            fields.append("compute_environment")
+        return _merge_unique_list([], fields)
+
     fields: list[str] = []
     for field in CORE_REQUIRED_FIELDS:
-        value = getattr(contract, field)
+        value = _required_field_value(contract, field)
         if value not in (None, "", [], {}):
             fields.append(field)
     if contract.baseline_repo:
@@ -531,12 +677,21 @@ def _confirmed_fields(contract: ResearchIntentContract) -> list[str]:
 
 
 def _missing_core_fields(contract: ResearchIntentContract) -> list[str]:
+    if contract.need_spec.needs:
+        return list(contract.need_spec.blocking_needs)
+
     missing = []
     for field in CORE_REQUIRED_FIELDS:
-        value = getattr(contract, field)
+        value = _required_field_value(contract, field)
         if value in (None, "", [], {}):
             missing.append(field)
     return missing
+
+
+def _required_field_value(contract: ResearchIntentContract, field: str) -> Any:
+    if field == "primary_metrics":
+        return contract.primary_metrics
+    return getattr(contract, field)
 
 
 def _clean_str(value: Any) -> str | None:
@@ -552,6 +707,10 @@ def _listify(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _canonicalize_metric_list(metrics: list[str]) -> list[str]:
+    return canonicalize_metrics(metrics)
 
 
 def _unique_metrics(metrics: list[str]) -> list[str]:
@@ -588,11 +747,32 @@ def _merge_evidence_sources(existing: list[dict[str, Any]], update: list[dict[st
     return merged
 
 
+def _merge_metric_intent(existing: MetricIntent, update: MetricIntent) -> MetricIntent:
+    if update.extraction_source == "user_confirmed":
+        return update.model_copy(deep=True)
+    if update.primary_metrics:
+        return update.model_copy(deep=True)
+    return existing.model_copy(deep=True)
+
+
 def _refresh_contract_state(contract: ResearchIntentContract) -> None:
+    if not contract.primary_metrics and contract.primary_metric:
+        contract.primary_metrics = [contract.primary_metric]
+    if contract.primary_metrics:
+        contract.primary_metric = contract.primary_metrics[0] if len(contract.primary_metrics) == 1 else None
+    contract.metric_priority = contract.metric_priority or _metric_priority(contract.primary_metrics, contract.secondary_metrics)
+    if not contract.metric_intent.primary_metrics and contract.primary_metrics:
+        contract.metric_intent = MetricIntent(
+            primary_metrics=contract.primary_metrics,
+            secondary_metrics=contract.secondary_metrics,
+            metric_priority=contract.metric_priority,
+            extraction_source="fallback",
+        )
+    contract.need_spec = _sync_need_spec_from_contract(contract)
     contract.user_confirmed_fields = _confirmed_fields(contract)
     contract.missing_required_fields = _missing_core_fields(contract)
-    contract.ready_for_plan = not contract.missing_required_fields
-    contract.ready_for_repo_analysis = bool(contract.baseline_repo)
+    contract.ready_for_plan = contract.need_spec.ready_for_plan if contract.need_spec.needs else not contract.missing_required_fields
+    contract.ready_for_repo_analysis = contract.need_spec.ready_for_repo_analysis or bool(contract.baseline_repo)
     contract.ready_for_experiment_agents = bool(
         contract.ready_for_plan
         and contract.ready_for_repo_analysis
@@ -601,3 +781,31 @@ def _refresh_contract_state(contract: ResearchIntentContract) -> None:
         and contract.evaluation_protocol
         and contract.compute_environment
     )
+
+
+def _sync_need_spec_from_contract(contract: ResearchIntentContract) -> RequiredNeedSpec:
+    spec = contract.need_spec.model_copy(deep=True)
+    for need in spec.needs:
+        value = _contract_value_for_need(contract, need.name)
+        if value not in (None, "", [], {}):
+            need.current_value = value
+            if need.source == "unknown":
+                need.source = "user"
+            need.confidence = max(need.confidence, 0.9)
+    return validate_need_spec(spec)
+
+
+def _contract_value_for_need(contract: ResearchIntentContract, name: str) -> Any:
+    mapping = {
+        "research_goal": contract.research_goal,
+        "baseline": contract.baseline,
+        "dataset": contract.dataset,
+        "metrics": contract.primary_metrics,
+        "success_criteria": contract.success_criteria,
+        "execution_mode": contract.execution_mode,
+        "repo": contract.baseline_repo,
+        "baseline_repo": contract.baseline_repo,
+        "allowed_change_scope": contract.allowed_change_scope,
+        "forbidden_change_scope": contract.forbidden_change_scope,
+    }
+    return mapping.get(name)

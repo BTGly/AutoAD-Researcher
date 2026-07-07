@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from autoad_researcher.assistant.v2.need_discovery import canonicalize_metrics
+
 
 def extract_confirmed_from_chat(transcript_tail: list[dict[str, Any]]) -> dict[str, Any]:
     if not transcript_tail:
@@ -33,11 +35,7 @@ def extract_confirmed_from_chat(transcript_tail: list[dict[str, Any]]) -> dict[s
     if re.search(r"特征提取|backbone|feature\s*extract", all_text):
         facts["research_direction"] = "feature_extractor"
 
-    metrics: list[str] = []
-    if re.search(r"auroc|auc-?roc|auc\b", all_text):
-        metrics.append("image_level_auroc")
-    if re.search(r"pixel.*auc|pixel.*auroc|定位", all_text):
-        metrics.append("pixel_level_auroc")
+    metrics = canonicalize_metrics(all_text)
     if metrics:
         facts["metrics"] = metrics
 

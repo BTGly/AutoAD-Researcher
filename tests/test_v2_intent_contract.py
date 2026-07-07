@@ -50,6 +50,7 @@ def test_build_contract_ready_for_plan_without_improvement_or_target_module(tmp_
     assert contract.research_goal == "提升 baseline 在目标数据集上的表现"
     assert contract.baseline == "PatchCore"
     assert contract.dataset == "MVTec AD"
+    assert contract.primary_metrics == ["image_level_auroc"]
     assert contract.primary_metric == "image_level_auroc"
     assert contract.success_criteria == "improve image_level_auroc under the same evaluation protocol"
     assert contract.user_improvement_hints == []
@@ -125,6 +126,7 @@ def test_format_contract_does_not_pressure_user_for_method_or_module():
         research_goal="提升 baseline 在目标数据集上的表现",
         baseline="PatchCore",
         dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
         primary_metric="image_level_auroc",
         success_criteria="improve image_level_auroc under the same evaluation protocol",
         ready_for_plan=True,
@@ -166,7 +168,7 @@ def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
                 "reply_to_user": "请确认主要目标。",
                 "contract_updates": {},
                 "new_user_confirmed_fields": [],
-                "missing_required_fields": ["primary_metric"],
+                "missing_required_fields": ["primary_metrics"],
                 "optional_hints_detected": {},
                 "next_question": "你主要想优化什么？",
                 "ready_for_confirmation": False,
@@ -252,8 +254,10 @@ def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path):
 
     assert second.intent_contract["baseline"] == "PatchCore"
     assert second.intent_contract["dataset"] == "MVTec AD"
-    assert second.intent_contract["primary_metric"] == "image_level_auroc"
-    assert "pixel_level_auroc" in second.intent_contract["secondary_metrics"]
+    assert second.intent_contract["primary_metrics"] == ["image_level_auroc", "pixel_level_auroc"]
+    assert second.intent_contract["primary_metric"] is None
+    assert second.intent_contract["secondary_metrics"] == []
+    assert second.intent_contract["metric_priority"] == "co_primary"
 
 
 def test_hf2_contract_ready_after_metric_and_success(tmp_path: Path):
@@ -277,11 +281,12 @@ def test_hf2_contract_ready_after_metric_and_success(tmp_path: Path):
 
     assert merged.ready_for_plan is True
     assert merged.missing_required_fields == []
+    assert merged.primary_metrics == ["image_level_auroc"]
     assert merged.primary_metric == "image_level_auroc"
     assert merged.success_criteria == "improve image_level_auroc under the same evaluation protocol"
 
 
-def test_hf2_metric_extraction_image_and_pixel(tmp_path: Path):
+def test_hf2_metric_extraction_image_and_pixel_co_primary(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
 
@@ -290,16 +295,45 @@ def test_hf2_metric_extraction_image_and_pixel(tmp_path: Path):
         user_input="主要看 image AUROC 和 pixel AUROC。",
         llm_context={"confirmed_from_user": {}},
     )
-    pixel_primary = build_contract_from_context(
+    reversed_order = build_contract_from_context(
         run_dir=run_dir,
-        user_input="主要看 pixel AUROC，image AUROC 也参考。",
+        user_input="主要看 pixel AUROC 和 image AUROC。",
         llm_context={"confirmed_from_user": {}},
     )
 
+    assert image_primary.primary_metrics == ["image_level_auroc", "pixel_level_auroc"]
+    assert image_primary.primary_metric is None
+    assert image_primary.secondary_metrics == []
+    assert image_primary.metric_priority == "co_primary"
+    assert reversed_order.primary_metrics == ["pixel_level_auroc", "image_level_auroc"]
+    assert reversed_order.primary_metric is None
+    assert reversed_order.secondary_metrics == []
+    assert reversed_order.metric_priority == "co_primary"
+
+
+def test_hf2_metric_extraction_explicit_primary_and_secondary(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    image_primary = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="image AUROC 为主，pixel AUROC 参考。",
+        llm_context={"confirmed_from_user": {}},
+    )
+    pixel_primary = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="pixel AUROC 为主，image AUROC 参考。",
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert image_primary.primary_metrics == ["image_level_auroc"]
     assert image_primary.primary_metric == "image_level_auroc"
     assert image_primary.secondary_metrics == ["pixel_level_auroc"]
+    assert image_primary.metric_priority == "image_level_auroc_first"
+    assert pixel_primary.primary_metrics == ["pixel_level_auroc"]
     assert pixel_primary.primary_metric == "pixel_level_auroc"
     assert pixel_primary.secondary_metrics == ["image_level_auroc"]
+    assert pixel_primary.metric_priority == "pixel_level_auroc_first"
 
 
 def test_hf2_llm_missing_fields_not_authoritative(monkeypatch):
@@ -307,7 +341,7 @@ def test_hf2_llm_missing_fields_not_authoritative(monkeypatch):
         return {
             "reply": json.dumps({
                 "reply_to_user": "已记录。",
-                "missing_required_fields": ["dataset", "primary_metric"],
+                "missing_required_fields": ["dataset", "primary_metrics"],
                 "next_question": "还需要确认成功标准。",
             }, ensure_ascii=False),
             "error": None,
@@ -324,7 +358,7 @@ def test_hf2_llm_missing_fields_not_authoritative(monkeypatch):
             "research_intent_contract": {
                 "run_id": "run_contract",
                 "dataset": "MVTec AD",
-                "primary_metric": "image_level_auroc",
+                "primary_metrics": ["image_level_auroc"],
                 "missing_required_fields": ["success_criteria"],
             },
         },
@@ -334,5 +368,5 @@ def test_hf2_llm_missing_fields_not_authoritative(monkeypatch):
     )
 
     assert "dataset" not in reply
-    assert "primary_metric" not in reply
+    assert "primary_metrics" not in reply
     assert "missing_required_fields" not in reply
