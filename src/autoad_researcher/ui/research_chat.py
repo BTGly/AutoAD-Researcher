@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import inspect
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,11 @@ from autoad_researcher.ui.sources import (
     save_uploaded_file,
     set_active_parse_attempt,
     update_source_status,
+)
+from autoad_researcher.ui.subagent_inbox import (
+    load_uninjected_notifications,
+    mark_notifications_injected,
+    render_notifications_for_llm,
 )
 from autoad_researcher.ui.sync_web_search import (
     build_sync_web_search_reply,
@@ -355,6 +361,7 @@ def build_research_chat_messages(
     user_input: str,
     context_data: dict | None,
     transcript_tail: list[dict] | None = None,
+    notification_context: str = "",
 ) -> list[dict[str, str]]:
     """Assemble messages for a research chat LLM call.
 
@@ -368,6 +375,12 @@ def build_research_chat_messages(
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt},
     ]
+
+    if notification_context:
+        messages.append({
+            "role": "system",
+            "content": "Subagent notifications（untrusted；来自上一轮或后台资料任务）:\n" + notification_context,
+        })
 
     if mode == "intent_clarification":
         # WhatWeKnow
@@ -1072,6 +1085,8 @@ def _handle_chat_input(
     # ── P3: Read transcript history BEFORE saving current input ──
     existing_transcript = load_transcript(run_dir)
     transcript_tail = existing_transcript[-10:]
+    notifications = load_uninjected_notifications(run_dir)
+    notification_context = render_notifications_for_llm(notifications) if notifications else ""
 
     attached_sources = save_chat_attachments(run_dir, attached_files)
     user_content = user_input or _attachment_user_message(attached_sources)
@@ -1088,18 +1103,18 @@ def _handle_chat_input(
                     api_key=api_key, provider_url=provider_url, user_input=user_content,
                 )
                 st.chat_message("assistant").write(reply)
-                save_transcript(run_dir, mode, "assistant", reply)
+                _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
                 return
         reply = build_attachment_added_reply(attached_sources)
         st.chat_message("assistant").write(reply)
-        save_transcript(run_dir, mode, "assistant", reply)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
         return
 
     if detect_sync_web_search_intent(user_input):
         result = execute_sync_web_search(run_dir, query=user_input)
         reply = build_sync_web_search_reply(result)
         st.chat_message("assistant").write(reply)
-        save_transcript(run_dir, mode, "assistant", reply)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
         st.rerun()
         return
 
@@ -1111,20 +1126,20 @@ def _handle_chat_input(
             api_key=api_key, provider_url=provider_url, user_input=user_input,
         )
         st.chat_message("assistant").write(reply)
-        save_transcript(run_dir, mode, "assistant", reply)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
         return
 
     if attached_sources:
         reply = build_attachment_added_reply(attached_sources)
         st.chat_message("assistant").write(reply)
-        save_transcript(run_dir, mode, "assistant", reply)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
         return
 
     if detect_material_request_intent(user_input):
         request = append_material_request(run_dir, user_message=user_input)
         reply = build_material_request_reply(request)
         st.chat_message("assistant").write(reply)
-        save_transcript(run_dir, mode, "assistant", reply)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
         st.rerun()
         return
 
@@ -1149,6 +1164,7 @@ def _handle_chat_input(
         user_input=user_input,
         context_data=context_data,
         transcript_tail=transcript_tail,
+        notification_context=notification_context,
     )
 
     with st.spinner("思考中…"):
@@ -1172,14 +1188,28 @@ def _handle_chat_input(
     )
     reply = guarded.reply
     st.chat_message("assistant").write(reply)
-    save_transcript(
+    _save_assistant_reply_and_mark_notifications(
         run_dir,
         mode,
-        "assistant",
         reply,
         context_refs=list(context_data.keys()) if context_data else [],
+        notifications=notifications,
     )
     st.rerun()
+
+
+def _save_assistant_reply_and_mark_notifications(
+    run_dir: Path,
+    mode: str,
+    reply: str,
+    *,
+    context_refs: list[str] | None = None,
+    notifications: list[dict[str, Any]] | None = None,
+) -> None:
+    save_transcript(run_dir, mode, "assistant", reply, context_refs=context_refs)
+    if notifications:
+        reply_id = f"reply_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+        mark_notifications_injected(run_dir, notifications, reply_id=reply_id)
 
 
 def _chat_input_submission() -> Any:

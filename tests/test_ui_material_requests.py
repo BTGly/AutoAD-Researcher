@@ -111,3 +111,13 @@ def test_material_request_panel_can_execute_pending_web_search():
     assert "run_pending_material_subagents(run_dir)" in body
     assert "execute_sync_web_search(run_dir, query=query)" not in body
     assert "subagent_run_id" in body
+
+
+def test_notification_marked_injected_only_after_successful_reply():
+    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
+    body = source[source.index("def _handle_chat_input("):source.index("def _chat_input_submission(")]
+    error_block = body[body.index('if result["error"]'):body.index("evidence_context = build_research_chat_evidence_context")]
+    assert "mark_notifications_injected" not in error_block
+
+    helper = source[source.index("def _save_assistant_reply_and_mark_notifications("):source.index("def _chat_input_submission(")]
+    assert helper.index("save_transcript(") < helper.index("mark_notifications_injected(")
