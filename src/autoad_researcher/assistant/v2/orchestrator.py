@@ -13,6 +13,14 @@ from typing import Any
 from autoad_researcher.assistant.v2.source_service import classify_input, register_source_intake
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
+from autoad_researcher.assistant.v2.intent_contract import (
+    build_contract_from_context,
+    format_contract_for_user,
+    is_contract_confirmation,
+    load_contract_draft,
+    save_confirmed_contract,
+    save_contract_draft,
+)
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
 
 
@@ -25,6 +33,8 @@ class OrchestratorResult:
     evidence_used: list[dict[str, Any]] = field(default_factory=list)
     answerability: dict[str, Any] = field(default_factory=dict)
     next_actions: list[str] = field(default_factory=list)
+    intent_contract: dict[str, Any] = field(default_factory=dict)
+    intent_contract_confirmed: bool = False
 
 
 class ResearchOrchestratorV2:
@@ -74,7 +84,31 @@ class ResearchOrchestratorV2:
             created_jobs.append(job)
 
         ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
-        reply_kind, reply = plan_reply(ctx, user_input, api_key=api_key, provider_url=provider_url)
+        existing_draft = load_contract_draft(run_dir)
+        if is_contract_confirmation(user_input) and existing_draft is not None:
+            contract = existing_draft
+        else:
+            contract = build_contract_from_context(
+                run_dir=run_dir,
+                user_input=user_input,
+                llm_context=ctx,
+                transcript_tail=transcript_tail,
+            )
+        save_contract_draft(run_dir, contract)
+        ctx["research_intent_contract"] = contract.model_dump(mode="json")
+
+        contract_confirmed = False
+        if is_contract_confirmation(user_input) and contract.ready_for_plan:
+            save_confirmed_contract(run_dir, contract)
+            contract_confirmed = True
+            reply_kind, reply = (
+                "intent_contract_confirmed",
+                "已确认 ResearchIntentContract，并写入 `research_intent_contract.json`。不会自动 patch 或运行实验；后续 agents 将以这个合同作为输入。",
+            )
+        elif contract.ready_for_plan:
+            reply_kind, reply = "intent_contract_confirmation", format_contract_for_user(contract)
+        else:
+            reply_kind, reply = plan_reply(ctx, user_input, api_key=api_key, provider_url=provider_url)
 
         return OrchestratorResult(
             reply=reply,
@@ -84,6 +118,8 @@ class ResearchOrchestratorV2:
             evidence_used=ctx.get("usable_evidence", []),
             answerability=ctx.get("answerability", {}),
             next_actions=_suggest_next_actions(ctx, reply_kind),
+            intent_contract=contract.model_dump(mode="json"),
+            intent_contract_confirmed=contract_confirmed,
         )
 
 
