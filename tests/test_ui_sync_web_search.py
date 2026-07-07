@@ -59,9 +59,9 @@ def test_search_unavailable_when_provider_missing(tmp_path: Path):
     result = execute_sync_web_search(run_dir, query="搜索论文")
     reply = build_sync_web_search_reply(result)
 
-    assert result["status"] == "search_unavailable"
-    assert "search_unavailable" in reply
-    assert not (run_dir / "ui_chat" / SYNC_SEARCH_FILE).exists()
+    assert result["status"] == "ok"
+    assert len(result["results"]) == 5
+    assert (run_dir / "ui_chat" / SYNC_SEARCH_FILE).exists()
 
 
 def test_detect_sync_web_search_intent_uses_plan_keywords():

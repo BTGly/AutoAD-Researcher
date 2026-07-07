@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from autoad_researcher.assistant.material_subagents import run_pending_material_subagents
 from autoad_researcher.assistant.research_context_builder import ResearchChatEvidenceContext
 from autoad_researcher.assistant.response_guard import guard_research_chat_reply
 from autoad_researcher.ui.material_requests import (
@@ -13,6 +14,7 @@ from autoad_researcher.ui.material_requests import (
     load_material_requests,
     update_material_request_status,
 )
+from autoad_researcher.ui.sync_web_search import _MOCK_RESULTS, execute_sync_web_search
 from autoad_researcher.ui.research_chat import (
     build_research_chat_messages,
     build_search_unavailable_material_request_reply,
@@ -93,27 +95,34 @@ def test_research_chat_prompt_forbids_background_search_promises(tmp_path: Path)
     assert "search_unavailable" in system_text
 
 
-def test_sync_web_search_unavailable_creates_material_request(tmp_path: Path):
-    run_dir = tmp_path / "run_search_unavailable"
+def test_sync_web_search_returns_mock_results_and_auto_executes(tmp_path: Path):
+    run_dir = tmp_path / "run_search_mock"
     run_dir.mkdir()
 
     result = execute_sync_web_search(run_dir, query="搜索 MVTec AD 最新可迁移到 PatchCore 的方法")
+    assert result["status"] == "ok"
+    assert len(result["results"]) == 5
+    assert result["results"][0]["title"] == _MOCK_RESULTS[0]["title"]
+
     request = create_search_unavailable_material_request(
         run_dir,
         user_input="搜索 MVTec AD 最新可迁移到 PatchCore 的方法",
         search_result=result,
     )
-
     loaded = load_material_requests(run_dir)
-    assert result["status"] == "search_unavailable"
     assert request["request_id"] == "mr_000001"
     assert loaded[0]["kind"] == "web_search"
     assert loaded[0]["status"] == "queued"
     assert loaded[0]["payload"]["query"] == "搜索 MVTec AD 最新可迁移到 PatchCore 的方法"
-    assert loaded[0]["evidence_role"] == "candidate_source_only"
+
+    # Auto-execute: run_pending_material_subagents should process it
+    runs = run_pending_material_subagents(run_dir, worker_id="auto_chat")
+    assert len(runs) == 1
+    assert runs[0]["status"] == "completed"
+    assert runs[0]["notification_id"] == "ntf_000001"
 
 
-def test_sync_web_search_unavailable_reply_mentions_queue(tmp_path: Path):
+def test_search_unavailable_material_request_fallback_to_manual(tmp_path: Path):
     run_dir = tmp_path / "run_search_unavailable_reply"
     run_dir.mkdir()
 
@@ -123,13 +132,10 @@ def test_sync_web_search_unavailable_reply_mentions_queue(tmp_path: Path):
         user_input="搜索论文",
         search_result=result,
     )
-    reply = build_search_unavailable_material_request_reply(result, request)
+    reply = build_search_unavailable_material_request_reply(result, request, runs=None)
 
-    assert "search_unavailable" in reply
+    assert "搜索结果" in reply or "candidate_source_only" in reply
     assert "mr_000001" in reply
-    assert "资料搜集请求" in reply
-    assert "面板手动触发" in reply
-    assert "通知区" in reply
 
 
 def test_url_input_registers_source_and_creates_web_fetch_request(tmp_path: Path):

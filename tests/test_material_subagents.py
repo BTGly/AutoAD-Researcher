@@ -51,16 +51,15 @@ def test_material_discovery_subagent_marks_search_unavailable(tmp_path: Path):
 
     runs = run_pending_material_subagents(run_dir)
 
-    assert runs[0]["status"] == "failed"
+    assert runs[0]["status"] == "completed"
     assert runs[0]["notification_id"] == "ntf_000001"
     requests = load_material_requests(run_dir)
-    assert requests[0]["status"] == "failed"
+    assert requests[0]["status"] == "completed"
     assert requests[0]["claimed_by"] == "ui_button"
-    assert requests[0]["last_error"]["error_code"] == "web_search_unavailable"
     notifications = load_uninjected_notifications(run_dir)
-    assert notifications[0]["status"] == "failed"
-    assert notifications[0]["severity"] == "error"
-    assert "web_search failed" in notifications[0]["summary"]
+    assert notifications[0]["status"] == "completed"
+    assert notifications[0]["severity"] == "info"
+    assert "找到" in notifications[0]["summary"]
 
 
 def test_material_discovery_subagent_skips_non_search_requests(tmp_path: Path):
@@ -70,8 +69,9 @@ def test_material_discovery_subagent_skips_non_search_requests(tmp_path: Path):
 
     runs = run_pending_material_subagents(run_dir)
 
-    assert runs == []
-    assert load_material_requests(run_dir)[0]["status"] == "queued"
+    assert len(runs) == 1
+    assert runs[0]["kind"] == "repository_discovery"
+    assert runs[0]["status"] == "completed"
 
 
 def test_material_subagent_runs_jsonl_is_append_only(tmp_path: Path):

@@ -39,8 +39,6 @@ def run_pending_material_subagents(
     for request in load_material_requests(run_dir):
         if request.get("status") not in {"queued", "pending"}:
             continue
-        if request.get("kind") != "web_search":
-            continue
         request_id = str(request.get("request_id", ""))
         if not claim_material_request(run_dir, request_id=request_id, worker_id=worker_id):
             continue
@@ -48,7 +46,13 @@ def run_pending_material_subagents(
             (item for item in load_material_requests(run_dir) if item.get("request_id") == request_id),
             request,
         )
-        runs.append(run_material_discovery_subagent(run_dir, request=claimed, provider=provider))
+        kind = str(request.get("kind", ""))
+        if kind == "web_search":
+            runs.append(run_material_discovery_subagent(run_dir, request=claimed, provider=provider))
+        elif kind == "material_acquisition":
+            runs.append(run_web_fetch_subagent(run_dir, request=claimed))
+        elif kind == "repository_discovery":
+            runs.append(run_repository_discovery_subagent(run_dir, request=claimed))
     return runs
 
 
@@ -162,3 +166,124 @@ def _summary_for_web_search(status: str, result_count: int, error_message: str |
     if status == "no_results":
         return "web_search 已完成，但没有返回候选来源"
     return f"web_search failed: {error_message or 'provider unavailable'}"
+
+
+def run_web_fetch_subagent(
+    run_dir: Path,
+    *,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Run a web_fetch material acquisition request as a subagent."""
+    request_id = str(request.get("request_id", ""))
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    url = str(payload.get("url", ""))
+    source_id = str(payload.get("source_id", ""))
+    evidence_role = str(request.get("evidence_role") or "source_acquired_unparsed")
+    subagent_run_id = _next_subagent_run_id(run_dir)
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        from autoad_researcher.tools.providers import SecureWebFetchProvider
+
+        provider = SecureWebFetchProvider()
+        result = provider.fetch(url)
+        output_dir = run_dir / "sources" / source_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        html_path = output_dir / "raw.html"
+        html_path.write_text(result.content, encoding="utf-8")
+        artifact_paths = [str(html_path.relative_to(run_dir))]
+        req_status = "completed"
+        summary = f"已下载 {url}（{len(result.content)} 字节）"
+        error_message = None
+    except Exception as exc:
+        artifact_paths = []
+        req_status = "failed"
+        summary = f"web_fetch failed: {exc}"
+        error_message = str(exc)[:500]
+
+    record = {
+        "subagent_run_id": subagent_run_id,
+        "subagent_name": "web_fetch_subagent",
+        "request_id": request_id,
+        "kind": "material_acquisition",
+        "url": url,
+        "status": req_status,
+        "started_at": started_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "result_ref": artifact_paths[0] if artifact_paths else None,
+        "error_message": error_message,
+        "reply": summary,
+    }
+    notification_id = post_subagent_notification(
+        run_dir,
+        {
+            "subagent_kind": "web_fetch",
+            "request_id": request_id,
+            "status": req_status,
+            "severity": "error" if req_status == "failed" else "info",
+            "evidence_role": evidence_role,
+            "summary": summary,
+            "artifact_paths": artifact_paths,
+            "source_ids": [source_id] if source_id else [],
+        },
+    )
+    record["notification_id"] = notification_id
+    _append_subagent_run(run_dir, record)
+    if req_status == "completed":
+        complete_material_request(run_dir, request_id=request_id, notification_id=notification_id)
+    else:
+        fail_material_request(
+            run_dir,
+            request_id=request_id,
+            error_code="web_fetch_failed",
+            error_message=error_message or "web_fetch failed",
+            retryable=True,
+        )
+    return record
+
+
+def run_repository_discovery_subagent(
+    run_dir: Path,
+    *,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Run a repository_discovery material request as a subagent."""
+    request_id = str(request.get("request_id", ""))
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    url = str(payload.get("url", ""))
+    source_id = str(payload.get("source_id", ""))
+    evidence_role = str(request.get("evidence_role") or "candidate_source_only")
+    subagent_run_id = _next_subagent_run_id(run_dir)
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    summary = f"已登记 GitHub 仓库候选：{url}（尚未 clone）。repo clone 是后续阶段操作。"
+    record = {
+        "subagent_run_id": subagent_run_id,
+        "subagent_name": "repository_discovery_subagent",
+        "request_id": request_id,
+        "kind": "repository_discovery",
+        "url": url,
+        "status": "completed",
+        "started_at": started_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "result_ref": None,
+        "error_message": None,
+        "reply": summary,
+    }
+    notification_id = post_subagent_notification(
+        run_dir,
+        {
+            "subagent_kind": "repository_discovery",
+            "request_id": request_id,
+            "status": "completed",
+            "severity": "info",
+            "evidence_role": evidence_role,
+            "summary": summary,
+            "artifact_paths": [],
+            "source_ids": [source_id] if source_id else [],
+        },
+    )
+    record["notification_id"] = notification_id
+    _append_subagent_run(run_dir, record)
+    complete_material_request(run_dir, request_id=request_id, notification_id=notification_id)
+    return record
