@@ -246,9 +246,9 @@ def build_material_request_reply(request: dict[str, Any]) -> str:
     request_id = str(request.get("request_id", "material_request"))
     kind = str(request.get("kind", "material_acquisition"))
     return (
-        f"已登记资料搜集请求 `{request_id}`（{kind}）。\n"
-        "当前 Research Chat 不会在后台静默执行网络搜索，也不能承诺几分钟后主动发新消息。\n"
-        "下一步需要进入 discovery/acquisition 阶段，由相应 agent 使用 web_search/web_fetch/git_clone 产出 artifacts；完成后我再基于 artifacts 汇总。"
+        f"已创建资料处理任务 `{request_id}`（{kind}）。\n"
+        "当前聊天不会承诺后台主动发消息；任务需要由资料搜集请求面板手动触发，或由 worker 处理。\n"
+        "完成后结果会写入通知区；你刷新页面或继续对话时，我会读取结果并接上当前对话。"
     )
 
 
@@ -307,7 +307,7 @@ def _default_evidence_role(kind: str) -> str:
     if kind == "web_search":
         return "candidate_source_only"
     if kind == "repository_discovery":
-        return "repo_acquired"
+        return "candidate_source_only"
     return "source_acquired_unparsed"
 
 

@@ -78,6 +78,7 @@ from autoad_researcher.ui.sources import (
     list_pdf_source_entries,
     load_source_registry,
     register_local_file_source,
+    register_url_source,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
     set_active_parse_attempt,
@@ -147,6 +148,7 @@ _FORCE_REPARSE_TOKENS = (
     "解析一次",
     "读一次",
 )
+_URL_RE = re.compile(r"https?://[^\s<>()，。！？；、]+", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -209,13 +211,14 @@ def render_research_chat():
         )
         if st.button("添加链接", type="secondary", disabled=not url_input.strip()):
             try:
-                from autoad_researcher.ui.sources import register_url_source
-                info = register_url_source(run_dir, url_input.strip())
+                intake = create_url_source_material_request(run_dir, url_input.strip())
             except Exception as exc:
                 st.error(f"添加失败：{exc}")
             else:
+                info = intake["source"]
+                request = intake["request"]
                 st.success(f"✅ 已登记：{info['source_id']}（{info['kind']}）")
-                st.caption("source 已记录，intake 待触发。")
+                st.caption(f"已创建资料处理任务：{request['request_id']}（{request['kind']}）")
                 st.rerun()
 
         user_text = st.text_area(
@@ -585,6 +588,77 @@ def build_attachment_added_reply(sources: list[dict[str, Any]]) -> str:
 def _attachment_user_message(sources: list[dict[str, Any]]) -> str:
     names = [Path(str(source["stored_path"])).name for source in sources]
     return "上传资料：" + "、".join(names)
+
+
+def extract_first_url(text: str) -> str | None:
+    match = _URL_RE.search(text)
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;:!?)]}")
+
+
+def create_url_source_material_request(run_dir: Path, url: str, *, user_message: str | None = None) -> dict[str, Any]:
+    source = register_url_source(run_dir, url)
+    source_id = str(source["source_id"])
+    source_kind = str(source.get("kind", "webpage"))
+    if source_kind == "github_repo":
+        request = append_material_request(
+            run_dir,
+            user_message=user_message or url,
+            kind="repository_discovery",
+            payload={"url": url, "source_id": source_id},
+            evidence_role="candidate_source_only",
+        )
+    else:
+        request = append_material_request(
+            run_dir,
+            user_message=user_message or url,
+            kind="material_acquisition",
+            payload={"tool": "web_fetch", "url": url, "source_id": source_id},
+            evidence_role="source_acquired_unparsed",
+        )
+    return {"source": source, "request": request}
+
+
+def build_url_source_material_request_reply(intake: dict[str, Any]) -> str:
+    source = intake["source"]
+    request = intake["request"]
+    source_id = str(source.get("source_id", "source"))
+    source_kind = str(source.get("kind", "url"))
+    request_id = str(request.get("request_id", "material_request"))
+    request_kind = str(request.get("kind", "material_acquisition"))
+    evidence_role = str(request.get("evidence_role", "source_acquired_unparsed"))
+    return (
+        f"已登记 URL source：`{source_id}`（{source_kind}）。\n"
+        f"同时已创建资料处理任务 `{request_id}`（{request_kind}，{evidence_role}）。\n"
+        "任务完成后会生成网页、论文或仓库候选 artifact，并通过通知区告诉我；在获取或解析完成前，它还不是 supported facts。"
+    )
+
+
+def create_search_unavailable_material_request(
+    run_dir: Path,
+    *,
+    user_input: str,
+    search_result: dict[str, Any],
+) -> dict[str, Any]:
+    reason = str(search_result.get("reason", "web_search provider is not configured"))
+    return append_material_request(
+        run_dir,
+        user_message=user_input,
+        kind="web_search",
+        payload={"query": user_input, "unavailable_reason": reason},
+        evidence_role="candidate_source_only",
+    )
+
+
+def build_search_unavailable_material_request_reply(search_result: dict[str, Any], request: dict[str, Any]) -> str:
+    request_id = str(request.get("request_id", "material_request"))
+    return (
+        build_sync_web_search_reply(search_result)
+        + "\n"
+        + f"我已创建资料搜集任务 `{request_id}`。你可以在「资料搜集请求」面板手动触发，或由 worker 处理；"
+        "完成后结果会写入通知区，我会在你刷新或继续对话时读取。"
+    )
 
 
 def detect_parse_intent(user_input: str) -> bool:
@@ -1103,18 +1177,34 @@ def _handle_chat_input(
                     api_key=api_key, provider_url=provider_url, user_input=user_content,
                 )
                 st.chat_message("assistant").write(reply)
-                _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
+                _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
                 return
         reply = build_attachment_added_reply(attached_sources)
         st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
+        return
+
+    url = extract_first_url(user_input)
+    if url:
+        intake = create_url_source_material_request(run_dir, url, user_message=user_input)
+        reply = build_url_source_material_request_reply(intake)
+        st.chat_message("assistant").write(reply)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
         return
 
     if detect_sync_web_search_intent(user_input):
         result = execute_sync_web_search(run_dir, query=user_input)
-        reply = build_sync_web_search_reply(result)
+        if result.get("status") == "search_unavailable":
+            request = create_search_unavailable_material_request(
+                run_dir,
+                user_input=user_input,
+                search_result=result,
+            )
+            reply = build_search_unavailable_material_request_reply(result, request)
+        else:
+            reply = build_sync_web_search_reply(result)
         st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
         st.rerun()
         return
 
@@ -1126,20 +1216,20 @@ def _handle_chat_input(
             api_key=api_key, provider_url=provider_url, user_input=user_input,
         )
         st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
         return
 
     if attached_sources:
         reply = build_attachment_added_reply(attached_sources)
         st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
         return
 
     if detect_material_request_intent(user_input):
         request = append_material_request(run_dir, user_message=user_input)
         reply = build_material_request_reply(request)
         st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=notifications)
+        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
         st.rerun()
         return
 
