@@ -162,6 +162,9 @@ def build_contract_from_context(
     )
 
     confirmed_metrics = _canonicalize_metric_list(_listify(confirmed.get("metrics")))
+    need_fields = contract_fields_from_need_spec(need_spec)
+    need_primary_metrics = _canonicalize_metric_list(_listify(need_fields.get("primary_metrics")))
+    need_secondary_metrics = _canonicalize_metric_list(_listify(need_fields.get("secondary_metrics")))
     inferred_metric_intent = _extract_metric_intent(combined_user_text)
     if confirmed_metrics:
         metric_intent = MetricIntent(
@@ -174,28 +177,51 @@ def build_contract_from_context(
             metric_priority="user_confirmed",
             extraction_source="user_confirmed",
         )
+    elif need_primary_metrics:
+        metric_intent = MetricIntent(
+            mentioned_metrics=[
+                MetricMention(
+                    raw_text=metric,
+                    canonical=metric,
+                    role="primary_candidate",
+                    confidence=1.0,
+                )
+                for metric in [*need_primary_metrics, *need_secondary_metrics]
+            ],
+            primary_metrics=need_primary_metrics,
+            secondary_metrics=[metric for metric in need_secondary_metrics if metric not in need_primary_metrics],
+            metric_priority=_clean_str(need_fields.get("metric_priority")) or _metric_priority(
+                need_primary_metrics,
+                need_secondary_metrics,
+            ),
+            extraction_source=_metric_intent_source_from_need_spec(need_spec),
+        )
     else:
         metric_intent = inferred_metric_intent
     primary_metrics = metric_intent.primary_metrics
     primary_metric = primary_metrics[0] if len(primary_metrics) == 1 else None
-    baseline_repo = _first_github_source(sources)
+    baseline_repo = _clean_str(need_fields.get("baseline_repo")) or _first_github_source(sources)
 
     contract = ResearchIntentContract(
         run_id=run_dir.name,
-        task_domain=_infer_task_domain(combined_user_text),
-        research_goal=_infer_research_goal(combined_user_text, confirmed),
-        baseline=_clean_str(confirmed.get("baseline")) or _infer_baseline(combined_user_text),
+        task_domain=_task_domain_from_need_spec(need_spec) or _infer_task_domain(combined_user_text),
+        research_goal=(
+            _clean_str(confirmed.get("research_goal"))
+            or _clean_str(need_fields.get("research_goal"))
+            or _infer_research_goal(combined_user_text, confirmed)
+        ),
+        baseline=_clean_str(confirmed.get("baseline")) or _clean_str(need_fields.get("baseline")) or _infer_baseline(combined_user_text),
         baseline_repo=baseline_repo,
-        dataset=_clean_str(confirmed.get("dataset")) or _infer_dataset(combined_user_text),
-        evaluation_protocol=_infer_evaluation_protocol(combined_user_text),
+        dataset=_clean_str(confirmed.get("dataset")) or _clean_str(need_fields.get("dataset")) or _infer_dataset(combined_user_text),
+        evaluation_protocol=_clean_str(need_fields.get("evaluation_protocol")) or _infer_evaluation_protocol(combined_user_text),
         primary_metrics=primary_metrics,
         primary_metric=primary_metric,
         secondary_metrics=metric_intent.secondary_metrics,
         metric_priority=metric_intent.metric_priority,
         metric_intent=metric_intent,
-        success_criteria=_infer_success_criteria(combined_user_text, primary_metrics),
+        success_criteria=_clean_str(need_fields.get("success_criteria")) or _infer_success_criteria(combined_user_text, primary_metrics),
         compute_environment=_infer_compute_environment(combined_user_text, confirmed),
-        execution_mode=_infer_execution_mode(combined_user_text),
+        execution_mode=_contract_execution_mode(need_fields.get("execution_mode"), combined_user_text),
         user_improvement_hints=_infer_improvement_hints(combined_user_text),
         user_target_module_hints=_infer_target_module_hints(combined_user_text),
         preferred_method_hints=_infer_preferred_method_hints(combined_user_text),
@@ -245,6 +271,8 @@ def merge_contract_draft(
     for field in scalar_fields:
         value = update_data.get(field)
         if value not in (None, "", [], {}):
+            if _should_keep_existing_field(merged, update, field):
+                continue
             setattr(merged, field, value)
 
     dict_fields = ["compute_environment"]
@@ -279,6 +307,36 @@ def merge_contract_draft(
     merged.evidence_sources = _merge_evidence_sources(merged.evidence_sources, update.evidence_sources)
     _refresh_contract_state(merged)
     return merged
+
+
+def contract_fields_from_need_spec(spec: RequiredNeedSpec) -> dict[str, Any]:
+    """Map validated NeedSpec values into ResearchIntentContract fields.
+
+    Deterministic inference remains a fallback. This bridge lets LLM-discovered
+    non-hardcoded tasks such as EfficientAD/VisA enter the canonical contract.
+    """
+
+    candidates: dict[str, tuple[int, Any]] = {}
+    for need in spec.needs:
+        if need.current_value in (None, "", [], {}):
+            continue
+        field = _contract_field_for_need_name(need.name)
+        if field is None:
+            continue
+        value = _contract_value_from_need(need.name, need.current_value)
+        if value in (None, "", [], {}):
+            continue
+        priority = _need_source_priority(need.source)
+        existing = candidates.get(field)
+        if existing is None or priority > existing[0]:
+            candidates[field] = (priority, value)
+
+    fields = {field: value for field, (_priority, value) in candidates.items()}
+    if fields.get("primary_metrics") and "metric_priority" not in fields:
+        primary_metrics = _listify(fields.get("primary_metrics"))
+        secondary_metrics = _listify(fields.get("secondary_metrics"))
+        fields["metric_priority"] = _metric_priority(primary_metrics, secondary_metrics)
+    return fields
 
 
 def save_contract_draft(run_dir: Path, contract: ResearchIntentContract) -> Path:
@@ -402,6 +460,92 @@ def _contract_evidence_sources(sources: list[dict[str, Any]], llm_context: dict[
                 "support_level": item.get("support_level"),
             })
     return evidence
+
+
+def _contract_field_for_need_name(name: str) -> str | None:
+    mapping = {
+        "research_goal": "research_goal",
+        "baseline": "baseline",
+        "target_method": "baseline",
+        "dataset": "dataset",
+        "metrics": "primary_metrics",
+        "primary_metrics": "primary_metrics",
+        "secondary_metrics": "secondary_metrics",
+        "metric_priority": "metric_priority",
+        "success_criteria": "success_criteria",
+        "execution_mode": "execution_mode",
+        "repo": "baseline_repo",
+        "baseline_repo": "baseline_repo",
+        "evaluation_protocol": "evaluation_protocol",
+    }
+    return mapping.get(name)
+
+
+def _contract_value_from_need(name: str, value: Any) -> Any:
+    if name in {"metrics", "primary_metrics", "secondary_metrics"}:
+        return _canonicalize_metric_list(_listify(value))
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
+def _need_source_priority(source: str) -> int:
+    return {
+        "user_confirmed": 60,
+        "user": 50,
+        "artifact": 40,
+        "repo": 40,
+        "paper": 40,
+        "llm_inferred": 30,
+        "default": 20,
+        "unknown": 10,
+    }.get(source, 0)
+
+
+def _field_source_priority(spec: RequiredNeedSpec, field: str) -> int:
+    priority = 0
+    for need in spec.needs:
+        mapped = _contract_field_for_need_name(need.name)
+        if mapped == field and need.current_value not in (None, "", [], {}):
+            priority = max(priority, _need_source_priority(need.source))
+    return priority
+
+
+def _should_keep_existing_field(existing: ResearchIntentContract, update: ResearchIntentContract, field: str) -> bool:
+    existing_value = getattr(existing, field, None)
+    if existing_value in (None, "", [], {}):
+        return False
+    existing_priority = _field_source_priority(existing.need_spec, field)
+    update_priority = _field_source_priority(update.need_spec, field)
+    return existing_priority > update_priority > 0
+
+
+def _metric_intent_source_from_need_spec(spec: RequiredNeedSpec) -> Literal["llm", "fallback", "user_confirmed"]:
+    priority = _field_source_priority(spec, "primary_metrics")
+    if priority >= _need_source_priority("user_confirmed"):
+        return "user_confirmed"
+    if priority >= _need_source_priority("llm_inferred"):
+        return "llm"
+    return "fallback"
+
+
+def _task_domain_from_need_spec(spec: RequiredNeedSpec) -> str | None:
+    task_type = spec.inferred_task_type.lower()
+    if "anomaly" in task_type:
+        return "anomaly_detection"
+    if task_type and task_type != "general_research":
+        return task_type
+    return None
+
+
+def _contract_execution_mode(
+    value: Any,
+    text: str,
+) -> Literal["plan_only", "approve_each_step", "agent_assisted_after_approval"]:
+    cleaned = _clean_str(value)
+    if cleaned in {"plan_only", "approve_each_step", "agent_assisted_after_approval"}:
+        return cleaned  # type: ignore[return-value]
+    return _infer_execution_mode(text)
 
 
 def _infer_task_domain(text: str) -> str:

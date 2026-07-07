@@ -33,7 +33,7 @@ RequiredFor = Literal[
     "final_report",
 ]
 Necessity = Literal["required_now", "required_later", "optional", "auto_fillable"]
-NeedSource = Literal["user", "llm_inferred", "artifact", "repo", "paper", "default", "unknown"]
+NeedSource = Literal["user_confirmed", "user", "llm_inferred", "artifact", "repo", "paper", "default", "unknown"]
 StageGoal = Literal[
     "clarify_intent",
     "generate_plan",

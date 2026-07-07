@@ -9,10 +9,12 @@ from autoad_researcher.assistant.v2.intent_contract import (
     DEFAULT_FORBIDDEN_CHANGE_SCOPE,
     ResearchIntentContract,
     build_contract_from_context,
+    contract_fields_from_need_spec,
     format_contract_for_user,
     load_confirmed_contract,
     merge_contract_draft,
 )
+from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
 
@@ -52,7 +54,7 @@ def test_build_contract_ready_for_plan_without_improvement_or_target_module(tmp_
     assert contract.dataset == "MVTec AD"
     assert contract.primary_metrics == ["image_level_auroc"]
     assert contract.primary_metric == "image_level_auroc"
-    assert contract.success_criteria == "improve image_level_auroc under the same evaluation protocol"
+    assert contract.success_criteria == "improve selected metrics under the same evaluation protocol"
     assert contract.user_improvement_hints == []
     assert contract.user_target_module_hints == []
     assert contract.ready_for_plan is True
@@ -283,7 +285,7 @@ def test_hf2_contract_ready_after_metric_and_success(tmp_path: Path):
     assert merged.missing_required_fields == []
     assert merged.primary_metrics == ["image_level_auroc"]
     assert merged.primary_metric == "image_level_auroc"
-    assert merged.success_criteria == "improve image_level_auroc under the same evaluation protocol"
+    assert merged.success_criteria == "主要看 image AUROC，成功标准是保持原始评价协议并提升指标。"
 
 
 def test_hf2_metric_extraction_image_and_pixel_co_primary(tmp_path: Path):
@@ -370,3 +372,192 @@ def test_hf2_llm_missing_fields_not_authoritative(monkeypatch):
     assert "dataset" not in reply
     assert "primary_metrics" not in reply
     assert "missing_required_fields" not in reply
+
+
+def test_need_spec_maps_non_hardcoded_baseline_into_contract(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps(_need_spec_payload(
+            baseline="EfficientAD",
+            dataset="VisA",
+            metrics=["image_level_auroc", "pixel_level_auroc"],
+        ), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="我要做一个视觉异常检测改进任务。",
+        llm_context={"confirmed_from_user": {}},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert contract.baseline == "EfficientAD"
+    assert contract.dataset == "VisA"
+    assert contract.primary_metrics == ["image_level_auroc", "pixel_level_auroc"]
+    assert contract.metric_priority == "co_primary"
+
+
+def test_need_spec_contract_mapping_prefers_source_priority():
+    spec = RequiredNeedSpec.model_validate({
+        "task_summary": "test",
+        "inferred_task_type": "image_anomaly_detection_improvement",
+        "current_stage_goal": "generate_plan",
+        "needs": [
+            {
+                "name": "baseline",
+                "category": "experiment_object",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "EfficientAD",
+                "source": "llm_inferred",
+                "confidence": 0.6,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "baseline",
+                "category": "experiment_object",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "PatchCore",
+                "source": "user",
+                "confidence": 0.95,
+                "blocking": False,
+                "question_to_user": None,
+            },
+        ],
+        "blocking_needs": [],
+        "next_best_question": None,
+        "ready_for_plan": True,
+        "ready_for_repo_analysis": False,
+        "ready_for_experiment_design": True,
+        "ready_for_patch": False,
+        "ready_for_run": False,
+    })
+
+    assert contract_fields_from_need_spec(spec)["baseline"] == "PatchCore"
+
+
+def test_no_api_key_contract_fallback_still_recognizes_patchcore_mvtec(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="我想基于 PatchCore 提升 MVTec AD，主要看 image AUROC，成功标准是比原始 baseline 提升。",
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert contract.baseline == "PatchCore"
+    assert contract.dataset == "MVTec AD"
+    assert contract.primary_metrics == ["image_level_auroc"]
+
+
+def test_user_confirmed_field_not_overwritten_by_llm_inferred(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps(_need_spec_payload(
+            baseline="EfficientAD",
+            dataset="VisA",
+            metrics=["image_level_auroc"],
+        ), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="继续",
+        llm_context={"confirmed_from_user": {"baseline": "PatchCore"}},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert contract.baseline == "PatchCore"
+    assert contract.dataset == "VisA"
+
+
+def _need_spec_payload(*, baseline: str, dataset: str, metrics: list[str]) -> dict:
+    return {
+        "task_summary": f"基于 {baseline} 在 {dataset} 上做改进",
+        "inferred_task_type": "image_anomaly_detection_improvement",
+        "current_stage_goal": "generate_plan",
+        "needs": [
+            {
+                "name": "research_goal",
+                "category": "intent",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "提升 baseline 在目标数据集上的表现",
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "baseline",
+                "category": "experiment_object",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": baseline,
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "dataset",
+                "category": "experiment_object",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": dataset,
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "metrics",
+                "category": "evaluation",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": metrics,
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "success_criteria",
+                "category": "evaluation",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "improve selected metrics under the same evaluation protocol",
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "execution_mode",
+                "category": "execution",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "plan_only",
+                "source": "default",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+        ],
+        "blocking_needs": [],
+        "next_best_question": None,
+        "ready_for_plan": True,
+        "ready_for_repo_analysis": False,
+        "ready_for_experiment_design": True,
+        "ready_for_patch": False,
+        "ready_for_run": False,
+    }
