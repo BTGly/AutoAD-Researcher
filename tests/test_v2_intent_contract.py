@@ -13,6 +13,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     format_contract_for_user,
     load_confirmed_contract,
     merge_contract_draft,
+    save_contract_draft,
 )
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
@@ -400,6 +401,116 @@ def test_need_spec_maps_non_hardcoded_baseline_into_contract(tmp_path: Path, mon
     assert contract.metric_priority == "co_primary"
 
 
+def test_hf2_identity_question_does_not_chase_dataset(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    save_contract_draft(
+        run_dir,
+        ResearchIntentContract(
+            run_id=run_dir.name,
+            research_goal="提升 baseline 在目标数据集上的表现",
+            baseline="PatchCore",
+            primary_metrics=["image_level_auroc"],
+            success_criteria="improve selected metrics",
+            ready_for_plan=False,
+            missing_required_fields=["dataset"],
+        ),
+    )
+
+    result = ResearchOrchestratorV2.handle(run_dir, user_input="你是谁？")
+
+    assert result.reply_kind == "answer"
+    assert "dataset" not in result.reply
+    assert "数据集" in result.reply
+    assert "请补充" not in result.reply
+    assert result.intent_contract["missing_required_fields"] == ["dataset"]
+
+
+def test_hf2_user_identity_does_not_update_contract(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    save_contract_draft(
+        run_dir,
+        ResearchIntentContract(
+            run_id=run_dir.name,
+            baseline="PatchCore",
+            missing_required_fields=["dataset"],
+        ),
+    )
+
+    result = ResearchOrchestratorV2.handle(run_dir, user_input="我是人类！")
+
+    assert result.intent_contract["baseline"] == "PatchCore"
+    assert result.intent_contract["dataset"] is None
+    assert "请补充" not in result.reply
+
+
+def test_hf2_playful_message_not_contract_update(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(run_dir, user_input="你是无敌美少女")
+
+    assert result.intent_contract == {}
+    assert "研究合同" in result.reply
+    assert "dataset" not in result.reply
+
+
+def test_hf2_frustration_not_contract_update(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(run_dir, user_input="我草泥马")
+
+    assert result.intent_contract == {}
+    assert "请补充" not in result.reply
+    assert "dataset" not in result.reply
+
+
+def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    save_contract_draft(
+        run_dir,
+        ResearchIntentContract(
+            run_id=run_dir.name,
+            research_goal="提升 baseline 在目标数据集上的表现",
+            baseline="PatchCore",
+            dataset="MVTec AD",
+            primary_metrics=["pixel_level_auroc"],
+            primary_metric="pixel_level_auroc",
+            metric_priority="single_primary",
+            success_criteria="improve pixel_level_auroc",
+            execution_mode="plan_only",
+        ),
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="主要看 image AUROC 和 pixel AUROC，成功标准是比原始 PatchCore 有提升，评价流程不能作弊，不能改测试集和指标定义。",
+    )
+
+    assert result.intent_contract["primary_metrics"] == ["image_level_auroc", "pixel_level_auroc"]
+    assert result.intent_contract["primary_metric"] is None
+    assert result.intent_contract["metric_priority"] == "co_primary"
+    assert result.intent_contract["success_criteria"]
+    assert result.intent_contract["evaluation_protocol"] == "keep baseline/original evaluation protocol; no test split or metric changes"
+
+
+def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="我想基于 PatchCore 做异常检测改进。",
+    )
+
+    assert result.reply_kind == "answer"
+    assert "主要目标" in result.reply or "指标" in result.reply
+    assert result.intent_contract.get("missing_required_fields")
+
+
 def test_need_spec_contract_mapping_prefers_source_priority():
     spec = RequiredNeedSpec.model_validate({
         "task_summary": "test",
@@ -470,7 +581,7 @@ def test_user_confirmed_field_not_overwritten_by_llm_inferred(tmp_path: Path, mo
 
     contract = build_contract_from_context(
         run_dir=run_dir,
-        user_input="继续",
+        user_input="继续这个视觉异常检测任务",
         llm_context={"confirmed_from_user": {"baseline": "PatchCore"}},
         api_key="sk-test",
         provider_url="https://example.test",

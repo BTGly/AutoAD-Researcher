@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any
 
+from autoad_researcher.assistant.v2.need_discovery import is_contract_relevant_turn
+
 
 def plan_reply(
     llm_context: dict[str, Any],
@@ -25,6 +27,11 @@ def plan_reply(
     usable = llm_context.get("usable_evidence", [])
     unparsed = llm_context.get("unparsed_sources", [])
     readable = llm_context.get("readable_summaries", [])
+
+    if not is_contract_relevant_turn(user_input):
+        if api_key:
+            return _llm_reply(llm_context, user_input, api_key, provider_url)
+        return "answer", _non_contract_fallback()
 
     if api_key:
         return _llm_reply(llm_context, user_input, api_key, provider_url)
@@ -49,6 +56,8 @@ def _llm_reply(
     system = (
         "你是 AutoAD Researcher v2，HF-2 研究意图与实验目标合同助手。\n"
         "你的任务不是让用户设计方法，也不是让用户决定改哪个模块；你的任务是澄清研究目标、baseline、dataset、metric、成功标准、执行模式和防作弊边界。\n"
+        "用户不是每一句话都在补充研究合同。只有当前消息明确涉及研究目标、baseline、dataset、metric、success criteria、执行模式、资料、仓库、论文或实验边界时，才推进 ResearchIntentContract。\n"
+        "对身份问题、闲聊、玩笑、发泄、辱骂或无意义短句，不更新合同、不追问 dataset/metric/success criteria；输出 contract_updates={}, missing_required_fields=[], next_question=\"\"。\n"
         "improvement_idea、target_module 只能作为 optional hints；用户没有也不能阻塞。\n"
         "后续 experiment agents 才负责发散候选方向、定位模块、patch、运行实验和分析结果。\n"
         "不要问'你想怎么改'、'你要改哪个模块'、'准备用什么方法'。\n"
@@ -67,7 +76,14 @@ def _llm_reply(
         "\"next_question\": string, "
         "\"ready_for_confirmation\": boolean, "
         "\"ready_for_experiment_agents\": boolean"
-        "}."
+        "}.\n"
+        "Few-shot:\n"
+        "用户: 你是谁？ -> contract_updates={}, missing_required_fields=[], next_question=\"\"。\n"
+        "用户: 我是谁？ -> contract_updates={}, missing_required_fields=[], next_question=\"\"。\n"
+        "用户: 我是人类！ -> contract_updates={}, missing_required_fields=[], next_question=\"\"。\n"
+        "用户: 我是傻逼 -> contract_updates={}, missing_required_fields=[], next_question=\"\"。\n"
+        "用户: 我草泥马 -> contract_updates={}, missing_required_fields=[], next_question=\"\"。\n"
+        "用户: 你是无敌美少女 -> contract_updates={}, missing_required_fields=[], next_question=\"\"。"
     )
 
     messages = [
@@ -108,6 +124,10 @@ def _unified_fallback(blocking: str, unparsed_count: int, usable_count: int, rea
     parts.append("默认禁止修改测试集、指标定义、数据划分、测试标签和任何标签泄漏；当前执行模式默认 plan_only。")
 
     return "answer", "\n".join(parts)
+
+
+def _non_contract_fallback() -> str:
+    return "这句话不会写入研究合同。需要继续推进研究任务时，可以直接告诉我实验目标、数据集、指标、资料链接或仓库。"
 
 
 def _json_text(value: Any) -> str:

@@ -729,7 +729,18 @@ def _infer_success_criteria(text: str, primary_metrics: list[str]) -> str | None
 
 
 def _infer_evaluation_protocol(text: str) -> str | None:
-    if any(token in text for token in ("不改测试", "不改评价", "官方评价", "原始设置", "原设置", "保持 baseline")):
+    if any(token in text for token in (
+        "不改测试",
+        "不能改测试",
+        "不改指标",
+        "不能改指标",
+        "不能作弊",
+        "不改评价",
+        "官方评价",
+        "原始设置",
+        "原设置",
+        "保持 baseline",
+    )):
         return "keep baseline/original evaluation protocol; no test split or metric changes"
     return None
 

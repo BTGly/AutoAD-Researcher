@@ -102,6 +102,9 @@ def discover_required_needs(
     if llm_payload is not None:
         return validate_need_spec(canonicalize_need_values(RequiredNeedSpec.model_validate(llm_payload)))
 
+    if not is_contract_relevant_turn(user_input):
+        return _non_contract_need_spec(current_stage_goal)
+
     text = _combined_user_text(user_input, transcript_tail)
     draft = existing_contract_draft or {}
     sources = source_registry or []
@@ -151,6 +154,8 @@ def discover_required_needs_with_llm(
         "answerability": answerability,
         "run_artifacts_summary": run_artifacts_summary,
     }
+    if not is_contract_relevant_turn(user_input):
+        return _non_contract_need_spec(current_stage_goal)
     if not api_key:
         return discover_required_needs(**fallback_kwargs)
 
@@ -264,6 +269,9 @@ def _build_need_discovery_messages(
         "你是 AutoAD Researcher 的 Need Discovery 组件，只输出 RequiredNeedSpec JSON。\n"
         "你的任务是判断当前目标和阶段真正缺哪些关键事实、材料、资源和安全约束。\n"
         "不要回答用户，不要输出 Markdown。\n"
+        "用户不是每一句话都在填写研究合同。只有当前消息明确涉及研究目标、baseline、dataset、metric、success criteria、执行模式、资料、仓库、论文或实验边界时，才推进合同。\n"
+        "身份问题、闲聊、玩笑、发泄、辱骂或无意义短句不是合同 turn：needs=[], blocking_needs=[], next_best_question=null，不要根据 existing_contract_draft.missing_required_fields 追问。\n"
+        "existing_contract_draft 中的 missing_required_fields 只是状态，不代表每轮都要追问；只有当前 turn 正在推进研究任务时，才提出 next_best_question。\n"
         "规则边界：metric/dataset/baseline 名称可以标准化；不要用关键词或出现顺序强行决定用户意图。\n"
         "improvement_idea 和 target_module 只能是 optional，不能 blocking。\n"
         "plan 阶段不能要求用户提供 dataset_path、python_env、GPU、repo entrypoint 或 config；这些应是 required_later 或 auto_fillable。\n"
@@ -358,6 +366,37 @@ def canonicalize_metrics(value: Any) -> list[str]:
     return _unique(metrics)
 
 
+def is_contract_relevant_turn(user_input: str) -> bool:
+    """Return whether this turn should advance the research contract."""
+
+    text = user_input.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if re.search(r"https?://|github\.com|arxiv\.org", lowered):
+        return True
+    research_patterns = [
+        r"baseline|dataset|metric|auroc|auc|f1\b|patchcore|efficientad|mvtec|visa\b",
+        r"repo|repository|github|paper|arxiv|pdf|experiment|benchmark|config|entrypoint",
+        r"anomaly|detection|训练|实验|指标|数据集|论文|仓库|资料|评价|评估|成功标准|异常|检测",
+        r"测试集|指标定义|泄漏|复现|显存|速度|推理|运行|方案|改进|提升|优化",
+        r"报错|错误|traceback|exception|bug|确认",
+    ]
+    if any(re.search(pattern, lowered) for pattern in research_patterns):
+        return True
+    non_contract_patterns = [
+        r"^(你是谁|我是谁|我是谁\?|你是.+|我是人类!?|我是人类！?)$",
+        r"^(我是傻逼|我草泥马|草泥马|操你|傻逼|无敌美少女)$",
+        r"^(哈哈+|hhh+|hello|hi|你好|在吗|谢谢|ok|嗯|啊|哦)$",
+    ]
+    compact = re.sub(r"\s+", "", text)
+    if any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in non_contract_patterns):
+        return False
+    if len(compact) <= 12 and not any(char.isdigit() for char in compact):
+        return False
+    return False
+
+
 def _combined_user_text(user_input: str, transcript_tail: list[dict[str, Any]] | None) -> str:
     parts = [
         str(entry.get("content", ""))
@@ -368,6 +407,22 @@ def _combined_user_text(user_input: str, transcript_tail: list[dict[str, Any]] |
     return "\n".join(part for part in parts if part.strip())
 
 
+def _non_contract_need_spec(current_stage_goal: StageGoal) -> RequiredNeedSpec:
+    return RequiredNeedSpec(
+        task_summary="non-contract chat turn",
+        inferred_task_type="non_contract_chat",
+        current_stage_goal=current_stage_goal,
+        needs=[],
+        blocking_needs=[],
+        next_best_question=None,
+        ready_for_plan=False,
+        ready_for_repo_analysis=False,
+        ready_for_experiment_design=False,
+        ready_for_patch=False,
+        ready_for_run=False,
+    )
+
+
 def _autofill_values(
     text: str,
     draft: dict[str, Any],
@@ -375,12 +430,14 @@ def _autofill_values(
     usable_evidence: list[dict[str, Any]],
     run_artifacts_summary: dict[str, Any],
 ) -> dict[str, Any]:
+    current_metrics = canonicalize_metrics(text)
+    current_success_criteria = _success_criteria_from_text(text)
     values: dict[str, Any] = {
         "research_goal": draft.get("research_goal") or _goal_from_text(text),
         "baseline": draft.get("baseline") or _baseline_from_text(text),
         "dataset": draft.get("dataset") or _dataset_from_text(text),
-        "metrics": draft.get("primary_metrics") or draft.get("primary_metric") or canonicalize_metrics(text),
-        "success_criteria": draft.get("success_criteria") or _success_criteria_from_text(text),
+        "metrics": current_metrics or draft.get("primary_metrics") or draft.get("primary_metric"),
+        "success_criteria": current_success_criteria or draft.get("success_criteria"),
         "execution_mode": draft.get("execution_mode") or _execution_mode_from_text(text),
         "allowed_change_scope": draft.get("allowed_change_scope"),
         "forbidden_change_scope": draft.get("forbidden_change_scope"),
