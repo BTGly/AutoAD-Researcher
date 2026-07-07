@@ -14,6 +14,7 @@ from autoad_researcher.ui.material_requests import (
     fail_material_request,
     load_material_requests,
 )
+from autoad_researcher.ui.sources import update_source_intake_result
 from autoad_researcher.ui.subagent_inbox import post_subagent_notification
 from autoad_researcher.ui.sync_web_search import (
     SYNC_SEARCH_FILE,
@@ -33,6 +34,7 @@ def run_pending_material_subagents(
     *,
     provider: WebSearchProvider | None = None,
     worker_id: str = "ui_button",
+    request_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run eligible queued material requests through material subagents."""
     runs: list[dict[str, Any]] = []
@@ -40,6 +42,8 @@ def run_pending_material_subagents(
         if request.get("status") not in {"queued", "pending"}:
             continue
         request_id = str(request.get("request_id", ""))
+        if request_ids is not None and request_id not in request_ids:
+            continue
         if not claim_material_request(run_dir, request_id=request_id, worker_id=worker_id):
             continue
         claimed = next(
@@ -192,6 +196,15 @@ def run_web_fetch_subagent(
         html_path = output_dir / "raw.html"
         html_path.write_text(result.content, encoding="utf-8")
         artifact_paths = [str(html_path.relative_to(run_dir))]
+        if source_id:
+            update_source_intake_result(
+                run_dir,
+                source_id,
+                status="uploaded_not_parsed",
+                stored_path=artifact_paths[0],
+                intake_status="ok",
+                clear_intake_error=True,
+            )
         req_status = "completed"
         summary = f"已下载 {url}（{len(result.content)} 字节）"
         error_message = None
@@ -200,6 +213,18 @@ def run_web_fetch_subagent(
         req_status = "failed"
         summary = f"web_fetch failed: {exc}"
         error_message = str(exc)[:500]
+        if source_id:
+            update_source_intake_result(
+                run_dir,
+                source_id,
+                status="failed",
+                intake_status="failed",
+                intake_error={
+                    "error_code": "web_fetch_failed",
+                    "error_message": error_message,
+                },
+                error_message=error_message,
+            )
 
     record = {
         "subagent_run_id": subagent_run_id,
@@ -230,7 +255,12 @@ def run_web_fetch_subagent(
     record["notification_id"] = notification_id
     _append_subagent_run(run_dir, record)
     if req_status == "completed":
-        complete_material_request(run_dir, request_id=request_id, notification_id=notification_id)
+        complete_material_request(
+            run_dir,
+            request_id=request_id,
+            notification_id=notification_id,
+            result_ref=artifact_paths[0] if artifact_paths else None,
+        )
     else:
         fail_material_request(
             run_dir,
@@ -257,6 +287,14 @@ def run_repository_discovery_subagent(
     started_at = datetime.now(timezone.utc).isoformat()
 
     summary = f"已登记 GitHub 仓库候选：{url}（尚未 clone）。repo clone 是后续阶段操作。"
+    if source_id:
+        update_source_intake_result(
+            run_dir,
+            source_id,
+            status="user_provided_not_ingested",
+            intake_status="ok",
+            clear_intake_error=True,
+        )
     record = {
         "subagent_run_id": subagent_run_id,
         "subagent_name": "repository_discovery_subagent",

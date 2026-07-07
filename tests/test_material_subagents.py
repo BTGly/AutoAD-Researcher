@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from autoad_researcher.tools.providers import WebFetchResult
 from autoad_researcher.assistant.material_subagents import (
     MATERIAL_DISCOVERY_SUBAGENT,
     MATERIAL_SUBAGENT_RUNS_FILE,
@@ -11,6 +12,7 @@ from autoad_researcher.assistant.material_subagents import (
 )
 from autoad_researcher.tools.providers import RecordedWebSearchProvider, WebSearchResult
 from autoad_researcher.ui.material_requests import append_material_request, load_material_requests
+from autoad_researcher.ui.sources import load_source_registry, register_url_source
 from autoad_researcher.ui.subagent_inbox import load_uninjected_notifications
 
 
@@ -51,15 +53,15 @@ def test_material_discovery_subagent_marks_search_unavailable(tmp_path: Path):
 
     runs = run_pending_material_subagents(run_dir)
 
-    assert runs[0]["status"] == "completed"
+    assert runs[0]["status"] == "failed"
     assert runs[0]["notification_id"] == "ntf_000001"
     requests = load_material_requests(run_dir)
-    assert requests[0]["status"] == "completed"
+    assert requests[0]["status"] == "failed"
     assert requests[0]["claimed_by"] == "ui_button"
     notifications = load_uninjected_notifications(run_dir)
-    assert notifications[0]["status"] == "completed"
-    assert notifications[0]["severity"] == "info"
-    assert "找到" in notifications[0]["summary"]
+    assert notifications[0]["status"] == "failed"
+    assert notifications[0]["severity"] == "error"
+    assert "web_search failed" in notifications[0]["summary"]
 
 
 def test_material_discovery_subagent_skips_non_search_requests(tmp_path: Path):
@@ -110,3 +112,65 @@ def test_web_search_result_is_candidate_source_only_in_notification(tmp_path: Pa
     notifications = load_uninjected_notifications(run_dir)
     assert notifications[0]["evidence_role"] == "candidate_source_only"
     assert notifications[0]["summary"] == "找到 1 个候选来源"
+
+
+def test_web_fetch_subagent_updates_source_and_request_result_ref(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_web_fetch"
+    run_dir.mkdir()
+    source = register_url_source(run_dir, "https://example.com/paper")
+    append_material_request(
+        run_dir,
+        user_message="下载 https://example.com/paper",
+        kind="material_acquisition",
+        payload={"tool": "web_fetch", "url": "https://example.com/paper", "source_id": source["source_id"]},
+        evidence_role="source_acquired_unparsed",
+    )
+
+    class FetchProvider:
+        def fetch(self, url: str) -> WebFetchResult:
+            return WebFetchResult(
+                url=url,
+                status_code=200,
+                content="<html><title>Paper</title></html>",
+                content_sha256="a" * 64,
+            )
+
+    import autoad_researcher.tools.providers as providers
+
+    monkeypatch.setattr(providers, "SecureWebFetchProvider", FetchProvider)
+
+    runs = run_pending_material_subagents(run_dir)
+
+    assert runs[0]["status"] == "completed"
+    requests = load_material_requests(run_dir)
+    assert requests[0]["status"] == "completed"
+    assert requests[0]["result_ref"] == f"sources/{source['source_id']}/raw.html"
+    registry = load_source_registry(run_dir)
+    registered = registry["sources"][0]
+    assert registered["status"] == "uploaded_not_parsed"
+    assert registered["intake_status"] == "ok"
+    assert registered["stored_path"] == f"sources/{source['source_id']}/raw.html"
+
+
+def test_repository_discovery_marks_source_candidate_intake_only(tmp_path: Path):
+    run_dir = tmp_path / "run_repo_discovery"
+    run_dir.mkdir()
+    source = register_url_source(run_dir, "https://github.com/example/repo")
+    append_material_request(
+        run_dir,
+        user_message="分析 https://github.com/example/repo",
+        kind="repository_discovery",
+        payload={"url": "https://github.com/example/repo", "source_id": source["source_id"]},
+        evidence_role="candidate_source_only",
+    )
+
+    runs = run_pending_material_subagents(run_dir)
+
+    assert runs[0]["status"] == "completed"
+    registry = load_source_registry(run_dir)
+    registered = registry["sources"][0]
+    assert registered["kind"] == "github_repo"
+    assert registered["status"] == "user_provided_not_ingested"
+    assert registered["intake_status"] == "ok"
+    notifications = load_uninjected_notifications(run_dir)
+    assert notifications[0]["evidence_role"] == "candidate_source_only"

@@ -145,6 +145,39 @@ def update_source_status(run_dir: Path, source_id: str, status: SourceStatus, *,
     _save_registry(run_dir, registry)
 
 
+def update_source_intake_result(
+    run_dir: Path,
+    source_id: str,
+    *,
+    status: SourceStatus | None = None,
+    stored_path: str | None = None,
+    intake_status: IntakeStatus | None = None,
+    intake_error: dict[str, Any] | None = None,
+    clear_intake_error: bool = False,
+    error_message: str | None = None,
+) -> None:
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("source_id") != source_id:
+            continue
+        if status is not None:
+            source["status"] = status
+        if stored_path is not None:
+            source["stored_path"] = stored_path
+        if intake_status is not None:
+            source["intake_status"] = intake_status
+        if clear_intake_error:
+            source["intake_error"] = None
+        elif intake_error is not None:
+            source["intake_error"] = intake_error
+        if error_message:
+            source["error_message"] = error_message
+        elif status is not None and status != "failed":
+            source.pop("error_message", None)
+        break
+    _save_registry(run_dir, registry)
+
+
 def append_source_ref(
     run_dir: Path,
     *,
@@ -543,6 +576,18 @@ def _detect_source_kind_from_url(url: str) -> SourceKind:
 
 def register_url_source(run_dir: Path, url: str) -> dict[str, Any]:
     kind = _detect_source_kind_from_url(url)
+    registry = load_source_registry(run_dir)
+    for source in registry.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        if source.get("kind") == kind and source.get("user_label") == url:
+            return {
+                "source_id": source["source_id"],
+                "kind": kind,
+                "intake_status": source.get("intake_status", "pending"),
+                "status": source.get("status", "user_provided_not_ingested"),
+                "stored_path": source.get("stored_path"),
+            }
     sid = append_source_ref(
         run_dir,
         kind=kind,
@@ -551,7 +596,13 @@ def register_url_source(run_dir: Path, url: str) -> dict[str, Any]:
         status="user_provided_not_ingested",
         intake_status="pending",
     )
-    return {"source_id": sid, "kind": kind, "intake_status": "pending", "status": "user_provided_not_ingested"}
+    return {
+        "source_id": sid,
+        "kind": kind,
+        "intake_status": "pending",
+        "status": "user_provided_not_ingested",
+        "stored_path": None,
+    }
 
 
 def register_user_text_source(run_dir: Path, text: str) -> dict[str, Any]:

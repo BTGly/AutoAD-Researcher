@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -21,34 +20,6 @@ from autoad_researcher.ui.chat_transcript import redact_secrets
 SYNC_SEARCH_DIR = "ui_chat"
 SYNC_SEARCH_FILE = "sync_web_search_results.jsonl"
 SYNC_SEARCH_STAGE = "candidate_source_only"
-
-_MOCK_RESULTS: list[dict[str, str]] = [
-    {
-        "title": "DINOv2 + PatchCore for MVTec AD Anomaly Detection — GitHub",
-        "url": "https://github.com/amazon-science/patchcore-inspection",
-        "snippet": "Official PatchCore repository. For feature extractor improvements, DINOv2 backbone integration has been explored in community forks.",
-    },
-    {
-        "title": "EfficientAD: Accurate Visual Anomaly Detection at Millisecond-Level Latencies — arXiv",
-        "url": "https://arxiv.org/abs/2303.05165",
-        "snippet": "EfficientAD proposes a lightweight feature extractor architecture for anomaly detection on MVTec AD. Compatible with PatchCore-like memory bank approaches.",
-    },
-    {
-        "title": "Anomalib: Deep Learning Library for Anomaly Detection — GitHub",
-        "url": "https://github.com/openvinotoolkit/anomalib",
-        "snippet": "Anomalib provides implementations of PatchCore, PaDiM, and other methods on MVTec AD. Includes feature extractor configuration options.",
-    },
-    {
-        "title": "Towards Total Recall in Industrial Anomaly Detection (PatchCore Paper) — arXiv",
-        "url": "https://arxiv.org/abs/2106.08265",
-        "snippet": "The original PatchCore paper. Describes the coreset sampling and nearest-neighbor scoring architecture.",
-    },
-    {
-        "title": "FastRecon: Few-shot Industrial Anomaly Detection via Fast Feature Reconstruction — arXiv",
-        "url": "https://arxiv.org/abs/2304.05189",
-        "snippet": "A recent method for few-shot anomaly detection on MVTec AD that can be combined with PatchCore's scoring strategy.",
-    },
-]
 
 
 class WebSearchProvider(Protocol):
@@ -80,27 +51,16 @@ def detect_sync_web_search_intent(message: str) -> bool:
     )
 
 
-class MockWebSearchProvider:
-    """Fallback search provider when no real provider is configured.
-
-    Returns curated candidate sources so the subagent inbox pipeline
-    is testable end-to-end. Every result is candidate_source_only.
-    """
-
-    def search(self, query: str) -> list[WebSearchResult]:
-        return [WebSearchResult.model_validate(item) for item in _MOCK_RESULTS]
-
-
 def load_sync_web_search_provider() -> WebSearchProvider | None:
     fixture_path = os.environ.get("AUTOAD_RESEARCH_CHAT_WEB_SEARCH_FIXTURE")
     if not fixture_path:
-        return MockWebSearchProvider()
+        return None
     path = Path(fixture_path)
     if not path.is_file():
-        return MockWebSearchProvider()
+        return None
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        return MockWebSearchProvider()
+        return None
     records: dict[str, list[WebSearchResult]] = {}
     for query, values in payload.items():
         if not isinstance(query, str) or not isinstance(values, list):
@@ -111,7 +71,7 @@ def load_sync_web_search_provider() -> WebSearchProvider | None:
                 parsed.append(WebSearchResult.model_validate(item))
         records[query] = parsed
     if not records:
-        return MockWebSearchProvider()
+        return None
     return RecordedWebSearchProvider(records)
 
 

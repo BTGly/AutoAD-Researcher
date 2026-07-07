@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from autoad_researcher.assistant.material_subagents import run_pending_material_subagents
 from autoad_researcher.assistant.research_context_builder import ResearchChatEvidenceContext
 from autoad_researcher.assistant.response_guard import guard_research_chat_reply
 from autoad_researcher.ui.material_requests import (
@@ -14,7 +13,6 @@ from autoad_researcher.ui.material_requests import (
     load_material_requests,
     update_material_request_status,
 )
-from autoad_researcher.ui.sync_web_search import _MOCK_RESULTS, execute_sync_web_search
 from autoad_researcher.ui.research_chat import (
     build_research_chat_messages,
     build_search_unavailable_material_request_reply,
@@ -95,31 +93,24 @@ def test_research_chat_prompt_forbids_background_search_promises(tmp_path: Path)
     assert "search_unavailable" in system_text
 
 
-def test_sync_web_search_returns_mock_results_and_auto_executes(tmp_path: Path):
-    run_dir = tmp_path / "run_search_mock"
+def test_sync_web_search_unavailable_creates_material_request_without_auto_failure(tmp_path: Path):
+    run_dir = tmp_path / "run_search_unavailable"
     run_dir.mkdir()
 
     result = execute_sync_web_search(run_dir, query="搜索 MVTec AD 最新可迁移到 PatchCore 的方法")
-    assert result["status"] == "ok"
-    assert len(result["results"]) == 5
-    assert result["results"][0]["title"] == _MOCK_RESULTS[0]["title"]
-
     request = create_search_unavailable_material_request(
         run_dir,
         user_input="搜索 MVTec AD 最新可迁移到 PatchCore 的方法",
         search_result=result,
     )
+
     loaded = load_material_requests(run_dir)
+    assert result["status"] == "search_unavailable"
     assert request["request_id"] == "mr_000001"
     assert loaded[0]["kind"] == "web_search"
     assert loaded[0]["status"] == "queued"
     assert loaded[0]["payload"]["query"] == "搜索 MVTec AD 最新可迁移到 PatchCore 的方法"
-
-    # Auto-execute: run_pending_material_subagents should process it
-    runs = run_pending_material_subagents(run_dir, worker_id="auto_chat")
-    assert len(runs) == 1
-    assert runs[0]["status"] == "completed"
-    assert runs[0]["notification_id"] == "ntf_000001"
+    assert loaded[0]["evidence_role"] == "candidate_source_only"
 
 
 def test_search_unavailable_material_request_fallback_to_manual(tmp_path: Path):
@@ -134,8 +125,9 @@ def test_search_unavailable_material_request_fallback_to_manual(tmp_path: Path):
     )
     reply = build_search_unavailable_material_request_reply(result, request, runs=None)
 
-    assert "搜索结果" in reply or "candidate_source_only" in reply
+    assert "search_unavailable" in reply
     assert "mr_000001" in reply
+    assert "通知区" in reply
 
 
 def test_url_input_registers_source_and_creates_web_fetch_request(tmp_path: Path):
@@ -159,6 +151,22 @@ def test_url_input_registers_source_and_creates_web_fetch_request(tmp_path: Path
         "source_id": intake["source"]["source_id"],
     }
     assert requests[0]["evidence_role"] == "source_acquired_unparsed"
+
+
+def test_repeated_url_reuses_source_and_material_request(tmp_path: Path):
+    run_dir = tmp_path / "run_repeat_url"
+    run_dir.mkdir()
+
+    first = create_url_source_material_request(run_dir, "https://arxiv.org/abs/2303.15140")
+    second = create_url_source_material_request(run_dir, "https://arxiv.org/abs/2303.15140")
+
+    registry = load_source_registry(run_dir)
+    requests = load_material_requests(run_dir)
+    assert len(registry["sources"]) == 1
+    assert len(requests) == 1
+    assert second["source"]["source_id"] == first["source"]["source_id"]
+    assert second["request"]["request_id"] == first["request"]["request_id"]
+    assert second["existing_request"] is True
 
 
 def test_arxiv_url_creates_web_fetch_material_request(tmp_path: Path):
@@ -240,6 +248,9 @@ def test_handle_chat_input_intercepts_material_request_before_llm_call():
     assert body.index("detect_sync_web_search_intent(user_input)") < body.index("build_pdf_parse_action(run_dir, user_input")
     assert "detect_material_request_intent(user_input)" in body
     assert body.index("detect_material_request_intent(user_input)") < body.index("call_research_chat(")
+    url_block = body[body.index("if url:"):body.index("if detect_sync_web_search_intent(user_input):")]
+    assert "request_ids={request_id}" in url_block
+    assert "st.rerun()" in url_block
 
 
 def test_material_request_panel_can_execute_pending_web_search():

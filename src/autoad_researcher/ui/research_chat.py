@@ -601,6 +601,9 @@ def create_url_source_material_request(run_dir: Path, url: str, *, user_message:
     source = register_url_source(run_dir, url)
     source_id = str(source["source_id"])
     source_kind = str(source.get("kind", "webpage"))
+    existing = _find_existing_material_request_for_url(run_dir, url=url, source_id=source_id)
+    if existing is not None:
+        return {"source": source, "request": existing, "existing_request": True}
     if source_kind == "github_repo":
         request = append_material_request(
             run_dir,
@@ -620,6 +623,19 @@ def create_url_source_material_request(run_dir: Path, url: str, *, user_message:
     return {"source": source, "request": request}
 
 
+def _find_existing_material_request_for_url(run_dir: Path, *, url: str, source_id: str) -> dict[str, Any] | None:
+    for request in reversed(load_material_requests(run_dir)):
+        status = str(request.get("status", ""))
+        if status in {"failed", "cancelled"}:
+            continue
+        payload = request.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("url") == url and payload.get("source_id") == source_id:
+            return request
+    return None
+
+
 def build_url_source_material_request_reply(intake: dict[str, Any], runs: list[dict[str, Any]] | None = None) -> str:
     source = intake["source"]
     request = intake["request"]
@@ -628,10 +644,16 @@ def build_url_source_material_request_reply(intake: dict[str, Any], runs: list[d
     request_id = str(request.get("request_id", "material_request"))
     request_kind = str(request.get("kind", "material_acquisition"))
     evidence_role = str(request.get("evidence_role", "source_acquired_unparsed"))
-    base = (
-        f"已登记 URL source：`{source_id}`（{source_kind}）。\n"
-        f"同时已创建资料处理任务 `{request_id}`（{request_kind}，{evidence_role}）。"
-    )
+    if intake.get("existing_request"):
+        base = (
+            f"已复用 URL source：`{source_id}`（{source_kind}）。\n"
+            f"已有资料处理任务 `{request_id}`（{request_kind}，{evidence_role}），不会重复创建。"
+        )
+    else:
+        base = (
+            f"已登记 URL source：`{source_id}`（{source_kind}）。\n"
+            f"同时已创建资料处理任务 `{request_id}`（{request_kind}，{evidence_role}）。"
+        )
     if runs:
         base += "\n已自动执行资料处理任务；结果已写入通知区。任务状态见「资料搜集请求」面板。"
     else:
@@ -1196,10 +1218,15 @@ def _handle_chat_input(
     url = extract_first_url(user_input)
     if url:
         intake = create_url_source_material_request(run_dir, url, user_message=user_input)
-        runs = run_pending_material_subagents(run_dir, worker_id="auto_chat")
+        request = intake["request"]
+        request_id = str(request.get("request_id", ""))
+        runs = []
+        if not intake.get("existing_request"):
+            runs = run_pending_material_subagents(run_dir, worker_id="auto_chat", request_ids={request_id})
         reply = build_url_source_material_request_reply(intake, runs)
         st.chat_message("assistant").write(reply)
         _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
+        st.rerun()
         return
 
     if detect_sync_web_search_intent(user_input):
@@ -1210,8 +1237,7 @@ def _handle_chat_input(
                 user_input=user_input,
                 search_result=result,
             )
-            runs = run_pending_material_subagents(run_dir, worker_id="auto_chat")
-            reply = build_search_unavailable_material_request_reply(result, request, runs)
+            reply = build_search_unavailable_material_request_reply(result, request, runs=None)
         else:
             reply = build_sync_web_search_reply(result)
         st.chat_message("assistant").write(reply)
@@ -1392,6 +1418,8 @@ def _render_source_cards_panel(run_dir: Path) -> None:
                 "source_id": row["source_id"],
                 "类型": row["kind"],
                 "状态": row["status"],
+                "intake": row["intake_status"] or "—",
+                "path": row["stored_path"] or "—",
                 "active attempt": row["active_parse_attempt_id"] or "—",
                 "attempts": row["parse_attempt_count"],
             }
@@ -1475,7 +1503,8 @@ def _render_evidence_boundary_panel(run_dir: Path) -> None:
 
     parsed = [r for r in rows if r["status"] == "parsed"]
     failed = [r for r in rows if r["status"] == "failed"]
-    unparsed = [r for r in rows if r["status"] in {"uploaded_not_parsed", "user_provided_not_ingested", "parsing"}]
+    acquired_unparsed = [r for r in rows if r["status"] in {"uploaded_not_parsed", "parsing"}]
+    candidate_only = [r for r in rows if r["status"] == "user_provided_not_ingested"]
     user_text = [r for r in rows if r["kind"] == "user_text"]
 
     with st.expander("证据边界", expanded=False):
@@ -1489,9 +1518,15 @@ def _render_evidence_boundary_panel(run_dir: Path) -> None:
         if user_text:
             st.info(f"用户提供（{len(user_text)} 个来源）")
 
-        if unparsed:
-            st.warning(f"未解析（{len(unparsed)} 个来源）")
-            for src in unparsed:
+        if acquired_unparsed:
+            st.warning(f"已获取但未解析（{len(acquired_unparsed)} 个来源）")
+            for src in acquired_unparsed:
+                path = src.get("stored_path") or "—"
+                st.caption(f"  {src['label'] or src['source_id']} · path={path}")
+
+        if candidate_only:
+            st.info(f"候选/待获取（{len(candidate_only)} 个来源）")
+            for src in candidate_only:
                 st.caption(f"  {src['label'] or src['source_id']}")
 
         if failed:

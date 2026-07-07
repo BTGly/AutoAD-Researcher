@@ -19,6 +19,7 @@ from autoad_researcher.ui.sources import (
     set_active_parse_attempt,
     update_source_status,
     update_source_parse_attempt,
+    register_url_source,
 )
 from autoad_researcher.core.events import EventStore
 
@@ -51,6 +52,18 @@ class TestSaveUploadedFile:
         assert len(reg["sources"]) == 1
         assert reg["sources"][0]["status"] == "uploaded_not_parsed"
         assert reg["sources"][0]["user_label"] == "SimpleNet.pdf"
+
+    def test_register_url_source_deduplicates_same_url(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+
+        first = register_url_source(run_dir, "https://arxiv.org/abs/2303.15140")
+        second = register_url_source(run_dir, "https://arxiv.org/abs/2303.15140")
+
+        reg = load_source_registry(run_dir)
+        assert first["source_id"] == second["source_id"]
+        assert len(reg["sources"]) == 1
+        assert reg["sources"][0]["user_label"] == "https://arxiv.org/abs/2303.15140"
 
     def test_saves_markdown_and_writes_registry(self, tmp_path):
         run_dir = tmp_path / "run_test"

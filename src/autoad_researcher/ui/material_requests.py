@@ -192,7 +192,13 @@ def claim_material_request(
     return False
 
 
-def complete_material_request(run_dir: Path, *, request_id: str, notification_id: str | None) -> dict[str, Any] | None:
+def complete_material_request(
+    run_dir: Path,
+    *,
+    request_id: str,
+    notification_id: str | None,
+    result_ref: str | None = None,
+) -> dict[str, Any] | None:
     with _material_requests_lock(run_dir):
         requests = load_material_requests(run_dir)
         updated: dict[str, Any] | None = None
@@ -202,6 +208,8 @@ def complete_material_request(run_dir: Path, *, request_id: str, notification_id
                 continue
             request["status"] = "completed"
             request["result_notification_id"] = notification_id
+            if result_ref:
+                request["result_ref"] = result_ref
             request["lease_until"] = None
             request["updated_at"] = now
             updated = request
