@@ -620,7 +620,7 @@ def create_url_source_material_request(run_dir: Path, url: str, *, user_message:
     return {"source": source, "request": request}
 
 
-def build_url_source_material_request_reply(intake: dict[str, Any]) -> str:
+def build_url_source_material_request_reply(intake: dict[str, Any], runs: list[dict[str, Any]] | None = None) -> str:
     source = intake["source"]
     request = intake["request"]
     source_id = str(source.get("source_id", "source"))
@@ -628,11 +628,15 @@ def build_url_source_material_request_reply(intake: dict[str, Any]) -> str:
     request_id = str(request.get("request_id", "material_request"))
     request_kind = str(request.get("kind", "material_acquisition"))
     evidence_role = str(request.get("evidence_role", "source_acquired_unparsed"))
-    return (
+    base = (
         f"已登记 URL source：`{source_id}`（{source_kind}）。\n"
-        f"同时已创建资料处理任务 `{request_id}`（{request_kind}，{evidence_role}）。\n"
-        "任务完成后会生成网页、论文或仓库候选 artifact，并通过通知区告诉我；在获取或解析完成前，它还不是 supported facts。"
+        f"同时已创建资料处理任务 `{request_id}`（{request_kind}，{evidence_role}）。"
     )
+    if runs:
+        base += "\n已自动执行资料处理任务；结果已写入通知区。任务状态见「资料搜集请求」面板。"
+    else:
+        base += "\n任务完成后会生成网页、论文或仓库候选 artifact；在获取或解析完成前，还不是 supported facts。"
+    return base
 
 
 def create_search_unavailable_material_request(
@@ -651,11 +655,16 @@ def create_search_unavailable_material_request(
     )
 
 
-def build_search_unavailable_material_request_reply(search_result: dict[str, Any], request: dict[str, Any]) -> str:
+def build_search_unavailable_material_request_reply(search_result: dict[str, Any], request: dict[str, Any], runs: list[dict[str, Any]] | None = None) -> str:
     request_id = str(request.get("request_id", "material_request"))
+    prefix = build_sync_web_search_reply(search_result)
+    if runs:
+        return (
+            prefix + "\n"
+            + f"已创建并自动执行资料搜集任务 `{request_id}`。结果见通知区。"
+        )
     return (
-        build_sync_web_search_reply(search_result)
-        + "\n"
+        prefix + "\n"
         + f"我已创建资料搜集任务 `{request_id}`。你可以在「资料搜集请求」面板手动触发，或由 worker 处理；"
         "完成后结果会写入通知区，我会在你刷新或继续对话时读取。"
     )
@@ -1187,7 +1196,8 @@ def _handle_chat_input(
     url = extract_first_url(user_input)
     if url:
         intake = create_url_source_material_request(run_dir, url, user_message=user_input)
-        reply = build_url_source_material_request_reply(intake)
+        runs = run_pending_material_subagents(run_dir, worker_id="auto_chat")
+        reply = build_url_source_material_request_reply(intake, runs)
         st.chat_message("assistant").write(reply)
         _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
         return
@@ -1200,7 +1210,8 @@ def _handle_chat_input(
                 user_input=user_input,
                 search_result=result,
             )
-            reply = build_search_unavailable_material_request_reply(result, request)
+            runs = run_pending_material_subagents(run_dir, worker_id="auto_chat")
+            reply = build_search_unavailable_material_request_reply(result, request, runs)
         else:
             reply = build_sync_web_search_reply(result)
         st.chat_message("assistant").write(reply)
