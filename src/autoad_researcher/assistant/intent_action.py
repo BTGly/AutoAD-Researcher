@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
 from autoad_researcher.assistant.probe import silent_probe
 from autoad_researcher.paper_intelligence.markdown import (
     blocks_jsonl_to_paper_markdown,
@@ -433,11 +434,16 @@ def render_response_for_decision(snapshot: ResearchContextSnapshot, decision: Ac
     return "我先基于当前材料状态整理候选理解；不启动代码修改或实验执行。"
 
 
-def build_response_context_for_decision(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> dict[str, Any]:
+def build_response_context_for_decision(
+    snapshot: ResearchContextSnapshot,
+    decision: ActionDecision,
+    *,
+    transcript_tail: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Build the structured response context used by assistant rendering."""
     return {
         "mode": decision.response_mode,
-        "facts": _response_context_facts(snapshot, decision),
+        "facts": _response_context_facts(snapshot, decision, transcript_tail=transcript_tail),
         "evidence_boundary": _response_context_evidence_boundary(snapshot),
         "allowed_actions": _allowed_actions_for_decision(snapshot, decision),
         "forbidden_actions": _forbidden_actions_for_decision(snapshot, decision),
@@ -948,12 +954,19 @@ def _source_snapshot(source: dict[str, Any]) -> SourceSnapshot:
     )
 
 
-def _response_context_facts(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> dict[str, Any]:
+def _response_context_facts(
+    snapshot: ResearchContextSnapshot,
+    decision: ActionDecision,
+    *,
+    transcript_tail: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    confirmed_from_chat = extract_confirmed_from_chat(transcript_tail or [])
     return {
         "run_id": snapshot.run_id,
         "selected_action": decision.selected_action,
         "execution_status": decision.execution_status,
         "reason": decision.reason,
+        "confirmed_from_chat": confirmed_from_chat,
         "source_id": decision.source_id,
         "stored_path": decision.stored_path,
         "sources": [_source_snapshot_fact(source) for source in snapshot.sources],

@@ -410,7 +410,7 @@ def build_research_chat_messages(
                 "handled by discovery/acquisition agents that write artifacts."
             ),
         })
-        response_ctx = build_research_chat_response_context(run_dir)
+        response_ctx = build_research_chat_response_context(run_dir, transcript_tail=transcript_tail)
         messages.append({
             "role": "system",
             "content": (
@@ -425,6 +425,16 @@ def build_research_chat_messages(
                 "to their baseline, answer from ResponseContext.facts.paper_context and user-confirmed baseline "
                 "constraints only. Do not switch to external SOTA/latest trends, do not invent numeric gains, "
                 "and do not recommend changing the baseline framework unless the user explicitly permits it."
+            ),
+        })
+        messages.append({
+            "role": "system",
+            "content": (
+                "Confirmed chat facts boundary: Information in ResponseContext.facts.confirmed_from_chat was "
+                "explicitly provided by the user in recent transcript and must not be asked again. Ask at most "
+                "one genuinely blocking follow-up question. If the confirmed facts and artifacts are enough to "
+                "draft a research plan, provide the plan directly. Do not treat research-level constraints as "
+                "file-level patch scope."
             ),
         })
 
@@ -444,7 +454,11 @@ def build_research_chat_messages(
     return messages
 
 
-def build_research_chat_response_context(run_dir: Path) -> dict[str, Any]:
+def build_research_chat_response_context(
+    run_dir: Path,
+    *,
+    transcript_tail: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     snapshot = build_research_context_snapshot(run_dir)
     decision = ActionDecision(
         snapshot_sha256="research_chat",
@@ -452,7 +466,9 @@ def build_research_chat_response_context(run_dir: Path) -> dict[str, Any]:
         response_mode="answer_directly",
         reason="research chat evidence package",
     )
-    return _sanitize_response_context_for_llm(build_response_context_for_decision(snapshot, decision))
+    return _sanitize_response_context_for_llm(
+        build_response_context_for_decision(snapshot, decision, transcript_tail=transcript_tail)
+    )
 
 
 def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
@@ -921,8 +937,18 @@ def _natural_reply_for_decision(
     Falls back to the deterministic template if the LLM is unavailable.
     """
     snapshot = build_research_context_snapshot(run_dir)
+    if history_tail is None:
+        try:
+            transcript = load_transcript(run_dir)
+            history_tail = [
+                {"role": entry.get("role", "user"), "content": str(entry.get("content", ""))[:1200]}
+                for entry in transcript[-6:]
+                if entry.get("role") in {"user", "assistant"} and entry.get("content")
+            ]
+        except Exception:
+            history_tail = []
     response_ctx = _sanitize_response_context_for_llm(
-        build_response_context_for_decision(snapshot, decision)
+        build_response_context_for_decision(snapshot, decision, transcript_tail=history_tail)
     )
 
     try:
@@ -946,16 +972,6 @@ def _natural_reply_for_decision(
             {"role": "system", "content": system},
             {"role": "system", "content": f"ResponseContext:\n{ctx_text}"},
         ]
-        if history_tail is None:
-            try:
-                transcript = load_transcript(run_dir)
-                history_tail = [
-                    {"role": entry.get("role", "user"), "content": str(entry.get("content", ""))[:1200]}
-                    for entry in transcript[-6:]
-                    if entry.get("role") in {"user", "assistant"} and entry.get("content")
-                ]
-            except Exception:
-                history_tail = []
         history_tail = _filter_stale_paper_history(history_tail, response_ctx)
         if history_tail:
             messages.extend(history_tail)
@@ -1126,7 +1142,7 @@ def _handle_chat_input(
         return
 
     evidence_context = build_research_chat_evidence_context(run_dir)
-    response_context = build_research_chat_response_context(run_dir)
+    response_context = build_research_chat_response_context(run_dir, transcript_tail=transcript_tail)
     guarded = guard_research_chat_reply(
         reply=result["reply"],
         user_input=user_input,

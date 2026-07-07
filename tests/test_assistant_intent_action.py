@@ -558,6 +558,36 @@ def test_build_response_context_for_decision_contains_policy_fields(tmp_path):
     assert "do_not_claim_unparsed_pdf_content" in context["style_constraints"]
 
 
+def test_response_context_includes_confirmed_from_chat(tmp_path):
+    run_dir = tmp_path / "run_confirmed_from_chat"
+    run_dir.mkdir()
+    snapshot = build_research_context_snapshot(run_dir)
+    decision = ActionDecision(
+        snapshot_sha256="aa" * 32,
+        selected_action="answer_directly",
+        response_mode="answer_directly",
+        reason="test",
+    )
+
+    context = build_response_context_for_decision(
+        snapshot,
+        decision,
+        transcript_tail=[
+            {"role": "user", "content": "MVTec，baseline 是 PatchCore，最多一天"},
+            {"role": "assistant", "content": "收到"},
+            {"role": "user", "content": "我不改基础框架，指标 AUROC 越高越好"},
+        ],
+    )
+
+    confirmed = context["facts"]["confirmed_from_chat"]
+    assert confirmed["dataset"] == "MVTec AD"
+    assert confirmed["baseline"] == "PatchCore"
+    assert confirmed["budget"] == {"per_candidate_time_limit": "24h"}
+    assert confirmed["metric_direction"] == "higher_is_better"
+    assert confirmed["metrics"] == ["image_level_auroc"]
+    assert confirmed["framework_constraint"] == "preserve_patchcore_core_pipeline"
+
+
 def test_render_response_for_decision_preserves_user_visible_return_or_has_fallback(tmp_path):
     from autoad_researcher.assistant.intent_action import ResearchContextSnapshot
 

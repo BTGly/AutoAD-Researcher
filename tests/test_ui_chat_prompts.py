@@ -188,6 +188,31 @@ class TestBuildResearchChatMessages:
         assert "Transfer recommendation boundary" in system_text
         assert "external SOTA/latest trends" in system_text
 
+    def test_confirmed_from_chat_prevents_reasking_dataset_baseline(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_research_chat_messages
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        transcript_tail = [
+            {"role": "user", "content": "MVTec，baseline 是 PatchCore"},
+            {"role": "user", "content": "我不改基础框架，最多一天"},
+        ]
+
+        messages = build_research_chat_messages(
+            run_dir=run_dir,
+            mode="intent_clarification",
+            user_input="那我决定完了，下一步？",
+            context_data={},
+            transcript_tail=transcript_tail,
+        )
+        system_text = "\n".join(m["content"] for m in messages if m["role"] == "system")
+
+        assert "confirmed_from_chat" in system_text
+        assert "MVTec AD" in system_text
+        assert "PatchCore" in system_text
+        assert "must not be asked again" in system_text
+        assert "Ask at most one genuinely blocking follow-up question" in system_text
+
 
 class TestTranscriptTail:
     """Verify transcript_tail is injected and current user_input does not repeat."""
