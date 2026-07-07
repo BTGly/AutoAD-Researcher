@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - runs_data:/app/runs
+      - config_data:/app/data
+    environment:
+      - AUTOAD_HOST=0.0.0.0
+      - AUTOAD_PORT=8000
+      - AUTOAD_RUNS_ROOT=/app/runs
+    restart: unless-stopped
+
+volumes:
+  runs_data:
+  config_data:
