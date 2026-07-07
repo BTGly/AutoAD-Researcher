@@ -94,7 +94,27 @@ def test_build_contract_keeps_repo_analysis_readiness_separate(tmp_path: Path):
     assert contract.baseline_repo == "https://github.com/example/repo"
 
 
-def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Path):
+def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        user_text = messages[-1]["content"]
+        if "TurnGateDecision JSON" in system_text:
+            if user_text == "确认":
+                return {"reply": json.dumps(_turn_gate_payload(
+                    turn_type="contract_confirmation",
+                    contract_action="confirm_contract",
+                    allowed=False,
+                ), ensure_ascii=False), "error": ""}
+            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        if "Need Discovery" in system_text:
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=["image_level_auroc"],
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
     transcript_tail = [
@@ -105,6 +125,8 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
         run_dir,
         user_input="我的目标是提升指标效果，保持 baseline 原始评价协议。",
         transcript_tail=transcript_tail,
+        api_key="sk-test",
+        provider_url="https://example.test",
     )
 
     assert result.reply_kind == "intent_contract_confirmation"
@@ -113,7 +135,12 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
     assert not (run_dir / CONTRACT_FILE).exists()
     assert "如果以上正确，请回复“确认”" in result.reply
 
-    confirmed = ResearchOrchestratorV2.handle(run_dir, user_input="确认")
+    confirmed = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="确认",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
 
     assert confirmed.reply_kind == "intent_contract_confirmed"
     assert confirmed.intent_contract_confirmed is True
@@ -240,19 +267,42 @@ def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
     assert "missing_required_fields" not in reply
 
 
-def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path):
+def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        user_text = messages[-1]["content"]
+        if "TurnGateDecision JSON" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        if "Need Discovery" in system_text:
+            metrics = (
+                ["image_level_auroc", "pixel_level_auroc"]
+                if "pixel AUROC" in user_text
+                else ["image_level_auroc"]
+            )
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=metrics,
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
 
     first = ResearchOrchestratorV2.handle(
         run_dir,
         user_input="我想基于 PatchCore 做异常检测改进，主要想提升 MVTec AD 上的效果，先不要自动改代码，先帮我整理方案。",
+        api_key="sk-test",
+        provider_url="https://example.test",
     )
     assert first.intent_contract["dataset"] == "MVTec AD"
 
     second = ResearchOrchestratorV2.handle(
         run_dir,
         user_input="主要看 image AUROC 和 pixel AUROC，成功标准是比原始 PatchCore 有提升，评价流程不能作弊，不能改测试集和指标定义。",
+        api_key="sk-test",
+        provider_url="https://example.test",
     )
 
     assert second.intent_contract["baseline"] == "PatchCore"
@@ -421,7 +471,6 @@ def test_hf2_identity_question_does_not_chase_dataset(tmp_path: Path):
 
     assert result.reply_kind == "answer"
     assert "dataset" not in result.reply
-    assert "数据集" in result.reply
     assert "请补充" not in result.reply
     assert result.intent_contract["missing_required_fields"] == ["dataset"]
 
@@ -478,8 +527,37 @@ def test_hf2_research_keyword_joke_without_api_is_unknown_not_contract_update(tm
     assert "dataset" not in result.reply
 
 
-def test_hf2_unknown_turn_with_api_can_be_classified_by_need_discovery(tmp_path: Path, monkeypatch):
+def test_hf2_research_keyword_joke_with_api_is_decided_by_turn_gate(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
+        if "TurnGateDecision JSON" in messages[0]["content"]:
+            return {"reply": json.dumps(_turn_gate_payload(
+                turn_type="joke",
+                contract_action="answer_without_contract_update",
+                allowed=False,
+                instruction="自然回应，不追问合同字段。",
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("自然回应，不追问合同字段。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="你是 PatchCore 战神哈哈哈",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.intent_contract == {}
+    assert "请补充" not in result.reply
+    assert "dataset" not in result.reply
+
+
+def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        if "TurnGateDecision JSON" in messages[0]["content"]:
+            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_need_spec_payload(
                 baseline="PatchCore",
@@ -513,7 +591,19 @@ def test_hf2_unknown_turn_with_api_can_be_classified_by_need_discovery(tmp_path:
     assert result.intent_contract["primary_metrics"] == ["image_level_auroc"]
 
 
-def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path):
+def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        if "TurnGateDecision JSON" in messages[0]["content"]:
+            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        if "Need Discovery" in messages[0]["content"]:
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=["image_level_auroc", "pixel_level_auroc"],
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
     save_contract_draft(
@@ -534,6 +624,8 @@ def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path):
     result = ResearchOrchestratorV2.handle(
         run_dir,
         user_input="主要看 image AUROC 和 pixel AUROC，成功标准是比原始 PatchCore 有提升，评价流程不能作弊，不能改测试集和指标定义。",
+        api_key="sk-test",
+        provider_url="https://example.test",
     )
 
     assert result.intent_contract["primary_metrics"] == ["image_level_auroc", "pixel_level_auroc"]
@@ -543,13 +635,23 @@ def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path):
     assert result.intent_contract["evaluation_protocol"] == "keep baseline/original evaluation protocol; no test split or metric changes"
 
 
-def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path):
+def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        if "TurnGateDecision JSON" in messages[0]["content"]:
+            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        if "Need Discovery" in messages[0]["content"]:
+            return {"reply": json.dumps(_incomplete_need_spec_payload(), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("还需要确认数据集和指标。", "你主要看哪些指标？"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
 
     result = ResearchOrchestratorV2.handle(
         run_dir,
         user_input="我想基于 PatchCore 做异常检测改进。",
+        api_key="sk-test",
+        provider_url="https://example.test",
     )
 
     assert result.reply_kind == "answer"
@@ -635,6 +737,127 @@ def test_user_confirmed_field_not_overwritten_by_llm_inferred(tmp_path: Path, mo
 
     assert contract.baseline == "PatchCore"
     assert contract.dataset == "VisA"
+
+
+def _turn_gate_payload(
+    *,
+    turn_type: str = "contract_update",
+    contract_action: str = "update_contract",
+    allowed: bool = True,
+    instruction: str | None = None,
+) -> dict:
+    return {
+        "turn_type": turn_type,
+        "contract_action": contract_action,
+        "contract_update_allowed": allowed,
+        "need_discovery_allowed": allowed,
+        "save_draft_allowed": allowed,
+        "user_intent_summary": "测试 turn gate 决策",
+        "evidence_from_current_turn": ["test"],
+        "evidence_from_context": [],
+        "confidence": 0.9,
+        "reason": "test",
+        "next_reply_instruction": instruction,
+    }
+
+
+def _reply_payload(reply: str, question: str = "") -> dict:
+    return {
+        "reply_to_user": reply,
+        "contract_updates": {},
+        "new_user_confirmed_fields": [],
+        "missing_required_fields": [],
+        "primary_metrics": [],
+        "secondary_metrics": [],
+        "metric_priority": None,
+        "optional_hints_detected": {},
+        "next_question": question,
+        "ready_for_confirmation": False,
+        "ready_for_experiment_agents": False,
+    }
+
+
+def _incomplete_need_spec_payload() -> dict:
+    return {
+        "task_summary": "基于 PatchCore 做异常检测改进",
+        "inferred_task_type": "image_anomaly_detection_improvement",
+        "current_stage_goal": "generate_plan",
+        "needs": [
+            {
+                "name": "research_goal",
+                "category": "intent",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "提升 baseline 在目标数据集上的表现",
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "baseline",
+                "category": "experiment_object",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "PatchCore",
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+            {
+                "name": "dataset",
+                "category": "experiment_object",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": None,
+                "source": "unknown",
+                "confidence": 0.0,
+                "blocking": True,
+                "question_to_user": "请确认数据集。",
+            },
+            {
+                "name": "metrics",
+                "category": "evaluation",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": [],
+                "source": "unknown",
+                "confidence": 0.0,
+                "blocking": True,
+                "question_to_user": "你主要看哪些指标？",
+            },
+            {
+                "name": "success_criteria",
+                "category": "evaluation",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": None,
+                "source": "unknown",
+                "confidence": 0.0,
+                "blocking": True,
+                "question_to_user": "成功标准是什么？",
+            },
+            {
+                "name": "execution_mode",
+                "category": "execution",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "plan_only",
+                "source": "default",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+        ],
+        "blocking_needs": ["dataset", "metrics", "success_criteria"],
+        "next_best_question": "你主要看哪些指标？",
+        "ready_for_plan": False,
+        "ready_for_repo_analysis": False,
+        "ready_for_experiment_design": False,
+        "ready_for_patch": False,
+        "ready_for_run": False,
+    }
 
 
 def _need_spec_payload(*, baseline: str, dataset: str, metrics: list[str]) -> dict:

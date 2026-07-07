@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,12 +43,6 @@ StageGoal = Literal[
     "run_experiment",
     "review_result",
 ]
-
-
-class ContractTurnRelevance(str, Enum):
-    YES = "yes"
-    NO = "no"
-    UNKNOWN = "unknown"
 
 
 class RequirementNeed(BaseModel):
@@ -109,10 +102,6 @@ def discover_required_needs(
     if llm_payload is not None:
         return validate_need_spec(canonicalize_need_values(RequiredNeedSpec.model_validate(llm_payload)))
 
-    relevance = classify_contract_turn_relevance(user_input)
-    if relevance is not ContractTurnRelevance.YES:
-        return _non_contract_need_spec(current_stage_goal)
-
     text = _combined_user_text(user_input, transcript_tail)
     draft = existing_contract_draft or {}
     sources = source_registry or []
@@ -162,12 +151,7 @@ def discover_required_needs_with_llm(
         "answerability": answerability,
         "run_artifacts_summary": run_artifacts_summary,
     }
-    relevance = classify_contract_turn_relevance(user_input)
-    if relevance is ContractTurnRelevance.NO:
-        return _non_contract_need_spec(current_stage_goal)
     if not api_key:
-        if relevance is ContractTurnRelevance.UNKNOWN:
-            return _non_contract_need_spec(current_stage_goal)
         return discover_required_needs(**fallback_kwargs)
 
     messages = _build_need_discovery_messages(
@@ -193,14 +177,10 @@ def discover_required_needs_with_llm(
     )
     payload = _parse_json_object(str(result.get("reply") or ""))
     if result.get("error") or payload is None:
-        if relevance is ContractTurnRelevance.UNKNOWN:
-            return _non_contract_need_spec(current_stage_goal)
         return discover_required_needs(**fallback_kwargs)
     try:
         spec = RequiredNeedSpec.model_validate(payload)
     except Exception:
-        if relevance is ContractTurnRelevance.UNKNOWN:
-            return _non_contract_need_spec(current_stage_goal)
         return discover_required_needs(**fallback_kwargs)
     spec.current_stage_goal = current_stage_goal
     return validate_need_spec(canonicalize_need_values(spec))
@@ -282,11 +262,10 @@ def _build_need_discovery_messages(
 ) -> list[dict[str, str]]:
     system = (
         "你是 AutoAD Researcher 的 Need Discovery 组件，只输出 RequiredNeedSpec JSON。\n"
-        "你的任务是判断当前目标和阶段真正缺哪些关键事实、材料、资源和安全约束。\n"
+        "你的任务是在 HF-2 Turn Gate 已允许进入合同链路后，判断当前目标和阶段真正缺哪些关键事实、材料、资源和安全约束。\n"
         "不要回答用户，不要输出 Markdown。\n"
-        "用户不是每一句话都在填写研究合同。只有当前消息明确涉及研究目标、baseline、dataset、metric、success criteria、执行模式、资料、仓库、论文或实验边界时，才推进合同。\n"
-        "身份问题、闲聊、玩笑、发泄、辱骂或无意义短句不是合同 turn：needs=[], blocking_needs=[], next_best_question=null，不要根据 existing_contract_draft.missing_required_fields 追问。\n"
-        "existing_contract_draft 中的 missing_required_fields 只是状态，不代表每轮都要追问；只有当前 turn 正在推进研究任务时，才提出 next_best_question。\n"
+        "不要重新做 turn relevance 判断；如果你收到输入，说明上游 Turn Gate 已经允许 Need Discovery。\n"
+        "existing_contract_draft 中的 missing_required_fields 只是状态；即使 Turn Gate 已允许进入合同链路，也只能围绕本轮推进所需的最关键缺口提出 next_best_question。\n"
         "规则边界：metric/dataset/baseline 名称可以标准化；不要用关键词或出现顺序强行决定用户意图。\n"
         "improvement_idea 和 target_module 只能是 optional，不能 blocking。\n"
         "plan 阶段不能要求用户提供 dataset_path、python_env、GPU、repo entrypoint 或 config；这些应是 required_later 或 auto_fillable。\n"
@@ -381,59 +360,6 @@ def canonicalize_metrics(value: Any) -> list[str]:
     return _unique(metrics)
 
 
-def is_contract_relevant_turn(user_input: str) -> bool:
-    """Compatibility wrapper for callers that only need a hard yes."""
-
-    return classify_contract_turn_relevance(user_input) is ContractTurnRelevance.YES
-
-
-def classify_contract_turn_relevance(user_input: str) -> ContractTurnRelevance:
-    """Classify whether this turn should advance the research contract.
-
-    YES means the message clearly advances research intent/material/experiment
-    state. NO means it is clearly casual/identity/frustration. UNKNOWN should be
-    judged by LLM Need Discovery when available instead of expanding regexes.
-    """
-
-    text = user_input.strip()
-    if not text:
-        return ContractTurnRelevance.NO
-    lowered = text.lower()
-    if re.search(r"https?://|github\.com|arxiv\.org", lowered):
-        return ContractTurnRelevance.YES
-    compact = re.sub(r"\s+", "", text)
-    research_term_pattern = r"auroc|auc|f1\b|patchcore|efficientad|mvtec|visa\b|anomaly|detection|实验|指标|论文|仓库|数据集|异常|检测"
-    if compact.startswith("你是") and re.search(research_term_pattern, lowered):
-        return ContractTurnRelevance.UNKNOWN
-    if compact in {"确认", "确认合同", "确认目标", "可以", "没问题", "同意", "就这样"}:
-        return ContractTurnRelevance.YES
-    non_contract_patterns = [
-        r"^(你是谁|我是谁|我是谁\?|你是.+|我是人类!?|我是人类！?)$",
-        r"^(我是傻逼|我草泥马|草泥马|操你|傻逼|无敌美少女)$",
-        r"^(哈哈+|hhh+|hello|hi|你好|在吗|谢谢|ok|嗯|啊|哦)$",
-    ]
-    if any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in non_contract_patterns):
-        return ContractTurnRelevance.NO
-    explicit_research_patterns = [
-        r"我想|我要|帮我|请|基于|主要看|成功标准|保持|不能改|不改|下载|解析|搜索|分析|总结|读取",
-        r"提升|优化|改进|复现|训练|实验|评价|评估|运行|跑|报错|错误|traceback|exception|bug",
-        r"baseline|dataset|metric|repo|repository|github|paper|arxiv|pdf|benchmark|config|entrypoint",
-        r"指标|数据集|论文|仓库|资料|测试集|指标定义|泄漏|显存|速度|推理|方案|异常检测",
-    ]
-    if any(re.search(pattern, lowered) for pattern in explicit_research_patterns):
-        return ContractTurnRelevance.YES
-    if re.search(research_term_pattern, lowered):
-        return ContractTurnRelevance.UNKNOWN
-    contextual_patterns = [
-        r"^(那就按.*来吧|就按.*|可以.*这个|继续|这个可以吗|按刚刚.*|就这个)$",
-    ]
-    if any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in contextual_patterns):
-        return ContractTurnRelevance.UNKNOWN
-    if len(compact) <= 12 and not any(char.isdigit() for char in compact):
-        return ContractTurnRelevance.NO
-    return ContractTurnRelevance.UNKNOWN
-
-
 def _combined_user_text(user_input: str, transcript_tail: list[dict[str, Any]] | None) -> str:
     parts = [
         str(entry.get("content", ""))
@@ -442,23 +368,6 @@ def _combined_user_text(user_input: str, transcript_tail: list[dict[str, Any]] |
     ]
     parts.append(user_input)
     return "\n".join(part for part in parts if part.strip())
-
-
-def _non_contract_need_spec(current_stage_goal: StageGoal) -> RequiredNeedSpec:
-    return RequiredNeedSpec(
-        task_summary="non-contract chat turn",
-        inferred_task_type="non_contract_chat",
-        current_stage_goal=current_stage_goal,
-        needs=[],
-        blocking_needs=[],
-        next_best_question=None,
-        ready_for_plan=False,
-        ready_for_repo_analysis=False,
-        ready_for_experiment_design=False,
-        ready_for_patch=False,
-        ready_for_run=False,
-    )
-
 
 def _autofill_values(
     text: str,

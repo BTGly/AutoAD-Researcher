@@ -6,8 +6,6 @@ import json
 import re
 from typing import Any
 
-from autoad_researcher.assistant.v2.need_discovery import ContractTurnRelevance, classify_contract_turn_relevance
-
 
 def plan_reply(
     llm_context: dict[str, Any],
@@ -27,12 +25,12 @@ def plan_reply(
     usable = llm_context.get("usable_evidence", [])
     unparsed = llm_context.get("unparsed_sources", [])
     readable = llm_context.get("readable_summaries", [])
+    turn_gate = llm_context.get("turn_gate_decision", {}) or {}
 
-    turn_relevance = classify_contract_turn_relevance(user_input)
-    if turn_relevance is not ContractTurnRelevance.YES:
+    if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
         if api_key:
             return _llm_reply(llm_context, user_input, api_key, provider_url)
-        return "answer", _non_contract_fallback()
+        return "answer", _non_contract_fallback(turn_gate)
 
     if api_key:
         return _llm_reply(llm_context, user_input, api_key, provider_url)
@@ -49,10 +47,12 @@ def _llm_reply(
     readable = llm_context.get("readable_summaries", [])
     confirmed = llm_context.get("confirmed_from_user", {})
     contract = llm_context.get("research_intent_contract", {})
+    turn_gate = llm_context.get("turn_gate_decision", {})
     blocking = llm_context.get("answerability", {}).get("blocking_next_step", "")
     evidence_text = "\n---\n".join(readable[:3]) if readable else "无可用 evidence"
     confirmed_text = "\n".join(f"{k}: {v}" for k, v in confirmed.items()) if confirmed else "无"
     contract_text = _json_text(contract) if contract else "{}"
+    turn_gate_text = _json_text(turn_gate) if turn_gate else "{}"
 
     system = (
         "你是 AutoAD Researcher v2，HF-2 研究意图与实验目标合同助手。\n"
@@ -91,6 +91,7 @@ def _llm_reply(
         {"role": "system", "content": system},
         {"role": "system", "content": f"当前状态: {blocking or 'idle'}"},
         {"role": "system", "content": f"已确认事实:\n{confirmed_text}"},
+        {"role": "system", "content": f"TurnGateDecision:\n{turn_gate_text}"},
         {"role": "system", "content": f"ResearchIntentContract draft:\n{contract_text}"},
         {"role": "system", "content": f"可用 evidence:\n{evidence_text}"},
         {"role": "user", "content": user_input},
@@ -127,7 +128,10 @@ def _unified_fallback(blocking: str, unparsed_count: int, usable_count: int, rea
     return "answer", "\n".join(parts)
 
 
-def _non_contract_fallback() -> str:
+def _non_contract_fallback(turn_gate: dict[str, Any] | None = None) -> str:
+    instruction = _clean_visible_text((turn_gate or {}).get("next_reply_instruction"))
+    if instruction:
+        return instruction
     return "这句话不会写入研究合同。需要继续推进研究任务时，可以直接告诉我实验目标、数据集、指标、资料链接或仓库。"
 
 
