@@ -40,10 +40,15 @@ if FRONTEND_DIR.exists():
         async def favicon_svg():
             return FileResponse(favicon)
 
+    @app.get("/", include_in_schema=False)
+    async def serve_index():
+        return FileResponse(FRONTEND_DIR / "index.html")
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
-        """SPA fallback — serve index.html for all non-API routes."""
+        if full_path.startswith("api/"):
+            return {"detail": "Not Found"}
         index = FRONTEND_DIR / "index.html"
         if index.exists():
             return FileResponse(index)
-        return {"status": "ok", "message": "Frontend not built. Run: cd frontend && npm run build"}
+        return {"detail": "Not Found"}
