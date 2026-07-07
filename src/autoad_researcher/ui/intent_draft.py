@@ -33,6 +33,7 @@ ProblemType = Literal[
     "other",
 ]
 IntentDecision = Literal["approved", "rejected", "needs_revision"]
+PatchScopeStatus = Literal["defer_to_patch_planner_after_repo_inspection"]
 
 
 class ResearchIntentDraft(BaseModel):
@@ -48,6 +49,7 @@ class ResearchIntentDraft(BaseModel):
     guardrail_metrics: list[str] = Field(default_factory=list)
     allowed_change_scope: list[str] = Field(default_factory=list)
     forbidden_change_scope: list[str] = Field(default_factory=list)
+    patch_scope_status: PatchScopeStatus = "defer_to_patch_planner_after_repo_inspection"
     benchmark_scope: dict[str, Any] = Field(default_factory=dict)
     success_criteria: str = Field(min_length=1)
     risks: list[str] = Field(default_factory=list)
@@ -116,8 +118,9 @@ def intent_draft_prompt_payload(*, run_id: str, transcript_tail: list[dict], con
         "problem_type": "accuracy_improvement | resource_efficiency | robustness | ablation | other",
         "primary_metrics": ["metric_name"],
         "guardrail_metrics": ["metric_name"],
-        "allowed_change_scope": ["path_or_module"],
-        "forbidden_change_scope": ["path_or_module"],
+        "allowed_change_scope": ["functional research-level constraint only; no file paths"],
+        "forbidden_change_scope": ["functional research-level constraint only; no file paths"],
+        "patch_scope_status": "defer_to_patch_planner_after_repo_inspection",
         "benchmark_scope": {"dataset": "", "category": "", "baseline": ""},
         "success_criteria": "explicit acceptance rule",
         "risks": ["risk"],
@@ -136,7 +139,9 @@ def intent_draft_prompt_payload(*, run_id: str, transcript_tail: list[dict], con
                 "You are AutoAD-Researcher's advisory research intent drafter. "
                 "Return exactly one JSON object and no markdown. Do not include API keys, "
                 "headers, tool outputs, or raw logs. Do not claim code was modified or a "
-                "pipeline was executed."
+                "pipeline was executed. Keep allowed_change_scope and forbidden_change_scope "
+                "at the research/function level; do not output file paths, module paths, or "
+                "patch hooks. Set patch_scope_status to defer_to_patch_planner_after_repo_inspection."
             ),
         },
         {
@@ -188,6 +193,8 @@ def intent_draft_markdown(draft: ResearchIntentDraft) -> str:
         f"{bullet(draft.allowed_change_scope)}\n\n"
         "## Forbidden Change Scope\n\n"
         f"{bullet(draft.forbidden_change_scope)}\n\n"
+        "## Patch Scope Status\n\n"
+        f"- {draft.patch_scope_status}\n\n"
         "## Success Criteria\n\n"
         f"{draft.success_criteria}\n\n"
         "## Risks\n\n"
@@ -205,6 +212,7 @@ def intent_draft_to_clarification_input(draft: ResearchIntentDraft) -> dict[str,
     constraints = [
         *draft.allowed_change_scope,
         *[f"forbidden: {item}" for item in draft.forbidden_change_scope],
+        f"patch_scope_status: {draft.patch_scope_status}",
         *draft.risks,
     ]
     task = InputTask(
@@ -225,6 +233,7 @@ def intent_draft_to_clarification_input(draft: ResearchIntentDraft) -> dict[str,
             "primary_metrics": draft.primary_metrics,
             "guardrail_metrics": draft.guardrail_metrics,
             "success_criteria": draft.success_criteria,
+            "patch_scope_status": draft.patch_scope_status,
             "open_questions": draft.open_questions,
         },
     }

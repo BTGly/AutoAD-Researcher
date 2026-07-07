@@ -967,6 +967,12 @@ def _natural_reply_for_decision(
             '不要反复要求用户提供链接；不要声称系统没有 web_search、web_fetch 或 git_clone ToolSpec。当前聊天未触发 acquisition 时，只说明可登记为待获取 source 或交给后续 discovery/acquisition agents。'
             '不得声称读过未解析资料，不得承诺执行 patch、runner、benchmark 或真实实验。'
         )
+        if decision.response_mode == "research_task_confirmed":
+            system += (
+                '当前 response_mode 是 research_task_confirmed；不要输出固定表单或只说“已确认”。'
+                '请给自然语言研究方案，包含：已确认事实、研究目标、候选方向、评估计划、执行边界、下一步。'
+                'Scope 只表达功能级研究约束；不要列具体文件路径、模块路径或 patch hook。'
+            )
         ctx_text = json.dumps(response_ctx, ensure_ascii=False, indent=2)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},

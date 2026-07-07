@@ -101,6 +101,30 @@ def test_prompt_payload_redacts_secret_like_content():
     assert "sk-***REDACTED***" in payload
 
 
+def test_intent_draft_prompt_defers_file_level_scope():
+    messages = intent_draft_prompt_payload(
+        run_id="run_ui_001",
+        transcript_tail=[{"role": "user", "content": "MVTec，baseline 是 PatchCore"}],
+        context={},
+    )
+
+    payload = json.dumps(messages, ensure_ascii=False)
+    assert "patch_scope_status" in payload
+    assert "defer_to_patch_planner_after_repo_inspection" in payload
+    assert "functional research-level constraint only; no file paths" in payload
+    assert "path_or_module" not in payload
+    assert "patch hooks" in payload
+
+
+def test_intent_draft_maps_patch_scope_status_to_clarification_hints():
+    draft = _draft()
+
+    mapped = intent_draft_to_clarification_input(draft)
+
+    assert mapped["clarification_hints"]["patch_scope_status"] == "defer_to_patch_planner_after_repo_inspection"
+    assert "patch_scope_status: defer_to_patch_planner_after_repo_inspection" in mapped["input_task"]["constraints"]
+
+
 def test_intent_draft_maps_to_clarification_input_shape():
     draft = _draft()
 

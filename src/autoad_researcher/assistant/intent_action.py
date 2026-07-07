@@ -430,7 +430,15 @@ def render_response_for_decision(snapshot: ResearchContextSnapshot, decision: Ac
     if decision.response_mode == "execution_request_blocked":
         return "当前还没有代码修改或实验执行批准。我可以先整理研究目标草案；这不会启动 patch、benchmark 或真实实验。"
     if decision.response_mode == "research_task_confirmed":
-        return "研究任务边界已确认，但这不代表已经批准代码修改或实验执行。"
+        return (
+            "研究任务边界已确认。\n\n"
+            "已确认事实：以当前 ResearchContextDraft、用户确认信息和已解析 artifacts 为准。\n"
+            "研究目标：围绕已确认 baseline 和指标约束形成可执行的改进方案。\n"
+            "候选方向：先做只读资料/仓库对齐，再由后续 planner 细化可修改位置。\n"
+            "评估计划：使用已确认数据集、指标方向和预算约束设计对比实验。\n"
+            "执行边界：这不代表批准代码修改、patch、benchmark 或真实实验。\n"
+            "下一步：冻结上下文，等待代码修改方案审批。"
+        )
     return "我先基于当前材料状态整理候选理解；不启动代码修改或实验执行。"
 
 

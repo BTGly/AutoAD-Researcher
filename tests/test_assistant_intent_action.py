@@ -612,6 +612,28 @@ def test_render_response_for_decision_preserves_user_visible_return_or_has_fallb
     assert "代码修改" in fallback or "实验执行" in fallback
 
 
+def test_research_task_confirmed_uses_natural_plan_fallback():
+    from autoad_researcher.assistant.intent_action import ResearchContextSnapshot
+
+    snapshot = ResearchContextSnapshot(run_id="run_confirmed")
+    decision = ActionDecision(
+        snapshot_sha256="aa" * 32,
+        selected_action="confirm_research_task",
+        response_mode="research_task_confirmed",
+        reason="user confirmed research task draft",
+    )
+
+    reply = render_response_for_decision(snapshot, decision)
+
+    assert "已确认事实" in reply
+    assert "研究目标" in reply
+    assert "候选方向" in reply
+    assert "评估计划" in reply
+    assert "执行边界" in reply
+    assert "下一步" in reply
+    assert "研究任务边界已确认，但这不代表已经批准代码修改或实验执行。" not in reply
+
+
 def test_render_response_for_decision_fallback_works(tmp_path):
     from autoad_researcher.assistant.intent_action import ResearchContextSnapshot
 
