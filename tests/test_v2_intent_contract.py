@@ -467,6 +467,52 @@ def test_hf2_frustration_not_contract_update(tmp_path: Path):
     assert "dataset" not in result.reply
 
 
+def test_hf2_research_keyword_joke_without_api_is_unknown_not_contract_update(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(run_dir, user_input="你是 PatchCore 战神")
+
+    assert result.intent_contract == {}
+    assert "请补充" not in result.reply
+    assert "dataset" not in result.reply
+
+
+def test_hf2_unknown_turn_with_api_can_be_classified_by_need_discovery(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        if "Need Discovery" in messages[0]["content"]:
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=["image_level_auroc"],
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps({
+            "reply_to_user": "已按刚才的设置整理。",
+            "contract_updates": {},
+            "new_user_confirmed_fields": [],
+            "missing_required_fields": [],
+            "optional_hints_detected": {},
+            "next_question": "",
+            "ready_for_confirmation": True,
+            "ready_for_experiment_agents": False,
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="那就按刚刚那个来吧",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.intent_contract["baseline"] == "PatchCore"
+    assert result.intent_contract["dataset"] == "MVTec AD"
+    assert result.intent_contract["primary_metrics"] == ["image_level_auroc"]
+
+
 def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()

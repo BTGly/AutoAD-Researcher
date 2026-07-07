@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from autoad_researcher.assistant.v2.need_discovery import is_contract_relevant_turn
+from autoad_researcher.assistant.v2.need_discovery import ContractTurnRelevance, classify_contract_turn_relevance
 
 
 def plan_reply(
@@ -28,7 +28,8 @@ def plan_reply(
     unparsed = llm_context.get("unparsed_sources", [])
     readable = llm_context.get("readable_summaries", [])
 
-    if not is_contract_relevant_turn(user_input):
+    turn_relevance = classify_contract_turn_relevance(user_input)
+    if turn_relevance is not ContractTurnRelevance.YES:
         if api_key:
             return _llm_reply(llm_context, user_input, api_key, provider_url)
         return "answer", _non_contract_fallback()

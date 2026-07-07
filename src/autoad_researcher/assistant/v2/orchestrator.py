@@ -13,7 +13,7 @@ from typing import Any
 from autoad_researcher.assistant.v2.source_service import classify_input, register_source_intake
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
-from autoad_researcher.assistant.v2.need_discovery import is_contract_relevant_turn
+from autoad_researcher.assistant.v2.need_discovery import ContractTurnRelevance, classify_contract_turn_relevance
 from autoad_researcher.assistant.v2.intent_contract import (
     build_contract_from_context,
     format_contract_for_user,
@@ -87,8 +87,11 @@ class ResearchOrchestratorV2:
 
         ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
         existing_draft = load_contract_draft(run_dir)
-        contract_relevant_turn = is_contract_relevant_turn(user_input) or bool(created_sources or created_jobs)
-        if not contract_relevant_turn:
+        turn_relevance = classify_contract_turn_relevance(user_input)
+        should_try_contract = bool(created_sources or created_jobs) or turn_relevance is ContractTurnRelevance.YES or (
+            turn_relevance is ContractTurnRelevance.UNKNOWN and bool(api_key)
+        )
+        if not should_try_contract:
             contract = existing_draft
             if contract is not None:
                 ctx["research_intent_contract"] = contract.model_dump(mode="json")
@@ -117,6 +120,22 @@ class ResearchOrchestratorV2:
                 api_key=api_key,
                 provider_url=provider_url,
             )
+            if contract_update.need_spec.inferred_task_type == "non_contract_chat":
+                contract = existing_draft
+                if contract is not None:
+                    ctx["research_intent_contract"] = contract.model_dump(mode="json")
+                reply_kind, reply = plan_reply(ctx, user_input, api_key=api_key, provider_url=provider_url)
+                return OrchestratorResult(
+                    reply=reply,
+                    reply_kind=reply_kind,
+                    created_sources=created_sources,
+                    created_jobs=created_jobs,
+                    evidence_used=ctx.get("usable_evidence", []),
+                    answerability=ctx.get("answerability", {}),
+                    next_actions=_suggest_next_actions(ctx, reply_kind),
+                    intent_contract=contract.model_dump(mode="json") if contract is not None else {},
+                    intent_contract_confirmed=False,
+                )
             contract = merge_contract_draft(existing_draft, contract_update)
         save_contract_draft(run_dir, contract)
         ctx["research_intent_contract"] = contract.model_dump(mode="json")

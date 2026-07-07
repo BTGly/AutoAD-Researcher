@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 
 from autoad_researcher.assistant.v2.need_discovery import (
+    ContractTurnRelevance,
     canonicalize_metrics,
+    classify_contract_turn_relevance,
     discover_required_needs,
     discover_required_needs_with_llm,
 )
@@ -100,6 +102,13 @@ def test_need_discovery_stage_sensitive():
 def test_metric_canonicalization_keeps_generic_auc_compat_without_pixel_leakage():
     assert canonicalize_metrics("看 AUROC") == ["image_level_auroc"]
     assert canonicalize_metrics("看 pixel AUROC") == ["pixel_level_auroc"]
+
+
+def test_contract_turn_relevance_is_tri_state():
+    assert classify_contract_turn_relevance("我想基于 PatchCore 做异常检测改进") is ContractTurnRelevance.YES
+    assert classify_contract_turn_relevance("你是谁？") is ContractTurnRelevance.NO
+    assert classify_contract_turn_relevance("你是 PatchCore 战神") is ContractTurnRelevance.UNKNOWN
+    assert classify_contract_turn_relevance("那就按刚刚那个来吧") is ContractTurnRelevance.UNKNOWN
 
 
 def test_llm_need_discovery_can_omit_dataset_without_system_forcing_it(monkeypatch):
