@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-from datetime import datetime, timezone
+import time
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,7 +16,9 @@ from autoad_researcher.ui.chat_transcript import redact_secrets
 
 MATERIAL_REQUESTS_DIR = "ui_chat"
 MATERIAL_REQUESTS_FILE = "material_requests.jsonl"
+MATERIAL_REQUESTS_LOCK = ".material_requests.lock"
 MaterialRequestKind = Literal["web_search", "repository_discovery", "material_acquisition"]
+MaterialRequestStatus = Literal["queued", "pending", "running", "completed", "failed", "cancelled"]
 
 
 def detect_material_request_intent(message: str) -> bool:
@@ -57,13 +62,34 @@ def classify_material_request_kind(message: str) -> MaterialRequestKind:
     return "material_acquisition"
 
 
-def append_material_request(run_dir: Path, *, user_message: str) -> dict[str, Any]:
+def append_material_request(
+    run_dir: Path,
+    *,
+    user_message: str,
+    kind: MaterialRequestKind | None = None,
+    payload: dict[str, Any] | None = None,
+    evidence_role: str | None = None,
+    created_from_message_id: str | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    request_kind = kind or classify_material_request_kind(user_message)
     request = {
+        "schema_version": 1,
         "request_id": _next_material_request_id(run_dir),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "status": "pending",
-        "kind": classify_material_request_kind(user_message),
+        "kind": request_kind,
+        "status": "queued",
+        "payload": payload if payload is not None else {"query": redact_secrets(user_message)},
         "user_message": redact_secrets(user_message),
+        "requested_by": "research_chat",
+        "created_from_message_id": created_from_message_id,
+        "created_at": now,
+        "updated_at": now,
+        "attempt_count": 0,
+        "claimed_by": None,
+        "lease_until": None,
+        "result_notification_id": None,
+        "last_error": None,
+        "evidence_role": evidence_role or _default_evidence_role(request_kind),
         "stage": "discovery_acquisition_pending",
     }
     path = _requests_path(run_dir)
@@ -138,6 +164,84 @@ def update_material_request_status(
     return updated
 
 
+def claim_material_request(
+    run_dir: Path,
+    *,
+    request_id: str,
+    worker_id: str,
+    lease_seconds: int = 300,
+) -> bool:
+    with _material_requests_lock(run_dir):
+        requests = load_material_requests(run_dir)
+        now = datetime.now(timezone.utc)
+        for request in requests:
+            if request.get("request_id") != request_id:
+                continue
+            status = request.get("status")
+            lease_until = _parse_datetime(request.get("lease_until"))
+            claimable = status in {"queued", "pending"} or (status == "running" and lease_until is not None and lease_until <= now)
+            if not claimable:
+                return False
+            request["status"] = "running"
+            request["claimed_by"] = worker_id
+            request["lease_until"] = (now + timedelta(seconds=lease_seconds)).isoformat()
+            request["attempt_count"] = int(request.get("attempt_count") or 0) + 1
+            request["updated_at"] = now.isoformat()
+            _write_material_requests(run_dir, requests)
+            return True
+    return False
+
+
+def complete_material_request(run_dir: Path, *, request_id: str, notification_id: str | None) -> dict[str, Any] | None:
+    with _material_requests_lock(run_dir):
+        requests = load_material_requests(run_dir)
+        updated: dict[str, Any] | None = None
+        now = datetime.now(timezone.utc).isoformat()
+        for request in requests:
+            if request.get("request_id") != request_id:
+                continue
+            request["status"] = "completed"
+            request["result_notification_id"] = notification_id
+            request["lease_until"] = None
+            request["updated_at"] = now
+            updated = request
+            break
+        if updated is not None:
+            _write_material_requests(run_dir, requests)
+        return updated
+
+
+def fail_material_request(
+    run_dir: Path,
+    *,
+    request_id: str,
+    error_code: str,
+    error_message: str,
+    retryable: bool,
+) -> dict[str, Any] | None:
+    with _material_requests_lock(run_dir):
+        requests = load_material_requests(run_dir)
+        updated: dict[str, Any] | None = None
+        now = datetime.now(timezone.utc).isoformat()
+        for request in requests:
+            if request.get("request_id") != request_id:
+                continue
+            request["status"] = "failed"
+            request["lease_until"] = None
+            request["updated_at"] = now
+            request["last_error"] = {
+                "error_code": error_code,
+                "error_message": error_message[:500],
+                "retryable": retryable,
+                "failed_at": now,
+            }
+            updated = request
+            break
+        if updated is not None:
+            _write_material_requests(run_dir, requests)
+        return updated
+
+
 def build_material_request_reply(request: dict[str, Any]) -> str:
     request_id = str(request.get("request_id", "material_request"))
     kind = str(request.get("kind", "material_acquisition"))
@@ -150,6 +254,32 @@ def build_material_request_reply(request: dict[str, Any]) -> str:
 
 def _requests_path(run_dir: Path) -> Path:
     return run_dir / MATERIAL_REQUESTS_DIR / MATERIAL_REQUESTS_FILE
+
+
+@contextmanager
+def _material_requests_lock(run_dir: Path, *, timeout_seconds: float = 5.0):
+    path = run_dir / MATERIAL_REQUESTS_DIR / MATERIAL_REQUESTS_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_seconds
+    fd: int | None = None
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii", errors="ignore"))
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("material request lock timeout")
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _write_material_requests(run_dir: Path, requests: list[dict[str, Any]]) -> None:
@@ -171,3 +301,20 @@ def _next_material_request_id(run_dir: Path) -> str:
         if match:
             max_seen = max(max_seen, int(match.group(1)))
     return f"mr_{max_seen + 1:06d}"
+
+
+def _default_evidence_role(kind: str) -> str:
+    if kind == "web_search":
+        return "candidate_source_only"
+    if kind == "repository_discovery":
+        return "repo_acquired"
+    return "source_acquired_unparsed"
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None

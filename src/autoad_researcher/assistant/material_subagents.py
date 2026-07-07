@@ -27,10 +27,10 @@ def run_pending_material_subagents(
     *,
     provider: WebSearchProvider | None = None,
 ) -> list[dict[str, Any]]:
-    """Run eligible pending material requests through material subagents."""
+    """Run eligible queued material requests through material subagents."""
     runs: list[dict[str, Any]] = []
     for request in load_material_requests(run_dir):
-        if request.get("status") != "pending":
+        if request.get("status") not in {"queued", "pending"}:
             continue
         if request.get("kind") != "web_search":
             continue

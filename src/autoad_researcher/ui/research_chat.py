@@ -1379,13 +1379,13 @@ def _render_material_request_panel(run_dir: Path) -> None:
     if not rows:
         return
     with st.expander("资料搜集请求", expanded=True):
-        pending = [row for row in rows if row.get("status") == "pending"]
+        pending = [row for row in rows if row.get("status") in {"queued", "pending"}]
         if pending:
             st.info(f"有 {len(pending)} 个待处理资料搜集请求；当前聊天不会后台执行搜索，可在这里手动运行资料搜集 subagent。")
             pending_search = [
                 request
                 for request in load_material_requests(run_dir)
-                if request.get("status") == "pending" and request.get("kind") == "web_search"
+                if request.get("status") in {"queued", "pending"} and request.get("kind") == "web_search"
             ]
             if pending_search and st.button("运行资料搜集 subagent", type="secondary"):
                 runs = run_pending_material_subagents(run_dir)

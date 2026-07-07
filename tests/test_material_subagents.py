@@ -62,7 +62,7 @@ def test_material_discovery_subagent_skips_non_search_requests(tmp_path: Path):
     runs = run_pending_material_subagents(run_dir)
 
     assert runs == []
-    assert load_material_requests(run_dir)[0]["status"] == "pending"
+    assert load_material_requests(run_dir)[0]["status"] == "queued"
 
 
 def test_material_subagent_runs_jsonl_is_append_only(tmp_path: Path):

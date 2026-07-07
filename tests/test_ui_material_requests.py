@@ -33,7 +33,7 @@ def test_append_material_request_writes_pending_jsonl(tmp_path: Path):
     request = append_material_request(run_dir, user_message="搜索 PatchCore 可迁移改进")
 
     assert request["request_id"] == "mr_000001"
-    assert request["status"] == "pending"
+    assert request["status"] == "queued"
     assert request["kind"] == "web_search"
     loaded = load_material_requests(run_dir)
     rows = build_material_request_rows(run_dir)
