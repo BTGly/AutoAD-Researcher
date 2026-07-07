@@ -9,6 +9,7 @@ import { Sidebar } from './components/Sidebar';
 import { DemoPanel } from './components/DemoPanel';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
+import { useWebSocket } from './hooks/useWebSocket';
 import { sendChat, createRun, getSources, getJobs } from './lib/api';
 import { generateId, mockParseFlow, mockUrlFlow, mockSearchFlow } from './lib/mock';
 import type { Message, ToastItem, ToolLine, SourceItem, JobItem, WSMessage } from './lib/types';
@@ -144,6 +145,27 @@ export default function App() {
   const handleClone = useCallback(() => {
     handleUrl('https://github.com/amazon-science/patchcore-inspection');
   }, [handleUrl]);
+
+  // ── WebSocket: real-time job/source updates ──
+  const onWsMessage = useCallback((msg: WSMessage) => {
+    if (msg.type === 'source.created') {
+      setSources(prev => [...prev, { sourceId: msg.sourceId || generateId(), kind: msg.kind || 'unknown', label: msg.sourceId || 'source', status: 'registered' }]);
+    }
+    if (msg.type === 'job.started') {
+      setJobs(prev => [...prev, { jobId: msg.jobId || generateId(), jobType: msg.jobType || 'unknown', status: 'running' }]);
+    }
+    if (msg.type === 'job.completed') {
+      setJobs(prev => prev.map(j => j.jobId === msg.jobId ? { ...j, status: 'completed' } : j));
+    }
+    if (msg.type === 'toast.success' && msg.message) {
+      addToast(msg.message, 'success');
+    }
+    if (msg.type === 'toast.error' && msg.message) {
+      addToast(msg.message, 'error');
+    }
+  }, [addToast]);
+
+  useWebSocket({ runId, onMessage: onWsMessage, enabled: true });
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
