@@ -6,9 +6,10 @@ interface Props {
   jobs: JobItem[];
   evidenceCount: number;
   draftReady: boolean;
+  children?: React.ReactNode;
 }
 
-export function Sidebar({ sources, jobs, evidenceCount, draftReady }: Props) {
+export function Sidebar({ sources, jobs, evidenceCount, draftReady, children }: Props) {
   const [tab, setTab] = useState<TabId>('sources');
 
   const tabs: { id: TabId; label: string; count: number }[] = [
@@ -45,6 +46,7 @@ export function Sidebar({ sources, jobs, evidenceCount, draftReady }: Props) {
         {tab === 'evidence' && <p style={{ color: 'var(--text-muted)', fontSize: '0.85em' }}>{evidenceCount} usable evidence items</p>}
         {tab === 'draft' && <p style={{ color: 'var(--text-muted)', fontSize: '0.85em' }}>{draftReady ? 'Research draft ready.' : 'No draft yet.'}</p>}
       </div>
+      {children}
     </div>
   );
 }
