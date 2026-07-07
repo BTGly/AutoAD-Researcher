@@ -34,6 +34,22 @@ def _extract_api_headers(request: Request) -> tuple[str, str, str]:
     return api_key, provider, model
 
 
+def _extract_experiment_headers(request: Request) -> dict[str, str]:
+    """Read experiment agent config from request headers."""
+    return {
+        "provider": request.headers.get("X-AutoAD-Exp-Provider", ""),
+        "model": request.headers.get("X-AutoAD-Exp-Model", ""),
+        "api_key": request.headers.get("X-AutoAD-Exp-Api-Key", ""),
+        "base_url": request.headers.get("X-AutoAD-Exp-Base-URL", ""),
+        "reasoning_effort": request.headers.get("X-AutoAD-Exp-Reasoning", ""),
+        "max_cycles": request.headers.get("X-AutoAD-Exp-Max-Cycles", ""),
+        "max_turns": request.headers.get("X-AutoAD-Exp-Max-Turns", ""),
+        "executor_timeout": request.headers.get("X-AutoAD-Exp-Timeout", ""),
+        "search_enabled": request.headers.get("X-AutoAD-Exp-Search", "0"),
+        "auto_search": request.headers.get("X-AutoAD-Exp-Auto-Search", "0"),
+    }
+
+
 @router.post("/send", response_model=ChatResponse)
 async def chat_send(req: ChatRequest, request: Request):
     run_dir = Path("runs") / req.run_id

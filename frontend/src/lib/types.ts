@@ -50,4 +50,17 @@ export interface WSMessage {
   delay?: number;
 }
 
-export type TabId = 'sources' | 'jobs' | 'evidence' | 'draft';
+export interface ExperimentConfig {
+  provider: string;
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+  reasoningEffort: string;
+  maxCycles: number;
+  maxTurns: number;
+  executorTimeout: number;
+  searchEnabled: boolean;
+  autoSearch: boolean;
+}
+
+export type TabId = 'sources' | 'jobs' | 'evidence' | 'draft' | 'settings';

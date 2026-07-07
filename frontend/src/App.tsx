@@ -22,7 +22,7 @@ interface ArtifactEntry {
 }
 
 export default function App() {
-  const { config, saveConfig, showConfig, openConfig, closeConfig } = useConfig();
+  const { config, saveConfig, saveExperimentConfig, showConfig, openConfig, closeConfig, DEFAULT_EXPERIMENT } = useConfig();
   const [runId, setRunId] = useState<string>('');
   const [taskStatus, setTaskStatus] = useState<string>('Ready');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -206,7 +206,12 @@ export default function App() {
         </div>
 
         {/* Right sidebar — Evidence / Artifacts */}
-        <Sidebar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false}>
+        <Sidebar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false}
+          experiment={config.experiment}
+          defaultExperiment={DEFAULT_EXPERIMENT}
+          defaultApiKey={config.apiKey}
+          onSaveExperiment={saveExperimentConfig}
+        >
           {artifacts.length > 0 && (
             <div style={{ marginTop: 8 }}>
               <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>Markdown 摘要</div>
