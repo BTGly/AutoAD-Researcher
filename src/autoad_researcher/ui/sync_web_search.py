@@ -1,7 +1,7 @@
-"""Synchronous Research Chat web_search bridge.
+"""Legacy Streamlit / V1 synchronous web search bridge.
 
-This module only surfaces candidate sources. Search results are not evidence
-until a later acquisition/fetch stage attests them.
+V2 React + PipelineJob path should not depend on this for primary chat behavior.
+Retained for compatibility. Use assistant/v2/orchestrator.py for V2 flows.
 """
 
 from __future__ import annotations

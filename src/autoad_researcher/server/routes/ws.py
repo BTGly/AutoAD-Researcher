@@ -42,14 +42,8 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
     try:
         while True:
             data = await ws.receive_json()
-            msg_type = data.get("type", "")
-            if msg_type == "ping":
+            if data.get("type") == "ping":
                 await ws.send_json({"type": "pong"})
-            elif msg_type == "chat.send":
-                await manager.broadcast(run_id, {
-                    "type": "assistant.delta",
-                    "content": "收到: " + data.get("user_input", ""),
-                })
     except WebSocketDisconnect:
         pass
     except Exception:

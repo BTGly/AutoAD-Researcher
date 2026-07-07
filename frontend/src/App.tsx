@@ -7,13 +7,13 @@ import { ConfigModal } from './components/ConfigModal';
 import { FirstRunSetup } from './components/FirstRunSetup';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
-import { DemoPanel } from './components/DemoPanel';
+import { DevMockPanel } from './components/DevMockPanel';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import { sendChat, createRun, getSources, getJobs, getArtifact } from './lib/api';
-import { generateId, mockParseFlow, mockUrlFlow, mockSearchFlow } from './lib/mock';
-import type { Message, ToastItem, ToolLine, SourceItem, JobItem, WSMessage } from './lib/types';
+import { generateId } from './lib/mock';
+import type { Message, ToastItem, SourceItem, JobItem, WSMessage } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
@@ -82,38 +82,12 @@ export default function App() {
     }
   }, [runId, refreshSidebar]);
 
-  // ── Mock demo handlers (dev only) ──
-  const playEvents = useCallback((events: WSMessage[], assistantId: string) => {
-    let i = 0; let accumulatedContent = '';
-    const updatedToolLines: ToolLine[] = [];
-    const next = () => {
-      if (i >= events.length) return;
-      const evt = events[i++];
-      if (evt.type === 'job.started') {
-        const tl: ToolLine = { id: generateId(), text: `${evt.jobType === 'paper_parse' ? '解析' : evt.jobType === 'git_clone' ? 'clone' : evt.jobType === 'web_search' ? '搜索' : evt.jobType === 'web_fetch' ? '下载' : '处理'}${evt.sourceLabel ? ` · ${evt.sourceLabel}` : ''}`, status: 'running' };
-        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, toolLines: [...(m.toolLines || []), tl] } : m));
-        updatedToolLines.push(tl);
-      }
-      if (evt.type === 'job.completed') {
-        const idx = updatedToolLines.findIndex(tl => tl.status === 'running');
-        if (idx >= 0) { updatedToolLines[idx] = { ...updatedToolLines[idx], status: 'done', duration: evt.duration }; }
-      }
-      if (evt.type === 'subagent.completed' && evt.toast) addToast(evt.message || '完成', 'success');
-      if (evt.type === 'assistant.delta' && evt.content) {
-        accumulatedContent += evt.content;
-        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: accumulatedContent } : m));
-      }
-      setTimeout(next, evt.delay || 300);
-    };
-    setTimeout(next, 50);
-  }, [addToast]);
-
+  // ── File upload — goes through real backend ──
   const handleFile = useCallback((name: string) => {
-    setMessages(prev => [...prev, { id: generateId(), role: 'user', content: `📎 ${name}`, timestamp: Date.now() }]);
-    const aid = generateId();
-    setMessages(prev => [...prev, { id: aid, role: 'assistant', content: '', timestamp: Date.now(), toolLines: [] }]);
-    playEvents(mockParseFlow(name).events, aid);
-  }, [playEvents]);
+    setMessages(prev => [...prev, { id: generateId(), role: 'user', content: '📎 ' + name, timestamp: Date.now() }]);
+    const reply = '文件上传接口尚未接入后端。请通过聊天框粘贴 arXiv/GitHub 链接触发 PipelineJob。';
+    setMessages(prev => [...prev, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() }]);
+  }, []);
 
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
@@ -223,15 +197,7 @@ export default function App() {
                 <div>sources: {sources.length} | jobs: {jobs.length}</div>
                 {artifacts.map(a => <div key={a.path}>artifact: {a.path}</div>)}
                 {import.meta.env.DEV && (
-                  <div style={{ marginTop: 8 }}>
-                    <DemoPanel
-                      onParsePdf={() => handleFile('2303.15140v2.pdf')}
-                      onUrl={(url) => { setMessages(prev => [...prev, { id: generateId(), role: 'user' as const, content: '链接: ' + url, timestamp: Date.now() }]); const aid = generateId(); setMessages(prev => [...prev, { id: aid, role: 'assistant' as const, content: '', timestamp: Date.now(), toolLines: [] }]); playEvents(mockUrlFlow(url).events, aid); }}
-                      onClone={() => { const u = 'https://github.com/amazon-science/patchcore-inspection'; setMessages(prev => [...prev, { id: generateId(), role: 'user' as const, content: '链接: ' + u, timestamp: Date.now() }]); const aid = generateId(); setMessages(prev => [...prev, { id: aid, role: 'assistant' as const, content: '', timestamp: Date.now(), toolLines: [] }]); playEvents(mockUrlFlow(u).events, aid); }}
-                      onSearch={() => { setMessages(prev => [...prev, { id: generateId(), role: 'user' as const, content: '搜索 MVTec AD 最新方法', timestamp: Date.now() }]); const aid = generateId(); setMessages(prev => [...prev, { id: aid, role: 'assistant' as const, content: '', timestamp: Date.now(), toolLines: [] }]); playEvents(mockSearchFlow('搜索 MVTec AD 最新方法').events, aid); }}
-                      onToast={addToast}
-                    />
-                  </div>
+                  <DevMockPanel addToast={addToast} setMessages={setMessages} />
                 )}
               </div>
             )}

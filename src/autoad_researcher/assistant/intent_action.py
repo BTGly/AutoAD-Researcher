@@ -398,48 +398,37 @@ def append_action_decision(run_dir: Path, decision: ActionDecision, *, user_mess
 
 
 def render_response_for_decision(snapshot: ResearchContextSnapshot, decision: ActionDecision) -> str:
-    """Render deterministic user-facing text for non-LLM response modes."""
-    build_response_context_for_decision(snapshot, decision)
+    """Render user-facing text. Priority: user_visible_message > natural context > minimal fallback."""
+    ctx = build_response_context_for_decision(snapshot, decision)
+
     if decision.user_visible_message:
         return decision.user_visible_message
-    if decision.response_mode == "empty_run_intake":
-        return "当前只知道你在探索异常检测方向。你可以先上传论文 PDF、提供仓库引用，或用一句话描述目标。"
-    if decision.response_mode == "reference_only_status":
-        return (
-            "我看到你提供了引用标识，但系统尚未摄入或解析对应材料。"
-            "当前不能确认论文正文或仓库代码；如果是论文，请上传 PDF。"
-        )
-    if decision.response_mode == "uploaded_not_parsed_status":
-        return "我看到 PDF 已进入当前任务，但尚未解析。解析完成前不能基于论文正文回答。"
-    if decision.response_mode == "parsing_in_progress_status":
-        return "论文正在解析中，请等待完成后再继续。"
-    if decision.response_mode == "parsing_failed_status":
-        return "上次论文解析没有成功。当前仍不能基于论文正文回答；你可以重新上传 PDF 或明确要求重新解析。"
-    if decision.response_mode == "parsed_artifact_insufficient":
-        warnings = "、".join(snapshot.paper_artifact_warnings) or "paper artifacts 证据不足"
-        if snapshot.has_readable_paper_artifact_content:
-            return f"已生成可读取的 paper artifacts，但 metadata 不完整（{warnings}）。我会基于现有 artifacts 回答，并标注限制。"
-        return f"已生成 paper artifacts，但质量不足（{warnings}）。当前不能基于论文正文作可靠判断。"
-    if decision.response_mode == "parsed_artifact_summary":
-        methods = "；".join(snapshot.paper_methods[:5]) if snapshot.paper_methods else "artifacts 中未看到结构化方法摘要"
-        parts = [f"我会只基于已生成 artifacts 回答。当前从 artifacts 看到：{methods}"]
-        if snapshot.missing_blocking_gaps:
-            gaps = "、".join(snapshot.missing_blocking_gaps[:5])
-            parts.append(f"仍缺：{gaps}")
-        return "\n\n".join(parts)
-    if decision.response_mode == "execution_request_blocked":
-        return "当前还没有代码修改或实验执行批准。我可以先整理研究目标草案；这不会启动 patch、benchmark 或真实实验。"
-    if decision.response_mode == "research_task_confirmed":
-        return (
-            "研究任务边界已确认。\n\n"
-            "已确认事实：以当前 ResearchContextDraft、用户确认信息和已解析 artifacts 为准。\n"
-            "研究目标：围绕已确认 baseline 和指标约束形成可执行的改进方案。\n"
-            "候选方向：先做只读资料/仓库对齐，再由后续 planner 细化可修改位置。\n"
-            "评估计划：使用已确认数据集、指标方向和预算约束设计对比实验。\n"
-            "执行边界：这不代表批准代码修改、patch、benchmark 或真实实验。\n"
-            "下一步：冻结上下文，等待代码修改方案审批。"
-        )
-    return "我先基于当前材料状态整理候选理解；不启动代码修改或实验执行。"
+
+    return _minimal_fallback_for_decision(decision, ctx)
+
+
+def _minimal_fallback_for_decision(decision: ActionDecision, ctx: dict[str, Any]) -> str:
+    """Minimal evidence-state fallback — no long fixed templates."""
+    mode = decision.response_mode
+    facts = ctx.get("facts", {})
+    boundary = ctx.get("evidence_boundary", {})
+
+    if mode in ("empty_run_intake", "reference_only_status"):
+        return "当前没有已登记的资料。上传 PDF 或粘贴链接开始。"
+    if mode in ("uploaded_not_parsed_status", "parsing_in_progress_status"):
+        return "PDF 已登记但尚未解析。后台会自动解析，完成后弹出通知。"
+    if mode == "parsing_failed_status":
+        return "上次论文解析未成功。你可以重新上传 PDF 或输入'强制重新解析'。"
+    if mode == "parsed_artifact_insufficient":
+        return "已生成 paper artifacts，但 metadata 不完整。我会基于现有内容回答并标注限制。"
+    if mode == "parsed_artifact_summary":
+        return "已基于解析 artifacts 生成摘要。你可以继续问论文内容或可迁移方法。"
+    if mode == "execution_request_blocked":
+        return "当前没有代码修改或实验执行批准。可以先整理研究目标草案。"
+    if mode == "research_task_confirmed":
+        return "研究任务边界已确认。后续可交给 Patch Planner 和实验 agents。"
+
+    return "收到。基于当前资料状态继续。"
 
 
 def build_response_context_for_decision(
