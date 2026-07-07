@@ -1,4 +1,4 @@
-"""Reply planner for V2. answerability-driven, not ResponseMode-driven."""
+"""Reply planner for V2. answerability-driven, with optional LLM for natural replies."""
 
 from __future__ import annotations
 
@@ -8,6 +8,9 @@ from typing import Any
 def plan_reply(
     llm_context: dict[str, Any],
     user_input: str,
+    *,
+    api_key: str = "",
+    provider_url: str = "",
 ) -> tuple[str, str]:
     """Return (reply_kind, reply_text)."""
 
@@ -21,27 +24,21 @@ def plan_reply(
     confirmed = llm_context.get("confirmed_from_user", {})
     readable = llm_context.get("readable_summaries", [])
 
-    if can_answer and ("迁移" in user_input or "transfer" in user_input.lower() or "能迁移" in user_input):
-        return _reply_transfer_question(llm_context, user_input)
-
     if can_answer and readable:
-        summary_text = "\n\n".join(readable[:3])
-        return "answer_from_evidence", (
-            f"基于已解析资料：\n\n{summary_text}\n\n"
-            "你可以继续问具体方法、可迁移性、或研究方案。"
-        )
+        if api_key:
+            return _llm_reply(llm_context, user_input, api_key, provider_url)
+        return _rule_based_answer(readable, user_input)
 
     if blocking == "parse" and unparsed:
         return "need_parse", (
-            f"当前有 {len(unparsed)} 个 source 已登记但尚未解析。\n"
-            "上传 PDF 后会自动触发后台解析，完成后弹出通知。"
+            f"当前有 {len(unparsed)} 个 PDF 已登记但尚未解析。\n"
+            "如已上传 PDF，系统会在后台自动解析；上传后短信会通知解析完成。"
         )
 
     if blocking == "fetch" and candidates:
         return "candidate_only", (
             f"当前有 {len(candidates)} 个候选来源（candidate_source_only）。\n"
-            "这些来源尚未 fetch/parse，不能作为 supported facts。\n"
-            "你可以上传 PDF 或粘贴 arXiv 链接触发下载和解析。"
+            "这些来源尚未 fetch/parse，不能作为 supported facts。"
         )
 
     if blocking == "intake":
@@ -50,40 +47,52 @@ def plan_reply(
             "你可以：\n"
             "- 上传 PDF 论文（点击右下角 +）\n"
             "- 粘贴 arXiv / GitHub 链接到对话框\n"
-            "- 搜索最新论文\n"
-            "- 描述你的研究方向"
+            "- 搜索最新论文"
         )
 
     if confirmed:
         parts = [f"当前已确认：{confirmed.get('dataset', '未指定')} / {confirmed.get('baseline', '未指定')}"]
-        if confirmed.get("research_direction"):
-            parts.append(f"研究方向：{confirmed['research_direction']}")
         return "answer", "\n".join(parts)
 
     return "answer", "收到。上传 PDF 或粘贴链接开始分析。"
 
 
-def _reply_transfer_question(llm_context: dict[str, Any], user_input: str) -> tuple[str, str]:
-    usable = llm_context.get("usable_evidence", [])
+def _llm_reply(
+    llm_context: dict[str, Any],
+    user_input: str,
+    api_key: str,
+    provider_url: str,
+) -> tuple[str, str]:
+    readable = llm_context.get("readable_summaries", [])
     confirmed = llm_context.get("confirmed_from_user", {})
-    baseline = confirmed.get("baseline", "unknown baseline")
+    evidence_text = "\n---\n".join(readable[:3])
+    confirmed_text = "\n".join(f"{k}: {v}" for k, v in confirmed.items()) if confirmed else "无"
 
-    paper_context = ""
-    for e in usable:
-        raw = e.get("raw", {})
-        title = raw.get("title", "")
-        method = raw.get("proposed_method", "")
-        if title:
-            paper_context += f"**{title}**\n"
-        if method:
-            paper_context += f"Method: {method}\n"
+    system = (
+        "你是科研资料对齐助手。基于已有 evidence 回答用户问题。\n"
+        "回复不超过 5 行。不要编造证据中没有的内容。\n"
+        "如果 evidence 不足，直接说缺什么，不要假装知道。"
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "system", "content": f"当前已确认事实:\n{confirmed_text}"},
+        {"role": "system", "content": f"当前可用 evidence:\n{evidence_text}"},
+        {"role": "user", "content": user_input},
+    ]
 
-    if paper_context:
-        return "answer_from_evidence", (
-            f"基于已解析论文：\n\n{paper_context}\n\n"
-            f"在不改变 {baseline} 主框架的前提下，"
-            "最可能迁移的模块需要对比论文的具体方法和当前框架的接口。"
-            "上传论文 PDF 或提供更多信息后，我可以给出具体建议。"
-        )
+    from autoad_researcher.ui.chat_client import call_research_chat
+    result = call_research_chat(api_key, provider_url, messages, model="deepseek-v4-flash", timeout_s=30)
 
-    return "need_parse", "当前没有已解析的论文内容。上传 PDF 后自动解析，完成后可以回答迁移问题。"
+    if result.get("reply") and not result.get("error"):
+        return "answer_from_evidence", result["reply"]
+
+    return _rule_based_answer(readable, user_input)
+
+
+def _rule_based_answer(readable: list[str], user_input: str) -> tuple[str, str]:
+    summary_text = "\n\n".join(readable[:3])
+    return "answer_from_evidence", (
+        f"基于已解析资料：\n\n{summary_text}\n\n"
+        "你可以继续问具体方法、可迁移性、或研究方案。\n"
+        "(当前未配置 API Key，回复为 rule-based。配置后调用 DeepSeek 做自然回答。)"
+    )

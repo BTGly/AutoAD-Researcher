@@ -40,6 +40,8 @@ class ResearchOrchestratorV2:
         user_input: str,
         attachments: list[str] | None = None,
         transcript_tail: list[dict[str, Any]] | None = None,
+        api_key: str = "",
+        provider_url: str = "",
     ) -> OrchestratorResult:
         user_input = user_input.strip()
         if not user_input:
@@ -55,7 +57,7 @@ class ResearchOrchestratorV2:
 
         ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
 
-        reply_kind, reply = plan_reply(ctx, user_input)
+        reply_kind, reply = plan_reply(ctx, user_input, api_key=api_key, provider_url=provider_url)
 
         return OrchestratorResult(
             reply=reply,
