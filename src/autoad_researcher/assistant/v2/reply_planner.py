@@ -12,17 +12,27 @@ def plan_reply(
     api_key: str = "",
     provider_url: str = "",
 ) -> tuple[str, str]:
-    """Return (reply_kind, reply_text)."""
-
     answerability = llm_context.get("answerability", {})
     can_answer = answerability.get("can_answer", False)
     blocking = answerability.get("blocking_next_step", "")
-    basis = answerability.get("basis", [])
     usable = llm_context.get("usable_evidence", [])
     candidates = llm_context.get("candidate_sources", [])
     unparsed = llm_context.get("unparsed_sources", [])
     confirmed = llm_context.get("confirmed_from_user", {})
     readable = llm_context.get("readable_summaries", [])
+
+    # Simple identity / capability questions — no evidence needed
+    simple_greetings = ("你是谁", "你能做什么", "hello", "hi", "你好", "帮助", "help")
+    if any(w in user_input.lower() for w in simple_greetings):
+        return "answer", (
+            "我是 AutoAD Researcher v2，科研资料对齐助手。\n\n"
+            "我可以帮你：\n"
+            "- 上传 PDF → 自动解析 → 讨论论文内容\n"
+            "- 粘贴 arXiv/GitHub 链接触发下载和分析\n"
+            "- 搜索候选方法\n"
+            "- 整理 ResearchContextDraft 给后续实验 agents\n\n"
+            "试试点击右上角 🔔 演示 看完整流程。"
+        )
 
     if can_answer and readable:
         if api_key:
@@ -32,7 +42,7 @@ def plan_reply(
     if blocking == "parse" and unparsed:
         return "need_parse", (
             f"当前有 {len(unparsed)} 个 PDF 已登记但尚未解析。\n"
-            "如已上传 PDF，系统会在后台自动解析；上传后短信会通知解析完成。"
+            "如已上传 PDF，后台会自动解析；完成后右上角弹出通知。"
         )
 
     if blocking == "fetch" and candidates:

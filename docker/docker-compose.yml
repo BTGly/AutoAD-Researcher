@@ -16,6 +16,20 @@ services:
       - AUTOAD_RUNS_ROOT=/app/runs
     restart: unless-stopped
 
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["uv", "run", "python", "-m", "autoad_researcher.worker.main", "--interval", "5"]
+    volumes:
+      - runs_data:/app/runs
+      - config_data:/app/data
+    environment:
+      - AUTOAD_RUNS_ROOT=/app/runs
+    restart: unless-stopped
+    depends_on:
+      - app
+
 volumes:
   runs_data:
   config_data:

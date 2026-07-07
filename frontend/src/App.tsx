@@ -176,7 +176,7 @@ export default function App() {
         <div style={{ fontWeight: 600, fontSize: '1.05em', color: 'var(--blue)' }}>AutoAD Researcher v2</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: '0.75em', color: 'var(--text-dim)' }}>{runId}</span>
-          <DemoPanel onParsePdf={() => handleFile('2303.15140v2.pdf')} onUrl={handleUrl} onClone={handleClone} onSearch={handleSearch} onToast={addToast} />
+          {import.meta.env.DEV && <DemoPanel onParsePdf={() => handleFile('2303.15140v2.pdf')} onUrl={handleUrl} onClone={handleClone} onSearch={handleSearch} onToast={addToast} />}
           <button onClick={openConfig} title="配置 API Key" style={{ padding: '6px 10px' }}>⚙</button>
         </div>
       </div>
@@ -192,7 +192,7 @@ export default function App() {
           </div>
           <div style={{ padding: '0 16px', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ flex: 1 }}><ChatInput onSend={handleSend} disabled={processing} /></div>
+              <div style={{ flex: 1 }}><ChatInput onSend={handleSend} /></div>
               <PlusMenu onFile={handleFile} />
             </div>
             <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 🔔 演示看工具动画</div>

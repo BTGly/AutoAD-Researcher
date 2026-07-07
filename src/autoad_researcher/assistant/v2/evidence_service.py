@@ -14,6 +14,7 @@ _LEGACY_PAPER_ARTIFACT_PATHS = [
     "paper/artifacts/paper_candidates.json",
     "paper/artifacts/method_components.json",
     "paper/artifacts/paper_idea_sources.json",
+    "paper/parse/paper.md",
     "paper/parse/sections.json",
 ]
 
@@ -47,7 +48,8 @@ def load_usable_evidence(run_dir: Path) -> list[dict[str, Any]]:
                         "artifact_path": artifact_path,
                         "evidence_type": _evidence_type_for_path(artifact_path),
                         "support_level": "supported",
-                        "parser_known": active_attempt.get("parser") not in (None, "unknown_legacy"),
+                        "parser_known": parser_name not in (None, "unknown_legacy"),
+                        "legacy": parser_name == "unknown_legacy",
                         "summary": artifact.get("summary", ""),
                         "raw": artifact.get("raw", {}),
                     })

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.v2.source_service import classify_input, register_source_intake
+from autoad_researcher.assistant.v2.job_service import append_pipeline_job
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
 
@@ -20,17 +21,14 @@ class OrchestratorResult:
     reply: str = ""
     reply_kind: str = "answer"
     created_sources: list[dict[str, Any]] = field(default_factory=list)
+    created_jobs: list[dict[str, Any]] = field(default_factory=list)
     evidence_used: list[dict[str, Any]] = field(default_factory=list)
     answerability: dict[str, Any] = field(default_factory=dict)
     next_actions: list[str] = field(default_factory=list)
 
 
 class ResearchOrchestratorV2:
-    """Single entry point for all research assistant interactions.
-
-    Determines intent, registers sources, checks evidence, and returns
-    a structured reply based on answerability — not ResponseMode templates.
-    """
+    """Single entry point for all research assistant interactions."""
 
     @classmethod
     def handle(
@@ -49,20 +47,40 @@ class ResearchOrchestratorV2:
 
         intent = classify_input(user_input, attachments)
         created_sources: list[dict[str, Any]] = []
+        created_jobs: list[dict[str, Any]] = []
 
         if intent in ("paper_pdf", "webpage", "github_repo"):
-            created_sources.append(register_source_intake(
-                run_dir, user_input=user_input, source_kind=intent,
-            ))
+            src = register_source_intake(run_dir, user_input=user_input, source_kind=intent)
+            created_sources.append(src)
+            source_id = src.get("source_id", "")
+            evidence_role = "source_acquired_unparsed"
+
+            if intent == "github_repo":
+                job = append_pipeline_job(run_dir, source_id=source_id, job_type="git_clone", evidence_role="candidate_source_only")
+                created_jobs.append(job)
+                job2 = append_pipeline_job(run_dir, source_id=source_id, job_type="repo_analyze", evidence_role="candidate_source_only")
+                created_jobs.append(job2)
+            elif intent == "paper_pdf":
+                job = append_pipeline_job(run_dir, source_id=source_id, job_type="paper_parse", evidence_role=evidence_role)
+                created_jobs.append(job)
+            else:
+                job = append_pipeline_job(run_dir, source_id=source_id, job_type="web_fetch", evidence_role=evidence_role)
+                created_jobs.append(job)
+                job2 = append_pipeline_job(run_dir, source_id=source_id, job_type="paper_parse", evidence_role=evidence_role)
+                created_jobs.append(job2)
+
+        if intent == "web_search":
+            job = append_pipeline_job(run_dir, source_id="search", job_type="web_search", evidence_role="candidate_source_only")
+            created_jobs.append(job)
 
         ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
-
         reply_kind, reply = plan_reply(ctx, user_input, api_key=api_key, provider_url=provider_url)
 
         return OrchestratorResult(
             reply=reply,
             reply_kind=reply_kind,
             created_sources=created_sources,
+            created_jobs=created_jobs,
             evidence_used=ctx.get("usable_evidence", []),
             answerability=ctx.get("answerability", {}),
             next_actions=_suggest_next_actions(ctx, reply_kind),
