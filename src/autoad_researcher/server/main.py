@@ -21,7 +21,7 @@ async def health():
     return {"status": "ok"}
 
 
-from autoad_researcher.server.routes import chat, runs, sources, jobs, artifacts, ws, experiment_config
+from autoad_researcher.server.routes import chat, runs, sources, jobs, artifacts, ws, experiment_config, report_route
 
 app.include_router(chat.router)
 app.include_router(runs.router)
@@ -30,6 +30,7 @@ app.include_router(jobs.router)
 app.include_router(artifacts.router)
 app.include_router(ws.router)
 app.include_router(experiment_config.router)
+app.include_router(report_route.router)
 
 # Serve React frontend (production mode)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "dist"

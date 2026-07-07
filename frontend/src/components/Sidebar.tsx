@@ -1,20 +1,15 @@
 import { useState } from 'react';
-import type { SourceItem, JobItem, TabId, ExperimentConfig } from '../lib/types';
-import { SettingsTab } from './SettingsTab';
+import type { SourceItem, JobItem, TabId } from '../lib/types';
 
 interface Props {
   sources: SourceItem[];
   jobs: JobItem[];
   evidenceCount: number;
   draftReady: boolean;
-  experiment?: ExperimentConfig;
-  defaultExperiment: ExperimentConfig;
-  defaultApiKey: string;
-  onSaveExperiment: (exp: ExperimentConfig) => void;
   children?: React.ReactNode;
 }
 
-export function Sidebar({ sources, jobs, evidenceCount, draftReady, experiment, defaultExperiment, defaultApiKey, onSaveExperiment, children }: Props) {
+export function Sidebar({ sources, jobs, evidenceCount, draftReady, children }: Props) {
   const [tab, setTab] = useState<TabId>('sources');
 
   const tabs: { id: TabId; label: string; count: number }[] = [
@@ -22,7 +17,6 @@ export function Sidebar({ sources, jobs, evidenceCount, draftReady, experiment, 
     { id: 'jobs', label: 'Jobs', count: jobs.length },
     { id: 'evidence', label: 'Evidence', count: evidenceCount },
     { id: 'draft', label: 'Draft', count: draftReady ? 1 : 0 },
-    { id: 'settings', label: 'Settings', count: experiment ? 1 : 0 },
   ];
 
   return (
@@ -51,13 +45,6 @@ export function Sidebar({ sources, jobs, evidenceCount, draftReady, experiment, 
         {tab === 'jobs' && <JobsList jobs={jobs} />}
         {tab === 'evidence' && <p style={{ color: 'var(--text-muted)', fontSize: '0.85em' }}>{evidenceCount} usable evidence items</p>}
         {tab === 'draft' && <p style={{ color: 'var(--text-muted)', fontSize: '0.85em' }}>{draftReady ? 'Research draft ready.' : 'No draft yet.'}</p>}
-        {tab === 'settings' && (
-          <SettingsTab
-            experiment={experiment ?? defaultExperiment}
-            onSave={onSaveExperiment}
-            defaultApiKey={defaultApiKey}
-          />
-        )}
       </div>
       {children}
     </div>

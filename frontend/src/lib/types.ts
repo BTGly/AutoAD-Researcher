@@ -63,4 +63,6 @@ export interface ExperimentConfig {
   autoSearch: boolean;
 }
 
-export type TabId = 'sources' | 'jobs' | 'evidence' | 'draft' | 'settings';
+export type TabId = 'sources' | 'jobs' | 'evidence' | 'draft';
+
+export type PageId = 'chat' | 'settings' | 'report';

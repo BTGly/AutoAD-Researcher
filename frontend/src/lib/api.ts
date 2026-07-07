@@ -85,6 +85,12 @@ export async function saveExperimentConfig(runId: string, config: any): Promise<
   return res.json();
 }
 
+export async function getReport(runId: string): Promise<{ content: string }> {
+  const res = await fetch(`/api/runs/${runId}/report`);
+  if (!res.ok) throw new Error(`Report not found: ${res.status}`);
+  return res.json();
+}
+
 export function wsUrl(runId: string): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${window.location.host}/api/runs/${runId}/ws`;

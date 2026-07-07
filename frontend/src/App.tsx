@@ -7,13 +7,16 @@ import { ConfigModal } from './components/ConfigModal';
 import { FirstRunSetup } from './components/FirstRunSetup';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
+import { LeftSidebar } from './components/LeftSidebar';
+import { SettingsPage } from './components/SettingsPage';
+import { ReportPage } from './components/ReportPage';
 import { DevMockPanel } from './components/DevMockPanel';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import { sendChat, createRun, getSources, getJobs, getArtifact } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, ToastItem, SourceItem, JobItem, WSMessage } from './lib/types';
+import type { Message, ToastItem, SourceItem, JobItem, WSMessage, PageId } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
@@ -31,6 +34,7 @@ export default function App() {
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
+  const [page, setPage] = useState<PageId>('chat');
   const streamingAssistantIdRef = useRef<string | null>(null);
   const streamingHadDeltaRef = useRef(false);
   const suppressLateDeltaRef = useRef(false);
@@ -186,58 +190,74 @@ export default function App() {
       </div>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Chat area */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
-            {messages.length === 0 && <WelcomeMessage />}
-            {messages.map(msg =>
-              msg.role === 'user' ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />
-            )}
-            {messages.length > 0 && <div ref={bottomRef} />}
-          </div>
-          <div style={{ padding: '0 16px', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ flex: 1 }}><ChatInput onSend={handleSend} /></div>
-              <PlusMenu onFile={handleFile} />
-            </div>
-            <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
-            <StatusBar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false} />
-          </div>
-        </div>
+        <LeftSidebar page={page} onPage={setPage} />
 
-        {/* Right sidebar — Evidence / Artifacts */}
-        <Sidebar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false}
-          experiment={config.experiment}
-          defaultExperiment={DEFAULT_EXPERIMENT}
-          defaultApiKey={config.apiKey}
-          onSaveExperiment={saveExperimentConfig}
-        >
-          {artifacts.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>Markdown 摘要</div>
-              {artifacts.map(a => (
-                <ArtifactItem key={a.path} artifact={a} runId={runId} />
-              ))}
+        {page === 'chat' && (
+          <>
+            {/* Chat area */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
+                {messages.length === 0 && <WelcomeMessage />}
+                {messages.map(msg =>
+                  msg.role === 'user' ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />
+                )}
+                {messages.length > 0 && <div ref={bottomRef} />}
+              </div>
+              <div style={{ padding: '0 16px', flexShrink: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1 }}><ChatInput onSend={handleSend} /></div>
+                  <PlusMenu onFile={handleFile} />
+                </div>
+                <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
+                <StatusBar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false} />
+              </div>
             </div>
-          )}
 
-          {/* Developer Details */}
-          <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-            <button onClick={() => setShowDev(!showDev)} style={{ width: '100%', fontSize: '0.78em', padding: '4px 0', background: 'transparent', border: 'none', color: 'var(--text-dim)' }}>
-              {showDev ? '▼' : '▶'} Developer Details
-            </button>
-            {showDev && (
-              <div style={{ fontSize: '0.72em', color: 'var(--text-dim)', marginTop: 4 }}>
-                <div>run_id: {runId || '未创建'}</div>
-                <div>sources: {sources.length} | jobs: {jobs.length}</div>
-                {artifacts.map(a => <div key={a.path}>artifact: {a.path}</div>)}
-                {import.meta.env.DEV && (
-                  <DevMockPanel addToast={addToast} setMessages={setMessages} />
+            {/* Right sidebar */}
+            <Sidebar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false}>
+              {artifacts.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>Markdown 摘要</div>
+                  {artifacts.map(a => (
+                    <ArtifactItem key={a.path} artifact={a} runId={runId} />
+                  ))}
+                </div>
+              )}
+
+              <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <button onClick={() => setShowDev(!showDev)} style={{ width: '100%', fontSize: '0.78em', padding: '4px 0', background: 'transparent', border: 'none', color: 'var(--text-dim)' }}>
+                  {showDev ? '▼' : '▶'} Developer Details
+                </button>
+                {showDev && (
+                  <div style={{ fontSize: '0.72em', color: 'var(--text-dim)', marginTop: 4 }}>
+                    <div>run_id: {runId || '未创建'}</div>
+                    <div>sources: {sources.length} | jobs: {jobs.length}</div>
+                    {artifacts.map(a => <div key={a.path}>artifact: {a.path}</div>)}
+                    {import.meta.env.DEV && (
+                      <DevMockPanel addToast={addToast} setMessages={setMessages} />
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-          </div>
-        </Sidebar>
+            </Sidebar>
+          </>
+        )}
+
+        {page === 'settings' && (
+          <SettingsPage
+            experiment={config.experiment ?? DEFAULT_EXPERIMENT}
+            defaultApiKey={config.apiKey}
+            onSave={saveExperimentConfig}
+            onBack={() => setPage('chat')}
+          />
+        )}
+
+        {page === 'report' && (
+          <ReportPage
+            runId={runId}
+            onBack={() => setPage('chat')}
+          />
+        )}
       </div>
     </div>
   );
