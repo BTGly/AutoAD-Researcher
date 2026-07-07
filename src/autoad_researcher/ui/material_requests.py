@@ -100,8 +100,36 @@ def build_material_request_rows(run_dir: Path) -> list[dict[str, str]]:
             "kind": str(request.get("kind", "")),
             "created_at": str(request.get("created_at", "")),
             "user_message": str(request.get("user_message", ""))[:120],
+            "result_ref": str(request.get("result_ref", "")),
         })
     return rows
+
+
+def update_material_request_status(
+    run_dir: Path,
+    *,
+    request_id: str,
+    status: str,
+    result_ref: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any] | None:
+    requests = load_material_requests(run_dir)
+    updated: dict[str, Any] | None = None
+    for request in requests:
+        if request.get("request_id") != request_id:
+            continue
+        request["status"] = status
+        request["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if result_ref:
+            request["result_ref"] = result_ref
+        if error_message:
+            request["error_message"] = error_message[:200]
+        updated = request
+        break
+    if updated is None:
+        return None
+    _write_material_requests(run_dir, requests)
+    return updated
 
 
 def build_material_request_reply(request: dict[str, Any]) -> str:
@@ -116,6 +144,15 @@ def build_material_request_reply(request: dict[str, Any]) -> str:
 
 def _requests_path(run_dir: Path) -> Path:
     return run_dir / MATERIAL_REQUESTS_DIR / MATERIAL_REQUESTS_FILE
+
+
+def _write_material_requests(run_dir: Path, requests: list[dict[str, Any]]) -> None:
+    path = _requests_path(run_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for request in requests:
+            handle.write(json.dumps(request, ensure_ascii=False, sort_keys=True))
+            handle.write("\n")
 
 
 def _next_material_request_id(run_dir: Path) -> str:

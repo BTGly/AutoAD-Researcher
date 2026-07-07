@@ -61,6 +61,8 @@ from autoad_researcher.ui.material_requests import (
     build_material_request_reply,
     build_material_request_rows,
     detect_material_request_intent,
+    load_material_requests,
+    update_material_request_status,
 )
 from autoad_researcher.ui.task_profile import (
     generate_task_profile_from_first_message,
@@ -1379,7 +1381,29 @@ def _render_material_request_panel(run_dir: Path) -> None:
     with st.expander("资料搜集请求", expanded=True):
         pending = [row for row in rows if row.get("status") == "pending"]
         if pending:
-            st.info(f"有 {len(pending)} 个待处理资料搜集请求；当前聊天不会后台执行搜索。")
+            st.info(f"有 {len(pending)} 个待处理资料搜集请求；当前聊天不会后台执行搜索，可在这里手动同步执行。")
+            pending_search = [
+                request
+                for request in load_material_requests(run_dir)
+                if request.get("status") == "pending" and request.get("kind") == "web_search"
+            ]
+            if pending_search and st.button("执行待处理 web_search", type="secondary"):
+                replies: list[str] = []
+                for request in pending_search:
+                    request_id = str(request.get("request_id", ""))
+                    query = str(request.get("user_message", ""))
+                    result = execute_sync_web_search(run_dir, query=query)
+                    status = "completed" if result.get("status") == "ok" else str(result.get("status", "search_unavailable"))
+                    update_material_request_status(
+                        run_dir,
+                        request_id=request_id,
+                        status=status,
+                        result_ref="ui_chat/sync_web_search_results.jsonl" if result.get("status") in {"ok", "no_results"} else None,
+                        error_message=str(result.get("reason", "")) if result.get("status") == "search_unavailable" else None,
+                    )
+                    replies.append(f"{request_id}: {build_sync_web_search_reply(result)}")
+                st.write("\n\n".join(replies))
+                st.rerun()
         st.table(rows[-8:])
 
 

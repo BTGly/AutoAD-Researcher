@@ -11,6 +11,7 @@ from autoad_researcher.ui.material_requests import (
     classify_material_request_kind,
     detect_material_request_intent,
     load_material_requests,
+    update_material_request_status,
 )
 from autoad_researcher.ui.research_chat import build_research_chat_messages
 
@@ -39,6 +40,27 @@ def test_append_material_request_writes_pending_jsonl(tmp_path: Path):
     assert loaded[0]["user_message"] == "搜索 PatchCore 可迁移改进"
     assert rows[0]["request_id"] == "mr_000001"
     assert "不会在后台静默执行网络搜索" in build_material_request_reply(request)
+
+
+def test_update_material_request_status_rewrites_existing_request(tmp_path: Path):
+    run_dir = tmp_path / "run_requests"
+    run_dir.mkdir()
+    append_material_request(run_dir, user_message="搜索 PatchCore 可迁移改进")
+
+    updated = update_material_request_status(
+        run_dir,
+        request_id="mr_000001",
+        status="search_unavailable",
+        error_message="web_search provider is not configured",
+    )
+
+    loaded = load_material_requests(run_dir)
+    rows = build_material_request_rows(run_dir)
+    assert updated is not None
+    assert len(loaded) == 1
+    assert loaded[0]["status"] == "search_unavailable"
+    assert loaded[0]["error_message"] == "web_search provider is not configured"
+    assert rows[0]["status"] == "search_unavailable"
 
 
 def test_research_chat_prompt_forbids_background_search_promises(tmp_path: Path):
@@ -79,3 +101,13 @@ def test_handle_chat_input_intercepts_material_request_before_llm_call():
     assert body.index("detect_sync_web_search_intent(user_input)") < body.index("build_pdf_parse_action(run_dir, user_input")
     assert "detect_material_request_intent(user_input)" in body
     assert body.index("detect_material_request_intent(user_input)") < body.index("call_research_chat(")
+
+
+def test_material_request_panel_can_execute_pending_web_search():
+    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
+    body = source[source.index("def _render_material_request_panel("):source.index("def _render_freeze_panel(")]
+
+    assert "执行待处理 web_search" in body
+    assert "execute_sync_web_search(run_dir, query=query)" in body
+    assert "update_material_request_status(" in body
+    assert "search_unavailable" in body
