@@ -14,11 +14,15 @@ function getHeaders(): Record<string, string> {
   }
 }
 
-export async function sendChat(userInput: string, runId: string): Promise<{ reply: string; reply_kind: string }> {
+export async function sendChat(
+  userInput: string,
+  runId: string,
+  transcriptTail: Array<{ role: string; content: string }> = [],
+): Promise<{ reply: string; reply_kind: string }> {
   const res = await fetch('/api/chat/send', {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ user_input: userInput, run_id: runId }),
+    body: JSON.stringify({ user_input: userInput, run_id: runId, transcript_tail: transcriptTail }),
   });
   if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
   return res.json();

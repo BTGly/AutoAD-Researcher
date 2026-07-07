@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 
@@ -77,7 +79,10 @@ def _llm_reply(
     result = call_research_chat(api_key, provider_url, messages, model="deepseek-v4-flash", timeout_s=30)
 
     if result.get("reply") and not result.get("error"):
-        return "answer", result["reply"]
+        payload = _parse_llm_contract_reply(str(result["reply"]))
+        if payload is not None:
+            return "answer", _visible_reply_from_llm_payload(payload)
+        return "answer", str(result["reply"])
 
     return _unified_fallback(blocking, 0, 0, 0)
 
@@ -102,9 +107,40 @@ def _unified_fallback(blocking: str, unparsed_count: int, usable_count: int, rea
 
 
 def _json_text(value: Any) -> str:
-    import json
-
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except TypeError:
         return "{}"
+
+
+def _parse_llm_contract_reply(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _visible_reply_from_llm_payload(payload: dict[str, Any]) -> str:
+    parts: list[str] = []
+    reply = _clean_visible_text(payload.get("reply_to_user"))
+    question = _clean_visible_text(payload.get("next_question"))
+    if reply:
+        parts.append(reply)
+    if question and question != reply:
+        parts.append(question)
+    if not parts:
+        parts.append("我已更新研究意图草稿。请继续补充目标、指标或成功标准。")
+    return "\n\n".join(parts)
+
+
+def _clean_visible_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()

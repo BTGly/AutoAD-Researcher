@@ -1,4 +1,8 @@
+import asyncio
+import json
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Request
 
@@ -8,6 +12,8 @@ from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.server.ws_manager import manager
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+TRANSCRIPT_RELATIVE_PATH = Path("chat") / "transcript.jsonl"
 
 
 def _extract_api_headers(request: Request) -> tuple[str, str, str]:
@@ -34,14 +40,19 @@ async def chat_send(req: ChatRequest, request: Request):
     run_dir.mkdir(parents=True, exist_ok=True)
 
     api_key, provider_url, _ = _extract_api_headers(request)
+    stored_transcript_tail = _load_transcript_tail(run_dir)
+    transcript_tail = req.transcript_tail or stored_transcript_tail
 
     result = ResearchOrchestratorV2.handle(
         run_dir,
         user_input=req.user_input,
         attachments=req.attachments or None,
+        transcript_tail=transcript_tail,
         api_key=api_key,
         provider_url=provider_url,
     )
+    _append_transcript(run_dir, "user", req.user_input)
+    _append_transcript(run_dir, "assistant", result.reply)
 
     # Broadcast created_sources and created_jobs
     for src in result.created_sources:
@@ -63,12 +74,17 @@ async def chat_send(req: ChatRequest, request: Request):
             "job_type": job.get("job_type", ""),
         })
 
-    await manager.broadcast(req.run_id, {
-        "type": "assistant.delta",
-        "content": result.reply,
-    })
+    message_id = f"assistant_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    for chunk in _reply_chunks(result.reply):
+        await manager.broadcast(req.run_id, {
+            "type": "assistant.delta",
+            "message_id": message_id,
+            "content": chunk,
+        })
+        await asyncio.sleep(0)
     await manager.broadcast(req.run_id, {
         "type": "assistant.done",
+        "message_id": message_id,
         "reply_kind": result.reply_kind,
     })
 
@@ -76,3 +92,47 @@ async def chat_send(req: ChatRequest, request: Request):
         reply=result.reply,
         reply_kind=result.reply_kind,
     )
+
+
+def _load_transcript_tail(run_dir: Path, limit: int = 12) -> list[dict[str, Any]]:
+    path = run_dir / TRANSCRIPT_RELATIVE_PATH
+    if not path.is_file():
+        return []
+    entries: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines[-limit:]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        role = payload.get("role")
+        content = payload.get("content")
+        if role in {"user", "assistant"} and isinstance(content, str):
+            entries.append({"role": role, "content": content})
+    return entries
+
+
+def _append_transcript(run_dir: Path, role: str, content: str) -> None:
+    path = run_dir / TRANSCRIPT_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "role": role,
+        "content": content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _reply_chunks(text: str, chunk_size: int = 96) -> list[str]:
+    if not text:
+        return [""]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        chunks.append(text[start:start + chunk_size])
+        start += chunk_size
+    return chunks

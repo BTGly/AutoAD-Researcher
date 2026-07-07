@@ -36,6 +36,7 @@ export interface JobItem {
 
 export interface WSMessage {
   type: string;
+  messageId?: string;
   message?: string;
   content?: string;
   kind?: string;

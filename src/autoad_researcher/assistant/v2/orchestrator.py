@@ -18,6 +18,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     format_contract_for_user,
     is_contract_confirmation,
     load_contract_draft,
+    merge_contract_draft,
     save_confirmed_contract,
     save_contract_draft,
 )
@@ -88,12 +89,13 @@ class ResearchOrchestratorV2:
         if is_contract_confirmation(user_input) and existing_draft is not None:
             contract = existing_draft
         else:
-            contract = build_contract_from_context(
+            contract_update = build_contract_from_context(
                 run_dir=run_dir,
                 user_input=user_input,
                 llm_context=ctx,
                 transcript_tail=transcript_tail,
             )
+            contract = merge_contract_draft(existing_draft, contract_update)
         save_contract_draft(run_dir, contract)
         ctx["research_intent_contract"] = contract.model_dump(mode="json")
 

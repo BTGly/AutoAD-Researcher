@@ -104,9 +104,14 @@ def build_contract_from_context(
     combined_user_text = _combined_user_text(user_input, transcript_tail)
     sources = _load_source_registry_sources(run_dir)
 
-    metrics = _listify(confirmed.get("metrics"))
-    primary_metric = metrics[0] if metrics else _infer_primary_metric(combined_user_text)
-    secondary_metrics = [metric for metric in metrics[1:] if metric != primary_metric]
+    confirmed_metrics = _listify(confirmed.get("metrics"))
+    inferred_primary_metric, inferred_secondary_metrics = _infer_metrics(combined_user_text)
+    if confirmed_metrics:
+        primary_metric = confirmed_metrics[0]
+        secondary_metrics = [metric for metric in confirmed_metrics[1:] if metric != primary_metric]
+    else:
+        primary_metric = inferred_primary_metric
+        secondary_metrics = inferred_secondary_metrics
     baseline_repo = _first_github_source(sources)
 
     contract = ResearchIntentContract(
@@ -141,6 +146,69 @@ def build_contract_from_context(
         and contract.compute_environment
     )
     return contract
+
+
+def merge_contract_draft(
+    existing: ResearchIntentContract | None,
+    update: ResearchIntentContract,
+) -> ResearchIntentContract:
+    """Merge a new deterministic observation into the existing draft.
+
+    Non-empty existing fields are retained unless the latest user turn produced
+    a non-empty replacement. Derived readiness fields are recalculated from the
+    merged canonical contract.
+    """
+
+    if existing is None:
+        merged = update.model_copy(deep=True)
+        _refresh_contract_state(merged)
+        return merged
+
+    merged = existing.model_copy(deep=True)
+    update_data = update.model_dump(mode="python")
+
+    scalar_fields = [
+        "task_domain",
+        "research_goal",
+        "baseline",
+        "baseline_repo",
+        "baseline_commit",
+        "baseline_entrypoint",
+        "baseline_config",
+        "dataset",
+        "evaluation_protocol",
+        "primary_metric",
+        "success_criteria",
+        "risk_preference",
+        "execution_mode",
+    ]
+    for field in scalar_fields:
+        value = update_data.get(field)
+        if value not in (None, "", [], {}):
+            setattr(merged, field, value)
+
+    dict_fields = ["compute_environment"]
+    for field in dict_fields:
+        current = getattr(merged, field)
+        value = update_data.get(field)
+        if isinstance(value, dict) and value:
+            setattr(merged, field, {**current, **value})
+
+    list_fields = [
+        "secondary_metrics",
+        "user_improvement_hints",
+        "user_target_module_hints",
+        "preferred_method_hints",
+        "allowed_change_scope",
+        "forbidden_change_scope",
+        "user_confirmed_fields",
+    ]
+    for field in list_fields:
+        setattr(merged, field, _merge_unique_list(getattr(merged, field), update_data.get(field)))
+
+    merged.evidence_sources = _merge_evidence_sources(merged.evidence_sources, update.evidence_sources)
+    _refresh_contract_state(merged)
+    return merged
 
 
 def save_contract_draft(run_dir: Path, contract: ResearchIntentContract) -> Path:
@@ -301,20 +369,66 @@ def _infer_dataset(text: str) -> str | None:
 
 
 def _infer_primary_metric(text: str) -> str | None:
+    return _infer_metrics(text)[0]
+
+
+def _infer_metrics(text: str) -> tuple[str | None, list[str]]:
     lowered = text.lower()
-    if re.search(r"pixel.*(auc|auroc)|定位", lowered):
+    candidates: list[tuple[int, str]] = []
+    patterns = [
+        ("pixel_level_auroc", r"pixel.{0,20}(auc|auroc)|pixel[-_\s]*level[-_\s]*(auc|auroc)|定位"),
+        ("image_level_auroc", r"image.{0,20}(auc|auroc)|image[-_\s]*level[-_\s]*(auc|auroc)|instance.{0,20}(auc|auroc)|auroc|auc-?roc|auc\b"),
+        ("pro", r"\bpro\b|\bau[-_\s]*pro\b"),
+        ("f1", r"\bf1\b|f1[-_\s]*score"),
+        ("accuracy", r"accuracy|准确率"),
+        ("inference_latency", r"速度|推理|latency|throughput|fps"),
+        ("peak_vram", r"显存|memory|vram"),
+    ]
+    for metric, pattern in patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            candidates.append((match.start(), metric))
+
+    primary = _explicit_primary_metric(text, lowered)
+    ordered = _unique_metrics([metric for _, metric in sorted(candidates, key=lambda item: item[0])])
+    if primary is None and ordered:
+        primary = ordered[0]
+    if primary is None:
+        return None, []
+    secondary = [metric for metric in ordered if metric != primary]
+    return primary, secondary
+
+
+def _explicit_primary_metric(original_text: str, lowered: str) -> str | None:
+    clauses = re.split(r"[，,。；;\n]+", original_text)
+    for clause in clauses:
+        if "主要" not in clause:
+            continue
+        clause_lowered = clause.lower()
+        clause_candidates = [
+            _metric_match_position(clause_lowered, r"pixel.{0,20}(auc|auroc)|定位", "pixel_level_auroc"),
+            _metric_match_position(clause_lowered, r"image.{0,20}(auc|auroc)|auroc|auc-?roc|auc\b", "image_level_auroc"),
+            _metric_match_position(clause_lowered, r"\bpro\b", "pro"),
+            _metric_match_position(clause_lowered, r"\bf1\b", "f1"),
+            _metric_match_position(clause_lowered, r"速度|推理|latency", "inference_latency"),
+            _metric_match_position(clause_lowered, r"显存|memory|vram", "peak_vram"),
+        ]
+        present = [item for item in clause_candidates if item is not None]
+        if present:
+            return sorted(present, key=lambda item: item[0])[0][1]
+
+    if re.search(r"主要看.{0,30}pixel", lowered):
         return "pixel_level_auroc"
-    if re.search(r"image.*(auc|auroc)|auroc|auc-?roc|auc\b", lowered):
+    if re.search(r"主要看.{0,30}image", lowered):
         return "image_level_auroc"
-    if "f1" in lowered:
-        return "f1"
-    if "accuracy" in lowered or "准确率" in text:
-        return "accuracy"
-    if "速度" in text or "推理" in text:
-        return "inference_latency"
-    if "显存" in text:
-        return "peak_vram"
     return None
+
+
+def _metric_match_position(text: str, pattern: str, metric: str) -> tuple[int, str] | None:
+    match = re.search(pattern, text)
+    if not match:
+        return None
+    return match.start(), metric
 
 
 def _infer_success_criteria(text: str, primary_metric: str | None) -> str | None:
@@ -438,3 +552,52 @@ def _listify(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _unique_metrics(metrics: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for metric in metrics:
+        if metric in seen:
+            continue
+        seen.add(metric)
+        unique.append(metric)
+    return unique
+
+
+def _merge_unique_list(existing: Any, update: Any) -> list[Any]:
+    values: list[Any] = []
+    for item in (existing or []):
+        if item not in values:
+            values.append(item)
+    for item in (update or []):
+        if item not in values:
+            values.append(item)
+    return values
+
+
+def _merge_evidence_sources(existing: list[dict[str, Any]], update: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*existing, *update]:
+        key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _refresh_contract_state(contract: ResearchIntentContract) -> None:
+    contract.user_confirmed_fields = _confirmed_fields(contract)
+    contract.missing_required_fields = _missing_core_fields(contract)
+    contract.ready_for_plan = not contract.missing_required_fields
+    contract.ready_for_repo_analysis = bool(contract.baseline_repo)
+    contract.ready_for_experiment_agents = bool(
+        contract.ready_for_plan
+        and contract.ready_for_repo_analysis
+        and contract.baseline_entrypoint
+        and contract.baseline_config
+        and contract.evaluation_protocol
+        and contract.compute_environment
+    )

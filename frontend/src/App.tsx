@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { ChatInput } from './components/ChatInput';
 import { PlusMenu } from './components/PlusMenu';
 import { UserMessage, AssistantMessage, WelcomeMessage } from './components/Messages';
@@ -31,6 +31,9 @@ export default function App() {
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
+  const streamingAssistantIdRef = useRef<string | null>(null);
+  const streamingHadDeltaRef = useRef(false);
+  const suppressLateDeltaRef = useRef(false);
   const bottomRef = useAutoScroll([messages]);
 
   const addToast = useCallback((message: string, kind: 'success' | 'error' | 'info') => {
@@ -64,23 +67,37 @@ export default function App() {
   // ── Real chat handler ──
   const handleSend = useCallback(async (text: string) => {
     const userMsg: Message = { id: generateId(), role: 'user', content: text, timestamp: Date.now() };
-    setMessages(prev => [...prev, userMsg]);
+    const assistantId = generateId();
+    const assistantMsg: Message = { id: assistantId, role: 'assistant', content: '', timestamp: Date.now() };
+    const transcriptTail = messages.slice(-12).map(msg => ({ role: msg.role, content: msg.content }));
+    streamingAssistantIdRef.current = assistantId;
+    streamingHadDeltaRef.current = false;
+    suppressLateDeltaRef.current = false;
+    setTaskStatus('Working');
+    setMessages(prev => [...prev, userMsg, assistantMsg]);
 
     try {
-      const res = await sendChat(text, runId || 'run_default');
-      setMessages(prev => [...prev, {
-        id: generateId(), role: 'assistant', content: res.reply, timestamp: Date.now(),
-      }]);
-      setTaskStatus('Working');
+      const res = await sendChat(text, runId || 'run_default', transcriptTail);
+      if (!streamingHadDeltaRef.current) {
+        setMessages(prev => prev.map(msg => (
+          msg.id === assistantId ? { ...msg, content: res.reply } : msg
+        )));
+        suppressLateDeltaRef.current = true;
+        streamingAssistantIdRef.current = null;
+        setTaskStatus('Ready');
+      }
       await refreshSidebar();
     } catch {
-      setMessages(prev => [...prev, {
-        id: generateId(), role: 'assistant',
-        content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000',
-        timestamp: Date.now(),
-      }]);
+      streamingAssistantIdRef.current = null;
+      suppressLateDeltaRef.current = true;
+      setTaskStatus('Error');
+      setMessages(prev => prev.map(msg => (
+        msg.id === assistantId
+          ? { ...msg, content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000' }
+          : msg
+      )));
     }
-  }, [runId, refreshSidebar]);
+  }, [messages, runId, refreshSidebar]);
 
   // ── File upload — goes through real backend ──
   const handleFile = useCallback((name: string) => {
@@ -120,6 +137,19 @@ export default function App() {
           return [...prev, { path: p, label }];
         });
       }
+    }
+    if (msg.type === 'assistant.delta' && msg.content) {
+      const assistantId = streamingAssistantIdRef.current;
+      if (!assistantId || suppressLateDeltaRef.current) return;
+      streamingHadDeltaRef.current = true;
+      setMessages(prev => prev.map(m => (
+        m.id === assistantId ? { ...m, content: m.content + msg.content } : m
+      )));
+    }
+    if (msg.type === 'assistant.done') {
+      streamingAssistantIdRef.current = null;
+      suppressLateDeltaRef.current = false;
+      setTaskStatus('Ready');
     }
     if (msg.type === 'toast.success' && msg.message) addToast(msg.message, 'success');
     if (msg.type === 'toast.error' && msg.message) addToast(msg.message, 'error');

@@ -11,6 +11,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     build_contract_from_context,
     format_contract_for_user,
     load_confirmed_contract,
+    merge_contract_draft,
 )
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
@@ -191,7 +192,147 @@ def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
 
     system_text = "\n".join(m["content"] for m in captured["messages"] if m["role"] == "system")
     assert kind == "answer"
-    assert "reply_to_user" in reply
+    assert "请确认主要目标。" in reply
+    assert "你主要想优化什么？" in reply
+    assert "reply_to_user" not in reply
+    assert "contract_updates" not in reply
+    assert "missing_required_fields" not in reply
     assert "每轮必须输出 JSON object" in system_text
     assert "improvement_idea、target_module 只能作为 optional hints" in system_text
     assert "不要问'你想怎么改'" in system_text
+
+
+def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {
+            "reply": json.dumps({
+                "reply_to_user": "我已记录 baseline 和数据集。",
+                "contract_updates": {"dataset": "MVTec AD"},
+                "missing_required_fields": ["dataset"],
+                "next_question": "请确认主要指标。",
+            }, ensure_ascii=False),
+            "error": None,
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intent"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "research_intent_contract": {"run_id": "run_contract"},
+        },
+        "我的数据集是 MVTec AD",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert reply == "我已记录 baseline 和数据集。\n\n请确认主要指标。"
+    assert "{" not in reply
+    assert "contract_updates" not in reply
+    assert "missing_required_fields" not in reply
+
+
+def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    first = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="我想基于 PatchCore 做异常检测改进，主要想提升 MVTec AD 上的效果，先不要自动改代码，先帮我整理方案。",
+    )
+    assert first.intent_contract["dataset"] == "MVTec AD"
+
+    second = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="主要看 image AUROC 和 pixel AUROC，成功标准是比原始 PatchCore 有提升，评价流程不能作弊，不能改测试集和指标定义。",
+    )
+
+    assert second.intent_contract["baseline"] == "PatchCore"
+    assert second.intent_contract["dataset"] == "MVTec AD"
+    assert second.intent_contract["primary_metric"] == "image_level_auroc"
+    assert "pixel_level_auroc" in second.intent_contract["secondary_metrics"]
+
+
+def test_hf2_contract_ready_after_metric_and_success(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    existing = ResearchIntentContract(
+        run_id="run_contract",
+        research_goal="提升 baseline 在目标数据集上的表现",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        execution_mode="plan_only",
+    )
+    update = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="主要看 image AUROC，成功标准是保持原始评价协议并提升指标。",
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    merged = merge_contract_draft(existing, update)
+
+    assert merged.ready_for_plan is True
+    assert merged.missing_required_fields == []
+    assert merged.primary_metric == "image_level_auroc"
+    assert merged.success_criteria == "improve image_level_auroc under the same evaluation protocol"
+
+
+def test_hf2_metric_extraction_image_and_pixel(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    image_primary = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="主要看 image AUROC 和 pixel AUROC。",
+        llm_context={"confirmed_from_user": {}},
+    )
+    pixel_primary = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="主要看 pixel AUROC，image AUROC 也参考。",
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert image_primary.primary_metric == "image_level_auroc"
+    assert image_primary.secondary_metrics == ["pixel_level_auroc"]
+    assert pixel_primary.primary_metric == "pixel_level_auroc"
+    assert pixel_primary.secondary_metrics == ["image_level_auroc"]
+
+
+def test_hf2_llm_missing_fields_not_authoritative(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {
+            "reply": json.dumps({
+                "reply_to_user": "已记录。",
+                "missing_required_fields": ["dataset", "primary_metric"],
+                "next_question": "还需要确认成功标准。",
+            }, ensure_ascii=False),
+            "error": None,
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intent"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "research_intent_contract": {
+                "run_id": "run_contract",
+                "dataset": "MVTec AD",
+                "primary_metric": "image_level_auroc",
+                "missing_required_fields": ["success_criteria"],
+            },
+        },
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert "dataset" not in reply
+    assert "primary_metric" not in reply
+    assert "missing_required_fields" not in reply

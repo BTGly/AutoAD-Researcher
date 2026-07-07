@@ -1,10 +1,13 @@
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
     user_input: str
     run_id: str = "run_default"
-    attachments: list[str] = []
+    attachments: list[str] = Field(default_factory=list)
+    transcript_tail: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
