@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from autoad_researcher.ui.material_requests import load_material_requests, update_material_request_status
+from autoad_researcher.ui.material_requests import (
+    claim_material_request,
+    complete_material_request,
+    fail_material_request,
+    load_material_requests,
+)
+from autoad_researcher.ui.subagent_inbox import post_subagent_notification
 from autoad_researcher.ui.sync_web_search import (
     SYNC_SEARCH_FILE,
     WebSearchProvider,
@@ -26,6 +32,7 @@ def run_pending_material_subagents(
     run_dir: Path,
     *,
     provider: WebSearchProvider | None = None,
+    worker_id: str = "ui_button",
 ) -> list[dict[str, Any]]:
     """Run eligible queued material requests through material subagents."""
     runs: list[dict[str, Any]] = []
@@ -34,7 +41,14 @@ def run_pending_material_subagents(
             continue
         if request.get("kind") != "web_search":
             continue
-        runs.append(run_material_discovery_subagent(run_dir, request=request, provider=provider))
+        request_id = str(request.get("request_id", ""))
+        if not claim_material_request(run_dir, request_id=request_id, worker_id=worker_id):
+            continue
+        claimed = next(
+            (item for item in load_material_requests(run_dir) if item.get("request_id") == request_id),
+            request,
+        )
+        runs.append(run_material_discovery_subagent(run_dir, request=claimed, provider=provider))
     return runs
 
 
@@ -46,15 +60,19 @@ def run_material_discovery_subagent(
 ) -> dict[str, Any]:
     """Run a single web_search material request as a discovery subagent."""
     request_id = str(request.get("request_id", ""))
-    query = str(request.get("user_message", ""))
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    query = str(payload.get("query") or request.get("user_message", ""))
     subagent_run_id = _next_subagent_run_id(run_dir)
     started_at = datetime.now(timezone.utc).isoformat()
 
     search_result = execute_sync_web_search(run_dir, query=query, provider=provider)
     search_status = str(search_result.get("status", "search_unavailable"))
-    request_status = "completed" if search_status == "ok" else search_status
+    request_status = "failed" if search_status == "search_unavailable" else "completed"
     result_ref = f"ui_chat/{SYNC_SEARCH_FILE}" if search_status in {"ok", "no_results"} else None
     error_message = str(search_result.get("reason", "")) if search_status == "search_unavailable" else None
+    evidence_role = str(request.get("evidence_role") or "candidate_source_only")
+    result_count = len(search_result.get("results", [])) if isinstance(search_result.get("results"), list) else 0
+    summary = _summary_for_web_search(search_status, result_count, error_message)
 
     record = {
         "subagent_run_id": subagent_run_id,
@@ -70,16 +88,30 @@ def run_material_discovery_subagent(
         "error_message": error_message,
         "reply": build_sync_web_search_reply(search_result),
     }
-    _append_subagent_run(run_dir, record)
-    update_material_request_status(
+    notification_id = post_subagent_notification(
         run_dir,
-        request_id=request_id,
-        status=request_status,
-        result_ref=result_ref,
-        error_message=error_message,
-        assigned_agent=MATERIAL_DISCOVERY_SUBAGENT,
-        subagent_run_id=subagent_run_id,
+        {
+            "subagent_kind": "material_discovery",
+            "request_id": request_id,
+            "status": request_status,
+            "severity": "error" if request_status == "failed" else "info",
+            "evidence_role": evidence_role,
+            "summary": summary,
+            "artifact_paths": [result_ref] if result_ref else [],
+        },
     )
+    record["notification_id"] = notification_id
+    _append_subagent_run(run_dir, record)
+    if request_status == "completed":
+        complete_material_request(run_dir, request_id=request_id, notification_id=notification_id)
+    else:
+        fail_material_request(
+            run_dir,
+            request_id=request_id,
+            error_code="web_search_unavailable",
+            error_message=error_message or "web_search failed",
+            retryable=True,
+        )
     return record
 
 
@@ -122,3 +154,11 @@ def _next_subagent_run_id(run_dir: Path) -> str:
         if match:
             max_seen = max(max_seen, int(match.group(1)))
     return f"msa_{max_seen + 1:06d}"
+
+
+def _summary_for_web_search(status: str, result_count: int, error_message: str | None) -> str:
+    if status == "ok":
+        return f"找到 {result_count} 个候选来源"
+    if status == "no_results":
+        return "web_search 已完成，但没有返回候选来源"
+    return f"web_search failed: {error_message or 'provider unavailable'}"
