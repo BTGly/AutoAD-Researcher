@@ -107,7 +107,7 @@ def test_material_request_panel_can_execute_pending_web_search():
     source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
     body = source[source.index("def _render_material_request_panel("):source.index("def _render_freeze_panel(")]
 
-    assert "执行待处理 web_search" in body
-    assert "execute_sync_web_search(run_dir, query=query)" in body
-    assert "update_material_request_status(" in body
-    assert "search_unavailable" in body
+    assert "运行资料搜集 subagent" in body
+    assert "run_pending_material_subagents(run_dir)" in body
+    assert "execute_sync_web_search(run_dir, query=query)" not in body
+    assert "subagent_run_id" in body

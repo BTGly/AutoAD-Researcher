@@ -112,6 +112,8 @@ def update_material_request_status(
     status: str,
     result_ref: str | None = None,
     error_message: str | None = None,
+    assigned_agent: str | None = None,
+    subagent_run_id: str | None = None,
 ) -> dict[str, Any] | None:
     requests = load_material_requests(run_dir)
     updated: dict[str, Any] | None = None
@@ -124,6 +126,10 @@ def update_material_request_status(
             request["result_ref"] = result_ref
         if error_message:
             request["error_message"] = error_message[:200]
+        if assigned_agent:
+            request["assigned_agent"] = assigned_agent
+        if subagent_run_id:
+            request["subagent_run_id"] = subagent_run_id
         updated = request
         break
     if updated is None:
