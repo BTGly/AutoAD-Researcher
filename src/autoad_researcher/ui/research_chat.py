@@ -80,6 +80,11 @@ from autoad_researcher.ui.sources import (
     set_active_parse_attempt,
     update_source_status,
 )
+from autoad_researcher.ui.sync_web_search import (
+    build_sync_web_search_reply,
+    detect_sync_web_search_intent,
+    execute_sync_web_search,
+)
 
 _SAFETY_WARNING = "研究助手只提供解释和建议，不会修改代码，也不会执行真实 L3。"
 _MODE_LABELS = {
@@ -404,10 +409,10 @@ def build_research_chat_messages(
             "role": "system",
             "content": (
                 "Material acquisition boundary: Research Chat has no background worker and cannot proactively "
-                "send a later message after web_search/web_fetch/git_clone. If the user asks to search, find latest "
-                "methods, collect papers, or discover repositories, do not say that you have started searching or "
-                "that you will reply in 5-10 minutes. Such requests must be recorded as material_requests and later "
-                "handled by discovery/acquisition agents that write artifacts."
+                "send a later message after web_search/web_fetch/git_clone. If a synchronous web_search provider "
+                "is available, search requests may return candidate_source_only results immediately; otherwise "
+                "return search_unavailable or record material_requests for later discovery/acquisition. Never say "
+                "that you will reply in 5-10 minutes."
             ),
         })
         response_ctx = build_research_chat_response_context(run_dir, transcript_tail=transcript_tail)
@@ -1086,6 +1091,14 @@ def _handle_chat_input(
         reply = build_attachment_added_reply(attached_sources)
         st.chat_message("assistant").write(reply)
         save_transcript(run_dir, mode, "assistant", reply)
+        return
+
+    if detect_sync_web_search_intent(user_input):
+        result = execute_sync_web_search(run_dir, query=user_input)
+        reply = build_sync_web_search_reply(result)
+        st.chat_message("assistant").write(reply)
+        save_transcript(run_dir, mode, "assistant", reply)
+        st.rerun()
         return
 
     # ── P6: Parse trigger — natural language PDF parse requests ──

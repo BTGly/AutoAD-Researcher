@@ -56,7 +56,8 @@ def test_research_chat_prompt_forbids_background_search_promises(tmp_path: Path)
 
     assert "Material acquisition boundary" in system_text
     assert "no background worker" in system_text
-    assert "material_requests" in system_text
+    assert "candidate_source_only" in system_text
+    assert "search_unavailable" in system_text
 
 
 def test_response_guard_rewrites_background_search_promise():
@@ -74,5 +75,7 @@ def test_response_guard_rewrites_background_search_promise():
 def test_handle_chat_input_intercepts_material_request_before_llm_call():
     source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
     body = source[source.index("def _handle_chat_input("):source.index("def _chat_input_submission(")]
+    assert "detect_sync_web_search_intent(user_input)" in body
+    assert body.index("detect_sync_web_search_intent(user_input)") < body.index("build_pdf_parse_action(run_dir, user_input")
     assert "detect_material_request_intent(user_input)" in body
     assert body.index("detect_material_request_intent(user_input)") < body.index("call_research_chat(")
