@@ -1,7 +1,23 @@
+function getHeaders(): Record<string, string> {
+  const cfg = localStorage.getItem('autoad_config');
+  if (!cfg) return { 'Content-Type': 'application/json' };
+  try {
+    const c = JSON.parse(cfg);
+    return {
+      'Content-Type': 'application/json',
+      'X-AutoAD-API-Key': c.apiKey || '',
+      'X-AutoAD-Base-URL': c.baseUrl || '',
+      'X-AutoAD-Model': c.model || '',
+    };
+  } catch {
+    return { 'Content-Type': 'application/json' };
+  }
+}
+
 export async function sendChat(userInput: string, runId: string): Promise<{ reply: string; reply_kind: string }> {
   const res = await fetch('/api/chat/send', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getHeaders(),
     body: JSON.stringify({ user_input: userInput, run_id: runId }),
   });
   if (!res.ok) throw new Error(`Chat API error: ${res.status}`);

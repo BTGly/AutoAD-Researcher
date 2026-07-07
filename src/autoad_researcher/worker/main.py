@@ -79,32 +79,47 @@ def _process_pending_jobs(run_dir: Path) -> int:
         print(f"[worker] running {job_type} ({job_id}) in {run_dir.name}")
 
         from autoad_researcher.assistant.v2.job_service import claim_pipeline_job, complete_pipeline_job, fail_pipeline_job
+        from autoad_researcher.assistant.v2.event_service import append_event
+
         claimed = claim_pipeline_job(run_dir, job_id)
         if not claimed:
             continue
 
+        append_event(run_dir, "job.started", {"job_id": job_id, "job_type": job_type})
+        success = False
+        outputs: list[str] = []
+
         try:
-            success = False
             if job_type == "web_search":
                 success = _run_web_search(run_dir, job)
             elif job_type == "web_fetch":
-                success = _run_web_fetch(run_dir, job)
+                success, outputs = _run_web_fetch(run_dir, job)
             elif job_type == "git_clone":
-                success = _run_git_clone(run_dir, job)
+                success, outputs = _run_git_clone(run_dir, job)
             elif job_type == "paper_parse":
-                success = _run_paper_parse(run_dir, job)
+                success, outputs = _run_paper_parse(run_dir, job)
             elif job_type == "repo_analyze":
-                success = _run_repo_analyze(run_dir, job)
+                success, outputs = _run_repo_analyze(run_dir, job)
             else:
                 fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
+                append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
                 continue
 
             if success:
-                complete_pipeline_job(run_dir, job_id, outputs=[])
+                complete_pipeline_job(run_dir, job_id, outputs=outputs)
+                append_event(run_dir, "job.completed", {"job_id": job_id, "outputs": outputs})
+                if outputs:
+                    append_event(run_dir, "artifact.created", {"job_id": job_id, "paths": outputs})
+                append_event(run_dir, "toast.success", {"message": f"{job_type} 完成"})
             else:
                 fail_pipeline_job(run_dir, job_id, error="execution failed")
+                append_event(run_dir, "job.failed", {"job_id": job_id, "error": "execution failed"})
+                append_event(run_dir, "toast.error", {"message": f"{job_type} 失败"})
         except Exception as exc:
-            fail_pipeline_job(run_dir, job_id, error=str(exc)[:500])
+            error_msg = str(exc)[:500]
+            fail_pipeline_job(run_dir, job_id, error=error_msg)
+            append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})
+            append_event(run_dir, "toast.error", {"message": f"{job_type} 失败"})
         processed += 1
 
     return processed
@@ -116,35 +131,36 @@ def _run_web_search(run_dir: Path, job: dict[str, Any]) -> bool:
     return True
 
 
-def _run_web_fetch(run_dir: Path, job: dict[str, Any]) -> bool:
+def _run_web_fetch(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = job.get("source_id", "")
     url = _find_source_url(run_dir, source_id)
     if not url:
-        return False
+        return False, []
 
     from autoad_researcher.tools.providers import SecureWebFetchProvider
     provider = SecureWebFetchProvider()
     result = provider.fetch(url)
     out_dir = run_dir / "sources" / source_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "raw.html").write_text(result.content, encoding="utf-8")
-    return True
+    html_path = out_dir / "raw.html"
+    html_path.write_text(result.content, encoding="utf-8")
+    return True, [str(html_path.relative_to(run_dir))]
 
 
-def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> bool:
+def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = job.get("source_id", "")
     url = _find_source_url(run_dir, source_id)
     if not url:
-        return False
+        return False, []
     try:
         from autoad_researcher.repository_intelligence.acquisition import shallow_clone
         shallow_clone(url, run_dir / "repos" / source_id)
-        return True
+        return True, [f"repos/{source_id}"]
     except Exception:
-        return False
+        return False, []
 
 
-def _run_paper_parse(run_dir: Path, job: dict[str, Any]) -> bool:
+def _run_paper_parse(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = job.get("source_id", "")
     sources = _load_sources(run_dir)
     for s in sources:
@@ -157,15 +173,16 @@ def _run_paper_parse(run_dir: Path, job: dict[str, Any]) -> bool:
                     capture_output=True, text=True, timeout=600,
                     cwd=str(run_dir.parent.parent)
                 )
-                return r.returncode == 0
-    return False
+                if r.returncode == 0:
+                    return True, [f"paper/parse/attempts/{source_id}"]
+    return False, []
 
 
-def _run_repo_analyze(run_dir: Path, job: dict[str, Any]) -> bool:
+def _run_repo_analyze(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = job.get("source_id", "")
     repo_dir = run_dir / "repos" / source_id
     if not repo_dir.exists():
-        return False
+        return False, []
 
     files = list(repo_dir.glob("**/*.py"))[:50]
     readme = repo_dir / "README.md"
@@ -175,8 +192,9 @@ def _run_repo_analyze(run_dir: Path, job: dict[str, Any]) -> bool:
     ]
     if readme.exists():
         summary_lines.append(f"\n## README\n{readme.read_text(encoding='utf-8', errors='replace')[:2000]}")
-    (repo_dir / "repo_brief.md").write_text("\n".join(summary_lines))
-    return True
+    brief_path = repo_dir / "repo_brief.md"
+    brief_path.write_text("\n".join(summary_lines))
+    return True, [str(brief_path.relative_to(run_dir))]
 
 
 def _find_source_url(run_dir: Path, source_id: str) -> str:

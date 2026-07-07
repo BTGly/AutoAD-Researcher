@@ -7,12 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-from autoad_researcher.ui.material_requests import _material_requests_lock as _file_lock
 
 JOBS_DIR = "jobs"
 JOBS_FILE = "pipeline_jobs.jsonl"
@@ -78,8 +77,9 @@ def append_pipeline_job(
     }
     path = _jobs_path(run_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(job, ensure_ascii=False) + "\n")
+    with _jobs_lock(run_dir):
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(job, ensure_ascii=False) + "\n")
     return job
 
 
@@ -87,42 +87,62 @@ def append_pipeline_job(
 def _jobs_lock(run_dir: Path, timeout: float = 5.0):
     lock_path = run_dir / JOBS_DIR / ".pipeline_jobs.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    yield
+    deadline = time.time() + timeout
+    fd = None
+    while time.time() < deadline:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            time.sleep(0.1)
+    if fd is None:
+        raise TimeoutError(f"Could not acquire jobs lock for {run_dir} within {timeout}s")
+    try:
+        yield
+    finally:
+        os.close(fd)
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
 
 
 def claim_pipeline_job(run_dir: Path, job_id: str) -> dict[str, Any] | None:
-    jobs = load_pipeline_jobs(run_dir)
-    for j in jobs:
-        if j["job_id"] == job_id and j.get("status") in ("queued",):
-            j["status"] = "running"
-            j["started_at"] = datetime.now(timezone.utc).isoformat()
-            _write_jobs(run_dir, jobs)
-            return j
+    with _jobs_lock(run_dir):
+        jobs = load_pipeline_jobs(run_dir)
+        for j in jobs:
+            if j["job_id"] == job_id and j.get("status") in ("queued",):
+                j["status"] = "running"
+                j["started_at"] = datetime.now(timezone.utc).isoformat()
+                _write_jobs(run_dir, jobs)
+                return j
     return None
 
 
 def complete_pipeline_job(run_dir: Path, job_id: str, *, outputs: list[str] | None = None) -> dict[str, Any] | None:
-    jobs = load_pipeline_jobs(run_dir)
-    for j in jobs:
-        if j["job_id"] == job_id:
-            j["status"] = "completed"
-            j["completed_at"] = datetime.now(timezone.utc).isoformat()
-            if outputs:
-                j["outputs"] = outputs
-            _write_jobs(run_dir, jobs)
-            return j
+    with _jobs_lock(run_dir):
+        jobs = load_pipeline_jobs(run_dir)
+        for j in jobs:
+            if j["job_id"] == job_id:
+                j["status"] = "completed"
+                j["completed_at"] = datetime.now(timezone.utc).isoformat()
+                if outputs:
+                    j["outputs"] = outputs
+                _write_jobs(run_dir, jobs)
+                return j
     return None
 
 
 def fail_pipeline_job(run_dir: Path, job_id: str, *, error: str) -> dict[str, Any] | None:
-    jobs = load_pipeline_jobs(run_dir)
-    for j in jobs:
-        if j["job_id"] == job_id:
-            j["status"] = "failed"
-            j["completed_at"] = datetime.now(timezone.utc).isoformat()
-            j["error"] = error
-            _write_jobs(run_dir, jobs)
-            return j
+    with _jobs_lock(run_dir):
+        jobs = load_pipeline_jobs(run_dir)
+        for j in jobs:
+            if j["job_id"] == job_id:
+                j["status"] = "failed"
+                j["completed_at"] = datetime.now(timezone.utc).isoformat()
+                j["error"] = error
+                _write_jobs(run_dir, jobs)
+                return j
     return None
 
 
