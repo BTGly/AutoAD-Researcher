@@ -312,6 +312,48 @@ def test_readable_artifacts_prioritize_structured_outputs_over_blocks(tmp_path):
     assert (parse_dir / "paper.md").exists()
 
 
+def test_paper_context_includes_method_components_and_candidates(tmp_path):
+    run_dir = tmp_path / "run_transfer_context"
+    run_dir.mkdir()
+    artifacts_dir = run_dir / "paper" / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    (artifacts_dir / "paper_summary.json").write_text(
+        json.dumps({
+            "title": {"value": "SimpleNet"},
+            "proposed_method": [{"text": "Use a Feature Adapter before anomaly discrimination."}],
+        }),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "method_components.json").write_text(
+        json.dumps([
+            {
+                "name": "Feature Adapter",
+                "role": "adapt pretrained local features to the target domain",
+                "input_signal": "backbone patch features",
+                "output_signal": "adapted patch features",
+            }
+        ]),
+        encoding="utf-8",
+    )
+    (artifacts_dir / "paper_candidates.json").write_text(
+        json.dumps([
+            {
+                "name": "Feature Adapter",
+                "kind": "idea_source",
+                "mention_role": "proposed_method",
+                "selection_status": "paper_mentioned",
+            }
+        ]),
+        encoding="utf-8",
+    )
+
+    paper_context = load_readable_paper_context(run_dir)
+
+    assert paper_context["can_answer_from_paper"] is True
+    assert "Feature Adapter" in json.dumps(paper_context["method_components"], ensure_ascii=False)
+    assert "Feature Adapter" in json.dumps(paper_context["paper_candidates"], ensure_ascii=False)
+
+
 def test_readable_parse_content_does_not_require_usable_metadata(tmp_path):
     run_dir = tmp_path / "run_partial_parse"
     run_dir.mkdir()

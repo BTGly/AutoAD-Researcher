@@ -605,7 +605,26 @@ def load_readable_paper_context(run_dir: Path) -> dict[str, Any]:
     sections = _sections_preview(run_dir / "paper" / "parse" / "sections.json", limit=20)
     if sections:
         context["sections"] = sections
-    context["can_answer_from_paper"] = any(key in context for key in ("summary", "markdown_excerpt", "sections"))
+    components = _artifact_records_preview(run_dir / "paper" / "artifacts" / "method_components.json", limit=8)
+    if components:
+        context["method_components"] = components
+    candidates = _artifact_records_preview(run_dir / "paper" / "artifacts" / "paper_candidates.json", limit=8)
+    if candidates:
+        context["paper_candidates"] = candidates
+    idea_sources = _artifact_records_preview(run_dir / "paper" / "artifacts" / "paper_idea_sources.json", limit=8)
+    if idea_sources:
+        context["paper_idea_sources"] = idea_sources
+    context["can_answer_from_paper"] = any(
+        key in context
+        for key in (
+            "summary",
+            "markdown_excerpt",
+            "sections",
+            "method_components",
+            "paper_candidates",
+            "paper_idea_sources",
+        )
+    )
     if not context["can_answer_from_paper"]:
         context["reason"] = "no_readable_paper_text_artifact"
     return context
@@ -688,6 +707,42 @@ def _sections_preview(path: Path, *, limit: int) -> list[dict[str, Any]]:
         if len(sections) >= limit:
             break
     return sections
+
+
+def _artifact_records_preview(path: Path, *, limit: int) -> list[dict[str, Any]]:
+    payload = _load_json(path)
+    if not isinstance(payload, list):
+        return []
+    records: list[dict[str, Any]] = []
+    preferred_keys = (
+        "name",
+        "title",
+        "description",
+        "suggested_transfer_surface",
+        "kind",
+        "role",
+        "input_signal",
+        "output_signal",
+        "training_required",
+        "inference_required",
+        "mention_role",
+        "selection_status",
+        "risks",
+        "warnings",
+    )
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        record: dict[str, Any] = {}
+        for key in preferred_keys:
+            compact = _compact_artifact_value(item.get(key), limit=500)
+            if compact is not None:
+                record[key] = compact
+        if record:
+            records.append(record)
+        if len(records) >= limit:
+            break
+    return records
 
 
 def _compact_artifact_value(value: Any, *, limit: int) -> Any:

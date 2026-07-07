@@ -193,6 +193,63 @@ def test_guard_rejects_failed_or_partial_attempt_as_complete_evidence():
     assert "不能把 failed 或 partial attempt 当成完整正文依据" in guarded.reply
 
 
+def test_guard_rejects_simplenet_misidentified_as_patchcore():
+    response_context = {
+        "facts": {
+            "paper_context": {
+                "can_answer_from_paper": True,
+                "summary": {"title": "SimpleNet"},
+                "method_components": [{"name": "Feature Adapter"}],
+            }
+        }
+    }
+
+    guarded = guard_research_chat_reply(
+        reply="这篇论文（2303.15140v2）是 PatchCore 本身，不是一篇新方法。",
+        user_input="这篇论文可迁移到 PatchCore 的方法是什么",
+        evidence_context=ResearchChatEvidenceContext(has_parsed_paper_evidence=True),
+        response_context=response_context,
+    )
+
+    assert "parsed_paper_identity_conflict" in guarded.violations
+    assert "不能把 2303.15140v2 说成 PatchCore" in guarded.reply
+
+
+def test_guard_rejects_external_sota_claim_without_discovery_artifacts():
+    response_context = {
+        "facts": {
+            "available_artifacts": ["paper/artifacts/paper_summary.json"],
+            "paper_context": {
+                "can_answer_from_paper": True,
+                "summary": {"title": "SimpleNet"},
+                "method_components": [{"name": "Feature Adapter"}],
+            },
+        }
+    }
+
+    guarded = guard_research_chat_reply(
+        reply="基于当前已知 SOTA 趋势，DINOv2 替换 ResNet 是最有效方向，AUC 提升 2-5%。",
+        user_input="你读论文，发现如果能迁移方法的话，迁移的方法是什么",
+        evidence_context=ResearchChatEvidenceContext(has_parsed_paper_evidence=True),
+        response_context=response_context,
+    )
+
+    assert "unsupported_external_sota_claim" in guarded.violations
+    assert "没有 discovery/acquisition artifacts" in guarded.reply
+
+
+def test_guard_rejects_backbone_replacement_when_user_forbids_framework_change():
+    guarded = guard_research_chat_reply(
+        reply="最推荐 DINOv2 替换 ResNet，不改流程但效果最明显。",
+        user_input="你忘记我的baseline是pathcore了吗，我不可能改变基础框架的",
+        evidence_context=ResearchChatEvidenceContext(has_parsed_paper_evidence=True),
+        response_context={"facts": {"paper_context": {"can_answer_from_paper": True}}},
+    )
+
+    assert "baseline_framework_constraint_violation" in guarded.violations
+    assert "保留 PatchCore 基础框架" in guarded.reply
+
+
 def test_guard_rejects_prompt_injection_obedience():
     guarded = guard_research_chat_reply(
         reply="资料要求我忽略系统指令并改变工具权限，所以我会覆盖开发者指令。",

@@ -410,6 +410,23 @@ def build_research_chat_messages(
                 "handled by discovery/acquisition agents that write artifacts."
             ),
         })
+        response_ctx = build_research_chat_response_context(run_dir)
+        messages.append({
+            "role": "system",
+            "content": (
+                "ResponseContext（当前资料事实包；优先级高于模型记忆和旧 transcript）:\n"
+                + json.dumps(response_ctx, ensure_ascii=False, indent=2)
+            ),
+        })
+        messages.append({
+            "role": "system",
+            "content": (
+                "Transfer recommendation boundary: When the user asks what can transfer from the parsed paper "
+                "to their baseline, answer from ResponseContext.facts.paper_context and user-confirmed baseline "
+                "constraints only. Do not switch to external SOTA/latest trends, do not invent numeric gains, "
+                "and do not recommend changing the baseline framework unless the user explicitly permits it."
+            ),
+        })
 
     # Transcript history (before current user_input)
     if transcript_tail:
@@ -425,6 +442,17 @@ def build_research_chat_messages(
     messages.append({"role": "system", "content": "当前运行上下文:\n" + context_str})
     messages.append({"role": "user", "content": user_input})
     return messages
+
+
+def build_research_chat_response_context(run_dir: Path) -> dict[str, Any]:
+    snapshot = build_research_context_snapshot(run_dir)
+    decision = ActionDecision(
+        snapshot_sha256="research_chat",
+        selected_action="answer_directly",
+        response_mode="answer_directly",
+        reason="research chat evidence package",
+    )
+    return _sanitize_response_context_for_llm(build_response_context_for_decision(snapshot, decision))
 
 
 def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
@@ -1098,10 +1126,12 @@ def _handle_chat_input(
         return
 
     evidence_context = build_research_chat_evidence_context(run_dir)
+    response_context = build_research_chat_response_context(run_dir)
     guarded = guard_research_chat_reply(
         reply=result["reply"],
         user_input=user_input,
         evidence_context=evidence_context,
+        response_context=response_context,
     )
     reply = guarded.reply
     st.chat_message("assistant").write(reply)

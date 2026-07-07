@@ -154,6 +154,40 @@ class TestBuildResearchChatMessages:
         assert "parsed_paper_evidence" in evidence_msgs[0]["content"]
         assert "Candidate References 不是 Known Facts" in evidence_msgs[0]["content"]
 
+    def test_intent_clarification_includes_response_context_and_transfer_boundary(self, tmp_path):
+        from autoad_researcher.ui.research_chat import build_research_chat_messages
+
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        artifacts = run_dir / "paper" / "artifacts"
+        artifacts.mkdir(parents=True)
+        (artifacts / "paper_summary.json").write_text(
+            json.dumps({
+                "title": {"value": "SimpleNet"},
+                "proposed_method": [{"text": "Feature Adapter adapts pretrained features."}],
+            }),
+            encoding="utf-8",
+        )
+        (artifacts / "paper_candidates.json").write_text(
+            json.dumps([{"name": "Feature Adapter", "kind": "idea_source"}]),
+            encoding="utf-8",
+        )
+
+        messages = build_research_chat_messages(
+            run_dir=run_dir,
+            mode="intent_clarification",
+            user_input="能迁移到我的 PatchCore baseline 的方法是什么",
+            context_data={},
+        )
+        system_text = "\n".join(m["content"] for m in messages if m["role"] == "system")
+
+        assert "ResponseContext" in system_text
+        assert "paper_context" in system_text
+        assert "paper_candidates" in system_text
+        assert "Feature Adapter" in system_text
+        assert "Transfer recommendation boundary" in system_text
+        assert "external SOTA/latest trends" in system_text
+
 
 class TestTranscriptTail:
     """Verify transcript_tail is injected and current user_input does not repeat."""

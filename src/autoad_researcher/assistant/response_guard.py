@@ -52,6 +52,15 @@ def guard_research_chat_reply(
     if _treats_failed_or_partial_attempt_as_complete(reply, response_context):
         violations.append("failed_or_partial_attempt_as_complete_evidence")
 
+    if _misidentifies_parsed_paper(reply, response_context):
+        violations.append("parsed_paper_identity_conflict")
+
+    if _unsupported_external_sota_claim(reply, user_input, response_context):
+        violations.append("unsupported_external_sota_claim")
+
+    if _violates_baseline_framework_constraint(reply, user_input):
+        violations.append("baseline_framework_constraint_violation")
+
     if _asks_for_artifacts(user_input) and not evidence_context.has_parsed_paper_evidence:
         violations.append("artifact_answer_without_parsed_artifact")
 
@@ -177,6 +186,97 @@ def _treats_failed_or_partial_attempt_as_complete(
     )
 
 
+def _misidentifies_parsed_paper(text: str, response_context: dict[str, Any] | None) -> bool:
+    paper_text = _paper_context_text(response_context).lower()
+    if "simplenet" not in paper_text:
+        return False
+    return bool(re.search(r"(这篇论文|2303\.15140v2).{0,20}(是|就是).{0,20}patchcore", text, re.IGNORECASE))
+
+
+def _unsupported_external_sota_claim(
+    text: str,
+    user_input: str,
+    response_context: dict[str, Any] | None,
+) -> bool:
+    if not _asks_transfer_or_improvement(user_input):
+        return False
+    if _has_discovery_artifacts(response_context):
+        return False
+    risky = (
+        "SOTA",
+        "最新",
+        "趋势",
+        "最有效",
+        "目前最",
+        "DINOv2",
+        "提升 2-5%",
+        "提升 5",
+        "AUC 提升",
+    )
+    return any(token.lower() in text.lower() for token in risky)
+
+
+def _violates_baseline_framework_constraint(text: str, user_input: str) -> bool:
+    user_lower = user_input.lower()
+    if not (
+        "patchcore" in user_lower
+        or "pathcore" in user_lower
+        or "baseline" in user_lower
+        or "基础框架" in user_input
+        or "基础架构" in user_input
+    ):
+        return False
+    if not any(token in user_input for token in ("不能", "不可能", "不要", "不改", "不改变")):
+        return False
+    patterns = [
+        r"(替换|换成|改成).{0,20}(backbone|ResNet|DINOv2|ViT)",
+        r"DINOv2.{0,20}(替换|换掉|取代)",
+        r"(最推荐|优先).{0,20}DINOv2",
+    ]
+    return _matches_any(patterns, text)
+
+
+def _asks_transfer_or_improvement(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        any(token in text for token in ("迁移", "用到", "提升", "改进", "baseline", "基础框架", "最有可能"))
+        or any(token in lowered for token in ("transfer", "improve", "baseline", "patchcore", "pathcore"))
+    )
+
+
+def _has_discovery_artifacts(response_context: dict[str, Any] | None) -> bool:
+    if not isinstance(response_context, dict):
+        return False
+    facts = response_context.get("facts")
+    if not isinstance(facts, dict):
+        return False
+    artifacts = facts.get("available_artifacts")
+    if not isinstance(artifacts, list):
+        return False
+    return any(
+        isinstance(item, str)
+        and (
+            "web_search_results" in item
+            or "repository_discovery" in item
+            or "discovery" in item
+            or "acquisition" in item
+        )
+        for item in artifacts
+    )
+
+
+def _paper_context_text(response_context: dict[str, Any] | None) -> str:
+    if not isinstance(response_context, dict):
+        return ""
+    facts = response_context.get("facts")
+    if not isinstance(facts, dict):
+        return ""
+    paper_context = facts.get("paper_context")
+    if not isinstance(paper_context, dict):
+        return ""
+    return str(paper_context)
+
+
 def _known_source_ids(response_context: dict[str, Any]) -> set[str]:
     known: set[str] = set()
     facts = response_context.get("facts")
@@ -236,10 +336,28 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def _safe_fallback_reply(violations: list[str], evidence_context: ResearchChatEvidenceContext) -> str:
+    if "parsed_paper_identity_conflict" in violations:
+        return (
+            "这里需要更正：当前 parsed paper context 显示这篇论文不是 PatchCore 本身，"
+            "不能把 2303.15140v2 说成 PatchCore。请以 paper_context 中的论文标题和组件为准，再讨论可迁移点。"
+        )
+
+    if "baseline_framework_constraint_violation" in violations:
+        return (
+            "你的 baseline 约束是保留 PatchCore 基础框架，因此不能优先建议替换 backbone 或切到外部框架。"
+            "应优先考虑放在 PatchCore 特征输出之后、memory bank 构建之前的轻量适配/投影类改动；具体候选必须来自已解析论文 artifacts 或后续 discovery artifacts。"
+        )
+
     if "background_material_acquisition_promise" in violations:
         return (
             "当前 Research Chat 不能在后台执行网络搜索，也不能承诺几分钟后主动发新消息。"
             "我可以把这个诉求登记为资料搜集请求；后续 discovery/acquisition agents 产出 artifacts 后，我再基于 artifacts 汇总。"
+        )
+
+    if "unsupported_external_sota_claim" in violations:
+        return (
+            "当前没有 discovery/acquisition artifacts 支持“最新 SOTA”“最有效”或具体提升幅度。"
+            "这类外部趋势不能用模型记忆补全；应先基于已解析论文 artifacts 提候选迁移点，或登记资料搜集请求后等待 web_search/web_fetch/git_clone 产出 artifacts。"
         )
 
     if "execution_promise_without_approval" in violations:
