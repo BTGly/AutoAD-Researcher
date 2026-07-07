@@ -7,6 +7,7 @@ or require optional method-design hints.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal
 
@@ -117,6 +118,74 @@ def discover_required_needs(
     return validate_need_spec(canonicalize_need_values(spec))
 
 
+def discover_required_needs_with_llm(
+    *,
+    user_input: str,
+    transcript_tail: list[dict[str, Any]] | None = None,
+    existing_contract_draft: dict[str, Any] | None = None,
+    source_registry: list[dict[str, Any]] | None = None,
+    usable_evidence: list[dict[str, Any]] | None = None,
+    created_jobs: list[dict[str, Any]] | None = None,
+    current_stage_goal: StageGoal = "generate_plan",
+    answerability: dict[str, Any] | None = None,
+    run_artifacts_summary: dict[str, Any] | None = None,
+    api_key: str = "",
+    provider_url: str = "",
+) -> RequiredNeedSpec:
+    """LLM-first requirement discovery with deterministic fallback.
+
+    The LLM proposes the task type, required needs, and next question. Core code
+    validates the schema, canonicalizes enum-like values, and applies safety
+    rules. Fallback is used only when no model config is available or the model
+    output is invalid.
+    """
+
+    fallback_kwargs = {
+        "user_input": user_input,
+        "transcript_tail": transcript_tail,
+        "existing_contract_draft": existing_contract_draft,
+        "source_registry": source_registry,
+        "usable_evidence": usable_evidence,
+        "created_jobs": created_jobs,
+        "current_stage_goal": current_stage_goal,
+        "answerability": answerability,
+        "run_artifacts_summary": run_artifacts_summary,
+    }
+    if not api_key:
+        return discover_required_needs(**fallback_kwargs)
+
+    messages = _build_need_discovery_messages(
+        user_input=user_input,
+        transcript_tail=transcript_tail,
+        existing_contract_draft=existing_contract_draft,
+        source_registry=source_registry,
+        usable_evidence=usable_evidence,
+        created_jobs=created_jobs,
+        current_stage_goal=current_stage_goal,
+        answerability=answerability,
+        run_artifacts_summary=run_artifacts_summary,
+    )
+
+    from autoad_researcher.ui.chat_client import call_research_chat
+
+    result = call_research_chat(
+        api_key,
+        provider_url,
+        messages,
+        model="deepseek-v4-flash",
+        timeout_s=30,
+    )
+    payload = _parse_json_object(str(result.get("reply") or ""))
+    if result.get("error") or payload is None:
+        return discover_required_needs(**fallback_kwargs)
+    try:
+        spec = RequiredNeedSpec.model_validate(payload)
+    except Exception:
+        return discover_required_needs(**fallback_kwargs)
+    spec.current_stage_goal = current_stage_goal
+    return validate_need_spec(canonicalize_need_values(spec))
+
+
 def canonicalize_need_values(spec: RequiredNeedSpec) -> RequiredNeedSpec:
     """Canonicalize enum-like values while preserving source and confidence."""
 
@@ -141,9 +210,22 @@ def validate_need_spec(spec: RequiredNeedSpec) -> RequiredNeedSpec:
     """Validate blocking state and readiness from schema fields."""
 
     updated = spec.model_copy(deep=True)
+    _ensure_stage_required_needs(updated)
     for need in updated.needs:
         if need.name in {"improvement_idea", "target_module"}:
             need.necessity = "optional"
+            need.blocking = False
+            continue
+        if need.name in {"entrypoint", "config", "baseline_entrypoint", "baseline_config"}:
+            need.necessity = "auto_fillable"
+            need.blocking = False
+            need.question_to_user = None
+            continue
+        if updated.current_stage_goal != "run_experiment" and (
+            need.required_for == "run"
+            or need.name in {"dataset_path", "python_env", "gpu", "cuda", "time_budget"}
+        ):
+            need.necessity = "required_later"
             need.blocking = False
             continue
         if need.necessity in {"optional", "required_later", "auto_fillable"}:
@@ -164,6 +246,71 @@ def validate_need_spec(spec: RequiredNeedSpec) -> RequiredNeedSpec:
         for name in ("dataset_path", "python_env", "time_budget", "human_review_policy")
     )
     return updated
+
+
+def _build_need_discovery_messages(
+    *,
+    user_input: str,
+    transcript_tail: list[dict[str, Any]] | None,
+    existing_contract_draft: dict[str, Any] | None,
+    source_registry: list[dict[str, Any]] | None,
+    usable_evidence: list[dict[str, Any]] | None,
+    created_jobs: list[dict[str, Any]] | None,
+    current_stage_goal: StageGoal,
+    answerability: dict[str, Any] | None,
+    run_artifacts_summary: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    system = (
+        "你是 AutoAD Researcher 的 Need Discovery 组件，只输出 RequiredNeedSpec JSON。\n"
+        "你的任务是判断当前目标和阶段真正缺哪些关键事实、材料、资源和安全约束。\n"
+        "不要回答用户，不要输出 Markdown。\n"
+        "规则边界：metric/dataset/baseline 名称可以标准化；不要用关键词或出现顺序强行决定用户意图。\n"
+        "improvement_idea 和 target_module 只能是 optional，不能 blocking。\n"
+        "plan 阶段不能要求用户提供 dataset_path、python_env、GPU、repo entrypoint 或 config；这些应是 required_later 或 auto_fillable。\n"
+        "run_experiment 阶段必须检查 dataset_path、python_env、time_budget、human_review_policy。\n"
+        "entrypoint/config 应由 repo analyzer 自动补，不能要求用户手写。\n"
+        "每轮只给 next_best_question 一个最关键问题。\n"
+        "JSON fields: task_summary, inferred_task_type, current_stage_goal, needs, blocking_needs, "
+        "next_best_question, ready_for_plan, ready_for_repo_analysis, ready_for_experiment_design, "
+        "ready_for_patch, ready_for_run. 每个 need 包含 name, category, required_for, necessity, "
+        "current_value, source, confidence, blocking, question_to_user."
+    )
+    context = {
+        "current_stage_goal": current_stage_goal,
+        "transcript_tail": transcript_tail or [],
+        "existing_contract_draft": existing_contract_draft or {},
+        "source_registry": source_registry or [],
+        "usable_evidence": usable_evidence or [],
+        "created_jobs": created_jobs or [],
+        "answerability": answerability or {},
+        "run_artifacts_summary": run_artifacts_summary or {},
+    }
+    return [
+        {"role": "system", "content": system},
+        {"role": "system", "content": "Context JSON:\n" + _json_text(context)},
+        {"role": "user", "content": user_input},
+    ]
+
+
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _json_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return "{}"
 
 
 def canonicalize_metrics(value: Any) -> list[str]:
@@ -318,6 +465,27 @@ def _need(
         blocking=False,
         question_to_user=question,
     )
+
+
+def _ensure_stage_required_needs(spec: RequiredNeedSpec) -> None:
+    existing = {need.name for need in spec.needs}
+    if spec.current_stage_goal == "run_experiment":
+        required = [
+            ("dataset_path", "environment", "run", "artifact"),
+            ("python_env", "environment", "run", "artifact"),
+            ("time_budget", "environment", "run", "user"),
+            ("human_review_policy", "safety", "run", "default"),
+        ]
+        for name, category, required_for, source in required:
+            if name not in existing:
+                spec.needs.append(_need(
+                    name,
+                    category,  # type: ignore[arg-type]
+                    required_for,  # type: ignore[arg-type]
+                    "required_now",
+                    None,
+                    source,  # type: ignore[arg-type]
+                ))
 
 
 def _infer_task_type(text: str, values: dict[str, Any]) -> str:

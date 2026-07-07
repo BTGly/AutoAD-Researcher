@@ -94,6 +94,9 @@ class ResearchOrchestratorV2:
                 user_input=user_input,
                 llm_context=ctx,
                 transcript_tail=transcript_tail,
+                existing_contract_draft=existing_draft,
+                api_key=api_key,
+                provider_url=provider_url,
             )
             contract = merge_contract_draft(existing_draft, contract_update)
         save_contract_draft(run_dir, contract)

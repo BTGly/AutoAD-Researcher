@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.assistant.v2.need_discovery import (
     RequiredNeedSpec,
     canonicalize_metrics,
-    discover_required_needs,
+    discover_required_needs_with_llm,
     validate_need_spec,
 )
 
@@ -138,19 +138,27 @@ def build_contract_from_context(
     user_input: str,
     llm_context: dict[str, Any],
     transcript_tail: list[dict[str, Any]] | None = None,
+    existing_contract_draft: ResearchIntentContract | None = None,
+    api_key: str = "",
+    provider_url: str = "",
 ) -> ResearchIntentContract:
     """Build a deterministic draft from confirmed chat facts and artifacts."""
 
     confirmed = dict(llm_context.get("confirmed_from_user") or {})
     combined_user_text = _combined_user_text(user_input, transcript_tail)
     sources = _load_source_registry_sources(run_dir)
-    need_spec = discover_required_needs(
+    need_spec = discover_required_needs_with_llm(
         user_input=user_input,
         transcript_tail=transcript_tail,
+        existing_contract_draft=(
+            existing_contract_draft.model_dump(mode="json") if existing_contract_draft is not None else None
+        ),
         source_registry=sources,
         usable_evidence=llm_context.get("usable_evidence", []) or [],
         current_stage_goal="generate_plan",
         answerability=llm_context.get("answerability", {}) or {},
+        api_key=api_key,
+        provider_url=provider_url,
     )
 
     confirmed_metrics = _canonicalize_metric_list(_listify(confirmed.get("metrics")))
