@@ -164,8 +164,10 @@ class ResearchOrchestratorV2:
             save_contract_draft(run_dir, contract)
         ctx["research_intent_contract"] = contract.model_dump(mode="json")
 
-        contract_confirmed = False
-        if contract.ready_for_plan:
+        # Source intake turn: brief status, don't reprint contract
+        if created_sources or created_jobs:
+            reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
+        elif contract.ready_for_plan:
             reply_kind, reply = "intent_contract_confirmation", format_contract_for_user(contract)
         else:
             reply_kind, reply = plan_reply(ctx, user_input, api_key=api_key, provider_url=provider_url)
@@ -179,7 +181,7 @@ class ResearchOrchestratorV2:
             answerability=ctx.get("answerability", {}),
             next_actions=_suggest_next_actions(ctx, reply_kind),
             intent_contract=contract.model_dump(mode="json"),
-            intent_contract_confirmed=contract_confirmed,
+            intent_contract_confirmed=False,
         )
 
 
@@ -193,3 +195,25 @@ def _suggest_next_actions(ctx: dict, reply_kind: str) -> list[str]:
     elif blocking == "parse":
         actions.append("parse registered sources")
     return actions
+
+
+def _source_intake_reply(
+    created_sources: list[dict[str, Any]],
+    created_jobs: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Brief status reply for source intake — never reprints contract."""
+    job_types = [j.get("job_type", "") for j in created_jobs]
+    if "git_clone" in job_types or "repo_analyze" in job_types:
+        return "source_intake", (
+            "已登记基线仓库，后台开始 clone 和 repo analysis。"
+            "完成后右侧 Evidence 会出现仓库摘要。"
+        )
+    if "web_search" in job_types:
+        return "source_intake", (
+            "已登记搜索任务，后台会整理候选资料。"
+            "完成后右侧 Evidence 会出现摘要。"
+        )
+    return "source_intake", (
+        "已登记论文链接，后台开始 fetch/parse。"
+        "完成后右侧 Evidence 会出现论文摘要。"
+    )

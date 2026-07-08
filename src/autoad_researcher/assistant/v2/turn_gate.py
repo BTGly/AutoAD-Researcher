@@ -74,7 +74,11 @@ def decide_turn_gate_with_llm(
         )
 
     if not api_key:
-        return _offline_no_contract_decision()
+        return _offline_no_contract_decision(
+            user_input=user_input,
+            transcript_tail=transcript_tail,
+            existing_contract_draft=existing_contract_draft,
+        )
 
     messages = _build_turn_gate_messages(
         user_input=user_input,
@@ -94,11 +98,19 @@ def decide_turn_gate_with_llm(
     )
     payload = _parse_json_object(str(result.get("reply") or ""))
     if result.get("error") or payload is None:
-        return _offline_no_contract_decision()
+        return _offline_no_contract_decision(
+            user_input=user_input,
+            transcript_tail=transcript_tail,
+            existing_contract_draft=existing_contract_draft,
+        )
     try:
         decision = TurnGateDecision.model_validate(payload)
     except Exception:
-        return _offline_no_contract_decision()
+        return _offline_no_contract_decision(
+            user_input=user_input,
+            transcript_tail=transcript_tail,
+            existing_contract_draft=existing_contract_draft,
+        )
     return _validate_turn_gate_decision(decision)
 
 
@@ -156,7 +168,33 @@ def _validate_turn_gate_decision(decision: TurnGateDecision) -> TurnGateDecision
     return decision
 
 
-def _offline_no_contract_decision() -> TurnGateDecision:
+def _offline_no_contract_decision(
+    *,
+    user_input: str = "",
+    transcript_tail: list[dict[str, Any]] | None = None,
+    existing_contract_draft: dict[str, Any] | None = None,
+) -> TurnGateDecision:
+    """Offline fallback with text-confirmation support.
+
+    Even without LLM, allow text confirmation when:
+    1. User says a confirmation keyword, AND
+    2. The last assistant message requested confirmation, AND
+    3. A draft contract exists.
+    """
+
+    if _is_contextual_confirmation(user_input, transcript_tail) and existing_contract_draft:
+        return TurnGateDecision(
+            turn_type="confirmation",
+            contract_action="confirm_contract",
+            contract_update_allowed=False,
+            need_discovery_allowed=False,
+            save_draft_allowed=True,
+            user_intent_summary="user confirmed contract via text",
+            confidence=0.9,
+            reason="Offline text confirmation detected: assistant requested confirmation in previous turn.",
+            next_reply_instruction="已确认合同。",
+        )
+
     return TurnGateDecision(
         turn_type="ambiguous",
         contract_action="answer_without_contract_update",
@@ -165,11 +203,32 @@ def _offline_no_contract_decision() -> TurnGateDecision:
         save_draft_allowed=False,
         user_intent_summary="offline natural-language turn",
         confidence=0.0,
-        reason="No LLM turn gate result is available; natural-language turns are not used to update the contract offline.",
-        next_reply_instruction=(
-            "当前离线模式不会根据自然语言更新研究合同；如需确认合同，请使用明确的 UI 确认动作或提供结构化输入。"
-        ),
+        reason="No LLM turn gate result is available.",
+        next_reply_instruction="",
     )
+
+
+_confirm_phrases = ("确认", "可以", "没问题", "同意", "就这样", "按这个来")
+_confirm_request_phrases = ("请回复确认", "是否确认", "确认后", "是否按此合同", "请确认", "回复确认")
+
+
+def _is_contextual_confirmation(
+    user_input: str,
+    transcript_tail: list[dict[str, Any]] | None,
+) -> bool:
+    """Check if user input is a confirmation in the context of a prior assistant request."""
+    if not transcript_tail:
+        return False
+    user_text = user_input.strip()
+    if not any(phrase in user_text for phrase in _confirm_phrases):
+        return False
+    for entry in reversed(transcript_tail):
+        if entry.get("role") == "assistant":
+            content = str(entry.get("content", ""))
+            if any(phrase in content for phrase in _confirm_request_phrases):
+                return True
+            break
+    return False
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

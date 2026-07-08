@@ -145,7 +145,7 @@ def build_contract_from_context(
     """Build a deterministic draft from confirmed chat facts and artifacts."""
 
     confirmed = dict(llm_context.get("confirmed_from_user") or {})
-    combined_user_text = _combined_user_text(user_input, transcript_tail)
+    combined_user_text = _filtered_user_text(user_input, transcript_tail)
     sources = _load_source_registry_sources(run_dir)
     need_spec = discover_required_needs_with_llm(
         user_input=user_input,
@@ -200,7 +200,7 @@ def build_contract_from_context(
         metric_intent = inferred_metric_intent
     primary_metrics = metric_intent.primary_metrics
     primary_metric = primary_metrics[0] if len(primary_metrics) == 1 else None
-    baseline_repo = _clean_str(need_fields.get("baseline_repo")) or _first_github_source(sources)
+    baseline_repo = _extract_clean_url(str(need_fields.get("baseline_repo", ""))) or _first_github_source(sources) or _clean_str(need_fields.get("baseline_repo"))
 
     contract = ResearchIntentContract(
         run_id=run_dir.name,
@@ -421,6 +421,38 @@ def _combined_user_text(user_input: str, transcript_tail: list[dict[str, Any]] |
     ]
     parts.append(user_input)
     return "\n".join(part for part in parts if part.strip())
+
+
+def _filtered_user_text(user_input: str, transcript_tail: list[dict[str, Any]] | None) -> str:
+    """Combined user text with non-research content filtered out.
+
+    Strips identity questions, confirmations, source intake commands,
+    and plain greetings that should not be used as contract field values.
+    """
+    raw = _combined_user_text(user_input, transcript_tail)
+    lines = raw.split("\n")
+    filtered: list[str] = []
+    skip_patterns = (
+        r"^(你是谁|我是谁|我是人类!?|我是傻逼|你好|哈哈|你真聪明|你能做什么)",
+        r"^(确认|可以|没问题|就这样|同意|按这个来)$",
+        r"^(请读取|下载并解析|分析这个仓库|这是 baseline)",
+        r"^https?://",
+        r"^搜索 ",
+    )
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(re.match(p, stripped, re.IGNORECASE) for p in skip_patterns):
+            continue
+        filtered.append(stripped)
+    return "\n".join(filtered)
+
+
+def _extract_clean_url(text: str) -> str | None:
+    """Extract a clean URL from a line that may have user phrasing around it."""
+    match = re.search(r"https?://[^\s\u4e00-\u9fff]+", text)
+    return match.group(0).rstrip(".,;:!?)]}") if match else None
 
 
 def _load_source_registry_sources(run_dir: Path) -> list[dict[str, Any]]:
