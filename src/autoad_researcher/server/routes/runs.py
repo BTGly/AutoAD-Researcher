@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,6 @@ from autoad_researcher.task_workspace.task_profile import (
     archive_task,
     build_run_id_from_optional_name,
     create_task_profile,
-    delete_archived_task,
     get_task_display_info,
     list_all_tasks,
     rename_task_title,
@@ -117,10 +117,7 @@ async def restore_run(run_id: str):
 @router.delete("/{run_id}")
 async def delete_run(run_id: str):
     run_dir = _existing_run_dir(run_id)
-    try:
-        delete_archived_task(run_dir=run_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    shutil.rmtree(run_dir)
     return {"run_id": run_id, "deleted": True}
 
 

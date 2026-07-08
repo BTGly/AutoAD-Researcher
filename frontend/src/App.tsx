@@ -16,7 +16,6 @@ import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
-  archiveRun,
   createRun,
   deleteRun,
   getArtifact,
@@ -25,7 +24,6 @@ import {
   getSources,
   getTranscript,
   renameRun,
-  restoreRun,
   sendChat,
 } from './lib/api';
 import { generateId } from './lib/mock';
@@ -123,8 +121,8 @@ export default function App() {
     return () => { cancelled = true; };
   }, [config.apiKey, switchRun]);
 
-  const handleCreateTask = useCallback(async (title?: string) => {
-    const created = await createRun(title).catch(() => null);
+  const handleCreateTask = useCallback(async () => {
+    const created = await createRun().catch(() => null);
     if (!created) {
       addToast('创建任务失败', 'error');
       return;
@@ -145,41 +143,35 @@ export default function App() {
     addToast('任务已重命名', 'success');
   }, [addToast, runId]);
 
-  const handleArchiveTask = useCallback(async () => {
-    if (!runId) return;
-    const archived = await archiveRun(runId).catch(() => null);
-    if (!archived) {
-      addToast('归档失败', 'error');
-      return;
-    }
-    const loaded = await refreshTasks();
-    const nextTask = loaded.find(task => !task.archived_at && task.run_id !== runId) || loaded.find(task => !task.archived_at);
-    if (nextTask) await switchRun(nextTask.run_id);
-    addToast('任务已归档', 'success');
-  }, [addToast, refreshTasks, runId, switchRun]);
-
-  const handleRestoreTask = useCallback(async (targetRunId: string) => {
-    const restored = await restoreRun(targetRunId).catch(() => null);
-    if (!restored) {
-      addToast('恢复失败', 'error');
-      return;
-    }
-    await refreshTasks();
-    await switchRun(targetRunId);
-    addToast('任务已恢复', 'success');
-  }, [addToast, refreshTasks, switchRun]);
-
   const handleDeleteTask = useCallback(async (targetRunId: string) => {
-    const ok = window.confirm('删除已归档任务会移除该任务目录，确认删除？');
+    const ok = window.confirm('删除这个 session 会移除该任务目录，确认删除？');
     if (!ok) return;
     const deleted = await deleteRun(targetRunId).catch(() => null);
     if (!deleted) {
-      addToast('删除失败，请先归档任务', 'error');
+      addToast('删除失败', 'error');
       return;
     }
-    await refreshTasks();
+    const remaining = await refreshTasks();
+    if (targetRunId === runId) {
+      const nextTask = remaining.find(task => task.run_id !== targetRunId);
+      if (nextTask) {
+        await switchRun(nextTask.run_id);
+      } else {
+        const created = await createRun().catch(() => null);
+        if (created) {
+          await refreshTasks();
+          await switchRun(created.run_id);
+        } else {
+          setRunId('');
+          setMessages([]);
+          setSources([]);
+          setJobs([]);
+          setArtifacts([]);
+        }
+      }
+    }
     addToast('任务已删除', 'success');
-  }, [addToast, refreshTasks]);
+  }, [addToast, refreshTasks, runId, switchRun]);
 
   // ── First-run: create run on save ──
   const handleFirstRunSave = useCallback(async (c: typeof config) => {
@@ -307,8 +299,6 @@ export default function App() {
             onSelect={switchRun}
             onCreate={handleCreateTask}
             onRename={handleRenameTask}
-            onArchive={handleArchiveTask}
-            onRestore={handleRestoreTask}
             onDelete={handleDeleteTask}
           />
           <span style={{

@@ -1,14 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { History, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { TaskRun } from '../lib/types';
 
 interface Props {
   activeTask: TaskRun | null;
   tasks: TaskRun[];
   onSelect: (runId: string) => void;
-  onCreate: (title?: string) => void;
+  onCreate: () => void;
   onRename: (title: string) => void;
-  onArchive: () => void;
-  onRestore: (runId: string) => void;
   onDelete: (runId: string) => void;
 }
 
@@ -18,129 +17,165 @@ export function TaskMenu({
   onSelect,
   onCreate,
   onRename,
-  onArchive,
-  onRestore,
   onDelete,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
+  const [query, setQuery] = useState('');
+  const [editing, setEditing] = useState(false);
   const [renameTitle, setRenameTitle] = useState('');
   const ref = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setRenameTitle(activeTask?.task_title || '');
+    setEditing(false);
   }, [activeTask?.run_id, activeTask?.task_title]);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
 
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) {
         setOpen(false);
+        setEditing(false);
       }
     };
     window.addEventListener('mousedown', handleClick);
     return () => window.removeEventListener('mousedown', handleClick);
   }, []);
 
-  const activeTitle = activeTask?.task_title || '未选择任务';
-  const archivedTasks = tasks.filter(task => task.archived_at);
-  const liveTasks = tasks.filter(task => !task.archived_at);
+  const filteredTasks = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const ordered = [...tasks].sort((a, b) => {
+      if (a.run_id === activeTask?.run_id) return -1;
+      if (b.run_id === activeTask?.run_id) return 1;
+      return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''));
+    });
+    if (!needle) return ordered;
+    return ordered.filter(task => (
+      task.task_title.toLowerCase().includes(needle)
+      || task.run_id.toLowerCase().includes(needle)
+      || task.task_summary.toLowerCase().includes(needle)
+    ));
+  }, [activeTask?.run_id, query, tasks]);
+
+  const activeTitle = activeTask?.task_title || 'Untitled session';
+
+  const submitRename = () => {
+    const nextTitle = renameTitle.trim();
+    if (nextTitle && nextTitle !== activeTask?.task_title) {
+      onRename(nextTitle);
+    }
+    setEditing(false);
+  };
 
   return (
-    <div className="task-menu" ref={ref}>
+    <div className="session-controls" ref={ref}>
+      <div className="session-current" title={activeTitle}>
+        <span className="session-current-label">当前任务：</span>
+        <span className="session-current-title">{activeTitle}</span>
+      </div>
+
       <button
-        className="task-menu-trigger"
-        onClick={() => setOpen(value => !value)}
-        title="切换或管理当前任务"
+        className="session-icon-button"
+        onClick={() => {
+          setOpen(value => !value);
+          setEditing(false);
+        }}
+        title="Session history"
+        aria-label="Session history"
       >
-        <span className="task-menu-label">当前任务：</span>
-        <span className="task-menu-title">{activeTitle}</span>
-        <span className="task-menu-chevron">{open ? '▲' : '▼'}</span>
+        <History size={16} strokeWidth={1.8} />
+      </button>
+      <button
+        className="session-icon-button"
+        onClick={onCreate}
+        title="New session"
+        aria-label="New session"
+      >
+        <Plus size={17} strokeWidth={1.8} />
       </button>
 
       {open && (
-        <div className="task-menu-panel">
-          <div className="task-menu-section">
-            <div className="task-menu-heading">任务列表</div>
-            <div className="task-menu-list">
-              {liveTasks.length === 0 && <div className="task-menu-empty">暂无任务</div>}
-              {liveTasks.map(task => (
-                <button
+        <div className="session-history-panel">
+          <div className="session-search">
+            <Search size={15} strokeWidth={1.8} />
+            <input
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="Search sessions..."
+            />
+          </div>
+
+          <div className="session-list">
+            {filteredTasks.length === 0 && <div className="session-empty">No sessions</div>}
+            {filteredTasks.map(task => {
+              const isActive = task.run_id === activeTask?.run_id;
+              return (
+                <div
                   key={task.run_id}
-                  className={`task-menu-item${task.run_id === activeTask?.run_id ? ' active' : ''}`}
+                  className={`session-row${isActive ? ' active' : ''}`}
                   onClick={() => {
-                    onSelect(task.run_id);
-                    setOpen(false);
+                    if (!editing) onSelect(task.run_id);
                   }}
                 >
-                  <span>{task.task_title}</span>
-                  <span className="task-menu-meta">{formatDate(task.updated_at || task.created_at)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="task-menu-section">
-            <div className="task-menu-heading">新建任务</div>
-            <div className="task-menu-row">
-              <input
-                value={newTitle}
-                onChange={event => setNewTitle(event.target.value)}
-                placeholder="任务标题"
-                maxLength={30}
-              />
-              <button
-                className="primary"
-                onClick={() => {
-                  onCreate(newTitle.trim() || undefined);
-                  setNewTitle('');
-                  setOpen(false);
-                }}
-              >
-                新建
-              </button>
-            </div>
-          </div>
-
-          {activeTask && (
-            <div className="task-menu-section">
-              <div className="task-menu-heading">当前任务</div>
-              <div className="task-menu-row">
-                <input
-                  value={renameTitle}
-                  onChange={event => setRenameTitle(event.target.value)}
-                  maxLength={30}
-                />
-                <button
-                  onClick={() => {
-                    const nextTitle = renameTitle.trim();
-                    if (nextTitle) onRename(nextTitle);
-                  }}
-                >
-                  重命名
-                </button>
-              </div>
-              <div className="task-menu-actions">
-                <button onClick={onArchive}>归档</button>
-              </div>
-            </div>
-          )}
-
-          {archivedTasks.length > 0 && (
-            <div className="task-menu-section">
-              <div className="task-menu-heading">已归档</div>
-              <div className="task-menu-list">
-                {archivedTasks.map(task => (
-                  <div key={task.run_id} className="task-menu-archived">
-                    <span>{task.task_title}</span>
-                    <div className="task-menu-actions">
-                      <button onClick={() => onRestore(task.run_id)}>恢复</button>
-                      <button className="danger" onClick={() => onDelete(task.run_id)}>删除</button>
-                    </div>
+                  <div className="session-row-main">
+                    {isActive && editing ? (
+                      <input
+                        ref={inputRef}
+                        value={renameTitle}
+                        onChange={event => setRenameTitle(event.target.value)}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter') submitRename();
+                          if (event.key === 'Escape') {
+                            setRenameTitle(activeTask?.task_title || '');
+                            setEditing(false);
+                          }
+                        }}
+                        onBlur={submitRename}
+                        maxLength={30}
+                        onClick={event => event.stopPropagation()}
+                      />
+                    ) : (
+                      <>
+                        <div className="session-row-title">{task.task_title}</div>
+                        <div className="session-row-meta">{formatDate(task.updated_at || task.created_at)}</div>
+                      </>
+                    )}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
+
+                  <div className="session-row-actions">
+                    {isActive && (
+                      <button
+                        className="session-row-button"
+                        title="Rename session"
+                        aria-label="Rename session"
+                        onClick={event => {
+                          event.stopPropagation();
+                          setEditing(true);
+                        }}
+                      >
+                        <Pencil size={14} strokeWidth={1.8} />
+                      </button>
+                    )}
+                    <button
+                      className="session-row-button danger"
+                      title="Delete session"
+                      aria-label="Delete session"
+                      onClick={event => {
+                        event.stopPropagation();
+                        onDelete(task.run_id);
+                      }}
+                    >
+                      <Trash2 size={14} strokeWidth={1.8} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -151,5 +186,10 @@ function formatDate(value: string | null): string {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' });
+  return date.toLocaleString(undefined, {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }

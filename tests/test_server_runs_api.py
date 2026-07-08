@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
 from autoad_researcher.server.routes import runs as runs_route
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
@@ -39,14 +38,10 @@ async def test_create_list_rename_and_transcript(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_archive_restore_and_delete_requires_archive(tmp_path: Path, monkeypatch):
+async def test_archive_restore_and_delete_session(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(runs_route, "RUNS_ROOT", str(tmp_path))
 
     created = await runs_route.create_run(runs_route.CreateRunRequest(task_title="Delete Me"))
-
-    with pytest.raises(HTTPException) as not_archived:
-        await runs_route.delete_run(created.run_id)
-    assert not_archived.value.status_code == 409
 
     archived = await runs_route.archive_run(created.run_id)
     assert archived.archived_at is not None
@@ -56,7 +51,6 @@ async def test_archive_restore_and_delete_requires_archive(tmp_path: Path, monke
     restored = await runs_route.restore_run(created.run_id)
     assert restored.archived_at is None
 
-    await runs_route.archive_run(created.run_id)
     deleted = await runs_route.delete_run(created.run_id)
     assert deleted == {"run_id": created.run_id, "deleted": True}
     assert not (tmp_path / created.run_id).exists()
