@@ -184,7 +184,7 @@ def _offline_no_contract_decision(
 
     if _is_contextual_confirmation(user_input, transcript_tail) and existing_contract_draft:
         return TurnGateDecision(
-            turn_type="confirmation",
+            turn_type="contract_confirmation",
             contract_action="confirm_contract",
             contract_update_allowed=False,
             need_discovery_allowed=False,
