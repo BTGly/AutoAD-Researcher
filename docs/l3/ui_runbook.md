@@ -7,23 +7,24 @@
 
 ```bash
 cd workspace/AutoAD-Researcher
-uv run --extra ui streamlit run src/autoad_researcher/ui/app.py
+uv run uvicorn autoad_researcher.server.main:app --host 0.0.0.0 --port 8000
+cd frontend
+bun dev --host 0.0.0.0 --port 5173
 ```
 
-Opens at `http://localhost:8501`.
+Open the React app at `http://localhost:5173`.
 
 ## Sidebar（所有页面通用）
 
-- **任务下拉框**：选择已有任务；默认隐藏已归档任务
-- **显示已归档任务**：勾选后可以查看并恢复已归档任务
-- **新建任务**：创建新的内部 `run_id`，可在运行配置页填写可读任务名
-- **当前任务**：显示人类可读任务名（首次在研究助手中对话后自动生成，或由用户命名/重命名）
+- **顶部当前任务菜单**：选择已有任务、查看已归档任务、恢复或删除任务
+- **新建任务**：创建新的内部 `run_id`，可填写可读任务名
+- **当前任务**：显示人类可读任务名；内部 `run_id` 只在 Developer Details 中展示
 - **任务摘要**：一句话描述
 - 若旧任务没有 profile：显示内部 `run_id`，避免下拉框和当前任务标题不一致
 - **重命名任务**：只改显示名称，不改 `run_id` 或 `runs/` 制品目录
 - **归档任务**：从默认任务列表隐藏当前任务；不会删除 `runs/` 下的证据链
 - **删除已归档任务**：先勾选“显示已归档任务”，选中已归档任务后点击“删除已归档任务”；目录会从 `runs/` 中物理删除
-- **高级信息折叠**：run_id / 制品目录 / CLI 复现命令
+- **Developer Details**：run_id / sources / jobs / artifact paths
 
 ## Pages
 

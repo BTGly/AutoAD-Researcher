@@ -15,10 +15,6 @@ else
   exit 1
 fi
 
-# Fix Streamlit 1.58 static HTML: remove crossorigin from module script
-# so JS loads in VS Code embedded browser without CORS headers.
-bash "$SCRIPT_DIR/fix_streamlit_cors.sh"
-
 echo "[verify] checking project structure..."
 
 test -d scripts

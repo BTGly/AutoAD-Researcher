@@ -1,3 +1,5 @@
+import type { TaskRun } from './types';
+
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
   if (!cfg) return { 'Content-Type': 'application/json' };
@@ -39,15 +41,53 @@ export async function sendChat(
   return res.json();
 }
 
-export async function getRuns(): Promise<Array<{ run_id: string; created_at: string; sources_count: number }>> {
-  const res = await fetch('/api/runs');
+export async function getRuns(includeArchived = false): Promise<TaskRun[]> {
+  const res = await fetch(`/api/runs?include_archived=${includeArchived ? 'true' : 'false'}`);
   if (!res.ok) throw new Error(`Runs API error: ${res.status}`);
   return res.json();
 }
 
-export async function createRun(): Promise<{ run_id: string }> {
-  const res = await fetch('/api/runs', { method: 'POST' });
+export async function createRun(taskTitle?: string): Promise<TaskRun> {
+  const res = await fetch('/api/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_title: taskTitle || null }),
+  });
   if (!res.ok) throw new Error(`Create run error: ${res.status}`);
+  return res.json();
+}
+
+export async function renameRun(runId: string, taskTitle: string): Promise<TaskRun> {
+  const res = await fetch(`/api/runs/${runId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_title: taskTitle }),
+  });
+  if (!res.ok) throw new Error(`Rename run error: ${res.status}`);
+  return res.json();
+}
+
+export async function archiveRun(runId: string): Promise<TaskRun> {
+  const res = await fetch(`/api/runs/${runId}/archive`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Archive run error: ${res.status}`);
+  return res.json();
+}
+
+export async function restoreRun(runId: string): Promise<TaskRun> {
+  const res = await fetch(`/api/runs/${runId}/restore`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Restore run error: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteRun(runId: string): Promise<{ run_id: string; deleted: boolean }> {
+  const res = await fetch(`/api/runs/${runId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Delete run error: ${res.status}`);
+  return res.json();
+}
+
+export async function getTranscript(runId: string): Promise<Array<{ role: string; content: string; created_at: string | null }>> {
+  const res = await fetch(`/api/runs/${runId}/transcript`);
+  if (!res.ok) return [];
   return res.json();
 }
 

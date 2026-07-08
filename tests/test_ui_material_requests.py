@@ -239,46 +239,29 @@ def test_response_guard_rewrites_background_search_promise():
     assert "资料搜集请求" in guarded.reply
 
 
-def test_handle_chat_input_intercepts_material_request_before_llm_call():
+def test_research_chat_keeps_material_request_helpers_without_streamlit_handler():
     source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
-    body = source[source.index("def _handle_chat_input("):source.index("def _chat_input_submission(")]
-    assert "detect_sync_web_search_intent(user_input)" in body
-    assert "extract_first_url(user_input)" in body
-    assert body.index("extract_first_url(user_input)") < body.index("detect_sync_web_search_intent(user_input)")
-    assert body.index("detect_sync_web_search_intent(user_input)") < body.index("build_pdf_parse_action(run_dir, user_input")
-    assert "detect_material_request_intent(user_input)" in body
-    assert body.index("detect_material_request_intent(user_input)") < body.index("call_research_chat(")
-    url_block = body[body.index("if url:"):body.index("if detect_sync_web_search_intent(user_input):")]
-    assert "request_ids={request_id}" in url_block
-    assert "st.rerun()" in url_block
 
-
-def test_material_request_panel_can_execute_pending_web_search():
-    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
-    body = source[source.index("def _render_material_request_panel("):source.index("def _render_freeze_panel(")]
-
-    assert "运行资料搜集 subagent" in body
-    assert "run_pending_material_subagents(run_dir)" in body
-    assert "execute_sync_web_search(run_dir, query=query)" not in body
-    assert "subagent_run_id" in body
+    assert "def _handle_chat_input(" not in source
+    assert "def _render_material_request_panel(" not in source
+    assert "def create_url_source_material_request(" in source
+    assert "def create_search_unavailable_material_request(" in source
+    assert "def build_search_unavailable_material_request_reply(" in source
 
 
 def test_notification_marked_injected_only_after_successful_reply():
     source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
-    body = source[source.index("def _handle_chat_input("):source.index("def _chat_input_submission(")]
-    error_block = body[body.index('if result["error"]'):body.index("evidence_context = build_research_chat_evidence_context")]
-    assert "mark_notifications_injected" not in error_block
-
-    helper = source[source.index("def _save_assistant_reply_and_mark_notifications("):source.index("def _chat_input_submission(")]
+    helper = source[source.index("def _save_assistant_reply_and_mark_notifications("):source.index("# ---------------------------------------------------------------------------\n# User-facing panels")]
     assert helper.index("save_transcript(") < helper.index("mark_notifications_injected(")
 
 
 def test_deterministic_reply_does_not_mark_notifications_injected():
-    source = Path("src/autoad_researcher/ui/research_chat.py").read_text(encoding="utf-8")
-    body = source[source.index("def _handle_chat_input("):source.index("messages = build_research_chat_messages(")]
+    run_dir = Path("unused")
+    request = {"request_id": "mr_000001", "kind": "web_search"}
+    reply = build_material_request_reply(request)
 
-    assert "notifications=notifications" not in body
-    assert body.count("notifications=None") >= 6
+    assert "资料搜集请求" in reply
+    assert not run_dir.exists()
 
 
 def test_llm_reply_marks_notifications_injected_after_context_use(tmp_path: Path):

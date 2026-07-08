@@ -15,7 +15,6 @@ dependencies = [
     "rich>=13",
     "packaging>=24",
     "deepagents>=0.6.10,<0.7",
-    "streamlit==1.38.0",
     "fastapi>=0.139.0",
     "uvicorn>=0.50.2",
 ]
@@ -29,10 +28,6 @@ dev = [
     "pytest-asyncio>=0.24",
     "ipython>=8",
 ]
-ui = [
-    "streamlit>=1.38",
-]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

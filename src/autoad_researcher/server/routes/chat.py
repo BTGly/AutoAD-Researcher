@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,9 @@ from autoad_researcher.server.ws_manager import manager
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 TRANSCRIPT_RELATIVE_PATH = Path("chat") / "transcript.jsonl"
+CONFIG_PATH = Path.home() / ".autoad" / "config.json"
+DEFAULT_PROVIDER = "https://api.deepseek.com"
+DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 def _extract_api_headers(request: Request) -> tuple[str, str, str]:
@@ -23,15 +27,24 @@ def _extract_api_headers(request: Request) -> tuple[str, str, str]:
     model = request.headers.get("X-AutoAD-Model", "")
 
     if not api_key:
-        from autoad_researcher.ui.v2_config import get_api_key
-        api_key = get_api_key()
+        api_key = _load_config_value("api_key") or os.environ.get("DEEPSEEK_API_KEY", "")
     if not provider:
-        from autoad_researcher.ui.v2_config import get_provider_url
-        provider = get_provider_url()
+        provider = _load_config_value("provider_url") or DEFAULT_PROVIDER
     if not model:
-        model = "deepseek-v4-flash"
+        model = _load_config_value("model") or DEFAULT_MODEL
 
     return api_key, provider, model
+
+
+def _load_config_value(key: str) -> str:
+    if not CONFIG_PATH.is_file():
+        return ""
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+    value = cfg.get(key, "")
+    return value if isinstance(value, str) else ""
 
 
 def _extract_experiment_headers(request: Request) -> dict[str, str]:

@@ -1,49 +1,31 @@
-"""Regression tests for Streamlit API key session-state handling."""
+"""Regression tests for removing the legacy Streamlit surface."""
 
 from pathlib import Path
 
-
-APP_SOURCE = Path("src/autoad_researcher/ui/app.py")
-
-
-def test_password_widget_does_not_bind_business_api_key_state():
-    source = APP_SOURCE.read_text(encoding="utf-8")
-
-    assert 'key="api_key"' not in source
-    assert 'st.session_state.get("api_key"' not in source
-    assert "_API_KEY_WIDGET_KEY" in source
-    assert "_API_KEY_STATE_KEY" in source
+from autoad_researcher.server.routes.chat import _load_config_value
 
 
-def test_preflight_uses_persisted_raw_api_key_state():
-    source = APP_SOURCE.read_text(encoding="utf-8")
-
-    assert 'api_key = st.session_state.get(_API_KEY_STATE_KEY, "")' in source
-    assert "api_key=api_key" in source
-    assert "st.session_state[_API_KEY_STATE_KEY] = api_key_val" in source
-
-
-def test_ui_can_load_provider_api_key_from_environment_or_dotenv():
-    source = APP_SOURCE.read_text(encoding="utf-8")
-
-    assert "PROVIDER_API_KEY_ENV" in source
-    assert "load_api_key_from_environment" in source
-    assert "_ensure_api_key_loaded()" in source
-    assert "LOCAL_ENV_PATH" in source
+def test_streamlit_entrypoints_and_config_are_removed():
+    assert not Path("src/autoad_researcher/ui/app.py").exists()
+    assert not Path("src/autoad_researcher/ui/app_v2.py").exists()
+    assert not Path("scripts/fix_streamlit_cors.sh").exists()
+    assert not Path(".streamlit/config.toml").exists()
 
 
-def test_ui_can_save_manually_entered_key_to_local_dotenv():
-    source = APP_SOURCE.read_text(encoding="utf-8")
+def test_pyproject_no_longer_depends_on_streamlit():
+    source = Path("pyproject.toml").read_text(encoding="utf-8")
 
-    assert "save_api_key_to_local_env" in source
-    assert "保存到本地 .env，下次自动加载" in source
-    assert "mask_api_key" in source
-    assert "os.environ[PROVIDER_API_KEY_ENV]" in source
+    assert "streamlit" not in source.lower()
 
 
-def test_terminal_reproduction_commands_source_dotenv_without_prompting_for_key():
-    source = APP_SOURCE.read_text(encoding="utf-8")
+def test_server_config_fallback_is_not_streamlit_bound(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"api_key": "sk-test", "provider_url": "https://example.test", "model": "m"}', encoding="utf-8")
 
-    assert "[ -f .env ] && set -a && source .env && set +a" in source
-    assert "Set DEEPSEEK_API_KEY in .env or environment" in source
-    assert "read -s -p" not in source
+    import autoad_researcher.server.routes.chat as chat_route
+
+    monkeypatch.setattr(chat_route, "CONFIG_PATH", config_path)
+
+    assert _load_config_value("api_key") == "sk-test"
+    assert _load_config_value("provider_url") == "https://example.test"
+    assert _load_config_value("model") == "m"

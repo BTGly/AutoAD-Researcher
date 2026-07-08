@@ -34,6 +34,18 @@ export interface JobItem {
   sourceLabel?: string;
 }
 
+export interface TaskRun {
+  run_id: string;
+  created_at: string | null;
+  updated_at: string | null;
+  sources_count: number;
+  task_title: string;
+  task_summary: string;
+  task_source: string;
+  task_profile_warning: string | null;
+  archived_at: string | null;
+}
+
 export interface WSMessage {
   type: string;
   messageId?: string;

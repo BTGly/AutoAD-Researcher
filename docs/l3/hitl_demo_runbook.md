@@ -5,23 +5,24 @@ Phase 2D demonstrates the human-in-the-loop path from Research Assistant intent 
 ## Preconditions
 
 - Run from the project root.
-- UI dependencies are installed with the `ui` extra.
+- Start the FastAPI backend and React frontend.
 - A DeepSeek-compatible API key is available only in local memory or environment, never in repo files.
 - Real L3 execution requires a prepared dataset, target repository, benchmark environment, and explicit user approval.
 
 Start the UI:
 
 ```bash
-uv run --extra ui streamlit run src/autoad_researcher/ui/app.py
+uv run uvicorn autoad_researcher.server.main:app --host 0.0.0.0 --port 8000
+cd frontend
+bun dev --host 0.0.0.0 --port 5173
 ```
 
 ## Expected Demo Flow
 
-1. Open `运行配置`, create or select a run ID, and enter the API key.
-2. Open `研究助手` and use `意图澄清` mode to describe the research goal.
-3. Click `生成研究意图草案`.
-4. Review `runs/{run_id}/ui_chat/intent_draft.json` in the UI.
-5. Click `确认采用` to write `runs/{run_id}/approvals/intent_confirmation.json`.
+1. Open the React app, create or select a task from the top current-task menu, and enter the API key during first-run setup.
+2. Use the chat page to describe the research goal.
+3. Review generated task artifacts under `runs/{run_id}/`.
+4. Confirm intent and approvals through the active HITL surfaces as they are exposed.
 6. In `Pipeline 输入准备`, click `生成 input_task.yaml`.
 7. Run Stage 3 from the terminal. With no patch approval, the expected stop is `patch_applicator` blocked.
 8. Return to the UI, review the patch plan/diff, and confirm `Patch Plan Approval`.

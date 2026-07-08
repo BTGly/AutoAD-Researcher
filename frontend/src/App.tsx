@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ChatInput } from './components/ChatInput';
 import { PlusMenu } from './components/PlusMenu';
 import { UserMessage, AssistantMessage, WelcomeMessage } from './components/Messages';
@@ -11,12 +11,25 @@ import { LeftSidebar } from './components/LeftSidebar';
 import { SettingsPage } from './components/SettingsPage';
 import { ReportPage } from './components/ReportPage';
 import { DevMockPanel } from './components/DevMockPanel';
+import { TaskMenu } from './components/TaskMenu';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
-import { sendChat, createRun, getSources, getJobs, getArtifact } from './lib/api';
+import {
+  archiveRun,
+  createRun,
+  deleteRun,
+  getArtifact,
+  getJobs,
+  getRuns,
+  getSources,
+  getTranscript,
+  renameRun,
+  restoreRun,
+  sendChat,
+} from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, ToastItem, SourceItem, JobItem, WSMessage, PageId } from './lib/types';
+import type { Message, ToastItem, SourceItem, JobItem, WSMessage, PageId, TaskRun } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
@@ -27,6 +40,7 @@ interface ArtifactEntry {
 export default function App() {
   const { config, saveConfig, saveExperimentConfig, showConfig, openConfig, closeConfig, DEFAULT_EXPERIMENT } = useConfig();
   const [runId, setRunId] = useState<string>('');
+  const [tasks, setTasks] = useState<TaskRun[]>([]);
   const [taskStatus, setTaskStatus] = useState<string>('Ready');
   const [messages, setMessages] = useState<Message[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -39,6 +53,7 @@ export default function App() {
   const streamingHadDeltaRef = useRef(false);
   const suppressLateDeltaRef = useRef(false);
   const bottomRef = useAutoScroll([messages]);
+  const activeTask = tasks.find(task => task.run_id === runId) || null;
 
   const addToast = useCallback((message: string, kind: 'success' | 'error' | 'info') => {
     setToasts(prev => [...prev, { id: generateId(), message, kind }]);
@@ -48,13 +63,123 @@ export default function App() {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
-  const refreshSidebar = useCallback(async () => {
-    if (!runId) return;
-    const s = await getSources(runId).catch(() => []);
-    const j = await getJobs(runId).catch(() => []);
+  const refreshTasks = useCallback(async () => {
+    const loaded = await getRuns(true).catch(() => []);
+    setTasks(loaded);
+    return loaded;
+  }, []);
+
+  const refreshSidebarForRun = useCallback(async (nextRunId: string) => {
+    if (!nextRunId) return;
+    const s = await getSources(nextRunId).catch(() => []);
+    const j = await getJobs(nextRunId).catch(() => []);
     setSources(s.map((src: any) => ({ sourceId: src.source_id || generateId(), kind: src.kind || 'unknown', label: src.user_label || src.source_id || 'source', status: src.status || 'unknown' })));
     setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '' })));
-  }, [runId]);
+  }, []);
+
+  const refreshSidebar = useCallback(async () => {
+    if (!runId) return;
+    await refreshSidebarForRun(runId);
+  }, [runId, refreshSidebarForRun]);
+
+  const switchRun = useCallback(async (nextRunId: string) => {
+    if (!nextRunId) return;
+    streamingAssistantIdRef.current = null;
+    streamingHadDeltaRef.current = false;
+    suppressLateDeltaRef.current = true;
+    setRunId(nextRunId);
+    setTaskStatus('Ready');
+    setSources([]);
+    setJobs([]);
+    setArtifacts([]);
+    const transcript = await getTranscript(nextRunId).catch(() => []);
+    setMessages(transcript.map(entry => ({
+      id: generateId(),
+      role: entry.role === 'user' ? 'user' : 'assistant',
+      content: entry.content,
+      timestamp: entry.created_at ? new Date(entry.created_at).getTime() : Date.now(),
+    })));
+    await refreshSidebarForRun(nextRunId);
+    suppressLateDeltaRef.current = false;
+  }, [refreshSidebarForRun]);
+
+  useEffect(() => {
+    if (!config.apiKey) return;
+    let cancelled = false;
+    (async () => {
+      const loaded = await getRuns(true).catch(() => []);
+      if (cancelled) return;
+      setTasks(loaded);
+      const firstLive = loaded.find(task => !task.archived_at) || loaded[0];
+      if (firstLive) {
+        await switchRun(firstLive.run_id);
+      } else {
+        const created = await createRun().catch(() => null);
+        if (cancelled || !created) return;
+        setTasks([created]);
+        await switchRun(created.run_id);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [config.apiKey, switchRun]);
+
+  const handleCreateTask = useCallback(async (title?: string) => {
+    const created = await createRun(title).catch(() => null);
+    if (!created) {
+      addToast('创建任务失败', 'error');
+      return;
+    }
+    await refreshTasks();
+    await switchRun(created.run_id);
+    addToast('任务已创建', 'success');
+  }, [addToast, refreshTasks, switchRun]);
+
+  const handleRenameTask = useCallback(async (title: string) => {
+    if (!runId) return;
+    const updated = await renameRun(runId, title).catch(() => null);
+    if (!updated) {
+      addToast('重命名失败', 'error');
+      return;
+    }
+    setTasks(prev => prev.map(task => task.run_id === updated.run_id ? updated : task));
+    addToast('任务已重命名', 'success');
+  }, [addToast, runId]);
+
+  const handleArchiveTask = useCallback(async () => {
+    if (!runId) return;
+    const archived = await archiveRun(runId).catch(() => null);
+    if (!archived) {
+      addToast('归档失败', 'error');
+      return;
+    }
+    const loaded = await refreshTasks();
+    const nextTask = loaded.find(task => !task.archived_at && task.run_id !== runId) || loaded.find(task => !task.archived_at);
+    if (nextTask) await switchRun(nextTask.run_id);
+    addToast('任务已归档', 'success');
+  }, [addToast, refreshTasks, runId, switchRun]);
+
+  const handleRestoreTask = useCallback(async (targetRunId: string) => {
+    const restored = await restoreRun(targetRunId).catch(() => null);
+    if (!restored) {
+      addToast('恢复失败', 'error');
+      return;
+    }
+    await refreshTasks();
+    await switchRun(targetRunId);
+    addToast('任务已恢复', 'success');
+  }, [addToast, refreshTasks, switchRun]);
+
+  const handleDeleteTask = useCallback(async (targetRunId: string) => {
+    const ok = window.confirm('删除已归档任务会移除该任务目录，确认删除？');
+    if (!ok) return;
+    const deleted = await deleteRun(targetRunId).catch(() => null);
+    if (!deleted) {
+      addToast('删除失败，请先归档任务', 'error');
+      return;
+    }
+    await refreshTasks();
+    addToast('任务已删除', 'success');
+  }, [addToast, refreshTasks]);
 
   // ── First-run: create run on save ──
   const handleFirstRunSave = useCallback(async (c: typeof config) => {
@@ -62,6 +187,7 @@ export default function App() {
     try {
       const r = await createRun();
       setRunId(r.run_id);
+      setTasks([r]);
       setTaskStatus('Ready');
     } catch {
       setRunId('run_default');
@@ -175,7 +301,16 @@ export default function App() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
           <span style={{ fontWeight: 600, fontSize: '1.05em', color: 'var(--blue)' }}>AutoAD Researcher</span>
-          <span style={{ fontSize: '0.85em', color: 'var(--text-muted)' }}>当前任务：新的研究任务</span>
+          <TaskMenu
+            activeTask={activeTask}
+            tasks={tasks}
+            onSelect={switchRun}
+            onCreate={handleCreateTask}
+            onRename={handleRenameTask}
+            onArchive={handleArchiveTask}
+            onRestore={handleRestoreTask}
+            onDelete={handleDeleteTask}
+          />
           <span style={{
             fontSize: '0.75em', padding: '2px 8px', borderRadius: 4,
             background: taskStatus === 'Ready' ? '#1a3a1a' : taskStatus === 'Working' ? '#3a2a0a' : taskStatus === 'Error' ? '#3a1a1a' : '#1a1a3a',

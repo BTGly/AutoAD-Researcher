@@ -4,15 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-try:
-    import streamlit as st
-except ModuleNotFoundError:  # UI extra is optional in CI/unit-test environments.
-    st = None
 
 from autoad_researcher.assistant.probe import silent_probe
 from autoad_researcher.assistant.prompt_selector import PromptSelector
@@ -26,21 +20,19 @@ from autoad_researcher.assistant.intent_action import (
     render_response_for_decision,
     resolve_material_auto_action,
 )
-from autoad_researcher.assistant.material_subagents import run_pending_material_subagents
 from autoad_researcher.assistant.research_context_builder import (
     build_research_chat_evidence_context,
     render_research_chat_evidence_context,
 )
 from autoad_researcher.assistant.response_guard import guard_research_chat_reply
 from autoad_researcher.core.events import EventStore
-from autoad_researcher.research_context.freeze import freeze_context, load_active_freeze_manifest
+from autoad_researcher.research_context.freeze import load_active_freeze_manifest
 from autoad_researcher.ui.artifact_viewer import (
     BLOCKED_REASON_HINTS,
     get_approval_gate_report,
     run_dir_path,
 )
 from autoad_researcher.ui.chat_client import call_research_chat
-from autoad_researcher.ui.chat_context import build_chat_context
 from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
 from autoad_researcher.ui.chat_transcript import load_transcript, save_transcript
 from autoad_researcher.ui.intent_draft import (
@@ -48,28 +40,18 @@ from autoad_researcher.ui.intent_draft import (
     load_intent_draft,
     intent_draft_prompt_payload,
     parse_intent_draft_response,
-    save_clarification_input,
-    save_intent_confirmation,
-    save_intent_draft,
     load_stage3_approval,
-    save_stage3_approval,
 )
 from autoad_researcher.ui.intake_bridge import (
     get_intake_bridge_status,
-    save_input_task_yaml_from_clarification,
 )
 from autoad_researcher.ui.material_requests import (
     append_material_request,
-    build_material_request_reply,
     build_material_request_rows,
-    detect_material_request_intent,
     load_material_requests,
 )
 from autoad_researcher.ui.task_profile import (
-    generate_task_profile_from_first_message,
     get_task_display_info,
-    safe_load_task_profile,
-    save_task_profile,
 )
 from autoad_researcher.ui.sources import (
     find_source_by_stored_path,
@@ -77,11 +59,9 @@ from autoad_researcher.ui.sources import (
     get_source_context,
     list_pdf_source_entries,
     load_source_registry,
-    register_local_file_source,
     register_url_source,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
-    set_active_parse_attempt,
     update_source_status,
 )
 from autoad_researcher.ui.subagent_inbox import (
@@ -91,8 +71,6 @@ from autoad_researcher.ui.subagent_inbox import (
 )
 from autoad_researcher.ui.sync_web_search import (
     build_sync_web_search_reply,
-    detect_sync_web_search_intent,
-    execute_sync_web_search,
 )
 
 _SAFETY_WARNING = "研究助手只提供解释和建议，不会修改代码，也不会执行真实 L3。"
@@ -151,180 +129,11 @@ _FORCE_REPARSE_TOKENS = (
 _URL_RE = re.compile(r"https?://[^\s<>()，。！？；、]+", re.IGNORECASE)
 
 
-# ---------------------------------------------------------------------------
-# Main UI
-# ---------------------------------------------------------------------------
-
-
-def render_research_chat():
-    if st is None:
-        raise RuntimeError("streamlit is required to render the Research Assistant UI")
-    st.title("研究助手")
-    st.caption(_SAFETY_WARNING)
-
-    api_key = st.session_state.get("_api_key_raw")
-    provider_url = st.session_state.get("provider_base_url", "https://api.deepseek.com")
-    dataset_root = st.session_state.get("dataset_root", "")
-    browse_id = st.session_state.get("_browse_run_id", st.session_state.get("_run_id_hash", ""))
-
-    run_dir = _resolve_run_dir(browse_id)
-    context_data = build_chat_context(run_dir) if run_dir and run_dir.is_dir() else None
-
-    if run_dir is None:
-        st.info("请先在侧边栏选择一个任务，或在「运行配置」中创建新任务。")
-        return
-
-    overview = build_research_assistant_overview(
-        run_dir,
-        dataset_root=dataset_root,
-        provider_url=provider_url,
-        context_data=context_data,
-    )
-    _render_task_overview(overview)
-    _render_flow_steps(run_dir)
-
-    # ── P6: Source Intake (source list + server-local developer entry) ──
-    with st.expander("📎 当前资料 / Sources", expanded=False):
-        st.caption("上传 PDF / txt / md，或直接把文件拖到底部聊天框。")
-
-        uploads = st.file_uploader(
-            "添加资料",
-            type=["pdf", "txt", "md", "markdown"],
-            accept_multiple_files=True,
-            key="_source_file_uploads",
-        )
-        upload_list = list(uploads or [])
-        if st.button("添加到当前任务", type="primary", disabled=not upload_list):
-            try:
-                saved = save_chat_attachments(run_dir, upload_list)
-            except Exception as exc:
-                st.error(f"添加失败：{exc}")
-            else:
-                st.success(build_attachment_added_reply(saved))
-                st.rerun()
-
-        st.caption("— 添加链接 / 仓库 / 文字 —")
-        url_input = st.text_input(
-            "网页或 GitHub 地址",
-            placeholder="https://github.com/amazon-science/patchcore-inspection",
-            key="_source_url_input",
-        )
-        if st.button("添加链接", type="secondary", disabled=not url_input.strip()):
-            try:
-                intake = create_url_source_material_request(run_dir, url_input.strip())
-            except Exception as exc:
-                st.error(f"添加失败：{exc}")
-            else:
-                info = intake["source"]
-                request = intake["request"]
-                st.success(f"✅ 已登记：{info['source_id']}（{info['kind']}）")
-                st.caption(f"已创建资料处理任务：{request['request_id']}（{request['kind']}）")
-                st.rerun()
-
-        user_text = st.text_area(
-            "手写研究说明",
-            placeholder="目标数据集为 MVTec AD，关注纹理类异常检测...",
-            key="_source_user_text_input",
-        )
-        if st.button("保存文字", type="secondary", disabled=not user_text.strip()):
-            try:
-                from autoad_researcher.ui.sources import register_user_text_source
-                info = register_user_text_source(run_dir, user_text.strip())
-            except Exception as exc:
-                st.error(f"保存失败：{exc}")
-            else:
-                st.success(f"✅ 已保存：{info['source_id']}")
-                st.rerun()
-
-        src_ctx = get_source_context(run_dir)
-        if src_ctx:
-            st.code(src_ctx, language="text")
-        else:
-            st.caption("暂无已添加的资料。支持 PDF / txt / md 上传。")
-
-        show_local_path = st.checkbox(
-            "高级：从服务器路径添加",
-            value=False,
-            key="_show_source_local_path",
-        )
-        if show_local_path:
-            local_path = st.text_input(
-                "服务器本地文件路径",
-                placeholder="/root/autodl-tmp/AI4S/2303.15140v2.pdf",
-                key="_source_local_path",
-            )
-            if st.button("添加本地文件", type="secondary", disabled=not local_path.strip()):
-                try:
-                    info = register_local_file_source(run_dir, local_path.strip())
-                except Exception as exc:
-                    st.error(f"添加失败：{exc}")
-                else:
-                    st.success(f"✅ 已添加：{info['stored_path']}")
-                    st.caption(f"现在可以在聊天框中说：读一下 {info['stored_path']}")
-                    st.rerun()
-
-    _render_source_cards_panel(run_dir)
-    _render_material_request_panel(run_dir)
-    _render_evidence_boundary_panel(run_dir)
-    _render_freeze_panel(run_dir)
-
-    if not api_key:
-        st.warning("请先在「运行配置」中填写 API Key。")
-        return
-
-    st.markdown("---")
-    st.subheader("研究助手")
-    st.caption("请描述你想做的实验、复现目标或改进方向。")
-    mode = st.radio(
-        "助手模式",
-        options=list(MODE_PROMPTS.keys()),
-        format_func=lambda m: _MODE_LABELS[m],
-        key="_chat_mode",
-        index=list(MODE_PROMPTS.keys()).index("intent_clarification"),
-        horizontal=True,
-    )
-
-    transcript = load_transcript(run_dir)
-    _render_transcript(transcript)
-    _handle_chat_input(
-        run_dir=run_dir,
-        mode=mode,
-        api_key=api_key,
-        provider_url=provider_url,
-        context_data=context_data,
-    )
-
-    st.markdown("---")
-    _render_intent_draft_panel(
-        run_dir=run_dir,
-        mode=mode,
-        api_key=api_key,
-        provider_url=provider_url,
-        context_data=context_data,
-    )
-
-    st.markdown("---")
-    _render_pipeline_input_panel(run_dir)
-
-    st.markdown("---")
-    _render_stage_approval_panel(run_dir)
-
-
 def _resolve_run_dir(browse_id: str) -> Path | None:
     try:
         return run_dir_path("runs", browse_id)
     except ValueError:
         return None
-
-
-def _render_task_overview(overview: dict[str, Any]) -> None:
-    st.subheader("当前任务")
-    st.markdown(f"**{overview['task_title']}**")
-    if overview.get("task_summary"):
-        st.caption(str(overview["task_summary"]))
-    cols = st.columns(2)
-    cols[0].metric("状态", str(overview["status_label"]))
-    cols[1].metric("数据集", str(overview["dataset_status"]))
 
 
 def _split_visible_transcript(
@@ -335,26 +144,6 @@ def _split_visible_transcript(
     if visible_tail <= 0 or len(transcript) <= visible_tail:
         return [], transcript
     return transcript[:-visible_tail], transcript[-visible_tail:]
-
-
-def _render_transcript(transcript: list[dict]) -> None:
-    older, visible = _split_visible_transcript(transcript)
-    if older:
-        st.caption(f"仅显示最近 {len(visible)} 条对话，最新消息在下方。")
-        with st.expander(f"查看更早对话（{len(older)} 条）", expanded=False):
-            for entry in older:
-                _render_transcript_entry(entry)
-    for entry in visible:
-        _render_transcript_entry(entry)
-
-
-def _render_transcript_entry(entry: dict) -> None:
-        role = entry.get("role", "user")
-        content = entry.get("content", "")
-        if role == "user":
-            st.chat_message("user").write(content)
-        else:
-            st.chat_message("assistant").write(content)
 
 
 def build_research_chat_messages(
@@ -881,8 +670,7 @@ def _execute_or_report_pdf_parse_action(
 
         if source_id:
             update_source_status(run_dir, str(source_id), "parsing")
-        with st.spinner(f"正在解析 {pdf_path.name}，论文解析可能需要 5-10 分钟…"):
-            result = _run_paper_intelligence(run_dir.name, pdf_path)
+        result = _run_paper_intelligence(run_dir.name, pdf_path)
         if result["status"] == "parsed":
             refreshed = build_research_context_snapshot(run_dir)
             has_readable_content = has_readable_paper_artifact_content(run_dir)
@@ -1167,162 +955,7 @@ def _reject_research_chat_action(run_dir: Path, kind: str, action: dict[str, Any
             "requested_keys": sorted(str(key) for key in action.keys()),
         },
     )
-    if st is not None:
-        st.warning(message)
     return message
-
-
-def _handle_chat_input(
-    *,
-    run_dir: Path,
-    mode: str,
-    api_key: str,
-    provider_url: str,
-    context_data: dict | None,
-) -> None:
-    submission = _chat_input_submission()
-    if not submission:
-        return
-    user_input, attached_files = normalize_chat_submission(submission)
-    if not user_input and not attached_files:
-        return
-
-    # ── P3: Read transcript history BEFORE saving current input ──
-    existing_transcript = load_transcript(run_dir)
-    transcript_tail = existing_transcript[-10:]
-    notifications = load_uninjected_notifications(run_dir)
-    notification_context = render_notifications_for_llm(notifications) if notifications else ""
-
-    attached_sources = save_chat_attachments(run_dir, attached_files)
-    user_content = user_input or _attachment_user_message(attached_sources)
-    save_transcript(run_dir, mode, "user", user_content)
-    st.chat_message("user").write(user_content)
-
-    if attached_sources and not user_input:
-        pdf_sources = [s for s in attached_sources if s.get("kind") == "paper_pdf"]
-        if len(pdf_sources) == 1:
-            parse_action = build_pdf_parse_action(run_dir, user_content, recent_sources=attached_sources)
-            if parse_action["action"] != "chat":
-                reply = _execute_or_report_pdf_parse_action(
-                    run_dir, parse_action,
-                    api_key=api_key, provider_url=provider_url, user_input=user_content,
-                )
-                st.chat_message("assistant").write(reply)
-                _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
-                return
-        reply = build_attachment_added_reply(attached_sources)
-        st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
-        return
-
-    url = extract_first_url(user_input)
-    if url:
-        intake = create_url_source_material_request(run_dir, url, user_message=user_input)
-        request = intake["request"]
-        request_id = str(request.get("request_id", ""))
-        runs = []
-        if not intake.get("existing_request"):
-            runs = run_pending_material_subagents(run_dir, worker_id="auto_chat", request_ids={request_id})
-        reply = build_url_source_material_request_reply(intake, runs)
-        st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
-        st.rerun()
-        return
-
-    if detect_sync_web_search_intent(user_input):
-        result = execute_sync_web_search(run_dir, query=user_input)
-        if result.get("status") == "search_unavailable":
-            request = create_search_unavailable_material_request(
-                run_dir,
-                user_input=user_input,
-                search_result=result,
-            )
-            reply = build_search_unavailable_material_request_reply(result, request, runs=None)
-        else:
-            reply = build_sync_web_search_reply(result)
-        st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
-        st.rerun()
-        return
-
-    # ── P6: Parse trigger — natural language PDF parse requests ──
-    parse_action = build_pdf_parse_action(run_dir, user_input, recent_sources=attached_sources)
-    if parse_action["action"] != "chat":
-        reply = _execute_or_report_pdf_parse_action(
-            run_dir, parse_action,
-            api_key=api_key, provider_url=provider_url, user_input=user_input,
-        )
-        st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
-        return
-
-    if attached_sources:
-        reply = build_attachment_added_reply(attached_sources)
-        st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
-        return
-
-    if detect_material_request_intent(user_input):
-        request = append_material_request(run_dir, user_message=user_input)
-        reply = build_material_request_reply(request)
-        st.chat_message("assistant").write(reply)
-        _save_assistant_reply_and_mark_notifications(run_dir, mode, reply, notifications=None)
-        st.rerun()
-        return
-
-    if not st.session_state.get("_first_task_message_handled"):
-        st.session_state._first_task_message_handled = True
-        existing, _warning = safe_load_task_profile(run_dir)
-        if existing is None:
-            try:
-                profile = generate_task_profile_from_first_message(
-                    run_dir=run_dir,
-                    api_key=api_key,
-                    provider_base_url=provider_url,
-                    first_user_message=user_input,
-                )
-                save_task_profile(run_dir, profile)
-            except Exception:
-                pass  # Never block chat on title generation.
-
-    messages = build_research_chat_messages(
-        run_dir=run_dir,
-        mode=mode,
-        user_input=user_input,
-        context_data=context_data,
-        transcript_tail=transcript_tail,
-        notification_context=notification_context,
-    )
-
-    with st.spinner("思考中…"):
-        result = call_research_chat(
-            api_key=api_key,
-            provider_base_url=provider_url,
-            messages=messages,
-        )
-
-    if result["error"]:
-        st.error(result["error"])
-        return
-
-    evidence_context = build_research_chat_evidence_context(run_dir)
-    response_context = build_research_chat_response_context(run_dir, transcript_tail=transcript_tail)
-    guarded = guard_research_chat_reply(
-        reply=result["reply"],
-        user_input=user_input,
-        evidence_context=evidence_context,
-        response_context=response_context,
-    )
-    reply = guarded.reply
-    st.chat_message("assistant").write(reply)
-    _save_assistant_reply_and_mark_notifications(
-        run_dir,
-        mode,
-        reply,
-        context_refs=list(context_data.keys()) if context_data else [],
-        notifications=notifications,
-    )
-    st.rerun()
 
 
 def _save_assistant_reply_and_mark_notifications(
@@ -1337,23 +970,6 @@ def _save_assistant_reply_and_mark_notifications(
     if notifications:
         reply_id = f"reply_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
         mark_notifications_injected(run_dir, notifications, reply_id=reply_id)
-
-
-def _chat_input_submission() -> Any:
-    kwargs: dict[str, Any] = {
-        "key": "_chat_input",
-    }
-    try:
-        parameters = inspect.signature(st.chat_input).parameters
-    except Exception:
-        parameters = {}
-    if "accept_file" in parameters:
-        kwargs["accept_file"] = "multiple"
-        kwargs["file_type"] = ["pdf", "txt", "md", "markdown"]
-        placeholder = "输入你的问题，或附加论文 PDF / 材料…"
-    else:
-        placeholder = "输入你的问题；上传资料请用上方「当前资料」里的添加按钮…"
-    return st.chat_input(placeholder, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1407,428 +1023,9 @@ def build_freeze_panel_state(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _render_source_cards_panel(run_dir: Path) -> None:
-    rows = build_source_card_rows(run_dir)
-    with st.expander("资料状态与解析版本", expanded=False):
-        if not rows:
-            st.caption("暂无资料。")
-            return
-        st.table([
-            {
-                "source_id": row["source_id"],
-                "类型": row["kind"],
-                "状态": row["status"],
-                "intake": row["intake_status"] or "—",
-                "path": row["stored_path"] or "—",
-                "active attempt": row["active_parse_attempt_id"] or "—",
-                "attempts": row["parse_attempt_count"],
-            }
-            for row in rows
-        ])
-        for row in rows:
-            _render_attempt_timeline(run_dir, row)
-
-def _render_attempt_timeline(run_dir: Path, row: dict[str, Any]) -> None:
-    """Render parse attempt timeline for a single source with switch controls."""
-    attempts = row.get("attempts", [])
-    if not attempts:
-        return
-
-    active_id = row.get("active_parse_attempt_id")
-    has_ok_attempt = any(
-        a.get("status") == "ok" for a in attempts
-    )
-
-    with st.container():
-        st.markdown(f"---")
-        st.caption(f"📋 {row.get('label', row.get('source_id', ''))} · 解析记录")
-        for idx, attempt in enumerate(attempts):
-            pa_id = attempt.get("parse_attempt_id", "—")
-            status = attempt.get("status", "—")
-            parser = attempt.get("parser", "—")
-            is_active = bool(attempt.get("active"))
-
-            status_icon = {
-                "ok": "✅",
-                "partial": "⚠️",
-                "failed": "❌",
-                "running": "🔄",
-            }.get(status, "⬜")
-
-            cols = st.columns([0.6, 1.4, 1.0, 1.4])
-            with cols[0]:
-                st.caption(f"{status_icon} {pa_id}")
-            with cols[1]:
-                st.caption(f"parser: {parser} | 状态: {status}")
-            with cols[2]:
-                if is_active:
-                    st.success("当前使用")
-                elif status == "ok":
-                    st.info("可切换")
-                elif status == "failed":
-                    st.caption("失败")
-
-            with cols[3]:
-                if not is_active and attempt.get("parse_attempt_id"):
-                    disabled = status == "failed" and has_ok_attempt
-                    if st.button(
-                        "设为当前",
-                        key=f"_active_attempt_{row['source_id']}_{pa_id}_{idx}",
-                        disabled=disabled,
-                    ):
-                        set_active_parse_attempt(
-                            run_dir,
-                            str(row["source_id"]),
-                            str(pa_id),
-                            reason="ui_source_card_switch",
-                        )
-                        st.success("已切换")
-                        st.rerun()
-
-            if status == "failed":
-                reason = attempt.get("reason") or row.get("error_message") or ""
-                if reason:
-                    st.caption(f"失败原因: {reason}")
-
-            quality = attempt.get("quality_report")
-            if quality:
-                st.caption(f"质量报告: {quality}")
-
-
-def _render_evidence_boundary_panel(run_dir: Path) -> None:
-    """Show what the system can and cannot answer based on available evidence."""
-    rows = build_source_card_rows(run_dir)
-    if not rows:
-        return
-
-    parsed = [r for r in rows if r["status"] == "parsed"]
-    failed = [r for r in rows if r["status"] == "failed"]
-    acquired_unparsed = [r for r in rows if r["status"] in {"uploaded_not_parsed", "parsing"}]
-    candidate_only = [r for r in rows if r["status"] == "user_provided_not_ingested"]
-    user_text = [r for r in rows if r["kind"] == "user_text"]
-
-    with st.expander("证据边界", expanded=False):
-        if parsed:
-            st.success(f"可引用（{len(parsed)} 个来源）")
-            for src in parsed:
-                st.caption(f"  {src['label'] or src['source_id']} · {src['active_parse_attempt_id'] or 'legacy'}")
-        else:
-            st.caption("暂无已解析来源。")
-
-        if user_text:
-            st.info(f"用户提供（{len(user_text)} 个来源）")
-
-        if acquired_unparsed:
-            st.warning(f"已获取但未解析（{len(acquired_unparsed)} 个来源）")
-            for src in acquired_unparsed:
-                path = src.get("stored_path") or "—"
-                st.caption(f"  {src['label'] or src['source_id']} · path={path}")
-
-        if candidate_only:
-            st.info(f"候选/待获取（{len(candidate_only)} 个来源）")
-            for src in candidate_only:
-                st.caption(f"  {src['label'] or src['source_id']}")
-
-        if failed:
-            st.error(f"解析失败（{len(failed)} 个来源）")
-            for src in failed:
-                err = src.get("error_message") or ""
-                st.caption(f"  {src['label'] or src['source_id']}{' · ' + err if err else ''}")
-
-        freeze_state = build_freeze_panel_state(run_dir)
-        if freeze_state.get("active_freeze_version"):
-            st.caption(f"当前冻结版本: {freeze_state['active_freeze_version']}（后续实验 agents 将读取此版本）")
-
-
-def _render_material_request_panel(run_dir: Path) -> None:
-    rows = build_material_request_rows(run_dir)
-    if not rows:
-        return
-    with st.expander("资料搜集请求", expanded=True):
-        pending = [row for row in rows if row.get("status") in {"queued", "pending"}]
-        if pending:
-            st.info(f"有 {len(pending)} 个待处理资料搜集请求；当前聊天不会后台执行搜索，可在这里手动运行资料搜集 subagent。")
-            pending_search = [
-                request
-                for request in load_material_requests(run_dir)
-                if request.get("status") in {"queued", "pending"} and request.get("kind") == "web_search"
-            ]
-            if pending_search and st.button("运行资料搜集 subagent", type="secondary"):
-                runs = run_pending_material_subagents(run_dir)
-                replies = [f"{run['request_id']} / {run['subagent_run_id']}: {run['reply']}" for run in runs]
-                st.write("\n\n".join(replies) if replies else "没有可运行的 pending web_search 请求。")
-                st.rerun()
-        st.table(rows[-8:])
-
-
-def _render_freeze_panel(run_dir: Path) -> None:
-    state = build_freeze_panel_state(run_dir)
-    with st.expander("冻结研究上下文", expanded=False):
-        if state["active_freeze_version"]:
-            st.info(f"当前冻结版本：{state['active_freeze_version']}")
-        elif state["draft_exists"]:
-            st.caption("已有 ResearchContextDraft，可以冻结当前资料与证据边界。")
-        else:
-            st.caption("尚无 ResearchContextDraft，暂不能冻结。")
-        if st.button("冻结当前研究上下文", type="primary", disabled=not state["button_enabled"]):
-            try:
-                result = freeze_context(run_dir)
-            except Exception as exc:
-                st.error(f"冻结失败：{exc}")
-            else:
-                st.success(f"已生成 {result['freeze_version']}")
-                st.rerun()
-        if state["freezes"]:
-            st.table(state["freezes"])
-
-
-def _render_intent_draft_panel(
-    *,
-    run_dir: Path,
-    mode: str,
-    api_key: str,
-    provider_url: str,
-    context_data: dict | None,
-) -> None:
-    st.subheader("研究目标草案")
-    existing = load_intent_draft(run_dir)
-    transcript = load_transcript(run_dir)
-    intent_messages = [entry for entry in transcript if entry.get("mode") == "intent_clarification"]
-
-    if mode != "intent_clarification":
-        st.info("切换到「意图澄清」后，可以把聊天内容整理成研究目标草案。")
-    elif not intent_messages:
-        st.info("先描述你的复现目标、实验想法或改进方向。")
-    else:
-        if st.button("生成研究目标草案", type="secondary"):
-            messages = intent_draft_prompt_payload(
-                run_id=run_dir.name,
-                transcript_tail=intent_messages,
-                context=context_data,
-            )
-            with st.spinner("正在整理研究目标草案…"):
-                result = call_research_chat(
-                    api_key=api_key,
-                    provider_base_url=provider_url,
-                    messages=messages,
-                )
-            if result["error"]:
-                st.error(result["error"])
-            else:
-                try:
-                    draft = parse_intent_draft_response(result["reply"], run_id=run_dir.name)
-                except ValueError as exc:
-                    st.error(f"草案无法解析：{exc}")
-                else:
-                    save_intent_draft(run_dir, draft)
-                    save_clarification_input(run_dir, draft)
-                    st.success("研究目标草案已生成，请检查后确认。")
-                    st.rerun()
-
-    draft = load_intent_draft(run_dir) or existing
-    if draft:
-        st.markdown(render_intent_draft_markdown(draft))
-        _render_confirmation_panel(run_dir)
-
-
-def _render_confirmation_panel(run_dir: Path) -> None:
-    draft = load_intent_draft(run_dir)
-    confirmation = load_intent_confirmation(run_dir)
-    if confirmation:
-        label = {
-            "approved": "已确认",
-            "needs_revision": "需要修改",
-            "rejected": "已放弃",
-        }[confirmation.decision]
-        st.info(f"研究目标状态：{label}")
-        if confirmation.comment:
-            st.caption(f"备注：{confirmation.comment}")
-
-    if not draft:
-        return
-
-    comment = st.text_area("确认备注（可选）", key="_intent_confirmation_comment")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("确认这个研究目标", type="primary"):
-            save_intent_confirmation(run_dir, decision="approved", comment=comment or None)
-            st.success("研究目标已确认。")
-            st.rerun()
-    with col2:
-        if st.button("需要修改"):
-            save_intent_confirmation(run_dir, decision="needs_revision", comment=comment or None)
-            st.warning("已标记为需要修改。")
-            st.rerun()
-    with col3:
-        if st.button("放弃"):
-            save_intent_confirmation(run_dir, decision="rejected", comment=comment or None)
-            st.error("已放弃当前研究目标。")
-            st.rerun()
-
-
-def _render_pipeline_input_panel(run_dir: Path) -> None:
-    action = build_pipeline_input_action(run_dir)
-    st.subheader("下一步")
-    st.write(action["message"])
-
-    if action["button_enabled"]:
-        if st.button("生成实验输入", type="primary"):
-            try:
-                save_input_task_yaml_from_clarification(run_dir)
-            except Exception as exc:
-                st.error(f"生成失败：{exc}")
-            else:
-                st.success("实验输入已准备好。")
-                st.rerun()
-
-
-def _render_flow_steps(run_dir: Path) -> None:
-    st.subheader("当前流程")
-    lines = []
-    for step in build_user_flow_steps(run_dir):
-        marker = "← 当前步骤" if step["state"] == "current" else "✓" if step["state"] == "done" else ""
-        suffix = f" {marker}" if marker else ""
-        lines.append(f"{step['index']}. {step['label']}{suffix}")
-    st.markdown("\n".join(lines))
-
-
-def _render_stage_approval_panel(run_dir: Path) -> None:
-    request_path = run_dir / "patch_planner" / "patch_planner_approval_request.json"
-    handoff_path = run_dir / "patch_applicator" / "patch_runner_handoff.json"
-    has_any_approval = request_path.is_file() or handoff_path.is_file()
-
-    if not has_any_approval:
-        st.info("后续 pipeline 到达相应阶段后，会在这里请求你的审批。")
-        return
-
-    st.subheader("需要你审批")
-    if request_path.is_file():
-        _render_patch_approval_panel(run_dir)
-    if handoff_path.is_file():
-        if request_path.is_file():
-            st.markdown("---")
-        _render_run_approval_panel(run_dir)
-
-
-def _render_patch_approval_panel(run_dir: Path) -> None:
-    st.markdown("**审批代码修改方案**")
-    diff_path = run_dir / "patch_planner" / "proposed_patch.diff"
-    validation_path = run_dir / "patch_planner" / "patch_payload_validation_report.json"
-    approval = load_stage3_approval(run_dir, decision_type="patch_approval")
-
-    if approval:
-        st.info("代码修改方案已确认。" if approval.confirmed_by_user else "代码修改方案已被拒绝。")
-
-    st.caption("请审阅修改方案、diff 和风险后再确认。")
-    if validation_path.is_file():
-        with st.expander("查看修改校验报告"):
-            try:
-                st.json(json.loads(validation_path.read_text(encoding="utf-8")))
-            except Exception:
-                st.code(validation_path.read_text(encoding="utf-8")[:4000])
-    if diff_path.is_file():
-        with st.expander("查看代码差异"):
-            st.code(diff_path.read_text(encoding="utf-8")[:8000], language="diff")
-
-    comment = st.text_area("代码修改审批备注（可选）", key="_patch_approval_comment")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("确认代码修改方案", type="primary"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="patch_approval",
-                confirmed_by_user=True,
-                user_confirmation_text=comment or "I approve the proposed patch plan.",
-            )
-            st.success("代码修改方案已确认。")
-            st.rerun()
-    with col2:
-        if st.button("拒绝代码修改方案"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="patch_approval",
-                confirmed_by_user=False,
-                user_confirmation_text=comment or "I reject the proposed patch plan.",
-            )
-            st.warning("已拒绝代码修改方案。")
-            st.rerun()
-
-
-def _render_run_approval_panel(run_dir: Path) -> None:
-    st.markdown("**审批真实执行**")
-    intake_path = run_dir / "runner_execute" / "runner_intake_report.json"
-    approval = load_stage3_approval(run_dir, decision_type="run_approval")
-
-    if approval:
-        st.info("真实执行已确认。" if approval.confirmed_by_user else "真实执行已被拒绝。")
-
-    st.warning(
-        "真实执行会运行 GPU benchmark、读取数据集并产生实验结果。"
-        "确认后仍需在终端设置 AUTOAD_L3_REAL_EXECUTION_ALLOWED=1。"
-    )
-    if intake_path.is_file():
-        with st.expander("查看执行准入报告"):
-            try:
-                st.json(json.loads(intake_path.read_text(encoding="utf-8")))
-            except Exception:
-                st.code(intake_path.read_text(encoding="utf-8")[:4000])
-
-    comment = st.text_area("真实执行审批备注（可选）", key="_run_approval_comment")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("确认真实执行", type="primary"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="run_approval",
-                confirmed_by_user=True,
-                user_confirmation_text=comment or "I approve real L3 execution.",
-            )
-            st.success("真实执行已确认。")
-            st.rerun()
-    with col2:
-        if st.button("拒绝真实执行"):
-            save_stage3_approval(
-                run_dir,
-                decision_type="run_approval",
-                confirmed_by_user=False,
-                user_confirmation_text=comment or "I reject real L3 execution.",
-            )
-            st.warning("已拒绝真实执行。")
-            st.rerun()
-
-
 # ---------------------------------------------------------------------------
 # Developer info and pure helpers
 # ---------------------------------------------------------------------------
-
-
-def _render_developer_info(
-    *,
-    run_dir: Path,
-    overview: dict[str, Any],
-    provider_url: str,
-    dataset_root: str,
-    context_data: dict | None,
-) -> None:
-    with st.expander("开发者信息", expanded=False):
-        st.json(build_developer_info_payload(
-            run_dir,
-            overview=overview,
-            provider_url=provider_url,
-            dataset_root=dataset_root,
-            context_data=context_data,
-        ))
-        st.markdown("**Approval gate status**")
-        st.table(build_hitl_gate_status_rows(run_dir))
-        draft = load_intent_draft(run_dir)
-        if draft:
-            st.markdown("**intent_draft.json**")
-            st.json(draft.model_dump(mode="json"))
-        st.markdown("**发送给 LLM 的上下文**")
-    if context_data:
-        st.json(context_data)
-    else:
-        st.caption("无上下文数据。")
 
 
 def build_research_assistant_overview(

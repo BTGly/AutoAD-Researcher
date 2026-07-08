@@ -7,12 +7,6 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-try:
-    import streamlit as _st  # noqa: F401
-    _HAS_STREAMLIT = True
-except ModuleNotFoundError:
-    _HAS_STREAMLIT = False
-
 from autoad_researcher.ui.task_profile import (
     TaskProfile,
     archive_task,
@@ -630,44 +624,13 @@ class TestRunIdPathUnchanged:
 
 
 # ---------------------------------------------------------------------------
-# app.py import-compile check
+# legacy import compatibility
 # ---------------------------------------------------------------------------
 
 
-class TestAppImport:
-    """Verify that app.py can be compiled/imported without runtime errors.
+def test_task_profile_implementation_moved_out_of_ui_package():
+    import autoad_researcher.task_workspace.task_profile as task_workspace_profile
+    import autoad_researcher.ui.task_profile as legacy_profile
 
-    Does NOT start Streamlit — only checks that the module's top-level
-    code (imports, function defs, class defs) compiles cleanly.  Catches
-    regressions like:
-      - NameError from calling a function before its definition
-      - Duplicate st.set_page_config()
-      - Missing imports (Path, etc.)
-    """
-
-    @pytest.mark.skipif(_HAS_STREAMLIT is False, reason="streamlit is optional (ui extra)")
-    def test_app_compiles(self, monkeypatch):
-        """Simulate streamlit enough that app.py can be compiled."""
-        monkeypatch.setattr("streamlit.set_page_config", lambda **kw: None)
-        monkeypatch.setattr("streamlit.sidebar.radio", lambda *a, **kw: "1. 运行配置")
-        monkeypatch.setattr("streamlit.sidebar.markdown", lambda *a, **kw: None)
-        monkeypatch.setattr("streamlit.sidebar.caption", lambda *a, **kw: None)
-        monkeypatch.setattr("streamlit.sidebar.text_input", lambda *a, **kw: "")
-        monkeypatch.setattr("streamlit.sidebar.expander", lambda *a, **kw: type("_ctx", (), {"__enter__": lambda s: None, "__exit__": lambda s,*a: None})())
-        monkeypatch.setattr("streamlit.sidebar.code", lambda *a, **kw: None)
-        monkeypatch.setattr("streamlit.session_state.setdefault", lambda k, v: None)
-
-        import ast
-        app_path = Path(__file__).parent.parent / "src" / "autoad_researcher" / "ui" / "app.py"
-        source = app_path.read_text()
-        try:
-            ast.parse(source)
-        except SyntaxError as exc:
-            pytest.fail(f"app.py has a syntax error: {exc}")
-
-    def test_app_no_duplicate_set_page_config(self):
-        """Verify exactly one st.set_page_config() call exists in app.py."""
-        app_path = Path(__file__).parent.parent / "src" / "autoad_researcher" / "ui" / "app.py"
-        source = app_path.read_text()
-        count = source.count("st.set_page_config(")
-        assert count == 1, f"Expected 1 st.set_page_config() call, found {count}"
+    assert legacy_profile.TaskProfile is task_workspace_profile.TaskProfile
+    assert legacy_profile.create_task_profile is task_workspace_profile.create_task_profile
