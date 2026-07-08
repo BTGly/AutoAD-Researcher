@@ -1,6 +1,6 @@
 """Compatibility imports for task workspace profile helpers.
 
-The Streamlit UI was removed, but older tests and internal helpers still import
+The legacy UI entrypoints were removed, but older tests and internal helpers still import
 this module path. The implementation now lives under
 ``autoad_researcher.task_workspace``.
 """

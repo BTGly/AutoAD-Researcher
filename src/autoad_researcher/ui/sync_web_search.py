@@ -1,4 +1,4 @@
-"""Legacy Streamlit / V1 synchronous web search bridge.
+"""Legacy local UI / V1 synchronous web search bridge.
 
 V2 React + PipelineJob path should not depend on this for primary chat behavior.
 Retained for compatibility. Use assistant/v2/orchestrator.py for V2 flows.

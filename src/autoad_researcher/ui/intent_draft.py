@@ -1,4 +1,4 @@
-"""Research Intent Draft artifacts for the Streamlit Research Assistant.
+"""Research Intent Draft artifacts for the local research assistant.
 
 These files are UI audit material. They do not participate in the Stage 3
 artifact chain and must not trigger pipeline execution.

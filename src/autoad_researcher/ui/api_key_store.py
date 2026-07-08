@@ -1,4 +1,4 @@
-"""Local API key loading/saving helpers for Streamlit UI.
+"""Local API key loading/saving helpers for the research UI.
 
 The value is never logged or committed.  The project-local `.env` file is
 already gitignored and is the intended place for local provider credentials.

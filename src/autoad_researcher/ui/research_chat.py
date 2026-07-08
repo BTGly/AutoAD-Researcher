@@ -333,10 +333,10 @@ def _run_paper_intelligence(run_id: str, pdf_path: Path) -> dict[str, str]:
 
 
 def normalize_chat_submission(submission: Any) -> tuple[str, list[Any]]:
-    """Normalize Streamlit chat_input return values across versions.
+    """Normalize legacy chat submission values.
 
-    Streamlit 1.58 returns a ChatInputValue when files are accepted, while older
-    code paths and tests may still pass a plain string.
+    Older UI paths and tests may pass a plain string, a dict-like object, or an
+    object with ``text``/``message`` and ``files`` attributes.
     """
     if submission is None:
         return "", []
