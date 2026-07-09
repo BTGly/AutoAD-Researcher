@@ -444,13 +444,13 @@ export default function App() {
 
               <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
                 <button onClick={() => setShowDev(!showDev)} style={{ width: '100%', fontSize: '0.78em', padding: '4px 0', background: 'transparent', border: 'none', color: 'var(--text-dim)' }}>
-                  {showDev ? '▼' : '▶'} Developer Details
+                  {showDev ? '▼' : '▶'} 开发者详情
                 </button>
                 {showDev && (
                   <div style={{ fontSize: '0.72em', color: 'var(--text-dim)', marginTop: 4 }}>
                     <div>run_id: {runId || '未创建'}</div>
-                    <div>sources: {sources.length} | jobs: {jobs.length}</div>
-                    {artifacts.map(a => <div key={a.path}>artifact: {a.path}</div>)}
+                    <div>资料：{sources.length} | 任务：{jobs.length}</div>
+                    {artifacts.map(a => <div key={a.path}>产物：{a.path}</div>)}
                     {import.meta.env.DEV && (
                       <DevMockPanel addToast={addToast} setMessages={setMessages} />
                     )}

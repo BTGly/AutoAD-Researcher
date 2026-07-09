@@ -12,10 +12,10 @@ export function StatusBar({ sources, jobs, evidenceCount, draftReady }: Props) {
   const pendingJobs = jobs.filter(j => j.status === 'running').length;
   const parts: string[] = [];
 
-  if (sources.length) parts.push(`📄 Sources: ${sources.length} (${parsedSources} parsed)`);
-  if (jobs.length) parts.push(`⚙ Jobs: ${jobs.length} (${pendingJobs} running)`);
-  if (evidenceCount) parts.push(`🔬 Evidence: ${evidenceCount} usable`);
-  if (draftReady) parts.push('📝 Draft: Ready');
+  if (sources.length) parts.push(`资料：${sources.length}（${parsedSources} 个已解析）`);
+  if (jobs.length) parts.push(`任务：${jobs.length}（${pendingJobs} 个运行中）`);
+  if (evidenceCount) parts.push(`证据：${evidenceCount} 条可用`);
+  if (draftReady) parts.push('草案：可生成计划');
 
   return (
     <div className="kbd-hint" style={{ textAlign: 'left', paddingLeft: 8 }}>
