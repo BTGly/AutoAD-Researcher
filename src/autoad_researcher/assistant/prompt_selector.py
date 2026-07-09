@@ -86,6 +86,10 @@ class PromptSelector:
             raise KeyError(f"unsupported v2 prompt component: {component}")
         return _V2_COMPONENT_TO_PROMPT[component]
 
+    def profile_for_v2_component(self, component: str):
+        prompt_id = self.prompt_id_for_v2_component(component)
+        return self._registry.require(prompt_id)
+
     def build_system_prompt_for_v2_component(self, component: str, *, include_global: bool = False) -> str:
         prompt_id = self.prompt_id_for_v2_component(component)
         return self._registry.build_system_prompt(prompt_id, include_global=include_global)

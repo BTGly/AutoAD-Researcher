@@ -160,6 +160,7 @@ def build_contract_from_context(
         answerability=llm_context.get("answerability", {}) or {},
         api_key=api_key,
         provider_url=provider_url,
+        run_dir=run_dir,
     )
 
     need_fields = contract_fields_from_need_spec(need_spec)

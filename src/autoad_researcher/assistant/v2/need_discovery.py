@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from pathlib import Path
 from typing import Any, Literal
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
+from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -132,6 +135,7 @@ def discover_required_needs_with_llm(
     run_artifacts_summary: dict[str, Any] | None = None,
     api_key: str = "",
     provider_url: str = "",
+    run_dir: Path | None = None,
 ) -> RequiredNeedSpec:
     """LLM-first requirement discovery with deterministic fallback.
 
@@ -166,24 +170,75 @@ def discover_required_needs_with_llm(
         answerability=answerability,
         run_artifacts_summary=run_artifacts_summary,
     )
+    selector = PromptSelector()
+    profile = selector.profile_for_v2_component("need_discovery")
+    system_prompt = messages[0]["content"] if messages else ""
+    model = "deepseek-v4-flash"
 
     from autoad_researcher.ui.chat_client import call_research_chat
 
+    started = time.perf_counter()
     result = call_research_chat(
         api_key,
         provider_url,
         messages,
-        model="deepseek-v4-flash",
+        model=model,
         timeout_s=30,
     )
-    payload = _parse_json_object(str(result.get("reply") or ""))
+    latency_ms = (time.perf_counter() - started) * 1000
+    reply_text = str(result.get("reply") or "")
+    payload = _parse_json_object(reply_text)
     if result.get("error") or payload is None:
+        append_llm_trace(
+            run_dir,
+            call_site="need_discovery",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="error",
+            schema_validation="skipped",
+            fallback_reason="llm_error_or_non_json",
+            latency_ms=latency_ms,
+        )
         return discover_required_needs(**fallback_kwargs)
     try:
         spec = RequiredNeedSpec.model_validate(payload)
     except Exception:
+        append_llm_trace(
+            run_dir,
+            call_site="need_discovery",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="ok",
+            schema_validation="error",
+            fallback_reason="schema_validation_error",
+            latency_ms=latency_ms,
+        )
         return discover_required_needs(**fallback_kwargs)
     spec.current_stage_goal = current_stage_goal
+    append_llm_trace(
+        run_dir,
+        call_site="need_discovery",
+        prompt_id=profile.prompt_id,
+        prompt_version=profile.prompt_version,
+        prompt_text=system_prompt,
+        model=model,
+        provider_url=provider_url,
+        messages=messages,
+        raw_output=reply_text,
+        parse_status="ok",
+        schema_validation="ok",
+        latency_ms=latency_ms,
+    )
     return validate_need_spec(canonicalize_need_values(spec))
 
 

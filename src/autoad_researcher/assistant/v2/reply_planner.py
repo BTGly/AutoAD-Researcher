@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
+from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 
 
 _CONTRACT_REPLY_KEYS = {
@@ -30,6 +33,7 @@ def plan_reply(
     api_key: str = "",
     provider_url: str = "",
     on_delta: Callable[[str], None] | None = None,
+    run_dir: Path | None = None,
 ) -> tuple[str, str]:
     """Return (reply_kind, reply_text).
 
@@ -53,11 +57,11 @@ def plan_reply(
 
     if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
         if api_key:
-            return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta)
+            return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta, run_dir=run_dir)
         return "answer", _non_contract_fallback(turn_gate)
 
     if api_key:
-        return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta)
+        return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta, run_dir=run_dir)
 
     return _unified_fallback(blocking, len(unparsed), len(usable), len(readable), pending_jobs, failed_jobs, unusable)
 
@@ -69,6 +73,7 @@ def _llm_reply(
     provider_url: str,
     *,
     on_delta: Callable[[str], None] | None = None,
+    run_dir: Path | None = None,
 ) -> tuple[str, str]:
     readable = llm_context.get("readable_summaries", [])
     confirmed = llm_context.get("confirmed_from_user", {})
@@ -85,7 +90,10 @@ def _llm_reply(
     contract_text = _json_text(contract) if contract else "{}"
     turn_gate_text = _json_text(turn_gate) if turn_gate else "{}"
 
-    system = PromptSelector().build_system_prompt_for_v2_component("reply_planner")
+    selector = PromptSelector()
+    profile = selector.profile_for_v2_component("reply_planner")
+    system = selector.build_system_prompt_for_v2_component("reply_planner")
+    model = "deepseek-v4-flash"
 
     messages = [
         {"role": "system", "content": system},
@@ -103,21 +111,68 @@ def _llm_reply(
 
     from autoad_researcher.ui.chat_client import call_research_chat
     visible_stream = _VisibleReplyDeltaFilter(on_delta) if on_delta is not None else None
+    started = time.perf_counter()
     result = call_research_chat(
         api_key,
         provider_url,
         messages,
-        model="deepseek-v4-flash",
+        model=model,
         timeout_s=30,
         on_delta=visible_stream.feed if visible_stream is not None else None,
     )
+    latency_ms = (time.perf_counter() - started) * 1000
 
     if result.get("reply") and not result.get("error"):
-        payload = _parse_llm_contract_reply(str(result["reply"]))
+        reply_text = str(result["reply"])
+        payload = _parse_llm_contract_reply(reply_text)
         if payload is not None:
+            append_llm_trace(
+                run_dir,
+                call_site="reply_planner",
+                prompt_id=profile.prompt_id,
+                prompt_version=profile.prompt_version,
+                prompt_text=system,
+                model=model,
+                provider_url=provider_url,
+                messages=messages,
+                raw_output=reply_text,
+                parse_status="ok",
+                schema_validation="ok",
+                latency_ms=latency_ms,
+            )
             return "answer", _visible_reply_from_llm_payload(payload)
-        return "answer", str(result["reply"])
+        append_llm_trace(
+            run_dir,
+            call_site="reply_planner",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="error",
+            schema_validation="not_run",
+            fallback_reason="non_json_reply_visible_passthrough",
+            latency_ms=latency_ms,
+        )
+        return "answer", reply_text
 
+    append_llm_trace(
+        run_dir,
+        call_site="reply_planner",
+        prompt_id=profile.prompt_id,
+        prompt_version=profile.prompt_version,
+        prompt_text=system,
+        model=model,
+        provider_url=provider_url,
+        messages=messages,
+        raw_output=str(result.get("reply") or ""),
+        parse_status="skipped",
+        schema_validation="skipped",
+        fallback_reason="llm_error_or_empty_reply",
+        latency_ms=latency_ms,
+    )
     return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable)
 
 

@@ -122,6 +122,7 @@ class ResearchOrchestratorV2:
             answerability=ctx.get("answerability", {}) or {},
             api_key=api_key,
             provider_url=provider_url,
+            run_dir=run_dir,
         )
         ctx["turn_gate_decision"] = turn_decision.model_dump(mode="json")
 
@@ -166,6 +167,7 @@ class ResearchOrchestratorV2:
                 api_key=api_key,
                 provider_url=provider_url,
                 on_delta=on_reply_delta,
+                run_dir=run_dir,
             )
             return OrchestratorResult(
                 reply=reply,
@@ -189,6 +191,7 @@ class ResearchOrchestratorV2:
                 api_key=api_key,
                 provider_url=provider_url,
                 on_delta=on_reply_delta,
+                run_dir=run_dir,
             )
             return OrchestratorResult(
                 reply=reply,
@@ -228,6 +231,7 @@ class ResearchOrchestratorV2:
                 api_key=api_key,
                 provider_url=provider_url,
                 on_delta=on_reply_delta,
+                run_dir=run_dir,
             )
 
         return OrchestratorResult(

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Literal
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
+from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from autoad_researcher.source_normalizer import extract_first_source_candidate, extract_first_url, is_repository_url, normalize_repository_reference
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -139,17 +141,40 @@ def plan_source_actions(
         repository_hints=repository_hints,
     )
 
+    selector = PromptSelector()
+    profile = selector.profile_for_v2_component("source_action_planner")
+    system_prompt = messages[0]["content"] if messages else ""
+    model = "deepseek-v4-flash"
+
     from autoad_researcher.ui.chat_client import call_research_chat
 
+    started = time.perf_counter()
     result = call_research_chat(
         api_key,
         provider_url,
         messages,
-        model="deepseek-v4-flash",
+        model=model,
         timeout_s=30,
     )
-    payload = _parse_json_object(str(result.get("reply") or ""))
+    latency_ms = (time.perf_counter() - started) * 1000
+    reply_text = str(result.get("reply") or "")
+    payload = _parse_json_object(reply_text)
     if result.get("error") or payload is None:
+        append_llm_trace(
+            run_dir,
+            call_site="source_action_planner",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="error",
+            schema_validation="skipped",
+            fallback_reason="llm_error_or_non_json",
+            latency_ms=latency_ms,
+        )
         return SourceActionPlan(
             actions=[],
             confidence=0.0,
@@ -158,11 +183,40 @@ def plan_source_actions(
     try:
         plan = SourceActionPlan.model_validate(payload)
     except Exception as exc:
+        append_llm_trace(
+            run_dir,
+            call_site="source_action_planner",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="ok",
+            schema_validation="error",
+            fallback_reason="schema_validation_error",
+            latency_ms=latency_ms,
+        )
         return SourceActionPlan(
             actions=[],
             confidence=0.0,
             reason=f"LLM source action planner output failed schema validation: {exc}",
         )
+    append_llm_trace(
+        run_dir,
+        call_site="source_action_planner",
+        prompt_id=profile.prompt_id,
+        prompt_version=profile.prompt_version,
+        prompt_text=system_prompt,
+        model=model,
+        provider_url=provider_url,
+        messages=messages,
+        raw_output=reply_text,
+        parse_status="ok",
+        schema_validation="ok",
+        latency_ms=latency_ms,
+    )
     return validate_source_action_plan(plan, repository_hints=repository_hints)
 
 
