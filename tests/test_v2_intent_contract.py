@@ -19,6 +19,7 @@ from autoad_researcher.assistant.v2.draft_service import load_research_draft_sta
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
+from autoad_researcher.server.routes.chat import _assistant_delta_message, _assistant_done_message
 from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
 
 
@@ -407,6 +408,81 @@ def test_reply_planner_streams_only_visible_reply_field(monkeypatch):
     assert "PatchCore" not in "".join(streamed)
 
 
+def test_reply_planner_handles_reply_to_user_not_first_key_without_leaking(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {
+            "reply": json.dumps({
+                "contract_updates": {"baseline": "PatchCore"},
+                "missing_required_fields": ["success_criteria"],
+                "reply_to_user": "我只展示这句。",
+                "next_question": "请确认成功标准。",
+                "ready_for_plan": False,
+            }, ensure_ascii=False),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intent"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "research_intent_contract": {"run_id": "run_contract"},
+        },
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert reply == "我只展示这句。\n\n请确认成功标准。"
+    assert "contract_updates" not in reply
+    assert "missing_required_fields" not in reply
+    assert "PatchCore" not in reply
+
+
+def test_reply_stream_chunk_split_and_key_order_do_not_leak_internal_fields(monkeypatch):
+    streamed: list[str] = []
+    payload = json.dumps({
+        "contract_updates": {"baseline": "PatchCore"},
+        "missing_required_fields": ["success_criteria"],
+        "reply_to_user": "已记录用户可见内容。",
+        "next_question": "",
+        "ready_for_plan": False,
+    }, ensure_ascii=False)
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        on_delta = kwargs.get("on_delta")
+        assert on_delta is not None
+        for chunk in [payload[:11], payload[11:39], payload[39:58], payload[58:77], payload[77:]]:
+            on_delta(chunk)
+        return {"reply": payload, "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intent"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "research_intent_contract": {"run_id": "run_contract"},
+        },
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        on_delta=streamed.append,
+    )
+
+    visible_stream = "".join(streamed)
+    assert reply == "已记录用户可见内容。"
+    assert visible_stream == "已记录用户可见内容。"
+    assert "contract_updates" not in visible_stream
+    assert "missing_required_fields" not in visible_stream
+    assert "PatchCore" not in visible_stream
+
+
 def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         return {
@@ -438,6 +514,79 @@ def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
     assert "{" not in reply
     assert "contract_updates" not in reply
     assert "missing_required_fields" not in reply
+
+
+def test_reply_planner_non_json_internal_payload_uses_safe_fallback(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {
+            "reply": (
+                "我已记录。\n"
+                'contract_updates: {"baseline": "PatchCore"}\n'
+                'missing_required_fields: ["success_criteria"]\n'
+            ),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intent"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "research_intent_contract": {"run_id": "run_contract"},
+        },
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert "当前状态: intent" in reply
+    assert "contract_updates" not in reply
+    assert "missing_required_fields" not in reply
+    assert "PatchCore" not in reply
+
+
+def test_reply_planner_broken_json_internal_payload_uses_safe_fallback(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {
+            "reply": '{"reply_to_user":"已记录。","contract_updates":{"baseline":"PatchCore"',
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intent"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "research_intent_contract": {"run_id": "run_contract"},
+        },
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert "当前状态: intent" in reply
+    assert "contract_updates" not in reply
+    assert "PatchCore" not in reply
+
+
+def test_assistant_delta_and_done_message_shapes_stay_compatible_for_reply_streaming():
+    assert _assistant_delta_message("assistant_1", "hello") == {
+        "type": "assistant.delta",
+        "message_id": "assistant_1",
+        "content": "hello",
+    }
+    assert _assistant_done_message("assistant_1", "answer", "done") == {
+        "type": "assistant.done",
+        "message_id": "assistant_1",
+        "reply_kind": "answer",
+        "content": "done",
+    }
 
 
 def test_reply_planner_parses_key_value_contract_payload(monkeypatch):

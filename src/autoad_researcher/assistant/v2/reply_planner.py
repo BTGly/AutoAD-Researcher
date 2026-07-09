@@ -141,6 +141,7 @@ def _llm_reply(
                 latency_ms=latency_ms,
             )
             return "answer", _visible_reply_from_llm_payload(payload)
+        internal_control_payload = _looks_like_internal_control_payload(reply_text)
         append_llm_trace(
             run_dir,
             call_site="reply_planner",
@@ -153,9 +154,15 @@ def _llm_reply(
             raw_output=reply_text,
             parse_status="error",
             schema_validation="not_run",
-            fallback_reason="non_json_reply_visible_passthrough",
+            fallback_reason=(
+                "internal_control_payload_parse_failed"
+                if internal_control_payload
+                else "non_json_reply_visible_passthrough"
+            ),
             latency_ms=latency_ms,
         )
+        if internal_control_payload:
+            return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable)
         return "answer", reply_text
 
     append_llm_trace(
@@ -386,6 +393,14 @@ def _parse_llm_contract_reply(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         payload = _parse_key_value_contract_reply(stripped)
     return payload if isinstance(payload, dict) else None
+
+
+def _looks_like_internal_control_payload(text: str) -> bool:
+    if not text.strip():
+        return False
+    quoted_key = r'"(?:' + "|".join(re.escape(key) for key in _CONTRACT_REPLY_KEYS - {"reply_to_user"}) + r')"\s*:'
+    line_key = r"(?m)^\s*(?:" + "|".join(re.escape(key) for key in _CONTRACT_REPLY_KEYS - {"reply_to_user"}) + r")\s*:"
+    return bool(re.search(quoted_key, text) or re.search(line_key, text))
 
 
 def _parse_key_value_contract_reply(text: str) -> dict[str, Any] | None:
