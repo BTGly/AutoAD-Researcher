@@ -43,6 +43,15 @@ _RESEARCH_CHAT_MODE_TO_PROMPT: dict[str, str] = {
 
 RESEARCH_CHAT_MODE_TO_PROMPT_ID: dict[str, str] = _RESEARCH_CHAT_MODE_TO_PROMPT
 
+_V2_COMPONENT_TO_PROMPT: dict[str, str] = {
+    "source_action_planner": "assistant.v2.source_action_plan.v1",
+    "turn_gate": "assistant.v2.turn_gate.v1",
+    "need_discovery": "assistant.v2.need_discovery.v1",
+    "reply_planner": "assistant.v2.reply_plan.v1",
+}
+
+V2_COMPONENT_TO_PROMPT_ID: dict[str, str] = _V2_COMPONENT_TO_PROMPT
+
 
 class PromptSelector:
     """Selects prompt profiles by assistant mode. No LLM, no semantics."""
@@ -71,6 +80,15 @@ class PromptSelector:
     def build_system_prompt_for_research_chat_mode(self, mode: str) -> str:
         prompt_id = self.prompt_id_for_research_chat_mode(mode)
         return self._registry.build_system_prompt(prompt_id)
+
+    def prompt_id_for_v2_component(self, component: str) -> str:
+        if component not in _V2_COMPONENT_TO_PROMPT:
+            raise KeyError(f"unsupported v2 prompt component: {component}")
+        return _V2_COMPONENT_TO_PROMPT[component]
+
+    def build_system_prompt_for_v2_component(self, component: str, *, include_global: bool = False) -> str:
+        prompt_id = self.prompt_id_for_v2_component(component)
+        return self._registry.build_system_prompt(prompt_id, include_global=include_global)
 
     def research_task_draft_profile(self):
         return self._registry.require(RESEARCH_TASK_DRAFT_PROMPT_ID)

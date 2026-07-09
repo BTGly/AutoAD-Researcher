@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.source_normalizer import extract_first_source_candidate, extract_first_url, is_repository_url, normalize_repository_reference
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -263,19 +264,7 @@ def _build_source_action_messages(
     tool_capabilities: list[ToolCapability],
     repository_hints: list[RepositoryHint],
 ) -> list[dict[str, str]]:
-    system = (
-        "你是 AutoAD Researcher 的 SourceActionPlanner。你只输出 SourceActionPlan JSON，不输出 Markdown。\n"
-        "你的职责是根据当前用户消息、最近对话、已有合同草稿、source registry、pending jobs 和可用工具，判断是否需要创建资料/工具动作。\n"
-        "你不是关键词分类器，不能仅因为出现 PatchCore、MVTec、AUROC、github、搜索、clone、仓库等词就创建动作。\n"
-        "必须根据语用意图判断：用户明确要求搜索、查找资料、读取网页、clone/克隆仓库、登记仓库 URL、继续资料处理时，才创建动作。\n"
-        "如果用户只是陈述 baseline/dataset/metric/idea，不要创建 source/tool action。\n"
-        "如果用户给了明确代码仓库 URL，可创建 register_github_repo 或 git_clone；如果用户只给项目名且要求找/clone 官方仓库，可用 github_discovery 或从 repository_hints 选择高置信候选。\n"
-        "repository_hints 只是候选上下文；选择它们需要在 rationale 中说明来自用户当前意图和上下文，不得把 hint 当默认事实强塞。\n"
-        "web_search 只产生 candidate_source_only，不能声称已经读完资料。\n"
-        "如果 clone 工具可用且用户要求 clone，不要回复“我不能 clone”；应输出 git_clone 动作，或在目标不明确时输出 github_discovery/ask_clarification。\n"
-        "Schema: {actions, user_visible_summary, confidence, reason}. "
-        "Action schema: {action_type, target, source_url, query, repository_hint_id, source_kind, confidence, requires_confirmation, rationale}."
-    )
+    system = PromptSelector().build_system_prompt_for_v2_component("source_action_planner")
     context = {
         "transcript_tail": transcript_tail or [],
         "existing_contract_draft": existing_contract_draft or {},

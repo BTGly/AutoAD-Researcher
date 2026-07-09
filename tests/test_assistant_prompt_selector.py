@@ -11,8 +11,13 @@ from autoad_researcher.assistant.prompt_selector import (
     PromptSelector,
     RESEARCH_CHAT_MODE_TO_PROMPT_ID,
     RESEARCH_TASK_DRAFT_PROMPT_ID,
+    V2_COMPONENT_TO_PROMPT_ID,
 )
 from autoad_researcher.assistant.session import AssistantMode
+from autoad_researcher.assistant.v2.need_discovery import _build_need_discovery_messages
+from autoad_researcher.assistant.v2.reply_planner import _llm_reply
+from autoad_researcher.assistant.v2.source_action_planner import _build_source_action_messages
+from autoad_researcher.assistant.v2.turn_gate import _build_turn_gate_messages
 
 
 def test_all_assistant_modes_have_stage_and_prompt_mapping():
@@ -122,3 +127,71 @@ def test_prompt_selector_excludes_execution_tools():
         forbidden_outputs = set(profile.io.forbidden_outputs)
         assert blocked.isdisjoint(forbidden_outputs)
         assert blocked.isdisjoint(set(rendered.split()))
+
+
+def test_selector_routes_v2_components_through_registry():
+    selector = PromptSelector()
+
+    assert V2_COMPONENT_TO_PROMPT_ID == {
+        "source_action_planner": "assistant.v2.source_action_plan.v1",
+        "turn_gate": "assistant.v2.turn_gate.v1",
+        "need_discovery": "assistant.v2.need_discovery.v1",
+        "reply_planner": "assistant.v2.reply_plan.v1",
+    }
+    for component, prompt_id in V2_COMPONENT_TO_PROMPT_ID.items():
+        assert selector.prompt_id_for_v2_component(component) == prompt_id
+        rendered = selector.build_system_prompt_for_v2_component(component)
+        profile = selector._registry.require(prompt_id)
+        assert rendered == profile.system_prompt
+        assert "AutoAD Assistant global invariants" not in rendered
+
+    with pytest.raises(KeyError, match="unsupported v2 prompt component"):
+        selector.prompt_id_for_v2_component("unknown")
+
+
+def test_v2_message_builders_use_registered_prompt_profiles(monkeypatch):
+    selector = PromptSelector()
+
+    source_messages = _build_source_action_messages(
+        user_input="clone repo",
+        transcript_tail=[],
+        existing_contract_draft={},
+        source_registry=[],
+        pending_jobs=[],
+        tool_capabilities=[],
+        repository_hints=[],
+    )
+    turn_messages = _build_turn_gate_messages(
+        user_input="继续",
+        transcript_tail=[],
+        existing_contract_draft={},
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+    )
+    need_messages = _build_need_discovery_messages(
+        user_input="做实验",
+        transcript_tail=[],
+        existing_contract_draft={},
+        source_registry=[],
+        usable_evidence=[],
+        created_jobs=[],
+        current_stage_goal="generate_plan",
+        answerability={},
+        run_artifacts_summary={},
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        captured["messages"] = messages
+        return {"reply": '{"reply_to_user":"ok"}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    _llm_reply({}, "你好", "sk-test", "https://example.test")
+    reply_messages = captured["messages"]
+
+    assert source_messages[0]["content"] == selector.build_system_prompt_for_v2_component("source_action_planner")
+    assert turn_messages[0]["content"] == selector.build_system_prompt_for_v2_component("turn_gate")
+    assert need_messages[0]["content"] == selector.build_system_prompt_for_v2_component("need_discovery")
+    assert reply_messages[0]["content"] == selector.build_system_prompt_for_v2_component("reply_planner")
