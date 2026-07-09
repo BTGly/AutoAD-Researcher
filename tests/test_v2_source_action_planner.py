@@ -11,6 +11,7 @@ from autoad_researcher.assistant.v2.source_action_planner import (
     plan_source_actions,
 )
 from autoad_researcher.assistant.v2.source_service import classify_input
+from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence, load_usable_evidence
 from autoad_researcher.ui.sources import load_source_registry
 from autoad_researcher.worker.main import _run_web_search
 
@@ -249,6 +250,50 @@ def test_orchestrator_creates_web_search_job_from_llm_source_action(monkeypatch,
     assert result.reply_kind == "source_intake"
     assert [job["job_type"] for job in result.created_jobs] == ["web_search"]
     assert result.created_jobs[0]["payload"]["query"] == "MVTec AD PatchCore AUROC improvement methods"
+
+
+def test_orchestrator_removes_latest_source_when_user_rejects_upload(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_remove"
+    source_dir = run_dir / "sources" / "src_wrong"
+    source_dir.mkdir(parents=True)
+    (source_dir / "wrong.md").write_text("wrong material", encoding="utf-8")
+    (run_dir / "sources" / "source_references.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "sources": [
+                {
+                    "source_id": "src_wrong",
+                    "kind": "markdown",
+                    "user_label": "wrong.md",
+                    "status": "uploaded_not_parsed",
+                    "stored_path": "sources/src_wrong/wrong.md",
+                    "created_at": "2026-07-09T01:00:00+00:00",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    append_artifact_evidence(
+        run_dir,
+        source_id="src_wrong",
+        artifact_path="sources/src_wrong/wrong.md",
+        evidence_type="uploaded_text",
+        parser_name="direct_upload",
+        summary="wrong material",
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("LLM planner should not be called for direct source removal")
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fail_if_called)
+
+    result = ResearchOrchestratorV2.handle(run_dir, user_input="我上传错了，这个不是我们要的")
+
+    assert result.reply_kind == "source_deleted"
+    assert "wrong.md" in result.reply
+    assert load_source_registry(run_dir)["sources"] == []
+    assert load_usable_evidence(run_dir) == []
+    assert not source_dir.exists()
 
 
 def test_worker_web_search_wraps_pipeline_job_for_material_subagent(monkeypatch, tmp_path: Path):

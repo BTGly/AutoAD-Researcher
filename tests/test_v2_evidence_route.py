@@ -12,6 +12,7 @@ from autoad_researcher.assistant.v2.job_service import append_pipeline_job, fail
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
 from autoad_researcher.paper_intelligence.reading_artifacts import build_paper_reading_artifacts
 from autoad_researcher.server.worker_runtime import embedded_worker_enabled
+from autoad_researcher.server.routes import draft as draft_route
 from autoad_researcher.server.routes import evidence as evidence_route
 from autoad_researcher.server.routes import sources as sources_route
 from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
@@ -80,6 +81,66 @@ async def test_evidence_route_rejects_path_traversal_run_id(tmp_path: Path, monk
         await evidence_route.get_evidence("../outside")
 
     assert excinfo.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_source_removes_registry_evidence_and_files(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sources_route, "RUNS_ROOT", str(tmp_path))
+    run_dir = tmp_path / "run_demo"
+    source_dir = run_dir / "sources" / "src_wrong"
+    source_dir.mkdir(parents=True)
+    (source_dir / "wrong.md").write_text("wrong material", encoding="utf-8")
+    (run_dir / "sources" / "source_references.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "sources": [
+                {
+                    "source_id": "src_wrong",
+                    "kind": "markdown",
+                    "user_label": "wrong.md",
+                    "status": "uploaded_not_parsed",
+                    "stored_path": "sources/src_wrong/wrong.md",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    append_artifact_evidence(
+        run_dir,
+        source_id="src_wrong",
+        artifact_path="sources/src_wrong/wrong.md",
+        evidence_type="uploaded_text",
+        parser_name="direct_upload",
+        summary="wrong material",
+    )
+
+    deleted = await sources_route.delete_source("run_demo", "src_wrong")
+
+    assert deleted == {"source_id": "src_wrong", "deleted": True, "removed_evidence": 1}
+    assert json.loads((run_dir / "sources" / "source_references.json").read_text(encoding="utf-8"))["sources"] == []
+    assert not source_dir.exists()
+    assert load_usable_evidence(run_dir) == []
+
+
+@pytest.mark.asyncio
+async def test_draft_route_returns_chinese_missing_state(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(draft_route, "RUNS_ROOT", str(tmp_path))
+    run_dir = tmp_path / "run_demo"
+    (run_dir / "chat").mkdir(parents=True)
+    (run_dir / "chat" / "transcript.jsonl").write_text(
+        json.dumps({"role": "user", "content": "pathcore为基线，然后指标AUROC，数据集mvtec"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    payload = await draft_route.get_draft("run_demo")
+
+    assert payload["title"] == "研究计划草案"
+    assert payload["has_draft"] is True
+    fields = {item["field"]: item for item in payload["fields"]}
+    assert fields["baseline"]["value"] == "PatchCore"
+    assert fields["dataset"]["value"] == "MVTec AD"
+    assert "AUROC" in fields["primary_metrics"]["value"]
+    assert any(item["label"] == "成功标准" for item in payload["missing"])
 
 
 @pytest.mark.asyncio
