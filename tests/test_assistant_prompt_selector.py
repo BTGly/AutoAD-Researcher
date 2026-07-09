@@ -75,10 +75,14 @@ def test_selector_does_not_route_from_user_text():
 def test_research_task_draft_prompt_is_schema_bound():
     selector = PromptSelector()
     profile = selector.research_task_draft_profile()
+    rendered = selector.build_research_task_draft_prompt()
 
     assert profile.prompt_id == RESEARCH_TASK_DRAFT_PROMPT_ID
     assert profile.io.output_schema == "ResearchTaskDraftV1"
-    assert "Do not interrogate. Propose first." in selector.build_research_task_draft_prompt()
+    assert profile.system_prompt in rendered
+    assert "研究任务书草案生成器" in rendered
+    assert "ResearchTaskDraftV1" in profile.io.output_schema
+    assert "Do not interrogate. Propose first." in rendered
 
 
 def test_selector_rejects_unsupported_mode_at_runtime():

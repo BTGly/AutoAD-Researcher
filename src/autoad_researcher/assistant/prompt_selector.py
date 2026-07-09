@@ -76,7 +76,7 @@ class PromptSelector:
         return self._registry.require(RESEARCH_TASK_DRAFT_PROMPT_ID)
 
     def build_research_task_draft_prompt(self) -> str:
-        return self.build_system_prompt_for_mode("task_confirmation")
+        return self._registry.build_system_prompt(RESEARCH_TASK_DRAFT_PROMPT_ID)
 
     def select_prompt_id(self, mode: AssistantMode) -> str:
         return self.prompt_id_for_mode(mode)
