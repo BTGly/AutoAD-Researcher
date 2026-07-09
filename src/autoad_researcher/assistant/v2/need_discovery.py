@@ -330,6 +330,11 @@ def canonicalize_metrics(value: Any) -> list[str]:
     for item in raw_items:
         lowered = item.lower()
         item_metrics: list[str] = []
+        if (
+            re.search(r"(?<![A-Za-z0-9_])auroc(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])auc-?roc(?![A-Za-z0-9_])", lowered)
+            and any(token in item for token in ("两种", "两个", "主流"))
+        ):
+            item_metrics.extend(["image_level_auroc", "pixel_level_auroc"])
         if re.search(r"image[-_\s]*(level[-_\s]*)?(auc|auroc)|instance[-_\s]*(level[-_\s]*)?(auc|auroc)", lowered):
             item_metrics.append("image_level_auroc")
         if re.search(r"pixel[-_\s]*(level[-_\s]*)?(auc|auroc)|full[-_\s]*pixel[-_\s]*(auc|auroc)|定位", lowered):
@@ -539,8 +544,8 @@ def _dataset_from_text(text: str) -> str | None:
 
 
 def _success_criteria_from_text(text: str) -> str | None:
-    if "成功标准" in text:
-        return text
+    if "比" in text and "patchcore" in text.lower() and ("提升" in text or "高于" in text or "超过" in text):
+        return "improve selected AUROC metrics over the PatchCore baseline under the same evaluation protocol"
     if "比原始" in text and "提升" in text:
         return "improve selected metrics over the original baseline under the same evaluation protocol"
     if "提升" in text or "提高" in text:

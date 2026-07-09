@@ -1,4 +1,5 @@
 import type { Message } from '../lib/types';
+import { MarkdownContent } from './MarkdownContent';
 import { ToolLineComponent } from './ToolLine';
 
 export function UserMessage({ msg }: { msg: Message }) {
@@ -17,7 +18,11 @@ export function AssistantMessage({ msg }: { msg: Message }) {
       {msg.toolLines?.map(tl => (
         <ToolLineComponent key={tl.id} tool={tl} />
       ))}
-      {msg.content && <div style={{ marginTop: msg.toolLines?.length ? 8 : 0 }} className="msg-content">{msg.content}</div>}
+      {msg.content && (
+        <MarkdownContent className={msg.toolLines?.length ? 'msg-content with-tool-lines' : 'msg-content'}>
+          {msg.content}
+        </MarkdownContent>
+      )}
     </div>
   );
 }

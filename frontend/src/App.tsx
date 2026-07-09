@@ -11,6 +11,7 @@ import { LeftSidebar } from './components/LeftSidebar';
 import { SettingsPage } from './components/SettingsPage';
 import { ReportPage } from './components/ReportPage';
 import { DevMockPanel } from './components/DevMockPanel';
+import { MarkdownContent } from './components/MarkdownContent';
 import { TaskMenu } from './components/TaskMenu';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
@@ -532,9 +533,9 @@ function ArtifactItem({ artifact, runId }: { artifact: ArtifactEntry; runId: str
         <div style={{
           maxHeight: 300, overflow: 'auto', padding: '6px 8px', fontSize: '0.78em',
           color: 'var(--text)', background: 'var(--bg)', borderRadius: 4, margin: '4px 0',
-          whiteSpace: 'pre-wrap', border: '1px solid var(--border)',
+          border: '1px solid var(--border)',
         }}>
-          {content.slice(0, 3000)}
+          <MarkdownContent>{content.slice(0, 3000)}</MarkdownContent>
         </div>
       )}
     </div>

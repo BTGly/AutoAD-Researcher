@@ -27,6 +27,14 @@ METRIC_LABELS = {
     "auroc": "AUROC",
 }
 
+HINT_LABELS = {
+    "feature_adapter": "特征适配器",
+    "synthetic_anomaly_features": "合成异常特征",
+    "discriminator_score_calibration": "判别器/分数校准",
+    "feature_extractor": "特征提取器",
+    "sampling": "采样/coreset 策略",
+}
+
 
 def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
     transcript = _load_transcript(run_dir)
@@ -38,17 +46,17 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
     failed_jobs = ctx.get("failed_jobs", []) or []
 
     if contract is not None:
+        primary_metrics = _augment_metrics_from_transcript(contract.primary_metrics, transcript)
         fields = {
-            "research_goal": contract.research_goal,
+            "research_goal": _display_goal(contract.research_goal, contract.baseline, contract.dataset, primary_metrics),
             "baseline": contract.baseline,
             "dataset": contract.dataset,
-            "primary_metrics": contract.primary_metrics,
-            "success_criteria": contract.success_criteria,
+            "primary_metrics": primary_metrics,
+            "success_criteria": _display_success_criteria(contract.success_criteria, contract.baseline, primary_metrics),
             "execution_mode": contract.execution_mode,
             "baseline_repo": contract.baseline_repo,
-            "evaluation_protocol": contract.evaluation_protocol,
-            "user_improvement_hints": contract.user_improvement_hints,
-            "preferred_method_hints": contract.preferred_method_hints,
+            "user_improvement_hints": contract.user_improvement_hints or _improvement_hints_from_transcript_and_evidence(transcript, usable),
+            "preferred_method_hints": contract.preferred_method_hints or _method_hints_from_evidence(usable),
         }
         missing = list(contract.missing_required_fields)
         ready = contract.ready_for_plan
@@ -63,7 +71,6 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
             "success_criteria": None,
             "execution_mode": "plan_only",
             "baseline_repo": _first_repo_source(sources),
-            "evaluation_protocol": None,
             "user_improvement_hints": [],
             "preferred_method_hints": _method_hints_from_evidence(usable),
         }
@@ -111,6 +118,41 @@ def _fallback_goal(confirmed: dict[str, Any]) -> str | None:
     return None
 
 
+def _augment_metrics_from_transcript(metrics: list[str], transcript: list[dict[str, Any]]) -> list[str]:
+    values = list(metrics or [])
+    text = "\n".join(str(entry.get("content") or "") for entry in transcript if entry.get("role") == "user")
+    lowered = text.lower()
+    if (
+        "auroc" in lowered
+        and any(token in text for token in ("两种", "两个", "主流"))
+        and "image_level_auroc" in values
+        and "pixel_level_auroc" not in values
+    ):
+        values.append("pixel_level_auroc")
+    return values
+
+
+def _display_goal(goal: str | None, baseline: str | None, dataset: str | None, metrics: list[str]) -> str | None:
+    if goal and goal != "提升 baseline 在目标数据集上的表现":
+        return goal
+    if baseline and dataset and metrics:
+        metric_text = "、".join(_metric_label(metric) for metric in metrics)
+        return f"提升 {baseline} 在 {dataset} 上的 {metric_text}"
+    return goal
+
+
+def _display_success_criteria(value: str | None, baseline: str | None, metrics: list[str]) -> str | None:
+    if value in (None, ""):
+        return value
+    metric_text = "、".join(_metric_label(metric) for metric in metrics) if metrics else "AUROC"
+    if len(value) > 160 or "\n" in value or "成功标准" in value:
+        target = baseline or "baseline"
+        return f"{metric_text} 高于 {target} 基线（保持相同评估设置）"
+    if "improve" in value and "PatchCore baseline" in value:
+        return f"{metric_text} 高于 PatchCore 基线（保持相同评估设置）"
+    return value
+
+
 def _missing_fields(fields: dict[str, Any]) -> list[str]:
     missing: list[str] = []
     for field in CORE_REQUIRED_FIELDS:
@@ -129,13 +171,14 @@ def _render_fields(fields: dict[str, Any]) -> list[dict[str, Any]]:
         ("success_criteria", "成功标准"),
         ("execution_mode", "执行模式"),
         ("baseline_repo", "基线仓库"),
-        ("evaluation_protocol", "评估协议"),
         ("preferred_method_hints", "论文/方法线索"),
         ("user_improvement_hints", "用户改进想法"),
     ]
     rendered: list[dict[str, Any]] = []
     for key, label in ordered:
         value = fields.get(key)
+        if key in {"preferred_method_hints", "user_improvement_hints"} and value in (None, "", [], {}):
+            continue
         rendered.append({
             "field": key,
             "label": label,
@@ -150,6 +193,8 @@ def _format_value(key: str, value: Any) -> str:
         return "待补充"
     if key == "primary_metrics" and isinstance(value, list):
         return "、".join(_metric_label(str(item)) for item in value)
+    if key in {"preferred_method_hints", "user_improvement_hints"} and isinstance(value, list):
+        return "；".join(_hint_label(str(item)) for item in value) if value else "待补充"
     if isinstance(value, list):
         return "；".join(str(item) for item in value) if value else "待补充"
     if isinstance(value, dict):
@@ -161,6 +206,10 @@ def _format_value(key: str, value: Any) -> str:
 
 def _metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric)
+
+
+def _hint_label(hint: str) -> str:
+    return HINT_LABELS.get(hint, hint)
 
 
 def _first_repo_source(sources: list[Any]) -> str | None:
@@ -180,6 +229,15 @@ def _method_hints_from_evidence(evidence: list[Any]) -> list[str]:
         if "SimpleNet" in summary and hint not in hints:
             hints.append(hint)
     return hints
+
+
+def _improvement_hints_from_transcript_and_evidence(transcript: list[dict[str, Any]], evidence: list[Any]) -> list[str]:
+    text = "\n".join(str(entry.get("content") or "") for entry in transcript if entry.get("role") == "user")
+    if not any(token in text for token in ("论文内", "论文里", "论文方法", "这些想法", "都可以尝试", "都列上")):
+        return []
+    if "SimpleNet 论文方法" not in _method_hints_from_evidence(evidence):
+        return []
+    return ["feature_adapter", "synthetic_anomaly_features", "discriminator_score_calibration"]
 
 
 def _source_summary(source: dict[str, Any]) -> dict[str, str]:

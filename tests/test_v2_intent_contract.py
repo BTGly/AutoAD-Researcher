@@ -15,6 +15,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     merge_contract_draft,
     save_contract_draft,
 )
+from autoad_researcher.assistant.v2.draft_service import load_research_draft_state
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
@@ -51,17 +52,103 @@ def test_build_contract_ready_for_plan_without_improvement_or_target_module(tmp_
         llm_context=llm_context,
     )
 
-    assert contract.research_goal == "提升 baseline 在目标数据集上的表现"
+    assert contract.research_goal == "提升 PatchCore 在 MVTec AD 上的 image_level_auroc"
     assert contract.baseline == "PatchCore"
     assert contract.dataset == "MVTec AD"
     assert contract.primary_metrics == ["image_level_auroc"]
     assert contract.primary_metric == "image_level_auroc"
-    assert contract.success_criteria == "improve selected metrics under the same evaluation protocol"
+    assert contract.success_criteria == "improve image_level_auroc under the same evaluation protocol"
     assert contract.user_improvement_hints == []
     assert contract.user_target_module_hints == []
     assert contract.ready_for_plan is True
     assert contract.ready_for_experiment_agents is False
     assert contract.missing_required_fields == []
+
+
+def test_contract_cleans_patchcore_simplenet_conversation_state(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    transcript = [
+        {"role": "user", "content": "pathcore为基线，然后指标AUROC，数据集mvtec；方法采取论文内的，你觉得什么方法好？"},
+        {"role": "assistant", "content": "可以尝试特征适配器、合成异常特征、判别器校准。"},
+        {"role": "user", "content": "这些想法都可以尝试，然后提升就是AUROC，到那时AUROC也有几种，选最主流的两种吧"},
+        {"role": "user", "content": "基线仓库找pathcore的啊，我说了用户改进想法了，你都列上去啊，成功标准比就是提升AUROC比pathcore"},
+    ]
+
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="基线仓库找pathcore的啊，我说了用户改进想法了，你都列上去啊，成功标准比就是提升AUROC比pathcore",
+        transcript_tail=transcript,
+        llm_context={
+            "confirmed_from_user": {
+                "baseline": "PatchCore",
+                "dataset": "MVTec AD",
+                "metrics": ["image_level_auroc"],
+            },
+            "usable_evidence": [
+                {
+                    "evidence_type": "paper_reading_summary",
+                    "summary": "SimpleNet uses a Feature Adaptor, Gaussian noise to synthesize anomalous features, and a Discriminator.",
+                }
+            ],
+        },
+    )
+
+    assert contract.research_goal == "提升 PatchCore 在 MVTec AD 上的 image_level_auroc, pixel_level_auroc"
+    assert contract.primary_metrics == ["image_level_auroc", "pixel_level_auroc"]
+    assert contract.success_criteria == (
+        "improve image_level_auroc, pixel_level_auroc over the PatchCore baseline under the same evaluation protocol"
+    )
+    assert contract.user_improvement_hints == [
+        "feature_adapter",
+        "synthetic_anomaly_features",
+        "discriminator_score_calibration",
+    ]
+    assert contract.preferred_method_hints == ["SimpleNet 论文方法"]
+
+
+def test_draft_display_cleans_legacy_polluted_contract(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    (run_dir / "chat").mkdir(parents=True)
+    (run_dir / "chat" / "transcript.jsonl").write_text(
+        "\n".join([
+            json.dumps({"role": "user", "content": "AUROC也有几种，选最主流的两种吧"}, ensure_ascii=False),
+            json.dumps({"role": "user", "content": "这些想法都可以尝试，方法采取论文内的"}, ensure_ascii=False),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence_dir = run_dir / "evidence"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "evidence_index.jsonl").write_text(
+        json.dumps({
+            "source_id": "src_pdf",
+            "support_level": "supported",
+            "evidence_type": "paper_reading_summary",
+            "artifact_path": "summary.md",
+            "summary": "SimpleNet uses feature adaptor, Gaussian noise, and discriminator.",
+        }, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    save_contract_draft(run_dir, ResearchIntentContract(
+        run_id="run_contract",
+        research_goal="提升 baseline 在目标数据集上的表现",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
+        success_criteria="成功标准 " + "聊天历史污染 " * 30 + "提升AUROC比pathcore",
+        baseline_repo="https://github.com/amazon-science/patchcore-inspection",
+    ))
+
+    payload = load_research_draft_state(run_dir)
+
+    fields = {item["field"]: item for item in payload["fields"]}
+    assert fields["research_goal"]["value"] == "提升 PatchCore 在 MVTec AD 上的 图像级 AUROC、像素级 AUROC"
+    assert fields["primary_metrics"]["value"] == "图像级 AUROC、像素级 AUROC"
+    assert fields["success_criteria"]["value"] == "图像级 AUROC、像素级 AUROC 高于 PatchCore 基线（保持相同评估设置）"
+    assert fields["user_improvement_hints"]["value"] == "特征适配器；合成异常特征；判别器/分数校准"
+    assert "evaluation_protocol" not in fields
 
 
 def test_build_contract_keeps_repo_analysis_readiness_separate(tmp_path: Path):
@@ -452,6 +539,40 @@ def test_parse_failure_question_bypasses_llm_speculation(monkeypatch):
     assert "临时服务异常" not in reply
 
 
+def test_repo_failure_question_does_not_append_pdf_conclusion():
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "idle"},
+            "unparsed_sources": [],
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "pending_jobs": [],
+            "failed_jobs": [
+                {"job_id": "job_000002", "job_type": "git_clone", "error": "git_clone: git command failed: timed_out:"},
+                {"job_id": "job_000004", "job_type": "git_clone", "error": "fatal: unable to access 'https://github.com/amazon-science/patchcore-inspection/': GnuTLS recv error (-110): The TLS connection was non-properly terminated."},
+                {"job_id": "job_000003", "job_type": "repo_summarize", "error": "dependency failed: job_000002"},
+            ],
+            "unusable_parsed_sources": [
+                {
+                    "source_id": "src_pdf",
+                    "user_label": "2303.15140v2.pdf",
+                    "warnings": ["parse produced no readable paper.md"],
+                }
+            ],
+        },
+        "查看clone仓库失败原因",
+    )
+
+    assert "网络/TLS" in reply
+    assert "不像是仓库不存在" in reply
+    assert "git_clone(job_000002)" in reply
+    assert "git_clone(job_000004)" in reply
+    assert "dependency failed: job_000002" in reply
+    assert "web_search 镜像/候选仓库" in reply
+    assert "PDF" not in reply
+    assert "论文方法细节证据" not in reply
+
+
 def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
@@ -521,7 +642,7 @@ def test_hf2_contract_ready_after_metric_and_success(tmp_path: Path):
     assert merged.missing_required_fields == []
     assert merged.primary_metrics == ["image_level_auroc"]
     assert merged.primary_metric == "image_level_auroc"
-    assert merged.success_criteria == "主要看 image AUROC，成功标准是保持原始评价协议并提升指标。"
+    assert merged.success_criteria == "improve image_level_auroc under the same evaluation protocol"
 
 
 def test_hf2_metric_extraction_image_and_pixel_co_primary(tmp_path: Path):

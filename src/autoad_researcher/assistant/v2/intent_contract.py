@@ -198,33 +198,50 @@ def build_contract_from_context(
         )
     else:
         metric_intent = inferred_metric_intent
-    primary_metrics = metric_intent.primary_metrics
+    primary_metrics = _expand_contextual_metric_set(metric_intent.primary_metrics, combined_user_text)
+    if primary_metrics != metric_intent.primary_metrics:
+        metric_intent = metric_intent.model_copy(update={
+            "primary_metrics": primary_metrics,
+            "secondary_metrics": [metric for metric in metric_intent.secondary_metrics if metric not in primary_metrics],
+            "metric_priority": _metric_priority(primary_metrics, []),
+        })
     primary_metric = primary_metrics[0] if len(primary_metrics) == 1 else None
     baseline_repo = _extract_clean_url(str(need_fields.get("baseline_repo", ""))) or _first_github_source(sources) or _clean_str(need_fields.get("baseline_repo"))
+    success_criteria = _normalize_success_criteria(
+        _clean_str(need_fields.get("success_criteria")) or _infer_success_criteria(combined_user_text, primary_metrics),
+        combined_user_text,
+        primary_metrics,
+    )
+    baseline = _clean_str(confirmed.get("baseline")) or _clean_str(need_fields.get("baseline")) or _infer_baseline(combined_user_text)
+    dataset = _clean_str(confirmed.get("dataset")) or _clean_str(need_fields.get("dataset")) or _infer_dataset(combined_user_text)
+    research_goal = _normalize_research_goal(
+        _clean_str(confirmed.get("research_goal"))
+        or _clean_str(need_fields.get("research_goal"))
+        or _infer_research_goal(combined_user_text, confirmed),
+        baseline,
+        dataset,
+        primary_metrics,
+    )
 
     contract = ResearchIntentContract(
         run_id=run_dir.name,
         task_domain=_task_domain_from_need_spec(need_spec) or _infer_task_domain(combined_user_text),
-        research_goal=(
-            _clean_str(confirmed.get("research_goal"))
-            or _clean_str(need_fields.get("research_goal"))
-            or _infer_research_goal(combined_user_text, confirmed)
-        ),
-        baseline=_clean_str(confirmed.get("baseline")) or _clean_str(need_fields.get("baseline")) or _infer_baseline(combined_user_text),
+        research_goal=research_goal,
+        baseline=baseline,
         baseline_repo=baseline_repo,
-        dataset=_clean_str(confirmed.get("dataset")) or _clean_str(need_fields.get("dataset")) or _infer_dataset(combined_user_text),
+        dataset=dataset,
         evaluation_protocol=_clean_str(need_fields.get("evaluation_protocol")) or _infer_evaluation_protocol(combined_user_text),
         primary_metrics=primary_metrics,
         primary_metric=primary_metric,
         secondary_metrics=metric_intent.secondary_metrics,
         metric_priority=metric_intent.metric_priority,
         metric_intent=metric_intent,
-        success_criteria=_clean_str(need_fields.get("success_criteria")) or _infer_success_criteria(combined_user_text, primary_metrics),
+        success_criteria=success_criteria,
         compute_environment=_infer_compute_environment(combined_user_text, confirmed),
         execution_mode=_contract_execution_mode(need_fields.get("execution_mode"), combined_user_text),
-        user_improvement_hints=_infer_improvement_hints(combined_user_text),
+        user_improvement_hints=_infer_improvement_hints(combined_user_text, llm_context.get("usable_evidence", []) or []),
         user_target_module_hints=_infer_target_module_hints(combined_user_text),
-        preferred_method_hints=_infer_preferred_method_hints(combined_user_text),
+        preferred_method_hints=_infer_preferred_method_hints(combined_user_text, llm_context.get("usable_evidence", []) or []),
         risk_preference=_infer_risk_preference(combined_user_text),
         evidence_sources=_contract_evidence_sources(sources, llm_context),
         need_spec=need_spec,
@@ -597,10 +614,32 @@ def _infer_research_goal(text: str, confirmed: dict[str, Any]) -> str | None:
             return "降低 baseline 显存占用"
         if "复现" in text and "跑通" in text:
             return "复现并跑通 baseline"
+        baseline = _infer_baseline(text)
+        dataset = _infer_dataset(text)
+        metric_intent = _extract_metric_intent(text)
+        if baseline and dataset and metric_intent.primary_metrics:
+            metric_text = ", ".join(metric_intent.primary_metrics)
+            return f"提升 {baseline} 在 {dataset} 上的 {metric_text}"
         return "提升 baseline 在目标数据集上的表现"
     if "复现" in text:
         return "复现并评估目标方法"
     return None
+
+
+def _normalize_research_goal(
+    value: str | None,
+    baseline: str | None,
+    dataset: str | None,
+    primary_metrics: list[str],
+) -> str | None:
+    if baseline and dataset and primary_metrics and value in {
+        None,
+        "",
+        "提升 baseline 在目标数据集上的表现",
+    }:
+        metric_text = ", ".join(primary_metrics)
+        return f"提升 {baseline} 在 {dataset} 上的 {metric_text}"
+    return value
 
 
 def _infer_baseline(text: str) -> str | None:
@@ -629,6 +668,8 @@ def _infer_metrics(text: str) -> tuple[str | None, list[str]]:
 def _extract_metric_intent(text: str) -> MetricIntent:
     mentions = _find_metric_mentions(text)
     mentioned = _unique_metrics([mention.canonical for mention in mentions])
+    if _requests_two_common_auroc_metrics(text):
+        mentioned = _unique_metrics([*mentioned, "image_level_auroc", "pixel_level_auroc"])
     if not mentioned:
         return MetricIntent()
 
@@ -700,6 +741,21 @@ def _find_metric_mentions(text: str) -> list[MetricMention]:
     return [mention for _, mention in sorted(mentions, key=lambda item: item[0])]
 
 
+def _requests_two_common_auroc_metrics(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        bool(re.search(r"(?<![A-Za-z0-9_])auroc(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])auc-?roc(?![A-Za-z0-9_])", lowered))
+        and any(token in text for token in ("两种", "两个", "主流"))
+        and any(token in lowered for token in ("mvtec", "patchcore", "anomaly"))
+    )
+
+
+def _expand_contextual_metric_set(metrics: list[str], text: str) -> list[str]:
+    if _requests_two_common_auroc_metrics(text):
+        return _unique_metrics([*metrics, "image_level_auroc", "pixel_level_auroc"])
+    return metrics
+
+
 def _metrics_with_primary_cues(text: str, metrics: list[str]) -> list[str]:
     primary: list[str] = []
     for clause in _metric_clauses(text):
@@ -755,10 +811,31 @@ def _infer_success_criteria(text: str, primary_metrics: list[str]) -> str | None
         return "reduce peak VRAM without weakening the evaluation protocol"
     if "速度" in text or "推理" in text:
         return "reduce inference latency without weakening the evaluation protocol"
+    if "比" in text and re.search(r"(patch\s*)?core|pathcore", text, re.IGNORECASE) and ("提升" in text or "高于" in text or "超过" in text):
+        metric = ", ".join(primary_metrics) if primary_metrics else "AUROC"
+        return f"improve {metric} over the PatchCore baseline under the same evaluation protocol"
     if "提升" in text or "提高" in text or "优化" in text:
         metric = ", ".join(primary_metrics) if primary_metrics else "primary metric"
         return f"improve {metric} under the same evaluation protocol"
     return None
+
+
+def _normalize_success_criteria(value: str | None, text: str, primary_metrics: list[str]) -> str | None:
+    if value in (None, ""):
+        return None
+    metric = ", ".join(primary_metrics) if primary_metrics else "AUROC"
+    if (
+        len(value) > 160
+        or "\n" in value
+        or ("成功标准" in value and len(value) > 40)
+        or "selected metrics" in value
+        or ("比" in text and re.search(r"(patch\s*)?core|pathcore", text, re.IGNORECASE))
+    ):
+        if "比" in text and re.search(r"(patch\s*)?core|pathcore", text, re.IGNORECASE):
+            return f"improve {metric} over the PatchCore baseline under the same evaluation protocol"
+        if "提升" in text or "提高" in text or "优化" in text:
+            return f"improve {metric} under the same evaluation protocol"
+    return value
 
 
 def _infer_evaluation_protocol(text: str) -> str | None:
@@ -797,15 +874,22 @@ def _infer_execution_mode(text: str) -> Literal["plan_only", "approve_each_step"
     return "plan_only"
 
 
-def _infer_improvement_hints(text: str) -> list[str]:
+def _infer_improvement_hints(text: str, usable_evidence: list[Any] | None = None) -> list[str]:
     hints: list[str] = []
-    if any(token in text.lower() for token in ("feature adapter", "adapter", "适配层")):
+    lowered = text.lower()
+    if any(token in lowered for token in ("feature adapter", "adapter", "适配层")) or "特征适配" in text:
         hints.append("feature_adapter")
-    if any(token in text.lower() for token in ("dinov2", "backbone", "特征提取")):
+    if any(token in lowered for token in ("dinov2", "backbone", "特征提取")):
         hints.append("feature_extractor")
-    if "采样" in text or "coreset" in text.lower():
+    if "采样" in text or "coreset" in lowered:
         hints.append("sampling")
-    return hints
+    if any(token in text for token in ("合成异常", "异常特征", "高斯噪声")):
+        hints.append("synthetic_anomaly_features")
+    if "判别器" in text or "discriminator" in lowered:
+        hints.append("discriminator_score_calibration")
+    if _accepts_paper_method_hints(text) and _evidence_mentions_simplenet(usable_evidence or []):
+        hints.extend(["feature_adapter", "synthetic_anomaly_features", "discriminator_score_calibration"])
+    return _merge_unique_list([], hints)
 
 
 def _infer_target_module_hints(text: str) -> list[str]:
@@ -820,8 +904,10 @@ def _infer_target_module_hints(text: str) -> list[str]:
     return hints
 
 
-def _infer_preferred_method_hints(text: str) -> list[str]:
+def _infer_preferred_method_hints(text: str, usable_evidence: list[Any] | None = None) -> list[str]:
     hints: list[str] = []
+    if "simplenet" in text.lower() or _evidence_mentions_simplenet(usable_evidence or []):
+        hints.append("SimpleNet 论文方法")
     if "轻量" in text:
         hints.append("lightweight")
     if "蒸馏" in text or "distill" in text.lower():
@@ -830,7 +916,21 @@ def _infer_preferred_method_hints(text: str) -> list[str]:
         hints.append("attention")
     if "特征融合" in text or "feature fusion" in text.lower():
         hints.append("feature_fusion")
-    return hints
+    return _merge_unique_list([], hints)
+
+
+def _accepts_paper_method_hints(text: str) -> bool:
+    return any(token in text for token in ("论文内", "论文里", "论文方法", "这些想法", "都可以尝试", "都列上"))
+
+
+def _evidence_mentions_simplenet(usable_evidence: list[Any]) -> bool:
+    for item in usable_evidence:
+        if not isinstance(item, dict):
+            continue
+        haystack = " ".join(str(item.get(key) or "") for key in ("summary", "artifact_path", "evidence_type"))
+        if "simplenet" in haystack.lower():
+            return True
+    return False
 
 
 def _infer_risk_preference(text: str) -> str | None:

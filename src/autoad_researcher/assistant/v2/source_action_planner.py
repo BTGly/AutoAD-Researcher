@@ -111,7 +111,11 @@ def plan_source_actions(
     they remain ordinary chat.
     """
 
-    explicit = _explicit_source_plan(user_input=user_input, attachments=attachments)
+    explicit = _explicit_source_plan(
+        user_input=user_input,
+        attachments=attachments,
+        source_registry=source_registry,
+    )
     if explicit is not None:
         return explicit
 
@@ -285,7 +289,12 @@ def _build_source_action_messages(
     ]
 
 
-def _explicit_source_plan(*, user_input: str, attachments: list[str] | None) -> SourceActionPlan | None:
+def _explicit_source_plan(
+    *,
+    user_input: str,
+    attachments: list[str] | None,
+    source_registry: list[dict[str, Any]] | None = None,
+) -> SourceActionPlan | None:
     if attachments:
         return SourceActionPlan(
             actions=[
@@ -299,6 +308,23 @@ def _explicit_source_plan(*, user_input: str, attachments: list[str] | None) -> 
             ],
             confidence=1.0,
             reason="Structured upload signal.",
+        )
+
+    mirror_query = _explicit_mirror_search_query(user_input, source_registry or [])
+    if mirror_query:
+        return SourceActionPlan(
+            actions=[
+                SourceAction(
+                    action_type="web_search",
+                    target=mirror_query,
+                    query=mirror_query,
+                    confidence=0.95,
+                    rationale="User explicitly asked to web-search for a repository mirror.",
+                )
+            ],
+            user_visible_summary="将搜索可访问的仓库镜像/候选来源。",
+            confidence=0.95,
+            reason="Explicit mirror repository search request.",
         )
 
     url = _extract_clean_url(user_input.strip())
@@ -332,6 +358,49 @@ def _is_github_url(url: str) -> bool:
     hostname = (parsed.hostname or "").lower()
     path_parts = [part for part in parsed.path.split("/") if part]
     return (hostname == "github.com" or hostname.endswith(".github.com")) and len(path_parts) >= 2
+
+
+def _explicit_mirror_search_query(user_input: str, source_registry: list[dict[str, Any]]) -> str | None:
+    text = re.sub(r"\s+", "", user_input.strip().lower())
+    if not text:
+        return None
+    has_search_intent = any(token in text for token in ("websearch", "web_search", "搜索", "搜一下", "查找", "找"))
+    has_mirror_repo_intent = any(token in text for token in ("镜像", "mirror", "替代源")) and any(
+        token in text for token in ("仓库", "repo", "github", "clone")
+    )
+    if not (has_search_intent and has_mirror_repo_intent):
+        return None
+    github_url = _latest_github_source_url(source_registry)
+    repo_slug = _github_repo_slug(github_url) if github_url else None
+    if repo_slug:
+        return f"{repo_slug} mirror GitCode Gitee AtomGit"
+    return user_input.strip()
+
+
+def _latest_github_source_url(source_registry: list[dict[str, Any]]) -> str | None:
+    github_sources = [
+        source for source in source_registry
+        if isinstance(source, dict)
+        and str(source.get("kind") or "") == "github_repo"
+        and (source.get("user_label") or source.get("stored_path"))
+    ]
+    if not github_sources:
+        return None
+    latest = max(github_sources, key=lambda item: str(item.get("created_at") or ""))
+    return str(latest.get("user_label") or latest.get("stored_path") or "")
+
+
+def _github_repo_slug(url: str | None) -> str | None:
+    if not url:
+        return None
+    cleaned = _extract_clean_url(url) or url.strip()
+    parsed = urlsplit(cleaned)
+    if (parsed.hostname or "").lower() != "github.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return "/".join(parts[:2])
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

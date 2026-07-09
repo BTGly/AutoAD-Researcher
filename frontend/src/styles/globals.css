@@ -64,6 +64,92 @@ html, body, #root {
 .msg-role.user { color: var(--text-dim); }
 .msg-role.assistant { color: var(--blue); }
 .msg-content { white-space: pre-wrap; word-break: break-word; }
+.markdown-content {
+  white-space: normal;
+  word-break: break-word;
+}
+.markdown-content.with-tool-lines { margin-top: 8px; }
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content > :last-child { margin-bottom: 0; }
+.markdown-content p { margin: 0 0 10px; }
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  margin: 14px 0 8px;
+  color: var(--text);
+  font-size: 1em;
+  line-height: 1.45;
+  font-weight: 700;
+}
+.markdown-content ul,
+.markdown-content ol {
+  margin: 8px 0 12px 20px;
+  padding-left: 8px;
+}
+.markdown-content li { margin: 4px 0; }
+.markdown-content li > p { margin: 0 0 6px; }
+.markdown-content strong { color: var(--text); font-weight: 700; }
+.markdown-content em { color: var(--text); }
+.markdown-content a { color: var(--blue); text-decoration: none; }
+.markdown-content a:hover { text-decoration: underline; }
+.markdown-content code {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.markdown-content pre {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-hover);
+}
+.markdown-content pre code {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  white-space: pre;
+}
+.markdown-content blockquote {
+  margin: 10px 0 12px;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+}
+.markdown-content hr {
+  margin: 14px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.markdown-table-wrap {
+  max-width: 100%;
+  margin: 10px 0 12px;
+  overflow-x: auto;
+}
+.markdown-content table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+}
+.markdown-content th,
+.markdown-content td {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-content th {
+  color: var(--text);
+  background: var(--bg-hover);
+  font-weight: 700;
+}
 .welcome-message {
   max-width: 820px; margin: 10vh auto 0; opacity: 0.5;
   padding: 0 12px;

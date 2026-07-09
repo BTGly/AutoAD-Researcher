@@ -44,6 +44,8 @@ def plan_reply(
     pending_jobs = llm_context.get("pending_jobs", [])
     failed_jobs = llm_context.get("failed_jobs", [])
     turn_gate = llm_context.get("turn_gate_decision", {}) or {}
+    if _is_repo_failure_question(user_input) and failed_jobs:
+        return _job_failure_fallback(blocking, pending_jobs, failed_jobs)
     if _is_parse_failure_question(user_input) and (failed_jobs or unusable):
         return _parse_failure_fallback(blocking, pending_jobs, failed_jobs, unusable)
 
@@ -240,8 +242,74 @@ def _parse_failure_fallback(
         else:
             parts.append("当前只知道这些 PDF 没有产出可读 paper.md。")
     parts.append("这些是当前 artifact 里能确认的原因；我不会补充 artifact 之外的猜测。")
-    parts.append("因此这份 PDF 目前不能作为论文方法细节证据。")
+    if unusable_sources:
+        parts.append("因此这份 PDF 目前不能作为论文方法细节证据。")
     return "answer", "\n".join(parts)
+
+
+def _job_failure_fallback(
+    blocking: str,
+    pending_jobs: list[dict[str, Any]] | None = None,
+    failed_jobs: list[dict[str, Any]] | None = None,
+) -> tuple[str, str]:
+    pending_jobs = pending_jobs or []
+    failed_jobs = failed_jobs or []
+    repo_failures = [job for job in failed_jobs if str(job.get("job_type") or "") in {"git_clone", "repo_summarize", "repo_analyze"}]
+    root_clone_failures = [job for job in repo_failures if str(job.get("job_type") or "") == "git_clone"]
+    dependent_failures = [job for job in repo_failures if str(job.get("error") or "").startswith("dependency failed")]
+    network_failures = [job for job in root_clone_failures if _looks_like_network_clone_failure(str(job.get("error") or ""))]
+
+    if network_failures:
+        parts = ["是的，从当前 job 记录看，主要失败原因是访问 GitHub 时的网络/TLS 传输失败。"]
+    elif root_clone_failures:
+        parts = ["当前根因在 git clone 阶段，仓库还没有成功拉到本地。"]
+    else:
+        parts = [f"当前状态: {blocking or 'idle'}"]
+
+    if root_clone_failures:
+        root_lines = ", ".join(
+            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
+            for j in root_clone_failures[:3]
+        )
+        parts.append(f"直接失败任务: {root_lines}")
+    elif failed_jobs:
+        job_lines = ", ".join(
+            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
+            for j in failed_jobs[:5]
+        )
+        parts.append(f"失败任务: {job_lines}")
+    if dependent_failures:
+        dep_lines = ", ".join(
+            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
+            for j in dependent_failures[:3]
+        )
+        parts.append(f"级联失败任务: {dep_lines}")
+    if pending_jobs:
+        job_lines = ", ".join(
+            f"{j.get('job_type')}({j.get('status')}, {j.get('job_id')})"
+            for j in pending_jobs[:3]
+        )
+        parts.append(f"仍在运行/排队的任务: {job_lines}")
+    if network_failures:
+        parts.append("这更像是当前环境到 GitHub 的连接不稳定或被中断，不像是仓库不存在。")
+        parts.append("可以下一步 web_search 镜像/候选仓库，再对可访问的候选源做 fetch 或 clone。")
+    elif repo_failures:
+        parts.append("因此当前仓库还没有成功 clone/analysis，右侧 Evidence 不应把 repo 摘要当作可用证据。")
+    return "answer", "\n".join(parts)
+
+
+def _looks_like_network_clone_failure(error: str) -> bool:
+    lowered = error.lower()
+    return any(token in lowered for token in (
+        "timed_out",
+        "timeout",
+        "gnutls",
+        "tls connection",
+        "non-properly terminated",
+        "unable to access",
+        "failed to connect",
+        "connection reset",
+    ))
 
 
 def _is_parse_failure_question(user_input: str) -> bool:
@@ -249,6 +317,15 @@ def _is_parse_failure_question(user_input: str) -> bool:
     if not text:
         return False
     return any(token in text for token in ("失败", "报错", "错误", "原因", "为什么", "为啥", "怎么回事"))
+
+
+def _is_repo_failure_question(user_input: str) -> bool:
+    text = re.sub(r"\s+", "", str(user_input).strip().lower())
+    if not text:
+        return False
+    has_failure_signal = any(token in text for token in ("失败", "报错", "错误", "原因", "为什么", "为啥", "怎么回事"))
+    has_repo_signal = any(token in text for token in ("clone", "git", "github", "repo", "仓库"))
+    return has_failure_signal and has_repo_signal
 
 
 def _non_contract_fallback(turn_gate: dict[str, Any] | None = None) -> str:

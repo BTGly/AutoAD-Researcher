@@ -252,6 +252,36 @@ def test_orchestrator_creates_web_search_job_from_llm_source_action(monkeypatch,
     assert result.created_jobs[0]["payload"]["query"] == "MVTec AD PatchCore AUROC improvement methods"
 
 
+def test_explicit_mirror_search_uses_registered_github_repo_without_llm(tmp_path: Path):
+    run_dir = tmp_path / "run_mirror"
+    source_dir = run_dir / "sources"
+    source_dir.mkdir(parents=True)
+    (source_dir / "source_references.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "sources": [
+                {
+                    "source_id": "src_repo",
+                    "kind": "github_repo",
+                    "user_label": "https://github.com/amazon-science/patchcore-inspection",
+                    "status": "user_provided_not_ingested",
+                    "created_at": "2026-07-09T01:00:00+00:00",
+                }
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="如果是网络问题，能不能 websearch 对应的镜像仓库？",
+    )
+
+    assert result.reply_kind == "source_intake"
+    assert [job["job_type"] for job in result.created_jobs] == ["web_search"]
+    assert result.created_jobs[0]["payload"]["query"] == "amazon-science/patchcore-inspection mirror GitCode Gitee AtomGit"
+
+
 def test_orchestrator_removes_latest_source_when_user_rejects_upload(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_remove"
     source_dir = run_dir / "sources" / "src_wrong"

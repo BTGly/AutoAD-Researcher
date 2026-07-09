@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getReport } from '../lib/api';
+import { MarkdownContent } from './MarkdownContent';
 
 interface Props {
   runId: string;
@@ -71,9 +72,9 @@ export function ReportPage({ runId, onBack }: Props) {
             border: '1px solid var(--border)', borderRadius: 8,
             padding: 24, background: 'var(--bg)',
             fontSize: '0.9em', lineHeight: 1.7,
-            whiteSpace: 'pre-wrap', fontFamily: 'inherit',
+            fontFamily: 'inherit',
           }}>
-            {report}
+            <MarkdownContent>{report}</MarkdownContent>
           </div>
         )}
       </div>
