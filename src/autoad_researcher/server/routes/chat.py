@@ -79,11 +79,7 @@ async def chat_send(req: ChatRequest, request: Request):
             return
         try:
             asyncio.run_coroutine_threadsafe(
-                manager.broadcast(req.run_id, {
-                    "type": "assistant.delta",
-                    "message_id": message_id,
-                    "content": delta,
-                }),
+                manager.broadcast(req.run_id, _assistant_delta_message(message_id, delta)),
                 loop,
             )
         except RuntimeError:
@@ -122,12 +118,7 @@ async def chat_send(req: ChatRequest, request: Request):
             "job_type": job.get("job_type", ""),
         })
 
-    await manager.broadcast(req.run_id, {
-        "type": "assistant.done",
-        "message_id": message_id,
-        "reply_kind": result.reply_kind,
-        "content": result.reply,
-    })
+    await manager.broadcast(req.run_id, _assistant_done_message(message_id, result.reply_kind, result.reply))
 
     return ChatResponse(
         reply=result.reply,
@@ -166,3 +157,20 @@ def _append_transcript(run_dir: Path, role: str, content: str) -> None:
     }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _assistant_delta_message(message_id: str, delta: str) -> dict[str, str]:
+    return {
+        "type": "assistant.delta",
+        "message_id": message_id,
+        "content": delta,
+    }
+
+
+def _assistant_done_message(message_id: str, reply_kind: str, content: str) -> dict[str, str]:
+    return {
+        "type": "assistant.done",
+        "message_id": message_id,
+        "reply_kind": reply_kind,
+        "content": content,
+    }

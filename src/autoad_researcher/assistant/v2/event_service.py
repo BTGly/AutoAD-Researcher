@@ -13,6 +13,15 @@ from typing import Any
 
 EVENTS_DIR = "events"
 EVENTS_FILE = "events.jsonl"
+LOW_FREQUENCY_TYPED_EVENTS = {
+    "planner.source_action.decided",
+    "planner.turn_gate.decided",
+    "planner.need_discovery.decided",
+    "contract.draft.updated",
+    "contract.confirmation.requested",
+    "prompt.trace.created",
+    "schema.validation.failed",
+}
 
 
 def _events_path(run_dir: Path) -> Path:
@@ -33,6 +42,12 @@ def append_event(run_dir: Path, event_type: str, payload: dict[str, Any] | None 
     return event
 
 
+def append_typed_event(run_dir: Path, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if event_type not in LOW_FREQUENCY_TYPED_EVENTS:
+        raise ValueError(f"unsupported low-frequency typed event: {event_type}")
+    return append_event(run_dir, event_type, payload)
+
+
 def load_events_since(run_dir: Path, last_event_id: int = 0) -> list[dict[str, Any]]:
     path = _events_path(run_dir)
     if not path.is_file():
@@ -47,6 +62,10 @@ def load_events_since(run_dir: Path, last_event_id: int = 0) -> list[dict[str, A
             except json.JSONDecodeError:
                 pass
     return events
+
+
+def event_to_ws_message(evt: dict[str, Any]) -> dict[str, Any]:
+    return {"type": evt["type"], **(evt.get("payload", {}) or {})}
 
 
 def _next_event_id(run_dir: Path) -> int:

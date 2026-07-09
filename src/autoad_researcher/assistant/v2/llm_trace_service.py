@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from autoad_researcher.assistant.v2.event_service import append_typed_event
+
 TRACE_DIR = "assistant/llm_traces"
 TRACE_INDEX = "llm_traces.jsonl"
 
@@ -69,6 +71,7 @@ def append_llm_trace(
     index_path = trace_dir / TRACE_INDEX
     with index_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    _append_trace_events(run_dir, record)
     return record
 
 
@@ -91,3 +94,19 @@ def provider_url_host(provider_url: str) -> str:
 
 def _new_trace_id() -> str:
     return f"trace_{int(time.time() * 1000)}_{uuid.uuid4().hex[:12]}"
+
+
+def _append_trace_events(run_dir: Path, record: dict[str, Any]) -> None:
+    summary = {
+        "trace_id": record["trace_id"],
+        "call_site": record["call_site"],
+        "prompt_id": record["prompt_id"],
+        "prompt_version": record["prompt_version"],
+        "parse_status": record["parse_status"],
+        "schema_validation": record["schema_validation"],
+        "fallback_reason": record["fallback_reason"],
+        "latency_ms": record["latency_ms"],
+    }
+    append_typed_event(run_dir, "prompt.trace.created", summary)
+    if record.get("schema_validation") == "error":
+        append_typed_event(run_dir, "schema.validation.failed", summary)

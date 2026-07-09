@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.v2.source_action_planner import SourceActionPlan, plan_source_actions
-from autoad_researcher.assistant.v2.event_service import append_event
+from autoad_researcher.assistant.v2.event_service import append_event, append_typed_event
 from autoad_researcher.assistant.v2.source_service import register_source_intake
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
@@ -94,6 +94,7 @@ class ResearchOrchestratorV2:
             api_key=api_key,
             provider_url=provider_url,
         )
+        _append_source_action_decided_event(run_dir, source_plan)
         created_sources, created_jobs = _execute_source_action_plan(run_dir, user_input, source_plan)
         if created_sources or created_jobs:
             ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
@@ -124,6 +125,7 @@ class ResearchOrchestratorV2:
             provider_url=provider_url,
             run_dir=run_dir,
         )
+        _append_turn_gate_decided_event(run_dir, turn_decision)
         ctx["turn_gate_decision"] = turn_decision.model_dump(mode="json")
 
         if created_sources or created_jobs:
@@ -223,6 +225,7 @@ class ResearchOrchestratorV2:
         if created_sources or created_jobs:
             reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
         elif contract.ready_for_plan:
+            _append_contract_confirmation_requested_event(run_dir, contract)
             reply_kind, reply = "intent_contract_confirmation", format_contract_for_user(contract)
         else:
             reply_kind, reply = plan_reply(
@@ -257,6 +260,48 @@ def _suggest_next_actions(ctx: dict, reply_kind: str) -> list[str]:
     elif blocking == "parse":
         actions.append("parse registered sources")
     return actions
+
+
+def _append_source_action_decided_event(run_dir: Path, plan: SourceActionPlan) -> None:
+    actions = plan.actions
+    append_typed_event(run_dir, "planner.source_action.decided", {
+        "action_count": len(actions),
+        "action_types": _unique_strings([action.action_type for action in actions]),
+        "source_kinds": _unique_strings([action.source_kind for action in actions if action.source_kind]),
+        "requires_confirmation_count": sum(1 for action in actions if action.requires_confirmation),
+        "confidence": plan.confidence,
+        "has_user_visible_summary": bool(plan.user_visible_summary),
+    })
+
+
+def _append_turn_gate_decided_event(run_dir: Path, decision) -> None:
+    append_typed_event(run_dir, "planner.turn_gate.decided", {
+        "turn_type": decision.turn_type,
+        "contract_action": decision.contract_action,
+        "contract_update_allowed": decision.contract_update_allowed,
+        "need_discovery_allowed": decision.need_discovery_allowed,
+        "save_draft_allowed": decision.save_draft_allowed,
+        "confidence": decision.confidence,
+    })
+
+
+def _append_contract_confirmation_requested_event(run_dir: Path, contract) -> None:
+    append_typed_event(run_dir, "contract.confirmation.requested", {
+        "ready_for_plan": contract.ready_for_plan,
+        "ready_for_repo_analysis": contract.ready_for_repo_analysis,
+        "ready_for_experiment_agents": contract.ready_for_experiment_agents,
+        "missing_required_fields": list(contract.missing_required_fields),
+        "primary_metrics_count": len(contract.primary_metrics),
+        "has_baseline_repo": bool(contract.baseline_repo),
+    })
+
+
+def _unique_strings(values: list[str | None]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
 
 
 def _maybe_remove_latest_source(run_dir: Path, user_input: str) -> dict[str, Any] | None:
