@@ -144,6 +144,39 @@ async def test_draft_route_returns_chinese_missing_state(tmp_path: Path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_draft_route_deduplicates_method_hints(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(draft_route, "RUNS_ROOT", str(tmp_path))
+    run_dir = tmp_path / "run_demo"
+    evidence_dir = run_dir / "evidence"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "evidence_index.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "source_id": "src_pdf",
+                "support_level": "supported",
+                "evidence_type": "paper_markdown_fallback",
+                "artifact_path": "paper.md",
+                "summary": "SimpleNet feature adaptor",
+            }),
+            json.dumps({
+                "source_id": "src_pdf",
+                "support_level": "supported",
+                "evidence_type": "paper_reading_summary",
+                "artifact_path": "summary.md",
+                "summary": "SimpleNet discriminator",
+            }),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = await draft_route.get_draft("run_demo")
+
+    fields = {item["field"]: item for item in payload["fields"]}
+    assert fields["preferred_method_hints"]["value"] == "SimpleNet 论文方法"
+
+
+@pytest.mark.asyncio
 async def test_evidence_state_route_reports_unusable_sources(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(evidence_route, "RUNS_ROOT", str(tmp_path))
     run_dir = tmp_path / "run_demo"

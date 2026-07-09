@@ -176,8 +176,9 @@ def _method_hints_from_evidence(evidence: list[Any]) -> list[str]:
         if not isinstance(item, dict):
             continue
         summary = str(item.get("summary") or "")
-        if "SimpleNet" in summary and "SimpleNet" not in hints:
-            hints.append("SimpleNet 论文方法")
+        hint = "SimpleNet 论文方法"
+        if "SimpleNet" in summary and hint not in hints:
+            hints.append(hint)
     return hints
 
 
