@@ -17,17 +17,22 @@ import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
   createRun,
+  deleteSource,
   deleteRun,
   getArtifact,
+  getEvidence,
+  getEvidenceState,
+  getDraft,
   getJobs,
   getRuns,
   getSources,
   getTranscript,
   renameRun,
   sendChat,
+  uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, ToastItem, SourceItem, JobItem, WSMessage, PageId, TaskRun } from './lib/types';
+import type { Message, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, DraftState } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
@@ -44,6 +49,9 @@ export default function App() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
   const [jobs, setJobs] = useState<JobItem[]>([]);
+  const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
+  const [unusableParsedSources, setUnusableParsedSources] = useState<UnusableParsedSource[]>([]);
+  const [draft, setDraft] = useState<DraftState | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
   const [page, setPage] = useState<PageId>('chat');
@@ -71,8 +79,16 @@ export default function App() {
     if (!nextRunId) return;
     const s = await getSources(nextRunId).catch(() => []);
     const j = await getJobs(nextRunId).catch(() => []);
+    const evidenceState = await getEvidenceState(nextRunId).catch(() => ({ usable_evidence: [], unusable_parsed_sources: [] }));
+    const draftState = await getDraft(nextRunId).catch(() => null);
+    const e = Array.isArray(evidenceState.usable_evidence)
+      ? evidenceState.usable_evidence
+      : await getEvidence(nextRunId).catch(() => []);
     setSources(s.map((src: any) => ({ sourceId: src.source_id || generateId(), kind: src.kind || 'unknown', label: src.user_label || src.source_id || 'source', status: src.status || 'unknown' })));
-    setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '' })));
+    setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '', error: job.error || '' })));
+    setEvidence(e.map(normalizeEvidence));
+    setUnusableParsedSources((evidenceState.unusable_parsed_sources || []).map(normalizeUnusableParsedSource));
+    setDraft(draftState);
   }, []);
 
   const refreshSidebar = useCallback(async () => {
@@ -89,6 +105,9 @@ export default function App() {
     setTaskStatus('Ready');
     setSources([]);
     setJobs([]);
+    setEvidence([]);
+    setUnusableParsedSources([]);
+    setDraft(null);
     setArtifacts([]);
     const transcript = await getTranscript(nextRunId).catch(() => []);
     setMessages(transcript.map(entry => ({
@@ -166,6 +185,9 @@ export default function App() {
           setMessages([]);
           setSources([]);
           setJobs([]);
+          setEvidence([]);
+          setUnusableParsedSources([]);
+          setDraft(null);
           setArtifacts([]);
         }
       }
@@ -222,30 +244,80 @@ export default function App() {
   }, [messages, runId, refreshSidebar]);
 
   // ── File upload — goes through real backend ──
-  const handleFile = useCallback((name: string) => {
-    setMessages(prev => [...prev, { id: generateId(), role: 'user', content: '📎 ' + name, timestamp: Date.now() }]);
-    const reply = '文件上传接口尚未接入后端。请通过聊天框粘贴 arXiv/GitHub 链接触发 PipelineJob。';
-    setMessages(prev => [...prev, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() }]);
-  }, []);
+  const handleFile = useCallback(async (file: File) => {
+    const targetRunId = runId || 'run_default';
+    setMessages(prev => [...prev, { id: generateId(), role: 'user', content: '📎 ' + file.name, timestamp: Date.now() }]);
+    setTaskStatus('Working');
+    try {
+      const result = await uploadSource(targetRunId, file);
+      const jobs = Array.isArray(result.jobs) ? result.jobs : [];
+      const source = result.source || {};
+      const reply = jobs.length
+        ? `已上传 ${file.name}，已创建解析任务 ${jobs.map((job: any) => `\`${job.job_id}\``).join('、')}。解析完成后右侧 Evidence 会同步更新。`
+        : `已上传 ${file.name}，已登记为可用文本资料，右侧 Evidence 已同步更新。`;
+      setMessages(prev => [...prev, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() }]);
+      if (source.source_id) {
+        setSources(prev => prev.some(s => s.sourceId === source.source_id)
+          ? prev
+          : [...prev, { sourceId: source.source_id, kind: source.kind || 'unknown', label: source.stored_path || file.name, status: 'uploaded_not_parsed' }]);
+      }
+      await refreshSidebarForRun(targetRunId);
+      setTaskStatus('Ready');
+    } catch {
+      setTaskStatus('Error');
+      setMessages(prev => [...prev, { id: generateId(), role: 'assistant', content: `上传失败：${file.name}` , timestamp: Date.now() }]);
+      addToast('上传失败', 'error');
+    }
+  }, [addToast, refreshSidebarForRun, runId]);
+
+  const handleDeleteSource = useCallback(async (sourceId: string) => {
+    if (!runId) return;
+    const ok = window.confirm('删除这个资料会移除对应 Source 和 Evidence，确认删除？');
+    if (!ok) return;
+    const deleted = await deleteSource(runId, sourceId).catch(() => null);
+    if (!deleted) {
+      addToast('删除资料失败', 'error');
+      return;
+    }
+    await refreshSidebarForRun(runId);
+    addToast('资料已删除', 'success');
+  }, [addToast, refreshSidebarForRun, runId]);
 
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
+    const jobId = msg.jobId || msg.job_id;
+    const jobType = msg.jobType || msg.job_type;
+    const sourceId = msg.sourceId || msg.source_id;
+    const storedPath = msg.storedPath || msg.stored_path;
     if (msg.type === 'source.created') {
-      setSources(prev => [...prev, { sourceId: msg.sourceId || generateId(), kind: msg.kind || 'unknown', label: msg.sourceId || 'source', status: 'registered' }]);
+      if (!sourceId) return;
+      setSources(prev => {
+        if (prev.some(source => source.sourceId === sourceId)) return prev;
+        return [...prev, { sourceId, kind: msg.kind || 'unknown', label: storedPath || sourceId, status: 'registered' }];
+      });
+    }
+    if (msg.type === 'source.deleted') {
+      if (sourceId) setSources(prev => prev.filter(source => source.sourceId !== sourceId));
+      refreshSidebar();
     }
     if (msg.type === 'job.queued') {
-      setJobs(prev => [...prev, { jobId: msg.jobId || generateId(), jobType: msg.jobType || 'unknown', status: 'queued' }]);
+      if (!jobId) return;
+      setJobs(prev => {
+        if (prev.some(job => job.jobId === jobId)) return prev;
+        return [...prev, { jobId, jobType: jobType || 'unknown', status: 'queued' }];
+      });
     }
     if (msg.type === 'job.started') {
-      setJobs(prev => prev.map(j => j.jobId === msg.jobId ? { ...j, status: 'running' } : j));
+      setJobs(prev => prev.map(j => j.jobId === jobId ? { ...j, status: 'running' } : j));
     }
     if (msg.type === 'job.completed') {
-      setJobs(prev => prev.map(j => j.jobId === msg.jobId ? { ...j, status: 'completed' } : j));
+      setJobs(prev => prev.map(j => j.jobId === jobId ? { ...j, status: 'completed' } : j));
       setTaskStatus('Ready');
     }
     if (msg.type === 'job.failed') {
-      setJobs(prev => prev.map(j => j.jobId === msg.jobId ? { ...j, status: 'failed' } : j));
+      setJobs(prev => prev.map(j => j.jobId === jobId ? { ...j, status: 'failed', error: msg.error || msg.message || j.error } : j));
       setTaskStatus('Error');
+      refreshSidebar();
     }
     if (msg.type === 'artifact.created') {
       const paths: string[] = (msg as any).paths || [];
@@ -259,6 +331,10 @@ export default function App() {
           return [...prev, { path: p, label }];
         });
       }
+      refreshSidebar();
+    }
+    if (msg.type === 'evidence.updated') {
+      refreshSidebar();
     }
     if (msg.type === 'assistant.delta' && msg.content) {
       const assistantId = streamingAssistantIdRef.current;
@@ -269,13 +345,20 @@ export default function App() {
       )));
     }
     if (msg.type === 'assistant.done') {
+      const assistantId = streamingAssistantIdRef.current;
+      if (assistantId && typeof msg.content === 'string') {
+        streamingHadDeltaRef.current = true;
+        setMessages(prev => prev.map(m => (
+          m.id === assistantId ? { ...m, content: msg.content || m.content } : m
+        )));
+      }
       streamingAssistantIdRef.current = null;
       suppressLateDeltaRef.current = false;
       setTaskStatus('Ready');
     }
     if (msg.type === 'toast.success' && msg.message) addToast(msg.message, 'success');
     if (msg.type === 'toast.error' && msg.message) addToast(msg.message, 'error');
-  }, [addToast]);
+  }, [addToast, refreshSidebar]);
 
   useWebSocket({ runId, onMessage: onWsMessage, enabled: !!runId });
 
@@ -334,12 +417,21 @@ export default function App() {
                   <PlusMenu onFile={handleFile} />
                 </div>
                 <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
-                <StatusBar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false} />
+                <StatusBar sources={sources} jobs={jobs} evidenceCount={evidence.length} draftReady={Boolean(draft?.has_draft)} />
               </div>
             </div>
 
             {/* Right sidebar */}
-            <Sidebar sources={sources} jobs={jobs} evidenceCount={artifacts.length} draftReady={false}>
+            <Sidebar
+              sources={sources}
+              jobs={jobs}
+              evidence={evidence}
+              unusableParsedSources={unusableParsedSources}
+              evidenceCount={evidence.length}
+              draftReady={Boolean(draft?.has_draft)}
+              draft={draft}
+              onDeleteSource={handleDeleteSource}
+            >
               {artifacts.length > 0 && (
                 <div style={{ marginTop: 8 }}>
                   <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>Markdown 摘要</div>
@@ -386,6 +478,31 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function normalizeEvidence(item: any): EvidenceItem {
+  return {
+    sourceId: item.source_id || item.sourceId || '',
+    artifactPath: item.artifact_path || item.artifactPath || '',
+    evidenceType: item.evidence_type || item.evidenceType || 'evidence',
+    supportLevel: item.support_level || item.supportLevel || 'supported',
+    parserName: item.parser_name || item.parserName || '',
+    summary: item.summary || '',
+    raw: item.raw || {},
+  };
+}
+
+function normalizeUnusableParsedSource(item: any): UnusableParsedSource {
+  return {
+    sourceId: item.source_id || item.sourceId || '',
+    label: item.user_label || item.label || item.source_id || item.sourceId || 'source',
+    status: item.status || 'failed',
+    parseAttemptId: item.parse_attempt_id || item.parseAttemptId || '',
+    parser: item.parser || '',
+    warnings: Array.isArray(item.warnings) ? item.warnings : [],
+    fatalErrors: Array.isArray(item.fatal_errors) ? item.fatal_errors : [],
+    parserErrors: Array.isArray(item.parser_errors) ? item.parser_errors : [],
+  };
 }
 
 function ArtifactItem({ artifact, runId }: { artifact: ArtifactEntry; runId: string }) {

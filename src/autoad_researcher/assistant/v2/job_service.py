@@ -19,9 +19,15 @@ JOBS_FILE = "pipeline_jobs.jsonl"
 JOB_TYPES = {
     "web_search": "candidate_source_only",
     "web_fetch": "source_acquired_unparsed",
+    "web_markitdown": "parsed_web_evidence",
     "git_clone": "repo_acquired",
     "paper_parse": "parsed_paper_evidence",
+    "paper_download": "source_acquired_unparsed",
+    "paper_parse_mineru": "parsed_paper_evidence",
+    "paper_parse_markitdown": "parsed_paper_evidence",
+    "paper_summarize": "parsed_paper_evidence",
     "repo_analyze": "repo_acquired",
+    "repo_summarize": "repo_acquired",
 }
 
 
@@ -62,6 +68,7 @@ def append_pipeline_job(
     source_id: str,
     job_type: str,
     evidence_role: str = "",
+    payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     job = {
         "job_id": _generate_job_id(run_dir),
@@ -74,6 +81,7 @@ def append_pipeline_job(
         "completed_at": None,
         "outputs": [],
         "error": None,
+        "payload": payload or {},
     }
     path = _jobs_path(run_dir)
     path.parent.mkdir(parents=True, exist_ok=True)

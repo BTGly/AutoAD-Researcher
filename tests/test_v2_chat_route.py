@@ -5,7 +5,6 @@ from pathlib import Path
 from autoad_researcher.server.routes.chat import (
     _append_transcript,
     _load_transcript_tail,
-    _reply_chunks,
 )
 
 
@@ -24,9 +23,3 @@ def test_v2_chat_transcript_tail_round_trips_recent_messages(tmp_path: Path):
         {"role": "user", "content": "user 13"},
         {"role": "assistant", "content": "assistant 13"},
     ]
-
-
-def test_v2_reply_chunks_split_long_reply_for_websocket_streaming():
-    chunks = _reply_chunks("abcdef", chunk_size=2)
-
-    assert chunks == ["ab", "cd", "ef"]

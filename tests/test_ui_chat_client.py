@@ -1,5 +1,6 @@
 """Tests for chat_client.py and chat_prompts.py."""
 
+import json
 from unittest.mock import patch
 
 import httpx
@@ -83,3 +84,42 @@ def test_client_never_returns_api_key():
         result = call_research_chat("sk-secret-key-123", "https://test.api", [{"role": "user", "content": "hello"}])
         reply_str = result["reply"] + result["error"]
         assert "sk-secret-key-123" not in reply_str
+
+
+def test_client_streams_openai_compatible_sse():
+    captured: dict[str, object] = {}
+
+    class MockStreamResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self):
+            yield "data: " + json.dumps({"choices": [{"delta": {"content": "助"}}]})
+            yield "data: " + json.dumps({"choices": [{"delta": {"content": "手回复"}}]})
+            yield "data: [DONE]"
+
+    def fake_stream(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs["json"]
+        return MockStreamResponse()
+
+    deltas: list[str] = []
+    with patch("httpx.stream", side_effect=fake_stream):
+        result = call_research_chat(
+            "sk-test",
+            "https://test.api",
+            [{"role": "user", "content": "hello"}],
+            on_delta=deltas.append,
+        )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://test.api/v1/chat/completions"
+    assert captured["json"]["stream"] is True
+    assert deltas == ["助", "手回复"]
+    assert result == {"reply": "助手回复", "error": ""}

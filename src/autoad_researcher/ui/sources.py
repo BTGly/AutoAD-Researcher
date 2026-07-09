@@ -178,6 +178,39 @@ def update_source_intake_result(
     _save_registry(run_dir, registry)
 
 
+def remove_source(run_dir: Path, source_id: str, *, reason: str = "user_removed") -> dict[str, Any] | None:
+    """Remove one source and its supported evidence entries.
+
+    This is a user-facing removal, not a destructive reset of unrelated run
+    artifacts. It deletes the source registry entry, the source upload
+    directory, per-source parse/acquisition directories, and evidence index
+    rows keyed by the same source_id.
+    """
+    registry = load_source_registry(run_dir)
+    kept: list[dict[str, Any]] = []
+    removed: dict[str, Any] | None = None
+    for source in registry.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        if source.get("source_id") == source_id:
+            removed = dict(source)
+            continue
+        kept.append(source)
+    if removed is None:
+        return None
+
+    registry["sources"] = kept
+    _save_registry(run_dir, registry)
+    _remove_source_files(run_dir, source_id)
+    removed_evidence = _remove_source_evidence(run_dir, source_id)
+    return {
+        "source": removed,
+        "source_id": source_id,
+        "reason": reason,
+        "removed_evidence": removed_evidence,
+    }
+
+
 def append_source_ref(
     run_dir: Path,
     *,
@@ -408,6 +441,45 @@ def _record_active_parse_attempt_changed(
             "reason": reason,
         },
     )
+
+
+def _remove_source_files(run_dir: Path, source_id: str) -> None:
+    for rel in (
+        Path("sources") / source_id,
+        Path("paper") / "parse" / "pdftotext" / source_id,
+        Path("paper") / "parse" / "markitdown" / source_id,
+        Path("paper") / "parse" / "arxiv_abs" / source_id,
+        Path("repos") / source_id,
+        Path("repo_acquisition") / source_id,
+    ):
+        target = run_dir / rel
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.is_file():
+            target.unlink()
+
+
+def _remove_source_evidence(run_dir: Path, source_id: str) -> int:
+    path = run_dir / "evidence" / "evidence_index.jsonl"
+    if not path.is_file():
+        return 0
+    kept: list[str] = []
+    removed = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        if isinstance(item, dict) and item.get("source_id") == source_id:
+            removed += 1
+            continue
+        kept.append(line)
+    if removed:
+        path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    return removed
 
 
 def _legacy_parse_attempt(run_dir: Path) -> dict[str, Any]:

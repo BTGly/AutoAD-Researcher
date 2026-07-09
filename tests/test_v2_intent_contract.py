@@ -18,6 +18,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
+from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
 
 
 def test_research_intent_contract_defaults_do_not_require_method_or_target_module():
@@ -232,6 +233,50 @@ def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
     assert "行为准则" in system_text
 
 
+def test_reply_planner_streams_only_visible_reply_field(monkeypatch):
+    streamed: list[str] = []
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        on_delta = kwargs.get("on_delta")
+        assert on_delta is not None
+        for chunk in [
+            '{"reply_to_user":"已记录',
+            '。", "contract_updates": {"baseline": "PatchCore"}, ',
+            '"missing_required_fields": []}',
+        ]:
+            on_delta(chunk)
+        return {
+            "reply": json.dumps({
+                "reply_to_user": "已记录。",
+                "contract_updates": {"baseline": "PatchCore"},
+                "missing_required_fields": [],
+            }, ensure_ascii=False),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intent"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "research_intent_contract": {"run_id": "run_contract"},
+        },
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        on_delta=streamed.append,
+    )
+
+    assert kind == "answer"
+    assert reply == "已记录。"
+    assert "".join(streamed) == "已记录。"
+    assert "contract_updates" not in "".join(streamed)
+    assert "PatchCore" not in "".join(streamed)
+
+
 def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         return {
@@ -263,6 +308,148 @@ def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
     assert "{" not in reply
     assert "contract_updates" not in reply
     assert "missing_required_fields" not in reply
+
+
+def test_reply_planner_parses_key_value_contract_payload(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {
+            "reply": (
+                'reply_to_user: "我只能看到解析不可用，不能读论文细节。"\n\n'
+                "contract_updates: {}\n"
+                'missing_required_fields: ["success_criteria"]\n'
+                'next_question: ""\n'
+                "ready_for_confirmation: false"
+            ),
+            "error": None,
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "parse_quality"},
+            "confirmed_from_user": {},
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "unusable_parsed_sources": [{"source_id": "src_pdf", "user_label": "paper.pdf"}],
+            "research_intent_contract": {"run_id": "run_contract"},
+        },
+        "你现在读论文，找到能做的方向",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert reply == "我只能看到解析不可用，不能读论文细节。"
+    assert "reply_to_user" not in reply
+    assert "contract_updates" not in reply
+
+
+def test_chat_facts_latest_metric_correction_overrides_old_vram_focus():
+    facts = extract_confirmed_from_chat([
+        {"role": "user", "content": "我想测试 coreset sampling 是否能降低显存和运行时间，AUROC 不明显下降就可以。"},
+        {"role": "assistant", "content": "已记录显存和运行时间。"},
+        {"role": "user", "content": "不是，我就是想提升AUROC，pathcore的，但是要从论文里提取方法，或者思路"},
+    ])
+
+    assert facts["metrics"] == ["image_level_auroc"]
+
+
+def test_need_discovery_metrics_override_stale_chat_fact_metrics(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps(_need_spec_payload(
+            baseline="PatchCore",
+            dataset="MVTec AD",
+            metrics=["image_level_auroc"],
+        ), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="不是，我就是想提升AUROC，pathcore的，但是要从论文里提取方法。",
+        transcript_tail=[
+            {"role": "user", "content": "我想测试 coreset sampling 是否能降低显存和运行时间。"},
+            {"role": "assistant", "content": "已记录显存和运行时间。"},
+        ],
+        llm_context={"confirmed_from_user": {"metrics": ["peak_vram"]}},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert contract.primary_metrics == ["image_level_auroc"]
+    assert contract.metric_intent.extraction_source == "llm"
+
+
+def test_reply_fallback_uses_known_parse_errors_without_guessing():
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "parse_quality"},
+            "unparsed_sources": [],
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "pending_jobs": [],
+            "failed_jobs": [],
+            "unusable_parsed_sources": [
+                {
+                    "source_id": "src_pdf",
+                    "user_label": "2303.15140v2.pdf",
+                    "warnings": ["parse produced no readable paper.md; parsed text is not usable evidence"],
+                    "fatal_errors": ["parse produced no readable paper.md"],
+                    "parser_errors": [{"parser_name": "markitdown", "error": "markitdown unavailable: No module named 'markitdown'"}],
+                }
+            ],
+        },
+        "为什么失败了",
+    )
+
+    assert "parse produced no readable paper.md" in reply
+    assert "markitdown unavailable" in reply
+    assert "扫描" not in reply
+    assert "复杂排版" not in reply
+
+
+def test_parse_failure_question_bypasses_llm_speculation(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps({
+            "reply_to_user": "可能是扫描版、加密/损坏，或者临时服务异常。",
+            "contract_updates": {},
+            "missing_required_fields": [],
+            "next_question": "",
+            "ready_for_confirmation": False,
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "parse_quality"},
+            "unparsed_sources": [],
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "pending_jobs": [],
+            "failed_jobs": [{"job_id": "job_000001", "job_type": "paper_parse_mineru", "error": "execution failed"}],
+            "unusable_parsed_sources": [
+                {
+                    "source_id": "src_pdf",
+                    "user_label": "2303.15140v2.pdf",
+                    "warnings": ["parse produced no readable paper.md; parsed text is not usable evidence"],
+                    "fatal_errors": ["parse produced no readable paper.md"],
+                    "parser_errors": [{"parser_name": "markitdown", "error": "markitdown unavailable: No module named 'markitdown'"}],
+                }
+            ],
+        },
+        "为什么失败了",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert "parse produced no readable paper.md" in reply
+    assert "markitdown unavailable" in reply
+    assert "请先确认主要目标" not in reply
+    assert "扫描版" not in reply
+    assert "加密/损坏" not in reply
+    assert "临时服务异常" not in reply
 
 
 def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch):

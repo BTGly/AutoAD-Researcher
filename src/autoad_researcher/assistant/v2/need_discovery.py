@@ -344,7 +344,7 @@ def canonicalize_metrics(value: Any) -> list[str]:
             item_metrics.append("inference_latency")
         if re.search(r"显存|memory|vram", lowered):
             item_metrics.append("peak_vram")
-        if not item_metrics and re.search(r"\bauroc\b|\bauc-?roc\b|\bauc\b", lowered):
+        if not item_metrics and re.search(r"(?<![A-Za-z0-9_])auroc(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])auc-?roc(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])auc(?![A-Za-z0-9_])", lowered):
             item_metrics.append("image_level_auroc")
         if not item_metrics and item in {
             "image_level_auroc",

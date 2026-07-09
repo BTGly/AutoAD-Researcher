@@ -71,14 +71,33 @@ async def chat_send(req: ChatRequest, request: Request):
     api_key, provider_url, _ = _extract_api_headers(request)
     stored_transcript_tail = _load_transcript_tail(run_dir)
     transcript_tail = req.transcript_tail or stored_transcript_tail
+    message_id = f"assistant_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    loop = asyncio.get_running_loop()
 
-    result = ResearchOrchestratorV2.handle(
+    def on_reply_delta(delta: str) -> None:
+        if not delta:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast(req.run_id, {
+                    "type": "assistant.delta",
+                    "message_id": message_id,
+                    "content": delta,
+                }),
+                loop,
+            )
+        except RuntimeError:
+            return
+
+    result = await asyncio.to_thread(
+        ResearchOrchestratorV2.handle,
         run_dir,
         user_input=req.user_input,
         attachments=req.attachments or None,
         transcript_tail=transcript_tail,
         api_key=api_key,
         provider_url=provider_url,
+        on_reply_delta=on_reply_delta,
     )
     _append_transcript(run_dir, "user", req.user_input)
     _append_transcript(run_dir, "assistant", result.reply)
@@ -103,18 +122,11 @@ async def chat_send(req: ChatRequest, request: Request):
             "job_type": job.get("job_type", ""),
         })
 
-    message_id = f"assistant_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
-    for chunk in _reply_chunks(result.reply):
-        await manager.broadcast(req.run_id, {
-            "type": "assistant.delta",
-            "message_id": message_id,
-            "content": chunk,
-        })
-        await asyncio.sleep(0)
     await manager.broadcast(req.run_id, {
         "type": "assistant.done",
         "message_id": message_id,
         "reply_kind": result.reply_kind,
+        "content": result.reply,
     })
 
     return ChatResponse(
@@ -154,14 +166,3 @@ def _append_transcript(run_dir: Path, role: str, content: str) -> None:
     }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-
-
-def _reply_chunks(text: str, chunk_size: int = 96) -> list[str]:
-    if not text:
-        return [""]
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        chunks.append(text[start:start + chunk_size])
-        start += chunk_size
-    return chunks

@@ -1,5 +1,7 @@
 """AutoAD Researcher v2 — FastAPI backend."""
 
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,6 +9,7 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 
 app = FastAPI(title="AutoAD Researcher v2")
+_worker_task: asyncio.Task | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,13 +24,36 @@ async def health():
     return {"status": "ok"}
 
 
-from autoad_researcher.server.routes import chat, runs, sources, jobs, artifacts, ws, experiment_config, report_route
+@app.on_event("startup")
+async def start_embedded_worker():
+    global _worker_task
+    from autoad_researcher.server.worker_runtime import embedded_worker_enabled, embedded_worker_loop
+
+    if embedded_worker_enabled() and _worker_task is None:
+        _worker_task = asyncio.create_task(embedded_worker_loop())
+
+
+@app.on_event("shutdown")
+async def stop_embedded_worker():
+    global _worker_task
+    if _worker_task is not None:
+        _worker_task.cancel()
+        try:
+            await _worker_task
+        except asyncio.CancelledError:
+            pass
+        _worker_task = None
+
+
+from autoad_researcher.server.routes import artifacts, chat, draft, evidence, experiment_config, jobs, report_route, runs, sources, ws
 
 app.include_router(chat.router)
 app.include_router(runs.router)
 app.include_router(sources.router)
+app.include_router(draft.router)
 app.include_router(jobs.router)
 app.include_router(artifacts.router)
+app.include_router(evidence.router)
 app.include_router(ws.router)
 app.include_router(experiment_config.router)
 app.include_router(report_route.router)

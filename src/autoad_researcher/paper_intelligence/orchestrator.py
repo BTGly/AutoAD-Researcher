@@ -186,7 +186,7 @@ class PaperIntelligenceOrchestrator:
             )
 
             parse_result = provider.parse(parse_req, attempt.attempt_dir)
-            blocks_jsonl_to_paper_markdown(attempt.attempt_dir)
+            paper_markdown_path = blocks_jsonl_to_paper_markdown(attempt.attempt_dir)
             parse_result = parse_result.model_copy(
                 update={
                     "parse_attempt_id": attempt.parse_attempt_id,
@@ -225,8 +225,26 @@ class PaperIntelligenceOrchestrator:
                 provider.get_quality_report(parse_result),
                 parse_result=parse_result,
                 parser=request.parser_profile_id,
+                has_readable_markdown=paper_markdown_path is not None,
             )
             _write_atomic_json(attempt.attempt_dir / "parse_quality_report.json", quality.model_dump())
+            if paper_markdown_path is None:
+                warnings.append("parse produced no readable paper.md; parsed text is not usable evidence")
+                _record_parse_attempt_result(
+                    run_dir,
+                    attempt,
+                    status="failed",
+                    warnings=warnings,
+                    make_active=False,
+                )
+                return {
+                    "status": "parse_failed",
+                    "stage": "parse_quality",
+                    "error": warnings[-1],
+                    "run_id": request.run_id,
+                    "parse_attempt_id": attempt.parse_attempt_id,
+                    "warnings": warnings,
+                }
 
             # ============================================================
             # 3. Canonical Paper Store + Evidence Writer
@@ -866,19 +884,28 @@ def _quality_report_for_attempt(
     *,
     parse_result,
     parser: str,
+    has_readable_markdown: bool = True,
 ) -> ParseQualityReport:
-    if parse_result.status == "success":
+    if parse_result.status == "success" and has_readable_markdown:
         quality_level = "usable"
         usable_for = ["paper_artifact_synthesis", "research_context_draft"]
         not_usable_for: list[str] = []
+        fatal_errors = list(quality.fatal_errors)
+    elif parse_result.status == "success":
+        quality_level = "unusable"
+        usable_for = []
+        not_usable_for = ["supported_research_facts", "paper_content_claims", "research_context_draft"]
+        fatal_errors = [*quality.fatal_errors, "parse produced no readable paper.md"]
     elif parse_result.status == "partial_success":
         quality_level = "partial"
         usable_for = ["parse_diagnostics"]
         not_usable_for = ["supported_research_facts"]
+        fatal_errors = list(quality.fatal_errors)
     else:
         quality_level = "unusable"
         usable_for = []
         not_usable_for = ["paper_content_claims", "research_context_draft"]
+        fatal_errors = list(quality.fatal_errors)
 
     return quality.model_copy(
         update={
@@ -888,6 +915,7 @@ def _quality_report_for_attempt(
             "quality_level": quality_level,
             "usable_for": usable_for,
             "not_usable_for": not_usable_for,
+            "fatal_errors": fatal_errors,
         }
     )
 

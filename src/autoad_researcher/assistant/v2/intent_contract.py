@@ -161,23 +161,12 @@ def build_contract_from_context(
         provider_url=provider_url,
     )
 
-    confirmed_metrics = _canonicalize_metric_list(_listify(confirmed.get("metrics")))
     need_fields = contract_fields_from_need_spec(need_spec)
     need_primary_metrics = _canonicalize_metric_list(_listify(need_fields.get("primary_metrics")))
     need_secondary_metrics = _canonicalize_metric_list(_listify(need_fields.get("secondary_metrics")))
+    confirmed_metrics = _canonicalize_metric_list(_listify(confirmed.get("metrics")))
     inferred_metric_intent = _extract_metric_intent(combined_user_text)
-    if confirmed_metrics:
-        metric_intent = MetricIntent(
-            mentioned_metrics=[
-                MetricMention(raw_text=metric, canonical=metric, role="primary_candidate", confidence=1.0)
-                for metric in confirmed_metrics
-            ],
-            primary_metrics=confirmed_metrics,
-            secondary_metrics=[],
-            metric_priority="user_confirmed",
-            extraction_source="user_confirmed",
-        )
-    elif need_primary_metrics:
+    if need_primary_metrics:
         metric_intent = MetricIntent(
             mentioned_metrics=[
                 MetricMention(
@@ -195,6 +184,17 @@ def build_contract_from_context(
                 need_secondary_metrics,
             ),
             extraction_source=_metric_intent_source_from_need_spec(need_spec),
+        )
+    elif confirmed_metrics:
+        metric_intent = MetricIntent(
+            mentioned_metrics=[
+                MetricMention(raw_text=metric, canonical=metric, role="primary_candidate", confidence=1.0)
+                for metric in confirmed_metrics
+            ],
+            primary_metrics=confirmed_metrics,
+            secondary_metrics=[],
+            metric_priority="fallback_user_history",
+            extraction_source="fallback",
         )
     else:
         metric_intent = inferred_metric_intent
@@ -678,6 +678,7 @@ def _find_metric_mentions(text: str) -> list[MetricMention]:
         ("accuracy", r"accuracy|准确率"),
         ("inference_latency", r"速度|推理速度|latency|throughput|fps"),
         ("peak_vram", r"显存|memory|vram"),
+        ("image_level_auroc", r"(?<![A-Za-z0-9_])auroc(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])auc-?roc(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])auc(?![A-Za-z0-9_])"),
     ]
     mentions: list[tuple[int, MetricMention]] = []
     occupied_spans: list[tuple[int, int]] = []

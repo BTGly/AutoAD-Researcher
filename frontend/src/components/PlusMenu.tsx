@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 
 interface Props {
-  onFile: (name: string) => void;
+  onFile: (file: File) => void;
 }
 
 export function PlusMenu({ onFile }: Props) {
@@ -10,7 +10,11 @@ export function PlusMenu({ onFile }: Props) {
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
-    if (f) { onFile(f.name); setOpen(false); }
+    if (f) {
+      onFile(f);
+      e.target.value = '';
+      setOpen(false);
+    }
   };
 
   return (

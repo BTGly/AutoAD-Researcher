@@ -6,10 +6,18 @@ Produces EvidenceIndex — the single source of truth for what the assistant can
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
+
+EVIDENCE_DIR = "evidence"
+EVIDENCE_FILE = "evidence_index.jsonl"
 
 _LEGACY_PAPER_ARTIFACT_PATHS = [
+    "paper/artifacts/paper_reading_summary.json",
+    "paper/artifacts/paper_reading_summary.md",
+    "paper/artifacts/paper_method_cards.json",
+    "paper/artifacts/paper_artifact_manifest.json",
     "paper/artifacts/paper_summary.json",
     "paper/artifacts/paper_candidates.json",
     "paper/artifacts/method_components.json",
@@ -27,6 +35,8 @@ def load_usable_evidence(run_dir: Path) -> list[dict[str, Any]]:
     """
 
     evidence: list[dict[str, Any]] = []
+    evidence.extend(_load_v2_artifact_evidence(run_dir))
+    evidence.extend(_load_paper_text_evidence(run_dir))
 
     sources = _load_sources(run_dir)
     for src in sources:
@@ -39,6 +49,10 @@ def load_usable_evidence(run_dir: Path) -> list[dict[str, Any]]:
         active_attempt = _find_active_attempt(attempts, active_pa)
 
         if active_attempt and active_attempt.get("status") == "ok":
+            quality_report_path = active_attempt.get("quality_report")
+            if isinstance(quality_report_path, str) and not _quality_report_is_usable(run_dir, quality_report_path):
+                continue
+            parser_name = active_attempt.get("parser") or "unknown_legacy"
             for artifact_path in _LEGACY_PAPER_ARTIFACT_PATHS:
                 artifact = _read_paper_artifact(run_dir, artifact_path, attempt=active_attempt)
                 if artifact:
@@ -79,13 +93,48 @@ def load_usable_evidence(run_dir: Path) -> list[dict[str, Any]]:
                                             "evidence_type": _evidence_type_for_path(artifact_path),
                                             "support_level": "supported",
                                             "parser_known": qr.get("parser") not in (None, "unknown_legacy"),
+                                            "legacy": False,
                                             "summary": artifact.get("summary", ""),
                                             "raw": artifact.get("raw", {}),
                                         })
                     except (json.JSONDecodeError, OSError):
                         pass
 
-    return evidence
+    return _dedupe_evidence(evidence)
+
+
+def append_artifact_evidence(
+    run_dir: Path,
+    *,
+    source_id: str,
+    artifact_path: str,
+    evidence_type: str,
+    summary: str,
+    parser_name: str,
+    support_level: str = "supported",
+    raw: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Append one text-first evidence entry for V2 artifacts."""
+    path = run_dir / EVIDENCE_DIR / EVIDENCE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "schema_version": 1,
+        "evidence_id": _next_v2_evidence_id(run_dir),
+        "source_id": source_id,
+        "artifact_path": artifact_path,
+        "evidence_type": evidence_type,
+        "support_level": support_level,
+        "parser_name": parser_name,
+        "parser_known": parser_name not in ("", "unknown", "unavailable"),
+        "legacy": False,
+        "summary": _trim_text(summary, 1200),
+        "raw": raw or {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
+    return entry
 
 
 def load_candidate_sources(run_dir: Path) -> list[dict[str, Any]]:
@@ -110,6 +159,189 @@ def load_unparsed_sources(run_dir: Path) -> list[dict[str, Any]]:
         if s.get("status") in ("registered", "uploaded_not_parsed", "user_provided_not_ingested")
         and not s.get("parse_attempts")
     ]
+
+
+def load_unusable_parsed_sources(run_dir: Path) -> list[dict[str, Any]]:
+    """Parsed/failed sources whose active attempt is not usable evidence."""
+    result: list[dict[str, Any]] = []
+    supported_source_ids = _source_ids_with_supported_text_evidence(run_dir)
+    for source in _load_sources(run_dir):
+        if str(source.get("source_id") or "") in supported_source_ids:
+            continue
+        attempts = source.get("parse_attempts")
+        if not isinstance(attempts, list) or not attempts:
+            continue
+        active_attempt = _find_active_attempt(attempts, source.get("active_parse_attempt_id"))
+        if not isinstance(active_attempt, dict):
+            continue
+        quality_report_path = active_attempt.get("quality_report")
+        usable = isinstance(quality_report_path, str) and _quality_report_is_usable(run_dir, quality_report_path)
+        if not usable:
+            quality_report = _load_quality_report(run_dir, quality_report_path) if isinstance(quality_report_path, str) else {}
+            result.append({
+                "source_id": source.get("source_id", ""),
+                "user_label": source.get("user_label", ""),
+                "status": source.get("status", ""),
+                "parse_attempt_id": active_attempt.get("parse_attempt_id", ""),
+                "parser": active_attempt.get("parser", ""),
+                "warnings": active_attempt.get("warnings", []),
+                "quality_level": quality_report.get("quality_level", ""),
+                "fatal_errors": quality_report.get("fatal_errors", []),
+                "not_usable_for": quality_report.get("not_usable_for", []),
+                "parser_errors": _load_parser_errors(run_dir, str(source.get("source_id", ""))),
+            })
+    return _dedupe_unusable_sources(result)
+
+
+def _load_v2_artifact_evidence(run_dir: Path) -> list[dict[str, Any]]:
+    path = run_dir / EVIDENCE_DIR / EVIDENCE_FILE
+    if not path.is_file():
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(item, dict)
+            and item.get("support_level") == "supported"
+            and _artifact_evidence_is_currently_supported(run_dir, item)
+        ):
+            entries.append(item)
+    return entries
+
+
+def _artifact_evidence_is_currently_supported(run_dir: Path, item: dict[str, Any]) -> bool:
+    if item.get("evidence_type") != "repo_summary":
+        return True
+    source_id = str(item.get("source_id") or "")
+    if not source_id:
+        return False
+    return (run_dir / "repo_acquisition" / source_id / "repository_attestation.json").is_file()
+
+
+def _source_ids_with_supported_text_evidence(run_dir: Path) -> set[str]:
+    supported_types = {
+        "paper_markdown_fallback",
+        "paper_reading_summary",
+        "paper_artifact_manifest",
+        "paper_text",
+        "uploaded_text",
+        "web_markdown",
+    }
+    source_ids: set[str] = set()
+    for item in _load_v2_artifact_evidence(run_dir):
+        if item.get("evidence_type") in supported_types:
+            source_id = str(item.get("source_id") or "")
+            if source_id:
+                source_ids.add(source_id)
+    for item in _load_paper_text_evidence(run_dir):
+        source_id = str(item.get("source_id") or "")
+        if source_id:
+            source_ids.add(source_id)
+    return source_ids
+
+
+def _dedupe_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for item in items:
+        key = (
+            str(item.get("source_id") or ""),
+            str(item.get("parse_attempt_id") or ""),
+            str(item.get("artifact_path") or ""),
+            str(item.get("evidence_type") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _load_paper_text_evidence(run_dir: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    paper_index = run_dir / "paper" / "evidence_index.jsonl"
+    if paper_index.is_file():
+        for line in paper_index.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            evidence = record.get("evidence")
+            if not isinstance(evidence, dict):
+                continue
+            parse_attempt_id = str(record.get("parse_attempt_id") or evidence.get("parse_attempt_id") or "")
+            artifact_path = f"paper/parse/attempts/{parse_attempt_id}/paper.md" if parse_attempt_id else "paper/parse/paper.md"
+            if not parse_attempt_id or not (run_dir / artifact_path).is_file():
+                continue
+            source_id = str(evidence.get("source_id") or "")
+            page = evidence.get("physical_page_index")
+            block_id = str(evidence.get("block_id") or "")
+            entries.append({
+                "source_id": source_id,
+                "parse_attempt_id": parse_attempt_id,
+                "artifact_path": artifact_path,
+                "evidence_type": "paper_text",
+                "support_level": "supported",
+                "parser_name": "mineru_pipeline_v1",
+                "parser_known": True,
+                "legacy": False,
+                "summary": _paper_evidence_summary(page, block_id),
+                "raw": {"evidence_id": evidence.get("evidence_id"), "physical_page_index": page, "block_id": block_id},
+            })
+    return entries
+
+
+def _quality_report_is_usable(run_dir: Path, rel_path: str) -> bool:
+    report = _load_quality_report(run_dir, rel_path)
+    return report.get("quality_level") == "usable"
+
+
+def _load_quality_report(run_dir: Path, rel_path: str) -> dict[str, Any]:
+    path = run_dir / rel_path
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_parser_errors(run_dir: Path, source_id: str) -> list[dict[str, str]]:
+    source_dir = run_dir / "sources" / source_id
+    if not source_dir.is_dir():
+        return []
+    errors: list[dict[str, str]] = []
+    for path in sorted(source_dir.glob("*_error.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(payload, dict):
+            errors.append({
+                "parser_name": str(payload.get("parser_name") or path.stem.removesuffix("_error")),
+                "error": _trim_text(str(payload.get("error") or ""), 500),
+            })
+    return errors
+
+
+def _dedupe_unusable_sources(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        key = (str(item.get("source_id") or ""), str(item.get("parse_attempt_id") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def _load_sources(run_dir: Path) -> list[dict[str, Any]]:
@@ -151,6 +383,14 @@ def _read_paper_artifact(run_dir: Path, rel_path: str, attempt: dict | None = No
         else:
             return None
 
+    if full.suffix.lower() == ".md":
+        try:
+            text = full.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        summary = _trim_text(text.strip(), 1000)
+        return {"summary": summary, "raw": {"path": rel_path}} if summary else None
+
     try:
         data = json.loads(full.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -164,6 +404,12 @@ def _read_paper_artifact(run_dir: Path, rel_path: str, attempt: dict | None = No
 
 
 def _evidence_type_for_path(path: str) -> str:
+    if "paper_reading_summary" in path:
+        return "paper_reading_summary"
+    if "paper_method_cards" in path:
+        return "paper_method_cards"
+    if "paper_artifact_manifest" in path:
+        return "paper_artifact_manifest"
     if "paper_summary" in path:
         return "paper_summary"
     if "paper_candidates" in path:
@@ -178,6 +424,27 @@ def _evidence_type_for_path(path: str) -> str:
 
 
 def _extract_summary(path: str, data: dict) -> str:
+    if "paper_reading_summary" in path:
+        summary = _safe_text(data.get("summary", ""))
+        if summary:
+            return summary
+        title = _safe_text(data.get("title", ""))
+        return f"Paper reading summary: {title}" if title else ""
+    if "paper_method_cards" in path:
+        cards = data.get("cards") if isinstance(data, dict) else []
+        if isinstance(cards, list):
+            titles = [
+                _safe_text(card.get("title", ""))
+                for card in cards
+                if isinstance(card, dict) and _safe_text(card.get("title", ""))
+            ]
+            return f"Method cards: {', '.join(titles[:8])}" if titles else f"{len(cards)} method cards"
+    if "paper_artifact_manifest" in path:
+        artifacts = data.get("artifacts") if isinstance(data, dict) else []
+        default_context = _safe_text(data.get("default_context", ""))
+        detail_context = _safe_text(data.get("detail_context", ""))
+        count = len(artifacts) if isinstance(artifacts, list) else 0
+        return f"Paper artifact manifest: {count} artifacts; default={default_context}; detail={detail_context}"
     if "paper_summary" in path:
         parts = []
         title = data.get("title", "")
@@ -242,9 +509,52 @@ def _is_garbled(text: str) -> bool:
 
 def _extract_raw_fields(path: str, data: dict) -> dict:
     raw: dict[str, Any] = {}
+    if "paper_reading_summary" in path:
+        raw["title"] = data.get("title", "")
+        raw["source_of_truth"] = data.get("source_of_truth", "")
+        raw["anchors"] = data.get("anchors", [])
+    if "paper_artifact_manifest" in path:
+        raw["default_context"] = data.get("default_context", "")
+        raw["detail_context"] = data.get("detail_context", "")
+        raw["artifacts"] = data.get("artifacts", [])
     if "paper_summary" in path:
         raw["title"] = data.get("title", "")
         raw["proposed_method"] = data.get("proposed_method", "")
     if isinstance(data, dict):
         raw = {**raw, **{k: v for k, v in data.items() if k not in raw and isinstance(v, (str, int, float, bool))}}
     return raw
+
+
+def _next_v2_evidence_id(run_dir: Path) -> str:
+    max_seen = 0
+    path = run_dir / EVIDENCE_DIR / EVIDENCE_FILE
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            eid = item.get("evidence_id")
+            if isinstance(eid, str) and eid.startswith("v2ev_"):
+                suffix = eid[5:]
+                if suffix.isdigit():
+                    max_seen = max(max_seen, int(suffix))
+    return f"v2ev_{max_seen + 1:06d}"
+
+
+def _paper_evidence_summary(page: Any, block_id: str) -> str:
+    parts = ["Parsed paper text"]
+    if isinstance(page, int):
+        parts.append(f"page {page + 1}")
+    if block_id:
+        parts.append(block_id)
+    return " · ".join(parts)
+
+
+def _trim_text(text: str, limit: int) -> str:
+    cleaned = " ".join(str(text).split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"

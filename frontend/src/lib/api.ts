@@ -97,9 +97,43 @@ export async function getSources(runId: string): Promise<any[]> {
   return res.json();
 }
 
+export async function uploadSource(runId: string, file: File): Promise<any> {
+  const res = await fetch(`/api/runs/${runId}/sources/upload`, {
+    method: 'POST',
+    headers: { 'X-AutoAD-Filename': encodeURIComponent(file.name) },
+    body: await file.arrayBuffer(),
+  });
+  if (!res.ok) throw new Error(`Upload source error: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteSource(runId: string, sourceId: string): Promise<any> {
+  const res = await fetch(`/api/runs/${runId}/sources/${sourceId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Delete source error: ${res.status}`);
+  return res.json();
+}
+
 export async function getJobs(runId: string): Promise<any[]> {
   const res = await fetch(`/api/runs/${runId}/jobs`);
   if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getEvidence(runId: string): Promise<any[]> {
+  const res = await fetch(`/api/runs/${runId}/evidence`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function getEvidenceState(runId: string): Promise<any> {
+  const res = await fetch(`/api/runs/${runId}/evidence/state`);
+  if (!res.ok) return { usable_evidence: [], unusable_parsed_sources: [] };
+  return res.json();
+}
+
+export async function getDraft(runId: string): Promise<any> {
+  const res = await fetch(`/api/runs/${runId}/draft`);
+  if (!res.ok) return { ready: false, has_draft: false, title: '研究计划草案', fields: [], missing: [], sources: [], evidence: [], jobs: [], next_questions: [] };
   return res.json();
 }
 

@@ -27,11 +27,52 @@ export interface SourceItem {
   status: string;
 }
 
+export interface DraftField {
+  field: string;
+  label: string;
+  value: string;
+  status: 'known' | 'missing' | string;
+}
+
+export interface DraftState {
+  ready: boolean;
+  has_draft: boolean;
+  title: string;
+  fields: DraftField[];
+  missing: Array<{ field: string; label: string }>;
+  sources: Array<{ source_id: string; label: string; kind: string; status: string }>;
+  evidence: Array<{ source_id: string; type: string; artifact_path: string; summary: string }>;
+  jobs: Array<{ job_id: string; source_id: string; job_type: string; status: string; error?: string }>;
+  next_questions: string[];
+}
+
 export interface JobItem {
   jobId: string;
   jobType: string;
   status: string;
   sourceLabel?: string;
+  error?: string;
+}
+
+export interface EvidenceItem {
+  sourceId: string;
+  artifactPath: string;
+  evidenceType: string;
+  supportLevel: string;
+  parserName?: string;
+  summary: string;
+  raw?: Record<string, any>;
+}
+
+export interface UnusableParsedSource {
+  sourceId: string;
+  label: string;
+  status: string;
+  parseAttemptId: string;
+  parser: string;
+  warnings: string[];
+  fatalErrors?: string[];
+  parserErrors?: Array<{ parser_name?: string; parserName?: string; error?: string }>;
 }
 
 export interface TaskRun {
@@ -56,8 +97,15 @@ export interface WSMessage {
   duration?: string;
   jobId?: string;
   jobType?: string;
+  job_id?: string;
+  job_type?: string;
+  error?: string;
   sourceId?: string;
+  source_id?: string;
   sourceLabel?: string;
+  stored_path?: string;
+  storedPath?: string;
+  paths?: string[];
   toast?: boolean;
   delay?: number;
 }
