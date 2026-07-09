@@ -125,6 +125,21 @@ class ResearchOrchestratorV2:
         )
         ctx["turn_gate_decision"] = turn_decision.model_dump(mode="json")
 
+        if created_sources or created_jobs:
+            if not turn_decision.contract_update_allowed or not turn_decision.need_discovery_allowed:
+                reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
+                return OrchestratorResult(
+                    reply=reply,
+                    reply_kind=reply_kind,
+                    created_sources=created_sources,
+                    created_jobs=created_jobs,
+                    evidence_used=ctx.get("usable_evidence", []),
+                    answerability=ctx.get("answerability", {}),
+                    next_actions=_suggest_next_actions(ctx, reply_kind),
+                    intent_contract=existing_draft.model_dump(mode="json") if existing_draft is not None else {},
+                    intent_contract_confirmed=False,
+                )
+
         if turn_decision.contract_action == "confirm_contract":
             contract = existing_draft
             if contract is not None:
@@ -388,7 +403,7 @@ def _source_intake_reply(
     job_types = [j.get("job_type", "") for j in created_jobs]
     if "git_clone" in job_types or "repo_analyze" in job_types:
         return "source_intake", (
-            "已登记基线仓库，后台开始 clone 和 repo analysis。"
+            "已登记代码仓库，后台开始 clone 和 repo analysis。"
             "完成后右侧 Evidence 会出现仓库摘要。"
         )
     if "web_search" in job_types:
@@ -397,6 +412,6 @@ def _source_intake_reply(
             "候选来源需要 fetch/parse 后才会进入右侧 Evidence。"
         )
     return "source_intake", (
-        "已登记论文链接，后台开始 fetch/parse。"
-        "完成后右侧 Evidence 会出现论文摘要。"
+        "已登记资料链接，后台开始 fetch/parse。"
+        "完成后右侧 Evidence 会出现可用摘要。"
     )

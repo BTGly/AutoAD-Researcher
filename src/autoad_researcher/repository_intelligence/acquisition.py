@@ -27,7 +27,7 @@ from autoad_researcher.tools import (
     run_process_tool,
 )
 
-AcquisitionProfile = Literal["shallow_ref", "partial_exact", "local"]
+AcquisitionProfile = Literal["shallow_ref", "partial_exact", "generic_shallow", "local"]
 AcquisitionStatus = Literal["success", "failed", "blocked"]
 
 GIT_ACQUISITION_ALLOWED = {
@@ -67,6 +67,8 @@ class RepositoryAcquisitionRequest(BaseModel):
                 raise ValueError("remote_url is required for remote acquisition")
             if self.resolved_commit is None:
                 raise ValueError("resolved_commit is required for remote acquisition")
+        if self.acquisition_profile == "generic_shallow" and self.remote_url is None:
+            raise ValueError("remote_url is required for generic_shallow acquisition")
         if self.acquisition_profile == "shallow_ref" and self.resolved_ref is None:
             raise ValueError("resolved_ref is required for shallow_ref acquisition")
         if self.acquisition_profile == "local" and self.local_path is None:
@@ -180,6 +182,17 @@ class RepositoryAcquisitionRunner:
                         decisions_path=decisions_path,
                         calls_path=calls_path,
                     )
+                elif request.acquisition_profile == "generic_shallow":
+                    source, attestation = self._acquire_generic_shallow(
+                        request=request,
+                        target=target,
+                        target_label=target_label,
+                        template_dir=template_dir,
+                        run_dir=run_dir,
+                        tool_calls=tool_calls,
+                        decisions_path=decisions_path,
+                        calls_path=calls_path,
+                    )
                 else:
                     source, attestation = self._acquire_partial_exact(
                         request=request,
@@ -260,6 +273,50 @@ class RepositoryAcquisitionRunner:
             canonical_remote_url=request.remote_url,
             requested_ref=request.resolved_ref,
             acquisition_profile="shallow_ref",
+            permission_engine=self.permission_engine,
+            timeout_seconds=self.timeout_seconds,
+            tool_calls=tool_calls,
+            decisions_path=decisions_path,
+            calls_path=calls_path,
+        )
+
+    def _acquire_generic_shallow(
+        self,
+        *,
+        request: RepositoryAcquisitionRequest,
+        target: Path,
+        target_label: str,
+        template_dir: Path,
+        run_dir: Path,
+        tool_calls: list[AcquisitionToolCallRecord],
+        decisions_path: Path,
+        calls_path: Path,
+    ) -> tuple[RepositorySource, RepositoryAttestation]:
+        assert request.remote_url is not None
+        self._run_git(
+            request.workspace_root.resolve(),
+            "workspace_root",
+            [
+                "git",
+                "clone",
+                "--depth=1",
+                "--no-tags",
+                f"--template={template_dir}",
+                request.remote_url,
+                str(target),
+            ],
+            "tool_git_clone",
+            tool_calls,
+            decisions_path,
+            calls_path,
+        )
+        return attest_repository(
+            source_id=request.source_id,
+            repository_root=target,
+            repository_root_label=target_label,
+            canonical_remote_url=request.remote_url,
+            requested_ref=request.resolved_ref,
+            acquisition_profile="generic_shallow",
             permission_engine=self.permission_engine,
             timeout_seconds=self.timeout_seconds,
             tool_calls=tool_calls,

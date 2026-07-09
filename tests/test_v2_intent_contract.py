@@ -151,6 +151,49 @@ def test_draft_display_cleans_legacy_polluted_contract(tmp_path: Path):
     assert "evaluation_protocol" not in fields
 
 
+def test_draft_does_not_infer_baseline_from_source_only_repo_url(tmp_path: Path):
+    run_dir = tmp_path / "run_source_only"
+    (run_dir / "chat").mkdir(parents=True)
+    (run_dir / "chat" / "transcript.jsonl").write_text(
+        json.dumps(
+            {
+                "role": "user",
+                "content": "https://github.com/amazon-science/patchcore-inspection.git；分析一下这个仓库，能clone",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    sources = run_dir / "sources"
+    sources.mkdir(parents=True)
+    (sources / "source_references.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "sources": [
+                    {
+                        "source_id": "src_repo",
+                        "kind": "github_repo",
+                        "user_label": "https://github.com/amazon-science/patchcore-inspection",
+                        "status": "user_provided_not_ingested",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = load_research_draft_state(run_dir)
+
+    fields = {item["field"]: item for item in payload["fields"]}
+    assert fields["baseline"]["status"] == "missing"
+    assert fields["baseline_repo"]["status"] == "missing"
+    assert fields["baseline"]["value"] == "待补充"
+    assert fields["baseline_repo"]["value"] == "待补充"
+
+
 def test_build_contract_keeps_repo_analysis_readiness_separate(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     sources = run_dir / "sources"
@@ -568,9 +611,36 @@ def test_repo_failure_question_does_not_append_pdf_conclusion():
     assert "git_clone(job_000002)" in reply
     assert "git_clone(job_000004)" in reply
     assert "dependency failed: job_000002" in reply
-    assert "web_search 镜像/候选仓库" in reply
+    assert "镜像 URL" in reply
+    assert "zip/tar" in reply
+    assert "web_search 镜像/候选仓库" not in reply
     assert "PDF" not in reply
     assert "论文方法细节证据" not in reply
+
+
+def test_repo_failure_with_truncated_cloning_error_is_explained_as_transport_failure():
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "idle"},
+            "unparsed_sources": [],
+            "usable_evidence": [],
+            "readable_summaries": [],
+            "pending_jobs": [],
+            "failed_jobs": [
+                {
+                    "job_id": "job_000001",
+                    "job_type": "git_clone",
+                    "error": "git_clone: git command failed: tool_git_clone: failed: Cloning into 'repo'",
+                },
+                {"job_id": "job_000002", "job_type": "repo_summarize", "error": "dependency failed: job_000001"},
+            ],
+        },
+        "clone失败了，你总结一下原因",
+    )
+
+    assert "网络/TLS" in reply
+    assert "仓库不存在" in reply
+    assert "dependency failed: job_000001" in reply
 
 
 def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch):

@@ -27,6 +27,7 @@ from autoad_researcher.assistant.research_context_builder import (
 from autoad_researcher.assistant.response_guard import guard_research_chat_reply
 from autoad_researcher.core.events import EventStore
 from autoad_researcher.research_context.freeze import load_active_freeze_manifest
+from autoad_researcher.source_normalizer import extract_first_url as normalize_first_source_url
 from autoad_researcher.ui.artifact_viewer import (
     BLOCKED_REASON_HINTS,
     get_approval_gate_report,
@@ -126,8 +127,6 @@ _FORCE_REPARSE_TOKENS = (
     "解析一次",
     "读一次",
 )
-_URL_RE = re.compile(r"https?://[^\s<>()，。！？；、]+", re.IGNORECASE)
-
 
 def _resolve_run_dir(browse_id: str) -> Path | None:
     try:
@@ -380,14 +379,12 @@ def _attachment_user_message(sources: list[dict[str, Any]]) -> str:
 
 
 def extract_first_url(text: str) -> str | None:
-    match = _URL_RE.search(text)
-    if not match:
-        return None
-    return match.group(0).rstrip(".,;:!?)]}")
+    return normalize_first_source_url(text)
 
 
 def create_url_source_material_request(run_dir: Path, url: str, *, user_message: str | None = None) -> dict[str, Any]:
     source = register_url_source(run_dir, url)
+    url = str(source.get("user_label") or url)
     source_id = str(source["source_id"])
     source_kind = str(source.get("kind", "webpage"))
     existing = _find_existing_material_request_for_url(run_dir, url=url, source_id=source_id)

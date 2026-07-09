@@ -155,7 +155,7 @@ def test_web_fetch_subagent_updates_source_and_request_result_ref(tmp_path: Path
 def test_repository_discovery_marks_source_candidate_intake_only(tmp_path: Path):
     run_dir = tmp_path / "run_repo_discovery"
     run_dir.mkdir()
-    source = register_url_source(run_dir, "https://github.com/example/repo")
+    source = register_url_source(run_dir, "https://github.com/example/repo", force_kind="github_repo")
     append_material_request(
         run_dir,
         user_message="分析 https://github.com/example/repo",

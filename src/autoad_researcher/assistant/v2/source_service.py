@@ -8,15 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
-import re
-
-
-def _extract_clean_url(text: str) -> str | None:
-    """Extract a clean URL from a line that may have user phrasing around it."""
-    match = re.search(r"https?://[^\s\u4e00-\u9fff]+", text)
-    return match.group(0).rstrip(".,;:!?)]}") if match else None
+from autoad_researcher.source_normalizer import extract_first_source_candidate, extract_first_url, normalize_repository_reference
 
 
 def classify_input(user_input: str, attachments: list[str] | None = None) -> str:
@@ -26,8 +19,9 @@ def classify_input(user_input: str, attachments: list[str] | None = None) -> str
     if attachments:
         return "paper_pdf"
 
-    url = _extract_clean_url(text)
-    if url and _is_github_url(url):
+    candidate = extract_first_source_candidate(text)
+    url = candidate.normalized_ref if candidate is not None else None
+    if candidate is not None and candidate.source_kind == "github_repo":
         return "github_repo"
 
     if url:
@@ -50,8 +44,12 @@ def register_source_intake(
     from autoad_researcher.ui.sources import append_source_ref, register_url_source
 
     if source_kind in ("webpage", "github_repo"):
-        url = source_url or _extract_clean_url(user_input.strip()) or user_input.strip()
-        result = register_url_source(run_dir, url)
+        if source_kind == "github_repo":
+            repo_candidate = normalize_repository_reference(source_url or user_input.strip())
+            url = repo_candidate.normalized_ref if repo_candidate is not None else (source_url or user_input.strip())
+        else:
+            url = source_url or extract_first_url(user_input.strip()) or user_input.strip()
+        result = register_url_source(run_dir, url, force_kind=source_kind)
         return {"source_id": result["source_id"], "kind": result["kind"], "status": result["status"]}
 
     sid = append_source_ref(
@@ -62,9 +60,3 @@ def register_source_intake(
         status="uploaded_not_parsed",
     )
     return {"source_id": sid, "kind": "paper_pdf", "status": "uploaded_not_parsed"}
-
-
-def _is_github_url(url: str) -> bool:
-    parsed = urlsplit(url)
-    hostname = (parsed.hostname or "").lower()
-    return hostname == "github.com" or hostname.endswith(".github.com")

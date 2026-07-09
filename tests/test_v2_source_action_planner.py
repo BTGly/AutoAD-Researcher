@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
+from autoad_researcher.assistant.v2.intent_contract import load_contract_draft
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.source_action_planner import (
     SourceActionPlan,
@@ -171,6 +172,73 @@ def test_orchestrator_creates_repo_jobs_from_llm_source_action(monkeypatch, tmp_
     assert registry["sources"][0]["user_label"] == "https://github.com/amazon-science/patchcore-inspection"
 
 
+def test_orchestrator_treats_mirror_url_as_repository_source_without_llm(tmp_path: Path):
+    run_dir = tmp_path / "run_mirror_url"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="https://gitee.com/example/patchcore-inspection.git",
+    )
+
+    assert result.reply_kind == "source_intake"
+    assert result.created_sources[0]["kind"] == "github_repo"
+    assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
+    registry = load_source_registry(run_dir)
+    assert registry["sources"][0]["user_label"] == "https://gitee.com/example/patchcore-inspection"
+
+
+def test_orchestrator_treats_gitlab_git_url_as_repository_source_without_llm(tmp_path: Path):
+    run_dir = tmp_path / "run_gitlab_url"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="https://gitlab.com/example-group/example-repo.git",
+    )
+
+    assert result.reply_kind == "source_intake"
+    assert result.created_sources[0]["kind"] == "github_repo"
+    assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
+    registry = load_source_registry(run_dir)
+    assert registry["sources"][0]["user_label"] == "https://gitlab.com/example-group/example-repo"
+
+
+def test_orchestrator_keeps_non_git_url_as_webpage_without_llm_repo_intent(tmp_path: Path):
+    run_dir = tmp_path / "run_generic_code_host"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="https://code.example.edu/example-group/example-repo",
+    )
+
+    assert result.reply_kind == "source_intake"
+    assert result.created_sources[0]["kind"] == "webpage"
+    assert [job["job_type"] for job in result.created_jobs] == ["web_fetch", "web_markitdown"]
+
+
+def test_plain_repo_analysis_url_is_not_registered_as_baseline_contract(tmp_path: Path):
+    run_dir = tmp_path / "run_plain_repo_url"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="https://github.com/amazon-science/patchcore-inspection.git；分析一下这个仓库，能clone",
+    )
+
+    assert result.reply_kind == "source_intake"
+    assert "代码仓库" in result.reply
+    assert "基线仓库" not in result.reply
+    assert result.intent_contract == {}
+    assert load_contract_draft(run_dir) is None
+
+    registry = load_source_registry(run_dir)
+    assert registry["sources"][0]["user_label"] == "https://github.com/amazon-science/patchcore-inspection"
+    assert "；" not in registry["sources"][0]["user_label"]
+    assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
+
+
 def test_orchestrator_creates_web_search_job_from_llm_source_action(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_search"
     run_dir.mkdir()
@@ -252,7 +320,7 @@ def test_orchestrator_creates_web_search_job_from_llm_source_action(monkeypatch,
     assert result.created_jobs[0]["payload"]["query"] == "MVTec AD PatchCore AUROC improvement methods"
 
 
-def test_explicit_mirror_search_uses_registered_github_repo_without_llm(tmp_path: Path):
+def test_explicit_mirror_search_does_not_auto_create_web_search_without_provider(tmp_path: Path):
     run_dir = tmp_path / "run_mirror"
     source_dir = run_dir / "sources"
     source_dir.mkdir(parents=True)
@@ -277,9 +345,8 @@ def test_explicit_mirror_search_uses_registered_github_repo_without_llm(tmp_path
         user_input="如果是网络问题，能不能 websearch 对应的镜像仓库？",
     )
 
-    assert result.reply_kind == "source_intake"
-    assert [job["job_type"] for job in result.created_jobs] == ["web_search"]
-    assert result.created_jobs[0]["payload"]["query"] == "amazon-science/patchcore-inspection mirror GitCode Gitee AtomGit"
+    assert [job["job_type"] for job in result.created_jobs] == []
+    assert load_pipeline_jobs(run_dir) == []
 
 
 def test_orchestrator_removes_latest_source_when_user_rejects_upload(monkeypatch, tmp_path: Path):

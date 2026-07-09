@@ -185,11 +185,11 @@ def test_arxiv_url_creates_web_fetch_material_request(tmp_path: Path):
     assert "还不是 supported facts" in reply
 
 
-def test_github_url_creates_repository_discovery_request(tmp_path: Path):
+def test_explicit_git_url_creates_repository_discovery_request(tmp_path: Path):
     run_dir = tmp_path / "run_github_url"
     run_dir.mkdir()
 
-    intake = create_url_source_material_request(run_dir, "https://github.com/example/repo")
+    intake = create_url_source_material_request(run_dir, "https://github.com/example/repo.git")
     request = intake["request"]
 
     assert intake["source"]["kind"] == "github_repo"

@@ -85,6 +85,30 @@ def test_partial_exact_acquisition_does_not_use_depth(tmp_path: Path):
     assert all(not arg.startswith("--depth") for arg in clone_call.argv)
 
 
+def test_generic_shallow_acquisition_does_not_require_resolved_commit(tmp_path: Path):
+    remote, commit = make_remote_repo(tmp_path)
+    run_dir = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+
+    result = RepositoryAcquisitionRunner().acquire(
+        RepositoryAcquisitionRequest(
+            schema_version=1,
+            source_id="source_generic",
+            workspace_root=workspace,
+            remote_url=remote.as_posix(),
+            acquisition_profile="generic_shallow",
+        ),
+        run_dir=run_dir,
+    )
+
+    assert result.status == "success"
+    assert result.source is not None
+    assert result.source.acquisition_profile == "generic_shallow"
+    assert result.source.resolved_commit == commit
+    clone_call = next(call for call in result.tool_calls if call.tool_call_id == "tool_git_clone")
+    assert "--depth=1" in clone_call.argv
+
+
 def test_ref_move_is_structured_failure(tmp_path: Path):
     remote, _commit = make_remote_repo(tmp_path)
     run_dir = tmp_path / "run"

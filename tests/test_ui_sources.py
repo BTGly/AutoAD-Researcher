@@ -151,12 +151,24 @@ class TestRegisterLocalFileSource:
         with pytest.raises(ValueError, match="不是可注册的资料文件"):
             register_local_file_source(run_dir, src)
 
-    def test_rejects_unsupported_file_type(self, tmp_path, monkeypatch):
+    def test_registers_archive_bundle(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
         src = tmp_path / "archive.zip"
         src.write_bytes(b"zip")
+
+        info = register_local_file_source(run_dir, src)
+
+        assert info["kind"] == "archive_bundle"
+        assert info["stored_path"].endswith("/archive.zip")
+
+    def test_rejects_unsupported_file_type(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        src = tmp_path / "notes.csv"
+        src.write_text("x,y\n", encoding="utf-8")
 
         with pytest.raises(ValueError, match="仅支持"):
             register_local_file_source(run_dir, src)
@@ -264,7 +276,7 @@ class TestSourceRegistry:
         run_dir = tmp_path / "run_test"
         run_dir.mkdir()
 
-        for kind in ("webpage", "user_text", "local_repo"):
+        for kind in ("webpage", "user_text", "local_repo", "archive_bundle", "document"):
             append_source_ref(
                 run_dir,
                 kind=kind,
@@ -274,8 +286,8 @@ class TestSourceRegistry:
             )
 
         reg = load_source_registry(run_dir)
-        assert [source["kind"] for source in reg["sources"]] == ["webpage", "user_text", "local_repo"]
-        assert [source["intake_status"] for source in reg["sources"]] == ["pending", "pending", "pending"]
+        assert [source["kind"] for source in reg["sources"]] == ["webpage", "user_text", "local_repo", "archive_bundle", "document"]
+        assert [source["intake_status"] for source in reg["sources"]] == ["pending", "pending", "pending", "pending", "pending"]
 
     def test_read_legacy_source_references_gets_virtual_attempt(self, tmp_path):
         run_dir = tmp_path / "run_test"

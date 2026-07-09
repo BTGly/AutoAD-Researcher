@@ -144,7 +144,7 @@ class RepositorySource(BaseModel):
     kind: Literal["github_public", "local_workspace"]
     canonical_remote_url: str | None
     requested_ref: str | None
-    acquisition_profile: Literal["shallow_ref", "partial_exact", "local"]
+    acquisition_profile: Literal["shallow_ref", "partial_exact", "generic_shallow", "local"]
     resolved_commit: str | None = Field(default=None, pattern=GitCommitPattern)
     tree_sha: str = Field(pattern=Sha256Pattern)
     detached_head: bool | None

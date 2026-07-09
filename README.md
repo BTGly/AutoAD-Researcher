@@ -32,6 +32,28 @@
 | [参考资料汇总](docs/AutoAD_参考资料汇总.md) | 参考论文、开源仓库、工具对比、BibTeX汇总 |
 | [Repository Intelligence](docs/repository-intelligence.md) | Step 3.1 仓库发现、固定、静态证据化分析、验证和 handoff 的当前实现边界 |
 
+## Docker 一键启动
+
+面向用户交付时不需要分别启动前端、后端和 worker。Docker 镜像会把 React 前端打包进 FastAPI，后台资料解析 worker 默认内置启动。
+
+```bash
+./scripts/docker-up.sh
+```
+
+或直接使用 compose：
+
+```bash
+docker compose -f docker/docker-compose.yml up --build
+```
+
+启动后打开：
+
+```text
+http://localhost:8000
+```
+
+运行数据保存在 Docker volume `autoad-researcher_runs_data` 中；停止服务用 `Ctrl+C`，后台再次启动会继续使用同一份 runs 数据。
+
 ## 真实用户任务 vs 内部 Benchmark
 
 ### 真实用户任务

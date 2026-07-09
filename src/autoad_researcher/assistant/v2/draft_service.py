@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,8 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         ready = contract.ready_for_plan
     else:
         confirmed = extract_confirmed_from_chat(transcript)
+        if _is_source_only_transcript(transcript, sources, pending_jobs, failed_jobs):
+            confirmed = {}
         metrics = confirmed.get("metrics") if isinstance(confirmed.get("metrics"), list) else []
         fields = {
             "research_goal": _fallback_goal(confirmed),
@@ -70,7 +73,7 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
             "primary_metrics": metrics,
             "success_criteria": None,
             "execution_mode": "plan_only",
-            "baseline_repo": _first_repo_source(sources),
+            "baseline_repo": None,
             "user_improvement_hints": [],
             "preferred_method_hints": _method_hints_from_evidence(usable),
         }
@@ -217,6 +220,31 @@ def _first_repo_source(sources: list[Any]) -> str | None:
         if isinstance(source, dict) and source.get("kind") == "github_repo":
             return str(source.get("user_label") or source.get("stored_path") or "") or None
     return None
+
+
+def _is_source_only_transcript(
+    transcript: list[dict[str, Any]],
+    sources: list[Any],
+    pending_jobs: list[Any],
+    failed_jobs: list[Any],
+) -> bool:
+    if not (sources or pending_jobs or failed_jobs):
+        return False
+    user_turns = [
+        str(entry.get("content") or "").strip()
+        for entry in transcript
+        if entry.get("role") == "user" and str(entry.get("content") or "").strip()
+    ]
+    if not user_turns:
+        return True
+    return all(_looks_like_source_intake_text(text) for text in user_turns)
+
+
+def _looks_like_source_intake_text(text: str) -> bool:
+    stripped = text.strip()
+    if re.search(r"https?://", stripped):
+        return True
+    return False
 
 
 def _method_hints_from_evidence(evidence: list[Any]) -> list[str]:

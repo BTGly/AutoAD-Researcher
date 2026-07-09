@@ -9,6 +9,7 @@ from autoad_researcher.server.ws_manager import manager
 
 RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
 router = APIRouter()
+TRANSIENT_EVENT_PREFIXES = ("toast.",)
 
 
 @router.websocket("/api/runs/{run_id}/ws")
@@ -20,7 +21,8 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
     # Replay existing events on connect
     for evt in load_events_since(run_dir, last_event_id):
         try:
-            await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
+            if not _is_transient_event(evt):
+                await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
             last_event_id = evt["event_id"]
         except Exception:
             break
@@ -51,3 +53,8 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
     finally:
         poll_task.cancel()
         manager.disconnect(run_id, ws)
+
+
+def _is_transient_event(evt: dict) -> bool:
+    event_type = str(evt.get("type") or "")
+    return event_type.startswith(TRANSIENT_EVENT_PREFIXES)

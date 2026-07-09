@@ -60,17 +60,18 @@ def decide_turn_gate_with_llm(
     intake/job events are structured system events and may enter the pipeline.
     """
 
-    if created_sources or created_jobs:
+    if (created_sources or created_jobs) and not api_key:
         return TurnGateDecision(
             turn_type="source_intake",
-            contract_action="update_contract",
-            contract_update_allowed=True,
-            need_discovery_allowed=True,
-            save_draft_allowed=True,
+            contract_action="answer_without_contract_update",
+            contract_update_allowed=False,
+            need_discovery_allowed=False,
+            save_draft_allowed=False,
             user_intent_summary="structured source/job intake",
             evidence_from_current_turn=["created_sources_or_jobs"],
             confidence=1.0,
-            reason="Source/job events are structured system state, not natural-language relevance.",
+            reason="Source/job events register materials; offline fallback does not infer research contract fields from source intake.",
+            next_reply_instruction="资料已登记并进入后台处理；不更新研究合同草案。",
         )
 
     if not api_key:
@@ -84,6 +85,8 @@ def decide_turn_gate_with_llm(
         user_input=user_input,
         transcript_tail=transcript_tail,
         existing_contract_draft=existing_contract_draft,
+        created_sources=created_sources,
+        created_jobs=created_jobs,
         answerability=answerability,
     )
 
@@ -119,6 +122,8 @@ def _build_turn_gate_messages(
     user_input: str,
     transcript_tail: list[dict[str, Any]] | None,
     existing_contract_draft: dict[str, Any] | None,
+    created_sources: list[dict[str, Any]] | None = None,
+    created_jobs: list[dict[str, Any]] | None = None,
     answerability: dict[str, Any],
 ) -> list[dict[str, str]]:
     system = (
@@ -127,6 +132,7 @@ def _build_turn_gate_messages(
         "你不是关键词分类器。不能仅因为出现 PatchCore、MVTec、AUROC、dataset、metric、实验、论文、仓库等词就判定为合同相关。\n"
         "必须根据当前用户消息、最近上下文、已有合同草稿、上一轮助手行为和语用意图判断。\n"
         "只有当用户明确表达研究目标、实验对象、评价指标、成功标准、执行边界、资料来源、确认/修改已有合同，或请求继续推进研究任务时，才允许进入合同链路。\n"
+        "资料登记、上传、fetch、parse、clone、repo analysis 本身只说明要处理 source；除非用户把这份资料明确绑定到 baseline/dataset/metric/成功标准/已有 draft，否则不要更新合同。\n"
         "身份问题、玩笑、发泄、辱骂、寒暄、情绪表达、与研究合同无关的对话，不允许更新合同。\n"
         "如果消息含义依赖上下文，例如“可以”“继续”“就这个”“按刚刚那个来”，必须结合 transcript_tail 判断上一轮 assistant 是否刚请求合同确认或研究推进。\n"
         "不确定时优先 answer_without_contract_update 或 ask_clarifying_question，不能贸然 save draft。\n"
@@ -137,6 +143,8 @@ def _build_turn_gate_messages(
     context = {
         "transcript_tail": transcript_tail or [],
         "existing_contract_draft": existing_contract_draft or {},
+        "created_sources": created_sources or [],
+        "created_jobs": created_jobs or [],
         "answerability": answerability,
     }
     return [

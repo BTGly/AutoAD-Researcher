@@ -88,6 +88,57 @@ async def upload_source(
         )
         append_event(run_dir, "artifact.created", {"source_id": source_id, "paths": artifacts})
         append_event(run_dir, "evidence.updated", {"source_id": source_id})
+    elif kind == "document":
+        job = append_pipeline_job(
+            run_dir,
+            source_id=source_id,
+            job_type="document_markitdown",
+            evidence_role="parsed_document_evidence",
+            payload={"stored_path": stored_path},
+        )
+        jobs.append(job)
+        append_event(run_dir, "job.queued", {
+            "job_id": job.get("job_id", ""),
+            "job_type": job.get("job_type", ""),
+            "source_id": source_id,
+        })
+    elif kind == "archive_bundle":
+        job = append_pipeline_job(
+            run_dir,
+            source_id=source_id,
+            job_type="archive_unpack_classify",
+            evidence_role="archive_manifest",
+            payload={"stored_path": stored_path},
+        )
+        jobs.append(job)
+        append_event(run_dir, "job.queued", {
+            "job_id": job.get("job_id", ""),
+            "job_type": job.get("job_type", ""),
+            "source_id": source_id,
+        })
+    elif kind == "local_repo":
+        unpack_job = append_pipeline_job(
+            run_dir,
+            source_id=source_id,
+            job_type="local_repo_unpack",
+            evidence_role="repo_acquired",
+            payload={"stored_path": stored_path},
+        )
+        jobs.append(unpack_job)
+        summarize_job = append_pipeline_job(
+            run_dir,
+            source_id=source_id,
+            job_type="repo_summarize",
+            evidence_role="repo_acquired",
+            payload={"depends_on": unpack_job.get("job_id")},
+        )
+        jobs.append(summarize_job)
+        for job in jobs:
+            append_event(run_dir, "job.queued", {
+                "job_id": job.get("job_id", ""),
+                "job_type": job.get("job_type", ""),
+                "source_id": source_id,
+            })
 
     append_event(run_dir, "source.created", {
         "source_id": source_id,

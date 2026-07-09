@@ -6,8 +6,8 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
+from autoad_researcher.source_normalizer import extract_first_source_candidate, extract_first_url, is_repository_url, normalize_repository_reference
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -65,7 +65,7 @@ class SourceAction(BaseModel):
     def _clean_source_url(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        cleaned = _extract_clean_url(value) or value.strip()
+        cleaned = extract_first_url(value) or value.strip()
         return cleaned or None
 
     @model_validator(mode="after")
@@ -183,10 +183,12 @@ def validate_source_action_plan(
             if action.source_url is None:
                 updated = action.model_copy(update={"source_url": hint.url, "target": action.target or hint.label})
         if updated.action_type in {"register_github_repo", "git_clone"} and updated.source_url:
-            if not _is_github_url(updated.source_url):
+            candidate = normalize_repository_reference(updated.source_url)
+            if candidate is None:
                 continue
+            updated = updated.model_copy(update={"source_url": candidate.normalized_ref, "source_kind": "github_repo"})
         if updated.action_type == "register_webpage" and updated.source_url:
-            if _is_github_url(updated.source_url):
+            if is_repository_url(updated.source_url):
                 updated = updated.model_copy(update={"action_type": "register_github_repo", "source_kind": "github_repo"})
         actions.append(updated)
     return plan.model_copy(update={"actions": actions})
@@ -265,9 +267,9 @@ def _build_source_action_messages(
         "你是 AutoAD Researcher 的 SourceActionPlanner。你只输出 SourceActionPlan JSON，不输出 Markdown。\n"
         "你的职责是根据当前用户消息、最近对话、已有合同草稿、source registry、pending jobs 和可用工具，判断是否需要创建资料/工具动作。\n"
         "你不是关键词分类器，不能仅因为出现 PatchCore、MVTec、AUROC、github、搜索、clone、仓库等词就创建动作。\n"
-        "必须根据语用意图判断：用户明确要求搜索、查找资料、读取网页、clone/克隆仓库、登记 GitHub URL、继续资料处理时，才创建动作。\n"
+        "必须根据语用意图判断：用户明确要求搜索、查找资料、读取网页、clone/克隆仓库、登记仓库 URL、继续资料处理时，才创建动作。\n"
         "如果用户只是陈述 baseline/dataset/metric/idea，不要创建 source/tool action。\n"
-        "如果用户给了明确 GitHub URL，可创建 register_github_repo 或 git_clone；如果用户只给项目名且要求找/clone 官方仓库，可用 github_discovery 或从 repository_hints 选择高置信候选。\n"
+        "如果用户给了明确代码仓库 URL，可创建 register_github_repo 或 git_clone；如果用户只给项目名且要求找/clone 官方仓库，可用 github_discovery 或从 repository_hints 选择高置信候选。\n"
         "repository_hints 只是候选上下文；选择它们需要在 rationale 中说明来自用户当前意图和上下文，不得把 hint 当默认事实强塞。\n"
         "web_search 只产生 candidate_source_only，不能声称已经读完资料。\n"
         "如果 clone 工具可用且用户要求 clone，不要回复“我不能 clone”；应输出 git_clone 动作，或在目标不明确时输出 github_discovery/ask_clarification。\n"
@@ -310,27 +312,16 @@ def _explicit_source_plan(
             reason="Structured upload signal.",
         )
 
-    mirror_query = _explicit_mirror_search_query(user_input, source_registry or [])
-    if mirror_query:
-        return SourceActionPlan(
-            actions=[
-                SourceAction(
-                    action_type="web_search",
-                    target=mirror_query,
-                    query=mirror_query,
-                    confidence=0.95,
-                    rationale="User explicitly asked to web-search for a repository mirror.",
-                )
-            ],
-            user_visible_summary="将搜索可访问的仓库镜像/候选来源。",
-            confidence=0.95,
-            reason="Explicit mirror repository search request.",
-        )
-
-    url = _extract_clean_url(user_input.strip())
-    if not url:
+    candidate = extract_first_source_candidate(user_input.strip())
+    if candidate is None:
         return None
-    action_type: SourceActionType = "register_github_repo" if _is_github_url(url) else "register_webpage"
+    url = candidate.normalized_ref
+    explicit_repo = candidate.source_kind == "github_repo"
+    action_type: SourceActionType = "register_github_repo" if explicit_repo else "register_webpage"
+    if explicit_repo:
+        repo_candidate = normalize_repository_reference(url)
+        if repo_candidate is not None:
+            url = repo_candidate.normalized_ref
     source_kind: Literal["webpage", "github_repo", "paper_pdf"] = "github_repo" if action_type == "register_github_repo" else "webpage"
     return SourceActionPlan(
         actions=[
@@ -346,61 +337,6 @@ def _explicit_source_plan(
         confidence=1.0,
         reason="Structured URL signal.",
     )
-
-
-def _extract_clean_url(text: str) -> str | None:
-    match = re.search(r"https?://[^\s\u4e00-\u9fff]+", text)
-    return match.group(0).rstrip(".,;:!?)]}") if match else None
-
-
-def _is_github_url(url: str) -> bool:
-    parsed = urlsplit(url)
-    hostname = (parsed.hostname or "").lower()
-    path_parts = [part for part in parsed.path.split("/") if part]
-    return (hostname == "github.com" or hostname.endswith(".github.com")) and len(path_parts) >= 2
-
-
-def _explicit_mirror_search_query(user_input: str, source_registry: list[dict[str, Any]]) -> str | None:
-    text = re.sub(r"\s+", "", user_input.strip().lower())
-    if not text:
-        return None
-    has_search_intent = any(token in text for token in ("websearch", "web_search", "搜索", "搜一下", "查找", "找"))
-    has_mirror_repo_intent = any(token in text for token in ("镜像", "mirror", "替代源")) and any(
-        token in text for token in ("仓库", "repo", "github", "clone")
-    )
-    if not (has_search_intent and has_mirror_repo_intent):
-        return None
-    github_url = _latest_github_source_url(source_registry)
-    repo_slug = _github_repo_slug(github_url) if github_url else None
-    if repo_slug:
-        return f"{repo_slug} mirror GitCode Gitee AtomGit"
-    return user_input.strip()
-
-
-def _latest_github_source_url(source_registry: list[dict[str, Any]]) -> str | None:
-    github_sources = [
-        source for source in source_registry
-        if isinstance(source, dict)
-        and str(source.get("kind") or "") == "github_repo"
-        and (source.get("user_label") or source.get("stored_path"))
-    ]
-    if not github_sources:
-        return None
-    latest = max(github_sources, key=lambda item: str(item.get("created_at") or ""))
-    return str(latest.get("user_label") or latest.get("stored_path") or "")
-
-
-def _github_repo_slug(url: str | None) -> str | None:
-    if not url:
-        return None
-    cleaned = _extract_clean_url(url) or url.strip()
-    parsed = urlsplit(cleaned)
-    if (parsed.hostname or "").lower() != "github.com":
-        return None
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) < 2:
-        return None
-    return "/".join(parts[:2])
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

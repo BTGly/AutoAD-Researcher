@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -18,9 +19,12 @@ from autoad_researcher.server.routes import sources as sources_route
 from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
 from autoad_researcher.tools.pdf_text_adapter import convert_pdf_to_markdown
 from autoad_researcher.tools.providers import GitHubCommitRef, GitHubRepositoryMetadata
+from autoad_researcher.ui.sources import append_source_ref
 from autoad_researcher.worker.main import (
     _process_pending_jobs,
     _run_git_clone,
+    _run_archive_unpack_classify,
+    _run_local_repo_unpack,
     _run_paper_fallbacks,
     _run_paper_parse_pdftotext,
     _run_paper_summarize,
@@ -47,6 +51,96 @@ def test_append_artifact_evidence_is_loaded_as_usable(tmp_path: Path):
     assert loaded[0]["artifact_path"] == "sources/src_web/content.md"
     assert loaded[0]["support_level"] == "supported"
     assert loaded[0]["summary"] == "Converted web page text"
+
+
+def test_local_repo_unpack_then_repo_summary_creates_evidence(tmp_path: Path):
+    run_dir = tmp_path / "run_demo"
+    source_dir = run_dir / "sources" / "src_repo"
+    source_dir.mkdir(parents=True)
+    archive_path = source_dir / "repo.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("patchcore/README.md", "# PatchCore\nbaseline repository\n")
+        zf.writestr("patchcore/patchcore/__init__.py", "")
+    append_source_ref(
+        run_dir,
+        kind="local_repo",
+        user_label="repo.zip",
+        stored_path="sources/src_repo/repo.zip",
+        status="uploaded_not_parsed",
+        source_id="src_repo",
+    )
+
+    ok, outputs = _run_local_repo_unpack(
+        run_dir,
+        {
+            "job_id": "job_000001",
+            "source_id": "src_repo",
+            "job_type": "local_repo_unpack",
+            "payload": {"stored_path": "sources/src_repo/repo.zip"},
+        },
+    )
+
+    assert ok is True
+    assert "repos/src_repo" in outputs
+    assert (run_dir / "repos" / "src_repo" / "README.md").is_file()
+    assert (run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json").is_file()
+
+    summary_ok, summary_outputs = _run_repo_analyze(
+        run_dir,
+        {"job_id": "job_000002", "source_id": "src_repo", "job_type": "repo_summarize"},
+    )
+
+    assert summary_ok is True
+    assert summary_outputs == ["repos/src_repo/repo_brief.md"]
+    evidence = load_usable_evidence(run_dir)
+    assert evidence[0]["evidence_type"] == "repo_summary"
+    assert "PatchCore" in evidence[0]["summary"]
+
+
+def test_archive_bundle_classifies_mixed_materials_and_queues_child_jobs(tmp_path: Path):
+    run_dir = tmp_path / "run_demo"
+    source_dir = run_dir / "sources" / "src_bundle"
+    source_dir.mkdir(parents=True)
+    archive_path = source_dir / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("repo/README.md", "# Repo\n")
+        zf.writestr("repo/pyproject.toml", "[project]\nname='demo'\n")
+        zf.writestr("repo/demo/__init__.py", "")
+        zf.writestr("paper/2303.15140v2.pdf", b"%PDF fake")
+        zf.writestr("docs/notes.md", "# Notes\n")
+        zf.writestr("docs/revision.docx", b"docx bytes")
+    append_source_ref(
+        run_dir,
+        kind="archive_bundle",
+        user_label="bundle.zip",
+        stored_path="sources/src_bundle/bundle.zip",
+        status="uploaded_not_parsed",
+        source_id="src_bundle",
+    )
+
+    ok, outputs = _run_archive_unpack_classify(
+        run_dir,
+        {
+            "job_id": "job_000001",
+            "source_id": "src_bundle",
+            "job_type": "archive_unpack_classify",
+            "payload": {"stored_path": "sources/src_bundle/bundle.zip"},
+        },
+    )
+
+    assert ok is True
+    assert outputs == ["archive_unpack/src_bundle/archive_manifest.json"]
+    registry = json.loads((run_dir / "sources" / "source_references.json").read_text(encoding="utf-8"))
+    children = [source for source in registry["sources"] if source.get("parent_source_id") == "src_bundle"]
+    assert {child["kind"] for child in children} == {"local_repo", "paper_pdf", "markdown", "document"}
+    jobs = load_pipeline_jobs(run_dir)
+    assert "local_repo_acquire" in [job["job_type"] for job in jobs]
+    assert "repo_summarize" in [job["job_type"] for job in jobs]
+    assert "paper_parse_mineru" in [job["job_type"] for job in jobs]
+    assert "document_markitdown" in [job["job_type"] for job in jobs]
+    evidence = load_usable_evidence(run_dir)
+    assert any(item["evidence_type"] == "archive_manifest" for item in evidence)
+    assert any(item["evidence_type"] == "uploaded_text" for item in evidence)
 
 
 @pytest.mark.asyncio
@@ -119,6 +213,53 @@ async def test_delete_source_removes_registry_evidence_and_files(tmp_path: Path,
     assert deleted == {"source_id": "src_wrong", "deleted": True, "removed_evidence": 1}
     assert json.loads((run_dir / "sources" / "source_references.json").read_text(encoding="utf-8"))["sources"] == []
     assert not source_dir.exists()
+    assert load_usable_evidence(run_dir) == []
+
+
+@pytest.mark.asyncio
+async def test_delete_archive_bundle_removes_child_sources_and_evidence(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sources_route, "RUNS_ROOT", str(tmp_path))
+    run_dir = tmp_path / "run_demo"
+    (run_dir / "sources" / "src_bundle").mkdir(parents=True)
+    (run_dir / "sources" / "src_child").mkdir(parents=True)
+    (run_dir / "sources" / "source_references.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "sources": [
+                {
+                    "source_id": "src_bundle",
+                    "kind": "archive_bundle",
+                    "user_label": "bundle.zip",
+                    "status": "parsed",
+                    "stored_path": "sources/src_bundle/bundle.zip",
+                },
+                {
+                    "source_id": "src_child",
+                    "kind": "markdown",
+                    "parent_source_id": "src_bundle",
+                    "user_label": "notes.md",
+                    "status": "parsed",
+                    "stored_path": "sources/src_child/notes.md",
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    append_artifact_evidence(
+        run_dir,
+        source_id="src_child",
+        artifact_path="sources/src_child/notes.md",
+        evidence_type="uploaded_text",
+        parser_name="archive_bundle",
+        summary="child notes",
+    )
+
+    deleted = await sources_route.delete_source("run_demo", "src_bundle")
+
+    assert deleted == {"source_id": "src_bundle", "deleted": True, "removed_evidence": 1}
+    assert json.loads((run_dir / "sources" / "source_references.json").read_text(encoding="utf-8"))["sources"] == []
+    assert not (run_dir / "sources" / "src_bundle").exists()
+    assert not (run_dir / "sources" / "src_child").exists()
     assert load_usable_evidence(run_dir) == []
 
 
@@ -343,6 +484,25 @@ async def test_upload_markdown_creates_text_evidence(tmp_path: Path, monkeypatch
     evidence = load_usable_evidence(tmp_path / "run_upload")
     assert evidence[0]["evidence_type"] == "uploaded_text"
     assert evidence[0]["artifact_path"] == payload["source"]["stored_path"]
+
+
+@pytest.mark.asyncio
+async def test_upload_archive_bundle_queues_classification(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(sources_route, "RUNS_ROOT", str(tmp_path))
+
+    archive = tmp_path / "repo.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("patchcore/README.md", "# PatchCore\n")
+
+    payload = await sources_route.upload_source(
+        "run_upload",
+        _BodyRequest(archive.read_bytes()),
+        x_autoad_filename="repo.zip",
+    )
+
+    assert payload["source"]["kind"] == "archive_bundle"
+    assert [job["job_type"] for job in payload["jobs"]] == ["archive_unpack_classify"]
+    assert payload["jobs"][0]["payload"]["stored_path"] == payload["source"]["stored_path"]
 
 
 def test_llm_context_includes_queued_pipeline_jobs(tmp_path: Path):
@@ -693,6 +853,52 @@ def test_worker_git_clone_uses_repository_acquisition_runner(tmp_path: Path, mon
     assert (run_dir / "repos" / "src_repo" / "README.md").is_file()
     assert (run_dir / "repo_acquisition" / "src_repo" / "repository_source.json").is_file()
     assert (run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json").is_file()
+
+
+def test_worker_git_clone_uses_generic_shallow_for_gitlab_url(tmp_path: Path, monkeypatch):
+    class FakeRepositoryAcquisitionRunner:
+        def __init__(self, timeout_seconds: int):
+            assert timeout_seconds == 120
+
+        def acquire(self, request, *, run_dir: Path):
+            assert request.source_id == "src_gitlab"
+            assert request.remote_url == "https://gitlab.com/example-group/example-repo"
+            assert request.resolved_ref is None
+            assert request.resolved_commit is None
+            assert request.acquisition_profile == "generic_shallow"
+            (request.workspace_root / "repos" / request.source_id).mkdir(parents=True)
+            (request.workspace_root / "repos" / request.source_id / "README.md").write_text("# Repo\n", encoding="utf-8")
+            run_dir.mkdir(parents=True)
+            (run_dir / "repository_source.json").write_text("{}", encoding="utf-8")
+            (run_dir / "repository_attestation.json").write_text("{}", encoding="utf-8")
+            (run_dir / "evidence_index.jsonl").write_text("", encoding="utf-8")
+            return type("FakeAcquisitionResult", (), {"status": "success", "error_message": None})()
+
+    import autoad_researcher.repository_intelligence.acquisition as acquisition
+
+    monkeypatch.setattr(acquisition, "RepositoryAcquisitionRunner", FakeRepositoryAcquisitionRunner)
+
+    run_dir = tmp_path / "run_gitlab"
+    (run_dir / "sources").mkdir(parents=True)
+    (run_dir / "sources" / "source_references.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "sources": [
+                {
+                    "source_id": "src_gitlab",
+                    "kind": "github_repo",
+                    "user_label": "https://gitlab.com/example-group/example-repo",
+                    "status": "user_provided_not_ingested",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    ok, outputs = _run_git_clone(run_dir, {"source_id": "src_gitlab"})
+
+    assert ok is True
+    assert "repos/src_gitlab" in outputs
 
 
 def test_repo_summary_without_clone_attestation_is_not_supported(tmp_path: Path):

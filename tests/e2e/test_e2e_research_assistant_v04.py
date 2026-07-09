@@ -198,11 +198,11 @@ class TestE2EFullFlow:
 
 
 class TestE2ESourceIntake:
-    """Source registration for GitHub, webpage, and user text."""
+    """Source registration for repository refs, webpage, and user text."""
 
-    def test_e2e_github_source_registered_intake_pending(self, tmp_path: Path):
+    def test_e2e_git_remote_source_registered_intake_pending(self, tmp_path: Path):
         run_dir = _make_run_dir(tmp_path)
-        result = register_url_source(run_dir, "https://github.com/amazon-science/patchcore-inspection")
+        result = register_url_source(run_dir, "https://github.com/amazon-science/patchcore-inspection.git")
         assert result["kind"] == "github_repo"
         assert result["intake_status"] == "pending"
         assert result["status"] == "user_provided_not_ingested"
@@ -236,9 +236,10 @@ class TestE2ESourceIntake:
         assert (run_dir / stored).read_text(encoding="utf-8") == text
 
     def test_e2e_url_kind_detection(self):
-        """URL kind detection: github → github_repo, else → webpage."""
-        assert _detect_source_kind_from_url("https://github.com/user/repo") == "github_repo"
-        assert _detect_source_kind_from_url("https://GITHUB.COM/user/repo/issues/1") == "github_repo"
+        """URL kind detection: explicit git remote → repo, else → webpage."""
+        assert _detect_source_kind_from_url("https://github.com/user/repo.git") == "github_repo"
+        assert _detect_source_kind_from_url("https://code.example.edu/user/repo.git") == "github_repo"
+        assert _detect_source_kind_from_url("https://github.com/user/repo/issues/1") == "webpage"
         assert _detect_source_kind_from_url("https://arxiv.org/abs/2106.08265") == "webpage"
         assert _detect_source_kind_from_url("https://example.com/paper.html") == "webpage"
 

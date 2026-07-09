@@ -18,6 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.source_normalizer import (
+    extract_first_source_candidate,
+    extract_first_url,
+    normalize_repository_reference,
+    source_kind_for_url,
+)
+
 SourceStatus = Literal[
     "uploaded_not_parsed",
     "user_provided_not_ingested",
@@ -37,6 +44,8 @@ SourceKind = Literal[
     "webpage",
     "user_text",
     "local_repo",
+    "archive_bundle",
+    "document",
 ]
 
 IntakeStatus = Literal[
@@ -187,27 +196,32 @@ def remove_source(run_dir: Path, source_id: str, *, reason: str = "user_removed"
     rows keyed by the same source_id.
     """
     registry = load_source_registry(run_dir)
+    sources = [source for source in registry.get("sources", []) if isinstance(source, dict)]
+    remove_ids = _source_descendant_ids(sources, source_id)
     kept: list[dict[str, Any]] = []
-    removed: dict[str, Any] | None = None
-    for source in registry.get("sources", []):
+    removed_sources: list[dict[str, Any]] = []
+    for source in sources:
         if not isinstance(source, dict):
             continue
-        if source.get("source_id") == source_id:
-            removed = dict(source)
+        if source.get("source_id") in remove_ids:
+            removed_sources.append(dict(source))
             continue
         kept.append(source)
-    if removed is None:
+    if not removed_sources:
         return None
 
     registry["sources"] = kept
     _save_registry(run_dir, registry)
-    _remove_source_files(run_dir, source_id)
-    removed_evidence = _remove_source_evidence(run_dir, source_id)
+    removed_evidence = 0
+    for removed_id in remove_ids:
+        _remove_source_files(run_dir, removed_id)
+        removed_evidence += _remove_source_evidence(run_dir, removed_id)
     return {
-        "source": removed,
+        "source": removed_sources[0],
         "source_id": source_id,
         "reason": reason,
         "removed_evidence": removed_evidence,
+        "removed_source_ids": sorted(remove_ids),
     }
 
 
@@ -223,6 +237,8 @@ def append_source_ref(
     intake_error: dict[str, Any] | None = None,
     active_parse_attempt_id: str | None = None,
     parse_attempts: list[dict[str, Any]] | None = None,
+    parent_source_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     sid = source_id or _generate_source_id()
     ref = {
@@ -237,10 +253,28 @@ def append_source_ref(
         "active_parse_attempt_id": active_parse_attempt_id,
         "parse_attempts": list(parse_attempts or []),
     }
+    if parent_source_id:
+        ref["parent_source_id"] = parent_source_id
+    if metadata:
+        ref["metadata"] = dict(metadata)
     registry = load_source_registry(run_dir)
     registry["sources"].append(ref)
     _save_registry(run_dir, registry)
     return sid
+
+
+def _source_descendant_ids(sources: list[dict[str, Any]], source_id: str) -> set[str]:
+    remove_ids = {source_id}
+    changed = True
+    while changed:
+        changed = False
+        for source in sources:
+            sid = str(source.get("source_id") or "")
+            parent = str(source.get("parent_source_id") or "")
+            if sid and parent in remove_ids and sid not in remove_ids:
+                remove_ids.add(sid)
+                changed = True
+    return remove_ids
 
 
 def append_source_parse_attempt(
@@ -449,7 +483,10 @@ def _remove_source_files(run_dir: Path, source_id: str) -> None:
         Path("paper") / "parse" / "pdftotext" / source_id,
         Path("paper") / "parse" / "markitdown" / source_id,
         Path("paper") / "parse" / "arxiv_abs" / source_id,
+        Path("document") / "parse" / "markitdown" / source_id,
         Path("repos") / source_id,
+        Path("archive_unpack") / source_id,
+        Path("repo_unpack") / source_id,
         Path("repo_acquisition") / source_id,
     ):
         target = run_dir / rel
@@ -506,14 +543,20 @@ def _default_intake_status(status: str | None) -> IntakeStatus:
 
 
 def _source_kind_for_name(name: str) -> SourceKind:
-    ext = Path(name).suffix.lower()
+    path = Path(name)
+    ext = path.suffix.lower()
+    suffixes = [suffix.lower() for suffix in path.suffixes]
     if ext == ".pdf":
         return "paper_pdf"
     if ext in (".md", ".markdown"):
         return "markdown"
     if ext == ".txt":
         return "text"
-    raise ValueError("仅支持 PDF/txt/md/markdown")
+    if ext in {".doc", ".docx", ".html", ".htm"}:
+        return "document"
+    if ext == ".zip" or ext == ".tar" or suffixes[-2:] in ([".tar", ".gz"], [".tar", ".bz2"], [".tar", ".xz"]) or ext in {".tgz", ".tbz", ".txz"}:
+        return "archive_bundle"
+    raise ValueError("仅支持 PDF/txt/md/markdown/html/doc/docx/zip/tar/tar.gz")
 
 
 def get_allowed_local_source_roots() -> list[Path]:
@@ -641,13 +684,17 @@ def resolve_source_pdf_path_safely(run_dir: Path, user_text: str) -> Path | None
 
 
 def _detect_source_kind_from_url(url: str) -> SourceKind:
-    if "github.com" in url.lower():
-        return "github_repo"
-    return "webpage"
+    return source_kind_for_url(url)
 
 
-def register_url_source(run_dir: Path, url: str) -> dict[str, Any]:
-    kind = _detect_source_kind_from_url(url)
+def register_url_source(run_dir: Path, url: str, *, force_kind: SourceKind | None = None) -> dict[str, Any]:
+    candidate = extract_first_source_candidate(url)
+    url = candidate.normalized_ref if candidate is not None else (extract_first_url(url) or url)
+    kind = force_kind or (candidate.source_kind if candidate is not None else _detect_source_kind_from_url(url))
+    if kind == "github_repo":
+        repo_candidate = normalize_repository_reference(url)
+        if repo_candidate is not None:
+            url = repo_candidate.normalized_ref
     registry = load_source_registry(run_dir)
     for source in registry.get("sources", []):
         if not isinstance(source, dict):
@@ -656,6 +703,7 @@ def register_url_source(run_dir: Path, url: str) -> dict[str, Any]:
             return {
                 "source_id": source["source_id"],
                 "kind": kind,
+                "user_label": url,
                 "intake_status": source.get("intake_status", "pending"),
                 "status": source.get("status", "user_provided_not_ingested"),
                 "stored_path": source.get("stored_path"),
@@ -671,6 +719,7 @@ def register_url_source(run_dir: Path, url: str) -> dict[str, Any]:
     return {
         "source_id": sid,
         "kind": kind,
+        "user_label": url,
         "intake_status": "pending",
         "status": "user_provided_not_ingested",
         "stored_path": None,

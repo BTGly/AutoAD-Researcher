@@ -15,17 +15,19 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV UV_LINK_MODE=copy
 
 # Python deps
-COPY pyproject.toml uv.lock ./
-RUN uv sync --python 3.12 --extra ui --extra dev --no-dev
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --python 3.12 --frozen --no-dev --no-install-project
 
 # Source
 COPY src/ ./src/
-COPY runs/ ./runs/
 COPY --from=frontend-build /frontend/dist ./frontend/dist
+RUN uv sync --python 3.12 --frozen --no-dev
 
 # Environment
 ENV AUTOAD_HOST=0.0.0.0
 ENV AUTOAD_PORT=8000
+ENV AUTOAD_RUNS_ROOT=/app/runs
+ENV AUTOAD_EMBEDDED_WORKER=1
 ENV PYTHONPATH=/app/src
 
 EXPOSE 8000

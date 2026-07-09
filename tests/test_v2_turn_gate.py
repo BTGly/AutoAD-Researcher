@@ -23,7 +23,7 @@ def test_turn_gate_without_api_does_not_update_natural_language_contract():
     assert decision.save_draft_allowed is False
 
 
-def test_turn_gate_allows_structured_source_intake_without_keyword_judgment():
+def test_turn_gate_without_api_keeps_structured_source_intake_out_of_contract():
     decision = decide_turn_gate_with_llm(
         user_input="https://github.com/amazon-science/patchcore-inspection",
         transcript_tail=[],
@@ -36,9 +36,10 @@ def test_turn_gate_allows_structured_source_intake_without_keyword_judgment():
     )
 
     assert decision.turn_type == "source_intake"
-    assert decision.contract_update_allowed is True
-    assert decision.need_discovery_allowed is True
-    assert decision.save_draft_allowed is True
+    assert decision.contract_action == "answer_without_contract_update"
+    assert decision.contract_update_allowed is False
+    assert decision.need_discovery_allowed is False
+    assert decision.save_draft_allowed is False
 
 
 def test_turn_gate_uses_llm_for_research_keyword_joke(monkeypatch):

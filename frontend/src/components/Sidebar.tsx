@@ -157,15 +157,16 @@ function EvidenceList({ evidence, unusableParsedSources }: { evidence: EvidenceI
         const type = evidenceTypeMeta(item.evidenceType);
         const support = supportMeta(item.supportLevel);
         const detail = detailPath(item);
+        const preview = evidencePreview(item);
         return (
           <div key={`${item.artifactPath}-${index}`} className="sidebar-card">
             <div className="sidebar-card-head">
               <div className="sidebar-title">{type.label}</div>
               <Badge meta={support} />
             </div>
-            {item.summary && (
-              <div className="sidebar-body">
-                {compactSummary(item.summary)}
+            {preview && (
+              <div className={`sidebar-body evidence-preview ${preview.tone || ''}`}>
+                {preview.text}
               </div>
             )}
             <div className="sidebar-muted">{parserLabel(item.parserName)} · {item.artifactPath}</div>
@@ -265,7 +266,10 @@ function Badge({ meta }: { meta: DisplayMeta }) {
 function sourceKindMeta(kind: string): DisplayMeta {
   const labels: Record<string, string> = {
     paper_pdf: '论文 PDF',
-    github_repo: 'GitHub 仓库',
+    github_repo: '代码仓库',
+    local_repo: '本地仓库包',
+    archive_bundle: '资料包',
+    document: '文档',
     markdown: 'Markdown',
     text: '文本',
     web_url: '网页链接',
@@ -293,6 +297,10 @@ function jobTypeMeta(jobType: string): DisplayMeta {
     paper_parse_pdftotext: '提取 PDF 文本',
     paper_reading_summary: '生成论文摘要',
     git_clone: '克隆仓库',
+    local_repo_unpack: '解包仓库',
+    local_repo_acquire: '登记本地仓库',
+    archive_unpack_classify: '解包分类',
+    document_markitdown: '转换文档',
     repo_summarize: '分析仓库',
     web_search: '搜索资料',
     web_fetch: '抓取网页',
@@ -316,9 +324,17 @@ function jobStatusMeta(status: string): DisplayMeta {
 function evidenceTypeMeta(type: string): DisplayMeta {
   const labels: Record<string, string> = {
     paper_markdown_fallback: '论文正文',
+    paper_text: '论文正文片段',
     paper_reading_summary: '论文阅读摘要',
+    paper_method_cards: '论文方法卡片',
     paper_artifact_manifest: '论文产物清单',
+    paper_summary: '论文结构摘要',
+    paper_candidates: '论文候选线索',
+    method_components: '方法组件',
+    sections: '论文章节',
     uploaded_text: '上传文本',
+    document_markdown: '文档正文',
+    archive_manifest: '资料包清单',
     web_markdown: '网页正文',
     repo_summary: '仓库摘要',
   };
@@ -350,14 +366,48 @@ function compactSummary(summary: string): string {
     .replace(/^#+\s*/gm, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return cleaned.length > 320 ? `${cleaned.slice(0, 319)}…` : cleaned;
+  return cleaned.length > 180 ? `${cleaned.slice(0, 179)}…` : cleaned;
+}
+
+function evidencePreview(item: EvidenceItem): { text: string; tone?: 'muted' } | null {
+  if (item.evidenceType === 'paper_markdown_fallback') {
+    return { text: '已提取论文正文，可作为详细事实源。正文较长，默认不在侧栏展开。', tone: 'muted' };
+  }
+  if (item.evidenceType === 'paper_text') {
+    return { text: compactSummary(item.summary || '已定位到论文正文片段，可用于回答具体论文内容。'), tone: 'muted' };
+  }
+  if (item.evidenceType === 'paper_artifact_manifest') {
+    const raw = item.raw || {};
+    const summaryPath = typeof raw.summary_path === 'string' ? raw.summary_path : '';
+    return {
+      text: summaryPath ? `记录可用论文产物；默认阅读入口：${summaryPath}` : '记录可用论文产物和详情路径。',
+      tone: 'muted',
+    };
+  }
+  if (!item.summary) return null;
+  return { text: localizeEvidenceSummary(compactSummary(item.summary)) };
+}
+
+function localizeEvidenceSummary(summary: string): string {
+  return summary
+    .replace(/\bTitle:\s*/g, '标题：')
+    .replace(/\bReadable sections:\s*/g, '可读章节：')
+    .replace(/\bMost relevant excerpt:\s*/g, '相关摘录：')
+    .replace(/\bPaper reading summary:\s*/g, '论文阅读摘要：')
+    .replace(/\bPaper artifact manifest:\s*/g, '论文产物清单：')
+    .replace(/\bMethod cards:\s*/g, '方法卡片：')
+    .replace(/\bParsed paper text\b/g, '论文正文片段')
+    .replace(/\bpage\s+(\d+)/gi, '第 $1 页')
+    .replace(/Use this summary as a routing artifact;?.*$/i, '用于定位详细论文证据。');
 }
 
 function humanJobError(error: string): string {
+  const lowered = error.toLowerCase();
   if (error.includes('dependency failed')) return '上游任务失败，所以这个任务没有继续执行。';
-  if (error.includes('timed_out')) return '连接或拉取超时，当前没有成功拿到远端内容。';
-  if (error.includes('GnuTLS') || error.includes('TLS connection')) return 'TLS 连接中断，仓库拉取没有完成。';
-  if (error.includes('unable to access')) return '无法访问目标仓库地址。';
+  if (lowered.includes('timed_out') || lowered.includes('timeout')) return '连接或拉取超时，当前没有成功拿到远端内容。';
+  if (lowered.includes('gnutls') || lowered.includes('tls connection') || lowered.includes('recv error')) return 'TLS/网络传输中断，仓库拉取没有完成。';
+  if (lowered.includes('cloning into') && lowered.includes('tool_git_clone')) return 'clone 传输没有完成，通常是网络连接中断或远端传输失败。';
+  if (lowered.includes('unable to access')) return '无法访问目标仓库地址；请确认 URL 是否干净且当前环境可访问。';
   return error.length > 180 ? `${error.slice(0, 179)}…` : error;
 }
 

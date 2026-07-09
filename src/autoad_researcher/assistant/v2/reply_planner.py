@@ -292,7 +292,11 @@ def _job_failure_fallback(
         parts.append(f"仍在运行/排队的任务: {job_lines}")
     if network_failures:
         parts.append("这更像是当前环境到 GitHub 的连接不稳定或被中断，不像是仓库不存在。")
-        parts.append("可以下一步 web_search 镜像/候选仓库，再对可访问的候选源做 fetch 或 clone。")
+        parts.append(
+            "下一步更稳的做法是由用户提供一个当前环境可访问的仓库来源："
+            "Gitee/GitCode/AtomGit 等镜像 URL，或本地 clone 后打包的 zip/tar。"
+            "系统会把这些材料登记、解析、证据化，再继续仓库分析。"
+        )
     elif repo_failures:
         parts.append("因此当前仓库还没有成功 clone/analysis，右侧 Evidence 不应把 repo 摘要当作可用证据。")
     return "answer", "\n".join(parts)
@@ -309,6 +313,10 @@ def _looks_like_network_clone_failure(error: str) -> bool:
         "unable to access",
         "failed to connect",
         "connection reset",
+        "cloning into",
+        "recv error",
+        "early eof",
+        "curl",
     ))
 
 

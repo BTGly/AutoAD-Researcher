@@ -41,6 +41,8 @@ interface ArtifactEntry {
   content?: string;
 }
 
+const MAX_VISIBLE_TOASTS = 3;
+
 export default function App() {
   const { config, saveConfig, saveExperimentConfig, showConfig, openConfig, closeConfig, DEFAULT_EXPERIMENT } = useConfig();
   const [runId, setRunId] = useState<string>('');
@@ -63,7 +65,7 @@ export default function App() {
   const activeTask = tasks.find(task => task.run_id === runId) || null;
 
   const addToast = useCallback((message: string, kind: 'success' | 'error' | 'info') => {
-    setToasts(prev => [...prev, { id: generateId(), message, kind }]);
+    setToasts(prev => [...prev, { id: generateId(), message, kind }].slice(-MAX_VISIBLE_TOASTS));
   }, []);
 
   const removeToast = useCallback((id: string) => {
@@ -110,6 +112,7 @@ export default function App() {
     setUnusableParsedSources([]);
     setDraft(null);
     setArtifacts([]);
+    setToasts([]);
     const transcript = await getTranscript(nextRunId).catch(() => []);
     setMessages(transcript.map(entry => ({
       id: generateId(),

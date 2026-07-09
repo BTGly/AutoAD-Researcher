@@ -14,9 +14,11 @@ import os
 import re
 import shutil
 import sys
+import tarfile
 import time
+import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
@@ -114,6 +116,14 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 success, outputs = _run_web_markitdown(run_dir, job)
             elif job_type == "git_clone":
                 success, outputs = _run_git_clone(run_dir, job)
+            elif job_type == "local_repo_unpack":
+                success, outputs = _run_local_repo_unpack(run_dir, job)
+            elif job_type == "local_repo_acquire":
+                success, outputs = _run_local_repo_acquire(run_dir, job)
+            elif job_type == "archive_unpack_classify":
+                success, outputs = _run_archive_unpack_classify(run_dir, job)
+            elif job_type == "document_markitdown":
+                success, outputs = _run_document_markitdown(run_dir, job)
             elif job_type in {"paper_parse", "paper_parse_mineru"}:
                 success, outputs = _run_paper_parse_mineru(run_dir, job)
             elif job_type == "paper_parse_markitdown":
@@ -223,24 +233,37 @@ def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
         from autoad_researcher.repository_intelligence.discovery import parse_github_repository_url
         from autoad_researcher.tools.providers import GitHubReadProvider
 
-        locator = parse_github_repository_url(url, strict=True)
-        metadata = GitHubReadProvider().repository_metadata(locator.owner, locator.repository)
-        resolved_ref = metadata.default_branch
-        commit = GitHubReadProvider().commit_ref(metadata.owner, metadata.repository, resolved_ref)
         acquisition_dir = run_dir / "repo_acquisition" / source_id
         _cleanup_incomplete_repository_target(run_dir, source_id)
-        result = RepositoryAcquisitionRunner(timeout_seconds=120).acquire(
-            RepositoryAcquisitionRequest(
-                schema_version=1,
-                source_id=source_id,
-                workspace_root=run_dir,
-                remote_url=locator.canonical_url,
-                resolved_ref=resolved_ref,
-                resolved_commit=commit.sha,
-                acquisition_profile="shallow_ref",
-            ),
-            run_dir=acquisition_dir,
-        )
+        try:
+            locator = parse_github_repository_url(url, strict=True)
+        except Exception:
+            result = RepositoryAcquisitionRunner(timeout_seconds=120).acquire(
+                RepositoryAcquisitionRequest(
+                    schema_version=1,
+                    source_id=source_id,
+                    workspace_root=run_dir,
+                    remote_url=url,
+                    acquisition_profile="generic_shallow",
+                ),
+                run_dir=acquisition_dir,
+            )
+        else:
+            metadata = GitHubReadProvider().repository_metadata(locator.owner, locator.repository)
+            resolved_ref = metadata.default_branch
+            commit = GitHubReadProvider().commit_ref(metadata.owner, metadata.repository, resolved_ref)
+            result = RepositoryAcquisitionRunner(timeout_seconds=120).acquire(
+                RepositoryAcquisitionRequest(
+                    schema_version=1,
+                    source_id=source_id,
+                    workspace_root=run_dir,
+                    remote_url=locator.canonical_url,
+                    resolved_ref=resolved_ref,
+                    resolved_commit=commit.sha,
+                    acquisition_profile="shallow_ref",
+                ),
+                run_dir=acquisition_dir,
+            )
         if result.status != "success":
             _write_parse_error(run_dir, source_id, "git_clone", result.error_message or "repository acquisition failed")
             return False, []
@@ -255,6 +278,573 @@ def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
     except Exception as exc:
         _write_parse_error(run_dir, source_id, "git_clone", str(exc))
         return False, []
+
+
+def _run_local_repo_unpack(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
+    source_id = str(job.get("source_id", ""))
+    source = _find_source(run_dir, source_id)
+    stored_path = str((job.get("payload") if isinstance(job.get("payload"), dict) else {}).get("stored_path") or "")
+    if not stored_path and source:
+        stored_path = str(source.get("stored_path") or "")
+    archive_path = run_dir / stored_path
+    if not stored_path or not archive_path.is_file():
+        _write_parse_error(run_dir, source_id, "local_repo_unpack", "uploaded repository archive not found")
+        return False, []
+
+    staging_dir = run_dir / "repo_unpack" / source_id
+    extract_dir = staging_dir / "extracted"
+    repo_dir = run_dir / "repos" / source_id
+    acquisition_dir = run_dir / "repo_acquisition" / source_id
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    shutil.rmtree(repo_dir, ignore_errors=True)
+    shutil.rmtree(acquisition_dir, ignore_errors=True)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _extract_repo_archive(archive_path, extract_dir)
+        selected_root = _select_extracted_repo_root(extract_dir)
+        shutil.copytree(selected_root, repo_dir, symlinks=False)
+
+        from autoad_researcher.repository_intelligence.acquisition import (
+            RepositoryAcquisitionRequest,
+            RepositoryAcquisitionRunner,
+        )
+        from autoad_researcher.ui.sources import update_source_intake_result
+
+        result = RepositoryAcquisitionRunner(timeout_seconds=120).acquire(
+            RepositoryAcquisitionRequest(
+                schema_version=1,
+                source_id=source_id,
+                workspace_root=run_dir,
+                local_path=repo_dir,
+                acquisition_profile="local",
+            ),
+            run_dir=acquisition_dir,
+        )
+        if result.status != "success":
+            _write_parse_error(run_dir, source_id, "local_repo_unpack", result.error_message or "local repository acquisition failed")
+            return False, []
+        update_source_intake_result(
+            run_dir,
+            source_id,
+            status="parsed",
+            intake_status="ok",
+            clear_intake_error=True,
+        )
+        return True, [
+            f"repos/{source_id}",
+            f"repo_acquisition/{source_id}/repository_source.json",
+            f"repo_acquisition/{source_id}/repository_attestation.json",
+            f"repo_acquisition/{source_id}/evidence_index.jsonl",
+        ]
+    except Exception as exc:
+        _write_parse_error(run_dir, source_id, "local_repo_unpack", str(exc))
+        return False, []
+
+
+def _run_local_repo_acquire(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
+    source_id = str(job.get("source_id", ""))
+    source = _find_source(run_dir, source_id)
+    stored_path = str((job.get("payload") if isinstance(job.get("payload"), dict) else {}).get("stored_path") or "")
+    if not stored_path and source:
+        stored_path = str(source.get("stored_path") or "")
+    local_path = run_dir / stored_path
+    if not stored_path or not local_path.is_dir():
+        _write_parse_error(run_dir, source_id, "local_repo_acquire", "local repository directory not found")
+        return False, []
+
+    repo_dir = run_dir / "repos" / source_id
+    acquisition_dir = run_dir / "repo_acquisition" / source_id
+    shutil.rmtree(repo_dir, ignore_errors=True)
+    shutil.rmtree(acquisition_dir, ignore_errors=True)
+    try:
+        shutil.copytree(local_path, repo_dir, symlinks=False)
+        return _attest_local_repo(run_dir, source_id, repo_dir, parser_name="local_repo_acquire")
+    except Exception as exc:
+        _write_parse_error(run_dir, source_id, "local_repo_acquire", str(exc))
+        return False, []
+
+
+def _attest_local_repo(run_dir: Path, source_id: str, repo_dir: Path, *, parser_name: str) -> tuple[bool, list[str]]:
+    from autoad_researcher.repository_intelligence.acquisition import (
+        RepositoryAcquisitionRequest,
+        RepositoryAcquisitionRunner,
+    )
+    from autoad_researcher.ui.sources import update_source_intake_result
+
+    acquisition_dir = run_dir / "repo_acquisition" / source_id
+    result = RepositoryAcquisitionRunner(timeout_seconds=120).acquire(
+        RepositoryAcquisitionRequest(
+            schema_version=1,
+            source_id=source_id,
+            workspace_root=run_dir,
+            local_path=repo_dir,
+            acquisition_profile="local",
+        ),
+        run_dir=acquisition_dir,
+    )
+    if result.status != "success":
+        _write_parse_error(run_dir, source_id, parser_name, result.error_message or "local repository acquisition failed")
+        return False, []
+    update_source_intake_result(
+        run_dir,
+        source_id,
+        status="parsed",
+        intake_status="ok",
+        clear_intake_error=True,
+    )
+    return True, [
+        f"repos/{source_id}",
+        f"repo_acquisition/{source_id}/repository_source.json",
+        f"repo_acquisition/{source_id}/repository_attestation.json",
+        f"repo_acquisition/{source_id}/evidence_index.jsonl",
+    ]
+
+
+def _run_archive_unpack_classify(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
+    source_id = str(job.get("source_id", ""))
+    source = _find_source(run_dir, source_id)
+    stored_path = str((job.get("payload") if isinstance(job.get("payload"), dict) else {}).get("stored_path") or "")
+    if not stored_path and source:
+        stored_path = str(source.get("stored_path") or "")
+    archive_path = run_dir / stored_path
+    if not stored_path or not archive_path.is_file():
+        _write_parse_error(run_dir, source_id, "archive_unpack_classify", "uploaded archive bundle not found")
+        return False, []
+
+    staging_dir = run_dir / "archive_unpack" / source_id
+    extract_dir = staging_dir / "extracted"
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        _extract_repo_archive(archive_path, extract_dir)
+        repo_roots = _discover_repo_roots(extract_dir)
+        child_records: list[dict[str, Any]] = []
+        queued_jobs: list[dict[str, Any]] = []
+
+        for index, repo_root in enumerate(repo_roots, start=1):
+            child_id = f"{source_id}_child_{index:03d}"
+            child_dir = run_dir / "sources" / child_id / "repository"
+            shutil.rmtree(child_dir.parent, ignore_errors=True)
+            shutil.copytree(repo_root, child_dir, symlinks=False)
+            rel = child_dir.relative_to(run_dir).as_posix()
+            label = repo_root.relative_to(extract_dir).as_posix() if repo_root != extract_dir else "repository"
+            _append_child_source(
+                run_dir,
+                source_id=child_id,
+                parent_source_id=source_id,
+                kind="local_repo",
+                user_label=label,
+                stored_path=rel,
+                bundle_path=label,
+            )
+            acquire_job = _queue_child_job(
+                run_dir,
+                source_id=child_id,
+                job_type="local_repo_acquire",
+                evidence_role="repo_acquired",
+                payload={"stored_path": rel, "parent_source_id": source_id},
+            )
+            summarize_job = _queue_child_job(
+                run_dir,
+                source_id=child_id,
+                job_type="repo_summarize",
+                evidence_role="repo_acquired",
+                payload={"depends_on": acquire_job.get("job_id"), "parent_source_id": source_id},
+            )
+            queued_jobs.extend([acquire_job, summarize_job])
+            child_records.append({"source_id": child_id, "kind": "local_repo", "bundle_path": label})
+
+        next_index = len(repo_roots) + 1
+        for material in _discover_material_files(extract_dir, repo_roots):
+            kind = _kind_for_material_file(material)
+            if kind is None:
+                continue
+            child_id = f"{source_id}_child_{next_index:03d}"
+            next_index += 1
+            child_dir = run_dir / "sources" / child_id
+            child_dir.mkdir(parents=True, exist_ok=True)
+            dest = child_dir / material.name
+            shutil.copyfile(material, dest)
+            rel = dest.relative_to(run_dir).as_posix()
+            bundle_path = material.relative_to(extract_dir).as_posix()
+            _append_child_source(
+                run_dir,
+                source_id=child_id,
+                parent_source_id=source_id,
+                kind=kind,
+                user_label=material.name,
+                stored_path=rel,
+                bundle_path=bundle_path,
+            )
+            child_records.append({"source_id": child_id, "kind": kind, "bundle_path": bundle_path})
+            if kind == "paper_pdf":
+                queued_jobs.append(_queue_child_job(
+                    run_dir,
+                    source_id=child_id,
+                    job_type="paper_parse_mineru",
+                    evidence_role="parsed_paper_evidence",
+                    payload={"stored_path": rel, "parent_source_id": source_id},
+                ))
+            elif kind == "document":
+                queued_jobs.append(_queue_child_job(
+                    run_dir,
+                    source_id=child_id,
+                    job_type="document_markitdown",
+                    evidence_role="parsed_document_evidence",
+                    payload={"stored_path": rel, "parent_source_id": source_id},
+                ))
+            elif kind in {"markdown", "text"}:
+                _append_uploaded_text_evidence(run_dir, child_id, rel, filename=material.name, kind=kind)
+
+        manifest_path = _write_archive_manifest(
+            run_dir,
+            source_id=source_id,
+            archive_path=stored_path,
+            extract_dir=extract_dir,
+            repo_roots=repo_roots,
+            child_records=child_records,
+            queued_jobs=queued_jobs,
+        )
+        _append_archive_manifest_evidence(run_dir, source_id, manifest_path, child_records)
+
+        from autoad_researcher.ui.sources import update_source_intake_result
+
+        update_source_intake_result(run_dir, source_id, status="parsed", intake_status="ok", clear_intake_error=True)
+        return True, [manifest_path]
+    except Exception as exc:
+        _write_parse_error(run_dir, source_id, "archive_unpack_classify", str(exc))
+        return False, []
+
+
+def _extract_repo_archive(archive_path: Path, extract_dir: Path) -> None:
+    name = archive_path.name.lower()
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                target = _safe_archive_target(extract_dir, member.filename)
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as src, target.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        return
+    if name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tar.xz", ".txz")):
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            for member in archive.getmembers():
+                target = _safe_archive_target(extract_dir, member.name)
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                if not member.isfile():
+                    raise ValueError(f"unsupported archive member type: {member.name}")
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"cannot extract archive member: {member.name}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with extracted, target.open("wb") as dst:
+                    shutil.copyfileobj(extracted, dst)
+        return
+    raise ValueError("unsupported repository archive format")
+
+
+def _safe_archive_target(root: Path, member_name: str) -> Path:
+    normalized = member_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts) or ":" in path.parts[0]:
+        raise ValueError(f"unsafe archive member path: {member_name}")
+    target = (root / Path(*path.parts)).resolve()
+    root_resolved = root.resolve()
+    try:
+        target.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError(f"archive member escapes target directory: {member_name}") from exc
+    return target
+
+
+def _select_extracted_repo_root(extract_dir: Path) -> Path:
+    children = [
+        child for child in extract_dir.iterdir()
+        if child.name != "__MACOSX" and not child.name.startswith(".DS_Store")
+    ]
+    if len(children) == 1 and children[0].is_dir():
+        return children[0]
+    if not children:
+        raise ValueError("repository archive is empty")
+    return extract_dir
+
+
+_REPO_MARKER_FILES = {
+    ".git",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "environment.yml",
+    "environment.yaml",
+    "package.json",
+    "Dockerfile",
+    "Makefile",
+    "CMakeLists.txt",
+}
+_CODE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cu",
+    ".go",
+    ".h",
+    ".hpp",
+    ".java",
+    ".js",
+    ".jsx",
+    ".m",
+    ".py",
+    ".rs",
+    ".sh",
+    ".ts",
+    ".tsx",
+}
+_MATERIAL_SUFFIX_TO_KIND = {
+    ".pdf": "paper_pdf",
+    ".doc": "document",
+    ".docx": "document",
+    ".html": "document",
+    ".htm": "document",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".txt": "text",
+}
+_IGNORED_ARCHIVE_DIRS = {
+    "__MACOSX",
+    ".cache",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "__pycache__",
+}
+_REPO_TEXT_BASENAMES = {
+    "readme",
+    "license",
+    "copying",
+    "changelog",
+    "contributing",
+    "authors",
+    "notice",
+}
+
+
+def _discover_repo_roots(extract_dir: Path) -> list[Path]:
+    candidates: list[tuple[int, int, Path]] = []
+    for directory in [extract_dir, *[p for p in extract_dir.rglob("*") if p.is_dir()]]:
+        if _is_ignored_archive_path(directory, extract_dir):
+            continue
+        score = _repo_score(directory)
+        if score >= 25:
+            depth = len(directory.relative_to(extract_dir).parts)
+            candidates.append((-score, depth, directory))
+    selected: list[Path] = []
+    for _neg_score, _depth, directory in sorted(candidates):
+        if any(_is_relative_to(directory, existing) or _is_relative_to(existing, directory) for existing in selected):
+            continue
+        selected.append(directory)
+    return selected
+
+
+def _repo_score(directory: Path) -> int:
+    score = 0
+    for marker in _REPO_MARKER_FILES:
+        if (directory / marker).exists():
+            score += 100 if marker == ".git" else 30
+    if any((directory / name).exists() for name in ("README.md", "README.rst", "README.txt", "README")):
+        score += 5
+    code_files = 0
+    for path in directory.rglob("*"):
+        if code_files >= 20:
+            break
+        if not path.is_file() or _is_ignored_archive_path(path, directory):
+            continue
+        if path.suffix.lower() in _CODE_SUFFIXES:
+            code_files += 1
+    score += min(code_files, 20)
+    return score
+
+
+def _discover_material_files(extract_dir: Path, repo_roots: list[Path]) -> list[Path]:
+    materials: list[Path] = []
+    for path in sorted(extract_dir.rglob("*")):
+        if not path.is_file() or _is_ignored_archive_path(path, extract_dir):
+            continue
+        kind = _kind_for_material_file(path)
+        if kind is None:
+            continue
+        containing_repo = next((root for root in repo_roots if _is_relative_to(path, root)), None)
+        if containing_repo is not None and kind in {"markdown", "text", "document"} and _is_common_repo_text(path):
+            continue
+        if containing_repo is not None and kind in {"markdown", "text"}:
+            continue
+        materials.append(path)
+    return materials
+
+
+def _kind_for_material_file(path: Path) -> str | None:
+    return _MATERIAL_SUFFIX_TO_KIND.get(path.suffix.lower())
+
+
+def _is_common_repo_text(path: Path) -> bool:
+    stem = path.stem.lower()
+    return stem in _REPO_TEXT_BASENAMES or path.name.lower() in {"license", "readme", "notice"}
+
+
+def _is_ignored_archive_path(path: Path, root: Path) -> bool:
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        parts = path.parts
+    return any(part in _IGNORED_ARCHIVE_DIRS or part.startswith(".DS_Store") for part in parts)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _append_child_source(
+    run_dir: Path,
+    *,
+    source_id: str,
+    parent_source_id: str,
+    kind: str,
+    user_label: str,
+    stored_path: str,
+    bundle_path: str,
+) -> None:
+    from autoad_researcher.assistant.v2.event_service import append_event
+    from autoad_researcher.ui.sources import append_source_ref
+
+    append_source_ref(
+        run_dir,
+        kind=kind,  # type: ignore[arg-type]
+        user_label=user_label,
+        stored_path=stored_path,
+        status="uploaded_not_parsed",
+        source_id=source_id,
+        parent_source_id=parent_source_id,
+        metadata={"bundle_path": bundle_path},
+    )
+    append_event(run_dir, "source.created", {
+        "source_id": source_id,
+        "kind": kind,
+        "stored_path": stored_path,
+        "parent_source_id": parent_source_id,
+    })
+
+
+def _queue_child_job(
+    run_dir: Path,
+    *,
+    source_id: str,
+    job_type: str,
+    evidence_role: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    from autoad_researcher.assistant.v2.event_service import append_event
+    from autoad_researcher.assistant.v2.job_service import append_pipeline_job
+
+    job = append_pipeline_job(
+        run_dir,
+        source_id=source_id,
+        job_type=job_type,
+        evidence_role=evidence_role,
+        payload=payload,
+    )
+    append_event(run_dir, "job.queued", {"job_id": job.get("job_id", ""), "job_type": job_type, "source_id": source_id})
+    return job
+
+
+def _append_uploaded_text_evidence(run_dir: Path, source_id: str, stored_path: str, *, filename: str, kind: str) -> None:
+    from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
+    from autoad_researcher.ui.sources import update_source_intake_result
+
+    append_artifact_evidence(
+        run_dir,
+        source_id=source_id,
+        artifact_path=stored_path,
+        evidence_type="uploaded_text",
+        parser_name="archive_bundle",
+        summary=_markdown_preview(run_dir / stored_path),
+        raw={"filename": filename, "kind": kind},
+    )
+    update_source_intake_result(run_dir, source_id, status="parsed", intake_status="ok", clear_intake_error=True)
+
+
+def _write_archive_manifest(
+    run_dir: Path,
+    *,
+    source_id: str,
+    archive_path: str,
+    extract_dir: Path,
+    repo_roots: list[Path],
+    child_records: list[dict[str, Any]],
+    queued_jobs: list[dict[str, Any]],
+) -> str:
+    manifest_dir = run_dir / "archive_unpack" / source_id
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, Any]] = []
+    for path in sorted(extract_dir.rglob("*")):
+        if _is_ignored_archive_path(path, extract_dir):
+            continue
+        rel = path.relative_to(extract_dir).as_posix()
+        entries.append({
+            "path": rel,
+            "type": "dir" if path.is_dir() else "file",
+            "size": path.stat().st_size if path.is_file() else None,
+        })
+    manifest = {
+        "schema_version": 1,
+        "source_id": source_id,
+        "archive_path": archive_path,
+        "entries": entries[:1000],
+        "truncated": len(entries) > 1000,
+        "repo_roots": [root.relative_to(extract_dir).as_posix() if root != extract_dir else "." for root in repo_roots],
+        "child_sources": child_records,
+        "queued_jobs": [
+            {"job_id": job.get("job_id"), "source_id": job.get("source_id"), "job_type": job.get("job_type")}
+            for job in queued_jobs
+        ],
+    }
+    path = manifest_dir / "archive_manifest.json"
+    path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path.relative_to(run_dir).as_posix()
+
+
+def _append_archive_manifest_evidence(run_dir: Path, source_id: str, manifest_path: str, child_records: list[dict[str, Any]]) -> None:
+    from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
+
+    counts: dict[str, int] = {}
+    for child in child_records:
+        kind = str(child.get("kind") or "unknown")
+        counts[kind] = counts.get(kind, 0) + 1
+    summary = "资料包已解包分类：" + ", ".join(f"{kind}={count}" for kind, count in sorted(counts.items())) if counts else "资料包已解包，但未发现可解析资料。"
+    append_artifact_evidence(
+        run_dir,
+        source_id=source_id,
+        artifact_path=manifest_path,
+        evidence_type="archive_manifest",
+        parser_name="archive_bundle_classifier",
+        summary=summary,
+        raw={"child_sources": child_records, "counts": counts},
+    )
 
 
 def _run_paper_parse_mineru(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -321,6 +911,40 @@ def _run_paper_parse_markitdown(run_dir: Path, job: dict[str, Any]) -> tuple[boo
         },
     })
     return True, _dedupe_outputs(result.output_paths + (summary_outputs if summary_ok else []))
+
+
+def _run_document_markitdown(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
+    source_id = str(job.get("source_id", ""))
+    source = _find_source(run_dir, source_id)
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    stored_path = str(payload.get("stored_path") or (source.get("stored_path") if source else "") or "")
+    if not stored_path:
+        _write_parse_error(run_dir, source_id, "document_markitdown", "source has no stored_path")
+        return False, []
+    input_path = run_dir / stored_path
+    output_dir = run_dir / "document" / "parse" / "markitdown" / source_id
+    output_path = output_dir / "document.md"
+
+    from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
+    from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
+    from autoad_researcher.ui.sources import update_source_intake_result
+
+    result = convert_local_to_markdown(input_path, output_path, run_dir=run_dir)
+    if not result.ok:
+        _write_parse_error(run_dir, source_id, "document_markitdown", result.error or "markitdown failed")
+        return False, []
+    artifact_path = result.output_paths[0]
+    update_source_intake_result(run_dir, source_id, status="parsed", intake_status="ok", clear_intake_error=True)
+    append_artifact_evidence(
+        run_dir,
+        source_id=source_id,
+        artifact_path=artifact_path,
+        evidence_type="document_markdown",
+        parser_name=result.parser_name,
+        summary=_markdown_preview(output_path),
+        raw=result.metadata,
+    )
+    return True, result.output_paths
 
 
 def _run_paper_fallbacks(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:

@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.source_normalizer import extract_first_url
 from autoad_researcher.assistant.v2.need_discovery import (
     RequiredNeedSpec,
     canonicalize_metrics,
@@ -206,7 +207,7 @@ def build_contract_from_context(
             "metric_priority": _metric_priority(primary_metrics, []),
         })
     primary_metric = primary_metrics[0] if len(primary_metrics) == 1 else None
-    baseline_repo = _extract_clean_url(str(need_fields.get("baseline_repo", ""))) or _first_github_source(sources) or _clean_str(need_fields.get("baseline_repo"))
+    baseline_repo = extract_first_url(str(need_fields.get("baseline_repo", ""))) or _first_github_source(sources) or _clean_str(need_fields.get("baseline_repo"))
     success_criteria = _normalize_success_criteria(
         _clean_str(need_fields.get("success_criteria")) or _infer_success_criteria(combined_user_text, primary_metrics),
         combined_user_text,
@@ -464,12 +465,6 @@ def _filtered_user_text(user_input: str, transcript_tail: list[dict[str, Any]] |
             continue
         filtered.append(stripped)
     return "\n".join(filtered)
-
-
-def _extract_clean_url(text: str) -> str | None:
-    """Extract a clean URL from a line that may have user phrasing around it."""
-    match = re.search(r"https?://[^\s\u4e00-\u9fff]+", text)
-    return match.group(0).rstrip(".,;:!?)]}") if match else None
 
 
 def _load_source_registry_sources(run_dir: Path) -> list[dict[str, Any]]:
