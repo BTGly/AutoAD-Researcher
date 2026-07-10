@@ -570,7 +570,15 @@ export default function App() {
               <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
                 {messages.length === 0 && <WelcomeMessage />}
                 {messages.map(msg =>
-                  msg.role === 'user' ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />
+                  msg.role === 'user'
+                    ? <UserMessage key={msg.id} msg={msg} />
+                    : (
+                      <AssistantMessage
+                        key={msg.id}
+                        msg={msg}
+                        streaming={activeChatTurnRunIdsRef.current.has(msg.id) && !completedAssistantIdsRef.current.has(msg.id)}
+                      />
+                    )
                 )}
                 {messages.length > 0 && <div ref={bottomRef} />}
               </div>

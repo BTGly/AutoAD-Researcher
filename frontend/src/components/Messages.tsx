@@ -1,20 +1,69 @@
+import { Check, Copy } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import type { Message } from '../lib/types';
 import { MarkdownContent } from './MarkdownContent';
 import { ToolLineComponent } from './ToolLine';
 
+async function copyText(content: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(content);
+    return true;
+  } catch {
+    const textarea = document.createElement('textarea');
+    textarea.value = content;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    return copied;
+  }
+}
+
+function CopyMessageButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  const resetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+  }, []);
+
+  const handleCopy = async () => {
+    if (!content || !await copyText(content)) return;
+    setCopied(true);
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = window.setTimeout(() => setCopied(false), 2000);
+  };
+
+  const label = copied ? '已复制' : '复制消息';
+  return (
+    <button type="button" className="message-copy-button" onClick={() => void handleCopy()} title={label} aria-label={label}>
+      {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+    </button>
+  );
+}
+
 export function UserMessage({ msg }: { msg: Message }) {
   return (
     <div className="message">
-      <div className="msg-role user">You</div>
+      <div className="message-heading">
+        <div className="msg-role user">You</div>
+        <CopyMessageButton content={msg.content} />
+      </div>
       <div className="msg-content">{msg.content}</div>
     </div>
   );
 }
 
-export function AssistantMessage({ msg }: { msg: Message }) {
+export function AssistantMessage({ msg, streaming = false }: { msg: Message; streaming?: boolean }) {
   return (
     <div className="message">
-      <div className="msg-role assistant">Assistant</div>
+      <div className="message-heading">
+        <div className="msg-role assistant">Assistant</div>
+        {!streaming && msg.content && <CopyMessageButton content={msg.content} />}
+      </div>
       {msg.toolLines?.map(tl => (
         <ToolLineComponent key={tl.id} tool={tl} />
       ))}
