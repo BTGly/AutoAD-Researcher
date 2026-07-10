@@ -4,6 +4,7 @@ import { PlusMenu } from './components/PlusMenu';
 import { UserMessage, AssistantMessage, WelcomeMessage } from './components/Messages';
 import { ToastContainer } from './components/Toast';
 import { ConfigModal } from './components/ConfigModal';
+import { ContractConfirmationModal } from './components/ContractConfirmationModal';
 import { FirstRunSetup } from './components/FirstRunSetup';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
@@ -18,6 +19,7 @@ import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
   createRun,
+  decideContractConfirmation,
   deleteSource,
   deleteRun,
   getArtifact,
@@ -55,6 +57,8 @@ export default function App() {
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [unusableParsedSources, setUnusableParsedSources] = useState<UnusableParsedSource[]>([]);
   const [draft, setDraft] = useState<DraftState | null>(null);
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [confirmationError, setConfirmationError] = useState('');
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
   const [page, setPage] = useState<PageId>('chat');
@@ -111,6 +115,8 @@ export default function App() {
     setEvidence([]);
     setUnusableParsedSources([]);
     setDraft(null);
+    setConfirmationBusy(false);
+    setConfirmationError('');
     setArtifacts([]);
     setToasts([]);
     const transcript = await getTranscript(nextRunId).catch(() => []);
@@ -287,6 +293,23 @@ export default function App() {
     addToast('资料已删除', 'success');
   }, [addToast, refreshSidebarForRun, runId]);
 
+  const handleContractConfirmation = useCallback(async (decision: 'approved' | 'rejected') => {
+    const confirmationId = draft?.confirmation?.confirmation_id;
+    if (!runId || !confirmationId) return;
+    setConfirmationBusy(true);
+    setConfirmationError('');
+    try {
+      const result = await decideContractConfirmation(runId, confirmationId, decision);
+      await refreshSidebarForRun(runId);
+      addToast(result.message, decision === 'approved' ? 'success' : 'info');
+    } catch {
+      setConfirmationError('确认状态已变化，请刷新后重新核对。');
+      await refreshSidebarForRun(runId);
+    } finally {
+      setConfirmationBusy(false);
+    }
+  }, [addToast, draft?.confirmation?.confirmation_id, refreshSidebarForRun, runId]);
+
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
     const jobId = msg.jobId || msg.job_id;
@@ -340,6 +363,13 @@ export default function App() {
     if (msg.type === 'evidence.updated') {
       refreshSidebar();
     }
+    if (
+      msg.type === 'contract.draft.updated'
+      || msg.type === 'contract.confirmation.requested'
+      || msg.type === 'contract.confirmation.resolved'
+    ) {
+      refreshSidebar();
+    }
     if (msg.type === 'assistant.delta' && msg.content) {
       const assistantId = streamingAssistantIdRef.current;
       if (!assistantId || suppressLateDeltaRef.current) return;
@@ -374,6 +404,15 @@ export default function App() {
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} />}
+      {draft?.confirmation?.status === 'pending' && (
+        <ContractConfirmationModal
+          draft={draft}
+          busy={confirmationBusy}
+          error={confirmationError}
+          onConfirm={() => handleContractConfirmation('approved')}
+          onRevise={() => handleContractConfirmation('rejected')}
+        />
+      )}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
 
       {/* Header */}

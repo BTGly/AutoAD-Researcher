@@ -44,6 +44,14 @@ export interface DraftState {
   evidence: Array<{ source_id: string; type: string; artifact_path: string; summary: string }>;
   jobs: Array<{ job_id: string; source_id: string; job_type: string; status: string; error?: string }>;
   next_questions: string[];
+  confirmation?: ContractConfirmationState | null;
+}
+
+export interface ContractConfirmationState {
+  confirmation_id: string;
+  draft_hash: string;
+  status: 'pending';
+  requested_at: string | null;
 }
 
 export interface JobItem {
@@ -108,6 +116,8 @@ export interface WSMessage {
   paths?: string[];
   toast?: boolean;
   delay?: number;
+  confirmation_id?: string;
+  decision?: 'approved' | 'rejected';
 }
 
 export interface ExperimentConfig {

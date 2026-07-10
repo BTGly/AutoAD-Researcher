@@ -442,3 +442,37 @@ input:focus, textarea:focus { border-color: var(--blue); }
   background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: 12px; padding: 28px; width: 420px; max-width: 90vw;
 }
+.confirmation-overlay { z-index: 9997; padding: 16px; }
+.contract-confirmation-modal {
+  width: min(560px, 100%);
+  max-height: min(720px, calc(100vh - 32px));
+  overflow-y: auto;
+  border-radius: 8px;
+  padding: 22px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+.confirmation-heading { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.confirmation-heading > svg { flex: 0 0 auto; margin-top: 2px; color: var(--green); }
+.confirmation-heading h2 { font-size: 1.05em; line-height: 1.4; margin: 0 0 3px; }
+.confirmation-heading p { color: var(--text-muted); font-size: 0.84em; }
+.confirmation-fields { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.confirmation-field {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.35fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.confirmation-field:last-child { border-bottom: 0; }
+.confirmation-field span { color: var(--text-muted); font-size: 0.82em; }
+.confirmation-field strong { font-weight: 500; overflow-wrap: anywhere; }
+.confirmation-boundary { margin-top: 14px; color: var(--text-muted); font-size: 0.82em; }
+.confirmation-error { margin-top: 10px; color: var(--red); font-size: 0.84em; }
+.confirmation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.confirmation-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 118px; }
+@media (max-width: 520px) {
+  .contract-confirmation-modal { padding: 18px; }
+  .confirmation-field { grid-template-columns: 1fr; gap: 3px; }
+  .confirmation-actions { flex-direction: column-reverse; }
+  .confirmation-actions button { width: 100%; }
+}

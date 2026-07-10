@@ -137,6 +137,20 @@ export async function getDraft(runId: string): Promise<any> {
   return res.json();
 }
 
+export async function decideContractConfirmation(
+  runId: string,
+  confirmationId: string,
+  decision: 'approved' | 'rejected',
+): Promise<{ confirmation_id: string; status: 'approved' | 'rejected'; message: string }> {
+  const res = await fetch(`/api/runs/${runId}/draft/confirmation`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ confirmation_id: confirmationId, decision }),
+  });
+  if (!res.ok) throw new Error(`Contract confirmation error: ${res.status}`);
+  return res.json();
+}
+
 export async function getArtifact(runId: string, path: string): Promise<{ path: string; content: string }> {
   const res = await fetch(`/api/runs/${runId}/artifacts/${path}`);
   if (!res.ok) throw new Error(`Artifact not found: ${path}`);
