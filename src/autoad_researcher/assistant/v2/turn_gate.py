@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class TurnGateDecision(BaseModel):
@@ -125,17 +125,29 @@ def decide_turn_gate_with_llm(
             raw_output=reply_text,
             parse_status="error",
             schema_validation="skipped",
-            fallback_reason="llm_error_or_non_json",
+            fallback_reason="llm_error" if result.get("error") else "json_repair_attempted",
             latency_ms=latency_ms,
         )
+        if not result.get("error"):
+            repaired = _repair_turn_gate_decision(
+                call_research_chat=call_research_chat,
+                api_key=api_key,
+                provider_url=provider_url,
+                candidate_text=reply_text,
+                validation_errors=[{"loc": "root", "type": "json_parse_error"}],
+                profile=profile,
+                run_dir=run_dir,
+                model=model,
+            )
+            if repaired is not None:
+                return repaired
         return _offline_no_contract_decision(
             user_input=user_input,
             transcript_tail=transcript_tail,
             existing_contract_draft=existing_contract_draft,
         )
-    try:
-        decision = TurnGateDecision.model_validate(payload)
-    except Exception:
+    decision, validation_errors, recovered_extra_fields = _validate_turn_gate_payload(payload)
+    if decision is None:
         append_llm_trace(
             run_dir,
             call_site="turn_gate",
@@ -148,9 +160,22 @@ def decide_turn_gate_with_llm(
             raw_output=reply_text,
             parse_status="ok",
             schema_validation="error",
-            fallback_reason="schema_validation_error",
+            schema_validation_errors=validation_errors,
+            fallback_reason="schema_validation_repair_attempted",
             latency_ms=latency_ms,
         )
+        repaired = _repair_turn_gate_decision(
+            call_research_chat=call_research_chat,
+            api_key=api_key,
+            provider_url=provider_url,
+            candidate_text=reply_text,
+            validation_errors=validation_errors,
+            profile=profile,
+            run_dir=run_dir,
+            model=model,
+        )
+        if repaired is not None:
+            return repaired
         return _offline_no_contract_decision(
             user_input=user_input,
             transcript_tail=transcript_tail,
@@ -167,10 +192,111 @@ def decide_turn_gate_with_llm(
         messages=messages,
         raw_output=reply_text,
         parse_status="ok",
-        schema_validation="ok",
+        schema_validation="recovered" if recovered_extra_fields else "ok",
+        schema_validation_errors=validation_errors,
+        fallback_reason="ignored_extra_fields" if recovered_extra_fields else "",
         latency_ms=latency_ms,
     )
     return _validate_turn_gate_decision(decision)
+
+
+def _validate_turn_gate_payload(
+    payload: dict[str, Any],
+) -> tuple[TurnGateDecision | None, list[dict[str, str]], bool]:
+    try:
+        return TurnGateDecision.model_validate(payload), [], False
+    except ValidationError as exc:
+        validation_errors = _validation_error_summary(exc)
+        if validation_errors and all(item["type"] == "extra_forbidden" for item in validation_errors):
+            known_payload = {
+                field_name: payload[field_name]
+                for field_name in TurnGateDecision.model_fields
+                if field_name in payload
+            }
+            try:
+                return TurnGateDecision.model_validate(known_payload), validation_errors, True
+            except ValidationError as filtered_exc:
+                return None, _validation_error_summary(filtered_exc), False
+        return None, validation_errors, False
+
+
+def _repair_turn_gate_decision(
+    *,
+    call_research_chat,
+    api_key: str,
+    provider_url: str,
+    candidate_text: str,
+    validation_errors: list[dict[str, str]],
+    profile,
+    run_dir: Path | None,
+    model: str,
+) -> TurnGateDecision | None:
+    repair_system = (
+        "Repair one TurnGateDecision response. Preserve its semantic decision, but return exactly one JSON object "
+        "that validates against this schema. Do not add Markdown or commentary.\nJSON Schema:\n"
+        + json.dumps(TurnGateDecision.model_json_schema(), ensure_ascii=False, sort_keys=True)
+    )
+    repair_messages = [
+        {"role": "system", "content": repair_system},
+        {
+            "role": "user",
+            "content": (
+                "Validation issues:\n"
+                + json.dumps(validation_errors, ensure_ascii=False, sort_keys=True)
+                + "\nCandidate response:\n"
+                + candidate_text
+            ),
+        },
+    ]
+    started = time.perf_counter()
+    result = call_research_chat(
+        api_key,
+        provider_url,
+        repair_messages,
+        model=model,
+        timeout_s=30,
+    )
+    latency_ms = (time.perf_counter() - started) * 1000
+    reply_text = str(result.get("reply") or "")
+    payload = _parse_json_object(reply_text)
+    decision: TurnGateDecision | None = None
+    repair_errors: list[dict[str, str]] = []
+    recovered_extra_fields = False
+    if not result.get("error") and payload is not None:
+        decision, repair_errors, recovered_extra_fields = _validate_turn_gate_payload(payload)
+    parse_status = "ok" if payload is not None else "error"
+    schema_status = "recovered" if decision is not None else ("skipped" if payload is None else "error")
+    append_llm_trace(
+        run_dir,
+        call_site="turn_gate.repair",
+        prompt_id=profile.prompt_id,
+        prompt_version=profile.prompt_version,
+        prompt_text=repair_system,
+        model=model,
+        provider_url=provider_url,
+        messages=repair_messages,
+        raw_output=reply_text,
+        parse_status=parse_status,
+        schema_validation=schema_status,
+        schema_validation_errors=repair_errors,
+        fallback_reason=(
+            "ignored_extra_fields"
+            if decision is not None and recovered_extra_fields
+            else "" if decision is not None else "schema_validation_repair_failed"
+        ),
+        latency_ms=latency_ms,
+    )
+    return _validate_turn_gate_decision(decision) if decision is not None else None
+
+
+def _validation_error_summary(exc: ValidationError) -> list[dict[str, str]]:
+    return [
+        {
+            "loc": ".".join(str(part) for part in error.get("loc", ())) or "root",
+            "type": str(error.get("type") or "validation_error"),
+        }
+        for error in exc.errors()
+    ]
 
 
 def _build_turn_gate_messages(

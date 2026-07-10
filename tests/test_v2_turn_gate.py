@@ -79,7 +79,11 @@ def test_turn_gate_uses_llm_for_research_keyword_joke(monkeypatch):
 
 
 def test_turn_gate_invalid_llm_output_falls_back_to_no_contract_update(monkeypatch):
+    calls = 0
+
     def fake_call(api_key, provider_base_url, messages, **kwargs):
+        nonlocal calls
+        calls += 1
         return {"reply": "not json", "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -97,3 +101,98 @@ def test_turn_gate_invalid_llm_output_falls_back_to_no_contract_update(monkeypat
 
     assert decision.contract_action == "answer_without_contract_update"
     assert decision.save_draft_allowed is False
+    assert calls == 2
+
+
+def test_turn_gate_ignores_only_extra_fields_without_repair_call(monkeypatch):
+    calls = 0
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {"reply": json.dumps({
+            "turn_type": "contract_update",
+            "contract_action": "update_contract",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": True,
+            "save_draft_allowed": True,
+            "user_intent_summary": "research intent supplied",
+            "evidence_from_current_turn": [],
+            "evidence_from_context": [],
+            "confidence": 0.9,
+            "reason": "research turn",
+            "next_reply_instruction": None,
+            "unrecognized_explanation": "ignore this field",
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    decision = decide_turn_gate_with_llm(
+        user_input="我想基于 PatchCore 在 MVTec AD 上提升 image AUROC",
+        transcript_tail=[],
+        existing_contract_draft=None,
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert decision.contract_action == "update_contract"
+    assert decision.contract_update_allowed is True
+    assert decision.need_discovery_allowed is True
+    assert decision.save_draft_allowed is True
+    assert calls == 1
+
+
+def test_turn_gate_repairs_missing_required_field_once(monkeypatch):
+    replies = [
+        {
+            "turn_type": "contract_update",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": True,
+            "save_draft_allowed": True,
+            "user_intent_summary": "research intent supplied",
+            "evidence_from_current_turn": [],
+            "evidence_from_context": [],
+            "confidence": 0.9,
+            "reason": "research turn",
+            "next_reply_instruction": None,
+        },
+        {
+            "turn_type": "contract_update",
+            "contract_action": "update_contract",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": True,
+            "save_draft_allowed": True,
+            "user_intent_summary": "research intent supplied",
+            "evidence_from_current_turn": [],
+            "evidence_from_context": [],
+            "confidence": 0.9,
+            "reason": "research turn",
+            "next_reply_instruction": None,
+        },
+    ]
+    captured_system_prompts: list[str] = []
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        captured_system_prompts.append(messages[0]["content"])
+        return {"reply": json.dumps(replies.pop(0), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    decision = decide_turn_gate_with_llm(
+        user_input="我想基于 PatchCore 在 MVTec AD 上提升 image AUROC",
+        transcript_tail=[],
+        existing_contract_draft=None,
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert decision.contract_action == "update_contract"
+    assert decision.contract_update_allowed is True
+    assert len(captured_system_prompts) == 2
+    assert "Repair one TurnGateDecision response" in captured_system_prompts[1]

@@ -29,6 +29,7 @@ def append_llm_trace(
     raw_output: str = "",
     parse_status: str,
     schema_validation: str,
+    schema_validation_errors: list[dict[str, str]] | None = None,
     fallback_reason: str = "",
     latency_ms: float | None = None,
     prompt_render_mode: str = "profile_only",
@@ -62,6 +63,7 @@ def append_llm_trace(
         "raw_output_hash": hash_text(raw_output) if raw_output else "",
         "parse_status": parse_status,
         "schema_validation": schema_validation,
+        "schema_validation_errors": schema_validation_errors or [],
         "fallback_reason": fallback_reason,
         "latency_ms": latency_ms,
         "created_at_ms": int(time.time() * 1000),
@@ -104,6 +106,7 @@ def _append_trace_events(run_dir: Path, record: dict[str, Any]) -> None:
         "prompt_version": record["prompt_version"],
         "parse_status": record["parse_status"],
         "schema_validation": record["schema_validation"],
+        "schema_validation_error_count": len(record.get("schema_validation_errors") or []),
         "fallback_reason": record["fallback_reason"],
         "latency_ms": record["latency_ms"],
     }

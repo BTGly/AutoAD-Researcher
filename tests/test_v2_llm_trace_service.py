@@ -31,6 +31,7 @@ def test_llm_trace_writes_redacted_metadata(tmp_path: Path):
         raw_output="raw model output with sk-output-secret",
         parse_status="error",
         schema_validation="skipped",
+        schema_validation_errors=[{"loc": "contract_action", "type": "missing"}],
         fallback_reason="llm_error_or_non_json",
         latency_ms=12.5,
     )
@@ -43,6 +44,7 @@ def test_llm_trace_writes_redacted_metadata(tmp_path: Path):
     assert record["messages_hash"]
     assert record["prompt_hash"]
     assert record["raw_output_hash"]
+    assert record["schema_validation_errors"] == [{"loc": "contract_action", "type": "missing"}]
 
     raw_trace_text = (run_dir / TRACE_DIR / TRACE_INDEX).read_text(encoding="utf-8")
     assert "sk-secret" not in raw_trace_text
