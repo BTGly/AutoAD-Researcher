@@ -1,5 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { ChatInput } from './components/ChatInput';
+import { FollowupQueue } from './components/FollowupQueue';
 import { PlusMenu } from './components/PlusMenu';
 import { UserMessage, AssistantMessage, WelcomeMessage } from './components/Messages';
 import { ToastContainer } from './components/Toast';
@@ -35,7 +36,7 @@ import {
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, DraftState } from './lib/types';
+import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, DraftState } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
@@ -62,14 +63,28 @@ export default function App() {
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
   const [page, setPage] = useState<PageId>('chat');
+  const [composerText, setComposerText] = useState('');
+  const [queuedMessagesByRun, setQueuedMessagesByRun] = useState<Record<string, QueuedChatMessage[]>>({});
+  const [queuePausedByRun, setQueuePausedByRun] = useState<Record<string, boolean>>({});
+  const [runLoading, setRunLoading] = useState(false);
+  const [loadedRunId, setLoadedRunId] = useState('');
   const currentRunIdRef = useRef('');
-  const activeChatTurnIdsRef = useRef(new Set<string>());
+  const messagesRef = useRef<Message[]>([]);
+  const activeChatTurnRunIdsRef = useRef(new Map<string, string>());
   const streamingHadDeltaIdsRef = useRef(new Set<string>());
   const completedAssistantIdsRef = useRef(new Set<string>());
+  const drainingQueueRunIdRef = useRef<string | null>(null);
   const [chatTurnActive, setChatTurnActive] = useState(false);
   const bottomRef = useAutoScroll([messages]);
   const activeTask = tasks.find(task => task.run_id === runId) || null;
   const visibleTaskStatus = chatTurnActive ? 'Working' : taskStatus;
+  const queuedMessages = useMemo(() => queuedMessagesByRun[runId] || [], [queuedMessagesByRun, runId]);
+  const queuePaused = Boolean(queuePausedByRun[runId]);
+  const waitingForConfirmation = draft?.confirmation?.status === 'pending';
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const addToast = useCallback((message: string, kind: 'success' | 'error' | 'info') => {
     setToasts(prev => [...prev, { id: generateId(), message, kind }].slice(-MAX_VISIBLE_TOASTS));
@@ -94,6 +109,7 @@ export default function App() {
     const e = Array.isArray(evidenceState.usable_evidence)
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
+    if (currentRunIdRef.current && currentRunIdRef.current !== nextRunId) return;
     setSources(s.map((src: any) => ({ sourceId: src.source_id || generateId(), kind: src.kind || 'unknown', label: src.user_label || src.source_id || 'source', status: src.status || 'unknown' })));
     setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '', error: job.error || '' })));
     setEvidence(e.map(normalizeEvidence));
@@ -108,11 +124,11 @@ export default function App() {
 
   const switchRun = useCallback(async (nextRunId: string) => {
     if (!nextRunId) return;
+    setRunLoading(true);
+    setLoadedRunId('');
     currentRunIdRef.current = nextRunId;
-    activeChatTurnIdsRef.current.clear();
-    streamingHadDeltaIdsRef.current.clear();
-    completedAssistantIdsRef.current.clear();
-    setChatTurnActive(false);
+    setChatTurnActive([...activeChatTurnRunIdsRef.current.values()].some(value => value === nextRunId));
+    setComposerText('');
     setRunId(nextRunId);
     setTaskStatus('Ready');
     setSources([]);
@@ -125,6 +141,7 @@ export default function App() {
     setArtifacts([]);
     setToasts([]);
     const transcript = await getTranscript(nextRunId).catch(() => []);
+    if (currentRunIdRef.current !== nextRunId) return;
     setMessages(transcript.map(entry => ({
       id: generateId(),
       role: entry.role === 'user' ? 'user' : 'assistant',
@@ -132,6 +149,10 @@ export default function App() {
       timestamp: entry.created_at ? new Date(entry.created_at).getTime() : Date.now(),
     })));
     await refreshSidebarForRun(nextRunId);
+    if (currentRunIdRef.current === nextRunId) {
+      setLoadedRunId(nextRunId);
+      setRunLoading(false);
+    }
   }, [refreshSidebarForRun]);
 
   useEffect(() => {
@@ -184,6 +205,16 @@ export default function App() {
       addToast('删除失败', 'error');
       return;
     }
+    setQueuedMessagesByRun(prev => {
+      const next = { ...prev };
+      delete next[targetRunId];
+      return next;
+    });
+    setQueuePausedByRun(prev => {
+      const next = { ...prev };
+      delete next[targetRunId];
+      return next;
+    });
     const remaining = await refreshTasks();
     if (targetRunId === runId) {
       const nextTask = remaining.find(task => task.run_id !== targetRunId);
@@ -215,28 +246,31 @@ export default function App() {
     try {
       const r = await createRun();
       currentRunIdRef.current = r.run_id;
+      setLoadedRunId(r.run_id);
       setRunId(r.run_id);
       setTasks([r]);
       setTaskStatus('Ready');
     } catch {
       currentRunIdRef.current = 'run_default';
+      setLoadedRunId('run_default');
       setRunId('run_default');
     }
   }, [saveConfig]);
 
-  // ── Real chat handler ──
-  const handleSend = useCallback(async (text: string) => {
-    const targetRunId = runId || 'run_default';
+  // ── Real chat turn ──
+  const runChatTurn = useCallback(async (text: string, targetRunId: string): Promise<boolean> => {
     const userMsg: Message = { id: generateId(), role: 'user', content: text, timestamp: Date.now() };
     const assistantId = generateId();
     const assistantMsg: Message = { id: assistantId, role: 'assistant', content: '', timestamp: Date.now() };
-    const transcriptTail = messages.slice(-12).map(msg => ({ role: msg.role, content: msg.content }));
-    activeChatTurnIdsRef.current.add(assistantId);
+    const transcriptTail = messagesRef.current.slice(-12).map(msg => ({ role: msg.role, content: msg.content }));
+    activeChatTurnRunIdsRef.current.set(assistantId, targetRunId);
     streamingHadDeltaIdsRef.current.delete(assistantId);
     completedAssistantIdsRef.current.delete(assistantId);
-    setChatTurnActive(true);
-    setTaskStatus('Working');
-    setMessages(prev => [...prev, userMsg, assistantMsg]);
+    if (currentRunIdRef.current === targetRunId) {
+      setChatTurnActive(true);
+      setTaskStatus('Working');
+      setMessages(prev => [...prev, userMsg, assistantMsg]);
+    }
 
     try {
       const res = await sendChat(text, targetRunId, assistantId, transcriptTail);
@@ -250,25 +284,94 @@ export default function App() {
         )));
       }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
+      return true;
     } catch {
       if (currentRunIdRef.current === targetRunId) {
         setTaskStatus('Error');
         setMessages(prev => prev.map(msg => (
           msg.id === assistantId
             ? { ...msg, content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000' }
-            : msg
+          : msg
         )));
       }
+      return false;
     } finally {
-      activeChatTurnIdsRef.current.delete(assistantId);
+      activeChatTurnRunIdsRef.current.delete(assistantId);
       streamingHadDeltaIdsRef.current.delete(assistantId);
       if (currentRunIdRef.current === targetRunId) {
-        const hasActiveTurn = activeChatTurnIdsRef.current.size > 0;
+        const hasActiveTurn = [...activeChatTurnRunIdsRef.current.values()].some(value => value === targetRunId);
         setChatTurnActive(hasActiveTurn);
         if (!hasActiveTurn) setTaskStatus(current => current === 'Error' ? current : 'Ready');
       }
     }
-  }, [messages, runId, refreshSidebarForRun]);
+  }, [refreshSidebarForRun]);
+
+  const enqueueChatMessage = useCallback((text: string, targetRunId: string) => {
+    const queued: QueuedChatMessage = {
+      id: generateId(),
+      runId: targetRunId,
+      content: text,
+      createdAt: Date.now(),
+      status: 'queued',
+    };
+    setQueuedMessagesByRun(prev => ({
+      ...prev,
+      [targetRunId]: [...(prev[targetRunId] || []), queued],
+    }));
+  }, []);
+
+  const handleSend = useCallback((text: string) => {
+    const targetRunId = runId || 'run_default';
+    const hasActiveTurn = [...activeChatTurnRunIdsRef.current.values()].some(value => value === targetRunId);
+    const hasQueuedMessages = Boolean(queuedMessagesByRun[targetRunId]?.length);
+    if (hasActiveTurn || hasQueuedMessages) {
+      enqueueChatMessage(text, targetRunId);
+      return;
+    }
+    setQueuePausedByRun(prev => ({ ...prev, [targetRunId]: false }));
+    void runChatTurn(text, targetRunId);
+  }, [enqueueChatMessage, queuedMessagesByRun, runChatTurn, runId]);
+
+  const handleEditQueuedMessage = useCallback((id: string) => {
+    const item = (queuedMessagesByRun[runId] || []).find(entry => entry.id === id);
+    if (!item) return;
+    setQueuedMessagesByRun(prev => ({
+      ...prev,
+      [runId]: (prev[runId] || []).filter(entry => entry.id !== id),
+    }));
+    setComposerText(item.content);
+  }, [queuedMessagesByRun, runId]);
+
+  const handleRemoveQueuedMessage = useCallback((id: string) => {
+    setQueuedMessagesByRun(prev => ({
+      ...prev,
+      [runId]: (prev[runId] || []).filter(entry => entry.id !== id),
+    }));
+  }, [runId]);
+
+  const handleResumeQueue = useCallback(() => {
+    setQueuePausedByRun(prev => ({ ...prev, [runId]: false }));
+  }, [runId]);
+
+  useEffect(() => {
+    const next = queuedMessages[0];
+    if (!runId || loadedRunId !== runId || !next || runLoading || chatTurnActive || waitingForConfirmation || queuePaused) return;
+    if ([...activeChatTurnRunIdsRef.current.values()].some(value => value === runId)) return;
+    if (drainingQueueRunIdRef.current === runId) return;
+
+    drainingQueueRunIdRef.current = runId;
+    setQueuedMessagesByRun(prev => ({
+      ...prev,
+      [runId]: (prev[runId] || []).filter(entry => entry.id !== next.id),
+    }));
+    void runChatTurn(next.content, next.runId)
+      .then(success => {
+        if (!success) setQueuePausedByRun(prev => ({ ...prev, [runId]: true }));
+      })
+      .finally(() => {
+        if (drainingQueueRunIdRef.current === runId) drainingQueueRunIdRef.current = null;
+      });
+  }, [chatTurnActive, loadedRunId, queuePaused, queuedMessages, runChatTurn, runId, runLoading, waitingForConfirmation]);
 
   // ── File upload — goes through real backend ──
   const handleFile = useCallback(async (file: File) => {
@@ -472,8 +575,23 @@ export default function App() {
                 {messages.length > 0 && <div ref={bottomRef} />}
               </div>
               <div style={{ padding: '0 16px', flexShrink: 0 }}>
+                <FollowupQueue
+                  items={queuedMessages}
+                  paused={queuePaused}
+                  waitingForConfirmation={waitingForConfirmation}
+                  onEdit={handleEditQueuedMessage}
+                  onRemove={handleRemoveQueuedMessage}
+                  onResume={handleResumeQueue}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ flex: 1 }}><ChatInput onSend={handleSend} /></div>
+                  <div style={{ flex: 1 }}>
+                    <ChatInput
+                      value={composerText}
+                      onChange={setComposerText}
+                      onSend={handleSend}
+                      disabled={runLoading}
+                    />
+                  </div>
                   <PlusMenu onFile={handleFile} />
                 </div>
                 <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>

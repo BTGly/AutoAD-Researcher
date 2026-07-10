@@ -14,6 +14,14 @@ export interface Message {
   timestamp: number;
 }
 
+export interface QueuedChatMessage {
+  id: string;
+  runId: string;
+  content: string;
+  createdAt: number;
+  status: 'queued';
+}
+
 export interface ToastItem {
   id: string;
   message: string;
