@@ -326,32 +326,24 @@ export default function App() {
     const hasQueuedMessages = Boolean(queuedMessagesByRun[targetRunId]?.length);
     if (hasActiveTurn || hasQueuedMessages) {
       enqueueChatMessage(text, targetRunId);
+      if (!hasActiveTurn && queuePausedByRun[targetRunId]) {
+        setQueuePausedByRun(prev => ({ ...prev, [targetRunId]: false }));
+      }
       return;
     }
     setQueuePausedByRun(prev => ({ ...prev, [targetRunId]: false }));
     void runChatTurn(text, targetRunId);
-  }, [enqueueChatMessage, queuedMessagesByRun, runChatTurn, runId]);
+  }, [enqueueChatMessage, queuePausedByRun, queuedMessagesByRun, runChatTurn, runId]);
 
-  const handleEditQueuedMessage = useCallback((id: string) => {
+  const handleRestoreQueuedMessage = useCallback((id: string) => {
     const item = (queuedMessagesByRun[runId] || []).find(entry => entry.id === id);
     if (!item) return;
     setQueuedMessagesByRun(prev => ({
       ...prev,
       [runId]: (prev[runId] || []).filter(entry => entry.id !== id),
     }));
-    setComposerText(item.content);
+    setComposerText(current => current.trim() ? `${item.content}\n${current}` : item.content);
   }, [queuedMessagesByRun, runId]);
-
-  const handleRemoveQueuedMessage = useCallback((id: string) => {
-    setQueuedMessagesByRun(prev => ({
-      ...prev,
-      [runId]: (prev[runId] || []).filter(entry => entry.id !== id),
-    }));
-  }, [runId]);
-
-  const handleResumeQueue = useCallback(() => {
-    setQueuePausedByRun(prev => ({ ...prev, [runId]: false }));
-  }, [runId]);
 
   useEffect(() => {
     const next = queuedMessages[0];
@@ -587,9 +579,7 @@ export default function App() {
                   items={queuedMessages}
                   paused={queuePaused}
                   waitingForConfirmation={waitingForConfirmation}
-                  onEdit={handleEditQueuedMessage}
-                  onRemove={handleRemoveQueuedMessage}
-                  onResume={handleResumeQueue}
+                  onRestore={handleRestoreQueuedMessage}
                 />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <div style={{ flex: 1 }}>

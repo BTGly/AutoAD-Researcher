@@ -21,3 +21,4 @@
 | 2026-07-06 | [2026-07-06.md](2026-07-06.md) | Research Chat UX alignment and prompt engineering closure: partial/readable artifacts, structured readable artifact priority, natural parse replies, assistant identity/pipeline approval grounding, transcript windowing, developer-info hiding, upload-button source intake, nested-expander fix, and PromptSelector/PromptRegistry material profiles |
 | 2026-07-07 | [2026-07-07.md](2026-07-07.md) | Pending material web_search request execution and status updates |
 | 2026-07-08 | [2026-07-08.md](2026-07-08.md) | Removed Streamlit surface; added FastAPI/React current-task list, switching, rename, archive, restore, delete, transcript reload, and task workspace migration |
+| 2026-07-10 | [2026-07-10.md](2026-07-10.md) | Simplified queued-message withdrawal to one lossless return-to-composer action |
