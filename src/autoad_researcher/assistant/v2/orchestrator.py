@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.v2.source_action_planner import SourceActionPlan, plan_source_actions
+from autoad_researcher.assistant.v2.contract_confirmation_service import (
+    request_contract_confirmation,
+    resolve_pending_contract_confirmation,
+)
 from autoad_researcher.assistant.v2.event_service import append_event, append_typed_event
 from autoad_researcher.assistant.v2.source_service import register_source_intake
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job
@@ -169,6 +173,7 @@ class ResearchOrchestratorV2:
                 if not draft_persisted:
                     save_contract_draft(run_dir, contract)
                 save_confirmed_contract(run_dir, contract)
+                resolve_pending_contract_confirmation(run_dir, decision="approved")
                 return OrchestratorResult(
                     reply=(
                         "已确认 ResearchIntentContract，并写入 `research_intent_contract.json`。"
@@ -245,7 +250,7 @@ class ResearchOrchestratorV2:
         if created_sources or created_jobs:
             reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
         elif contract.ready_for_plan:
-            _append_contract_confirmation_requested_event(run_dir, contract)
+            request_contract_confirmation(run_dir, contract)
             reply_kind, reply = "intent_contract_confirmation", format_contract_for_user(contract)
         else:
             reply_kind, reply = plan_reply(
@@ -312,17 +317,6 @@ def _append_turn_gate_decided_event(run_dir: Path, decision) -> None:
         "need_discovery_allowed": decision.need_discovery_allowed,
         "save_draft_allowed": decision.save_draft_allowed,
         "confidence": decision.confidence,
-    })
-
-
-def _append_contract_confirmation_requested_event(run_dir: Path, contract) -> None:
-    append_typed_event(run_dir, "contract.confirmation.requested", {
-        "ready_for_plan": contract.ready_for_plan,
-        "ready_for_repo_analysis": contract.ready_for_repo_analysis,
-        "ready_for_experiment_agents": contract.ready_for_experiment_agents,
-        "missing_required_fields": list(contract.missing_required_fields),
-        "primary_metrics_count": len(contract.primary_metrics),
-        "has_baseline_repo": bool(contract.baseline_repo),
     })
 
 

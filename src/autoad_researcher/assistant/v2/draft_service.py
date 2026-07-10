@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
+from autoad_researcher.assistant.v2.contract_confirmation_service import load_pending_contract_confirmation
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.intent_contract import CORE_REQUIRED_FIELDS, load_contract_draft
 from autoad_researcher.ui.sources import load_source_registry
@@ -91,6 +92,7 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         "evidence": [_evidence_summary(item) for item in usable if isinstance(item, dict)],
         "jobs": [_job_summary(item) for item in [*pending_jobs, *failed_jobs] if isinstance(item, dict)],
         "next_questions": _next_questions(missing, fields, usable),
+        "confirmation": load_pending_contract_confirmation(run_dir),
     }
 
 

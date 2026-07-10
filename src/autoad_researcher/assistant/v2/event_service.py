@@ -19,6 +19,7 @@ LOW_FREQUENCY_TYPED_EVENTS = {
     "planner.need_discovery.decided",
     "contract.draft.updated",
     "contract.confirmation.requested",
+    "contract.confirmation.resolved",
     "prompt.trace.created",
     "schema.validation.failed",
 }
