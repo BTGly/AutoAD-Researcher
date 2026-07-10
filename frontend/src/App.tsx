@@ -62,11 +62,14 @@ export default function App() {
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
   const [page, setPage] = useState<PageId>('chat');
-  const streamingAssistantIdRef = useRef<string | null>(null);
-  const streamingHadDeltaRef = useRef(false);
-  const suppressLateDeltaRef = useRef(false);
+  const currentRunIdRef = useRef('');
+  const activeChatTurnIdsRef = useRef(new Set<string>());
+  const streamingHadDeltaIdsRef = useRef(new Set<string>());
+  const completedAssistantIdsRef = useRef(new Set<string>());
+  const [chatTurnActive, setChatTurnActive] = useState(false);
   const bottomRef = useAutoScroll([messages]);
   const activeTask = tasks.find(task => task.run_id === runId) || null;
+  const visibleTaskStatus = chatTurnActive ? 'Working' : taskStatus;
 
   const addToast = useCallback((message: string, kind: 'success' | 'error' | 'info') => {
     setToasts(prev => [...prev, { id: generateId(), message, kind }].slice(-MAX_VISIBLE_TOASTS));
@@ -105,9 +108,11 @@ export default function App() {
 
   const switchRun = useCallback(async (nextRunId: string) => {
     if (!nextRunId) return;
-    streamingAssistantIdRef.current = null;
-    streamingHadDeltaRef.current = false;
-    suppressLateDeltaRef.current = true;
+    currentRunIdRef.current = nextRunId;
+    activeChatTurnIdsRef.current.clear();
+    streamingHadDeltaIdsRef.current.clear();
+    completedAssistantIdsRef.current.clear();
+    setChatTurnActive(false);
     setRunId(nextRunId);
     setTaskStatus('Ready');
     setSources([]);
@@ -127,7 +132,6 @@ export default function App() {
       timestamp: entry.created_at ? new Date(entry.created_at).getTime() : Date.now(),
     })));
     await refreshSidebarForRun(nextRunId);
-    suppressLateDeltaRef.current = false;
   }, [refreshSidebarForRun]);
 
   useEffect(() => {
@@ -210,48 +214,61 @@ export default function App() {
     saveConfig(c);
     try {
       const r = await createRun();
+      currentRunIdRef.current = r.run_id;
       setRunId(r.run_id);
       setTasks([r]);
       setTaskStatus('Ready');
     } catch {
+      currentRunIdRef.current = 'run_default';
       setRunId('run_default');
     }
   }, [saveConfig]);
 
   // ── Real chat handler ──
   const handleSend = useCallback(async (text: string) => {
+    const targetRunId = runId || 'run_default';
     const userMsg: Message = { id: generateId(), role: 'user', content: text, timestamp: Date.now() };
     const assistantId = generateId();
     const assistantMsg: Message = { id: assistantId, role: 'assistant', content: '', timestamp: Date.now() };
     const transcriptTail = messages.slice(-12).map(msg => ({ role: msg.role, content: msg.content }));
-    streamingAssistantIdRef.current = assistantId;
-    streamingHadDeltaRef.current = false;
-    suppressLateDeltaRef.current = false;
+    activeChatTurnIdsRef.current.add(assistantId);
+    streamingHadDeltaIdsRef.current.delete(assistantId);
+    completedAssistantIdsRef.current.delete(assistantId);
+    setChatTurnActive(true);
     setTaskStatus('Working');
     setMessages(prev => [...prev, userMsg, assistantMsg]);
 
     try {
-      const res = await sendChat(text, runId || 'run_default', transcriptTail);
-      if (!streamingHadDeltaRef.current) {
+      const res = await sendChat(text, targetRunId, assistantId, transcriptTail);
+      if (
+        currentRunIdRef.current === targetRunId
+        && !streamingHadDeltaIdsRef.current.has(assistantId)
+        && !completedAssistantIdsRef.current.has(assistantId)
+      ) {
         setMessages(prev => prev.map(msg => (
           msg.id === assistantId ? { ...msg, content: res.reply } : msg
         )));
-        suppressLateDeltaRef.current = true;
-        streamingAssistantIdRef.current = null;
-        setTaskStatus('Ready');
       }
-      await refreshSidebar();
+      if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
     } catch {
-      streamingAssistantIdRef.current = null;
-      suppressLateDeltaRef.current = true;
-      setTaskStatus('Error');
-      setMessages(prev => prev.map(msg => (
-        msg.id === assistantId
-          ? { ...msg, content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000' }
-          : msg
-      )));
+      if (currentRunIdRef.current === targetRunId) {
+        setTaskStatus('Error');
+        setMessages(prev => prev.map(msg => (
+          msg.id === assistantId
+            ? { ...msg, content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000' }
+            : msg
+        )));
+      }
+    } finally {
+      activeChatTurnIdsRef.current.delete(assistantId);
+      streamingHadDeltaIdsRef.current.delete(assistantId);
+      if (currentRunIdRef.current === targetRunId) {
+        const hasActiveTurn = activeChatTurnIdsRef.current.size > 0;
+        setChatTurnActive(hasActiveTurn);
+        if (!hasActiveTurn) setTaskStatus(current => current === 'Error' ? current : 'Ready');
+      }
     }
-  }, [messages, runId, refreshSidebar]);
+  }, [messages, runId, refreshSidebarForRun]);
 
   // ── File upload — goes through real backend ──
   const handleFile = useCallback(async (file: File) => {
@@ -371,24 +388,24 @@ export default function App() {
       refreshSidebar();
     }
     if (msg.type === 'assistant.delta' && msg.content) {
-      const assistantId = streamingAssistantIdRef.current;
-      if (!assistantId || suppressLateDeltaRef.current) return;
-      streamingHadDeltaRef.current = true;
+      const assistantId = msg.message_id;
+      if (!assistantId || completedAssistantIdsRef.current.has(assistantId)) return;
+      streamingHadDeltaIdsRef.current.add(assistantId);
       setMessages(prev => prev.map(m => (
         m.id === assistantId ? { ...m, content: m.content + msg.content } : m
       )));
     }
     if (msg.type === 'assistant.done') {
-      const assistantId = streamingAssistantIdRef.current;
+      const assistantId = msg.message_id;
+      if (assistantId) {
+        completedAssistantIdsRef.current.add(assistantId);
+      }
       if (assistantId && typeof msg.content === 'string') {
-        streamingHadDeltaRef.current = true;
+        streamingHadDeltaIdsRef.current.add(assistantId);
         setMessages(prev => prev.map(m => (
           m.id === assistantId ? { ...m, content: msg.content || m.content } : m
         )));
       }
-      streamingAssistantIdRef.current = null;
-      suppressLateDeltaRef.current = false;
-      setTaskStatus('Ready');
     }
     if (msg.type === 'toast.success' && msg.message) addToast(msg.message, 'success');
     if (msg.type === 'toast.error' && msg.message) addToast(msg.message, 'error');
@@ -429,10 +446,10 @@ export default function App() {
           />
           <span style={{
             fontSize: '0.75em', padding: '2px 8px', borderRadius: 4,
-            background: taskStatus === 'Ready' ? '#1a3a1a' : taskStatus === 'Working' ? '#3a2a0a' : taskStatus === 'Error' ? '#3a1a1a' : '#1a1a3a',
-            color: taskStatus === 'Ready' ? 'var(--green)' : taskStatus === 'Working' ? 'var(--orange)' : taskStatus === 'Error' ? 'var(--red)' : 'var(--blue)',
+            background: visibleTaskStatus === 'Ready' ? '#1a3a1a' : visibleTaskStatus === 'Working' ? '#3a2a0a' : visibleTaskStatus === 'Error' ? '#3a1a1a' : '#1a1a3a',
+            color: visibleTaskStatus === 'Ready' ? 'var(--green)' : visibleTaskStatus === 'Working' ? 'var(--orange)' : visibleTaskStatus === 'Error' ? 'var(--red)' : 'var(--blue)',
           }}>
-            {taskStatus}
+            {visibleTaskStatus}
           </span>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

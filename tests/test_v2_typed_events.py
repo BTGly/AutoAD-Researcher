@@ -4,11 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from autoad_researcher.assistant.v2.event_service import append_typed_event, event_to_ws_message, load_events_since
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
-from autoad_researcher.server.routes.chat import _assistant_delta_message, _assistant_done_message
+from autoad_researcher.server.models import ChatRequest
+from autoad_researcher.server.routes.chat import _assistant_delta_message, _assistant_done_message, _resolve_message_id
 
 
 def test_low_frequency_typed_event_writes_and_replays(tmp_path: Path):
@@ -147,6 +149,19 @@ def test_assistant_delta_and_done_message_shapes_remain_compatible():
         "reply_kind": "answer",
         "content": "done",
     }
+
+
+def test_chat_request_id_is_reused_as_assistant_message_id():
+    request = ChatRequest(user_input="hello", request_id="client.request_1")
+
+    assert _resolve_message_id(request.request_id) == "client.request_1"
+
+
+def test_chat_request_id_falls_back_and_rejects_unsafe_characters():
+    assert _resolve_message_id(None).startswith("assistant_")
+
+    with pytest.raises(ValidationError):
+        ChatRequest(user_input="hello", request_id="request id with spaces")
 
 
 def _ready_need_spec_payload() -> dict:

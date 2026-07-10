@@ -98,6 +98,7 @@ export interface TaskRun {
 export interface WSMessage {
   type: string;
   messageId?: string;
+  message_id?: string;
   message?: string;
   content?: string;
   kind?: string;
