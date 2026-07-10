@@ -77,6 +77,7 @@ def build_llm_context(
             limitations.append("no sources registered")
 
     return {
+        "recent_dialogue": _recent_dialogue(transcript_tail),
         "confirmed_from_user": confirmed,
         "usable_evidence": usable,
         "readable_summaries": [e.get("summary", "") for e in usable if e.get("summary")],
@@ -126,6 +127,16 @@ def build_llm_context(
         ],
         "forbidden_actions": FORBIDDEN_ACTIONS,
     }
+
+
+def _recent_dialogue(transcript_tail: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    dialogue: list[dict[str, str]] = []
+    for entry in (transcript_tail or [])[-12:]:
+        role = entry.get("role")
+        content = entry.get("content")
+        if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+            dialogue.append({"role": role, "content": content})
+    return dialogue
 
 
 def _job_context(job: dict[str, Any]) -> dict[str, Any]:

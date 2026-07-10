@@ -104,7 +104,9 @@ def discover_required_needs(
     """
 
     if llm_payload is not None:
-        return validate_need_spec(canonicalize_need_values(RequiredNeedSpec.model_validate(llm_payload)))
+        spec = canonicalize_need_values(RequiredNeedSpec.model_validate(llm_payload))
+        _recover_directional_plan_success_criteria(spec, _combined_user_text(user_input, transcript_tail))
+        return validate_need_spec(spec)
 
     text = _combined_user_text(user_input, transcript_tail)
     draft = existing_contract_draft or {}
@@ -119,7 +121,9 @@ def discover_required_needs(
         current_stage_goal=current_stage_goal,
         needs=needs,
     )
-    return validate_need_spec(canonicalize_need_values(spec))
+    spec = canonicalize_need_values(spec)
+    _recover_directional_plan_success_criteria(spec, text)
+    return validate_need_spec(spec)
 
 
 def discover_required_needs_with_llm(
@@ -239,7 +243,9 @@ def discover_required_needs_with_llm(
         schema_validation="ok",
         latency_ms=latency_ms,
     )
-    return validate_need_spec(canonicalize_need_values(spec))
+    spec = canonicalize_need_values(spec)
+    _recover_directional_plan_success_criteria(spec, _combined_user_text(user_input, transcript_tail))
+    return validate_need_spec(spec)
 
 
 def canonicalize_need_values(spec: RequiredNeedSpec) -> RequiredNeedSpec:
@@ -302,6 +308,21 @@ def validate_need_spec(spec: RequiredNeedSpec) -> RequiredNeedSpec:
         for name in ("dataset_path", "python_env", "time_budget", "human_review_policy")
     )
     return updated
+
+
+def _recover_directional_plan_success_criteria(spec: RequiredNeedSpec, user_text: str) -> None:
+    if spec.current_stage_goal != "generate_plan":
+        return
+    user_supported_value = _success_criteria_from_text(user_text)
+    if not user_supported_value:
+        return
+    for need in spec.needs:
+        if need.name == "success_criteria" and _is_empty_need_value(need.current_value):
+            need.current_value = user_supported_value
+            need.source = "user"
+            need.confidence = max(need.confidence, 0.9)
+            need.question_to_user = None
+            return
 
 
 def _build_need_discovery_messages(

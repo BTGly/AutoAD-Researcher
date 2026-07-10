@@ -50,9 +50,9 @@ def plan_reply(
     pending_jobs = llm_context.get("pending_jobs", [])
     failed_jobs = llm_context.get("failed_jobs", [])
     turn_gate = llm_context.get("turn_gate_decision", {}) or {}
-    if _is_repo_failure_question(user_input) and failed_jobs:
+    if _is_explicit_repo_failure_question(user_input) and failed_jobs:
         return _job_failure_fallback(blocking, pending_jobs, failed_jobs)
-    if _is_parse_failure_question(user_input) and (failed_jobs or unusable):
+    if _is_explicit_parse_failure_question(user_input) and (failed_jobs or unusable):
         return _parse_failure_fallback(blocking, pending_jobs, failed_jobs, unusable)
 
     if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
@@ -84,6 +84,7 @@ def _llm_reply(
     unusable = llm_context.get("unusable_parsed_sources", [])
     paper_summaries = llm_context.get("paper_reading_summaries", [])
     artifact_manifests = llm_context.get("artifact_manifests", [])
+    recent_dialogue = llm_context.get("recent_dialogue", [])
     blocking = llm_context.get("answerability", {}).get("blocking_next_step", "")
     evidence_text = "\n---\n".join(readable[:3]) if readable else "无可用 evidence"
     confirmed_text = "\n".join(f"{k}: {v}" for k, v in confirmed.items()) if confirmed else "无"
@@ -98,6 +99,7 @@ def _llm_reply(
     messages = [
         {"role": "system", "content": system},
         {"role": "system", "content": f"当前状态: {blocking or 'idle'}"},
+        {"role": "system", "content": f"最近对话（按时间顺序）:\n{_json_text(recent_dialogue)}"},
         {"role": "system", "content": f"已确认事实:\n{confirmed_text}"},
         {"role": "system", "content": f"TurnGateDecision:\n{turn_gate_text}"},
         {"role": "system", "content": f"ResearchIntentContract draft:\n{contract_text}"},
@@ -162,7 +164,13 @@ def _llm_reply(
             latency_ms=latency_ms,
         )
         if internal_control_payload:
-            return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable)
+            return _reply_failure_fallback(
+                turn_gate,
+                blocking,
+                pending_jobs,
+                failed_jobs,
+                unusable,
+            )
         return "answer", reply_text
 
     append_llm_trace(
@@ -180,7 +188,27 @@ def _llm_reply(
         fallback_reason="llm_error_or_empty_reply",
         latency_ms=latency_ms,
     )
-    return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable)
+    return _reply_failure_fallback(
+        turn_gate,
+        blocking,
+        pending_jobs,
+        failed_jobs,
+        unusable,
+    )
+
+
+def _reply_failure_fallback(
+    turn_gate: dict[str, Any],
+    blocking: str,
+    pending_jobs: list[dict[str, Any]],
+    failed_jobs: list[dict[str, Any]],
+    unusable_sources: list[dict[str, Any]],
+) -> tuple[str, str]:
+    if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
+        instruction = _clean_visible_text(turn_gate.get("next_reply_instruction"))
+        if instruction:
+            return "answer", instruction
+    return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable_sources)
 
 
 def _unified_fallback(
@@ -351,14 +379,18 @@ def _looks_like_network_clone_failure(error: str) -> bool:
     ))
 
 
-def _is_parse_failure_question(user_input: str) -> bool:
+def _is_explicit_parse_failure_question(user_input: str) -> bool:
     text = re.sub(r"\s+", "", str(user_input).strip().lower())
     if not text:
         return False
-    return any(token in text for token in ("失败", "报错", "错误", "原因", "为什么", "为啥", "怎么回事"))
+    has_failure_signal = any(token in text for token in ("失败", "报错", "错误", "原因", "为什么", "为啥", "怎么回事"))
+    has_parse_subject = any(token in text for token in (
+        "解析", "parse", "parser", "pdf", "论文", "文档", "资料", "source", "artifact", "mineru", "markitdown",
+    ))
+    return has_failure_signal and has_parse_subject
 
 
-def _is_repo_failure_question(user_input: str) -> bool:
+def _is_explicit_repo_failure_question(user_input: str) -> bool:
     text = re.sub(r"\s+", "", str(user_input).strip().lower())
     if not text:
         return False

@@ -16,6 +16,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     save_contract_draft,
 )
 from autoad_researcher.assistant.v2.draft_service import load_research_draft_state
+from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
@@ -265,7 +266,7 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
     assert result.intent_contract["ready_for_plan"] is True
     assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
     assert not (run_dir / CONTRACT_FILE).exists()
-    assert "如果以上正确，请回复“确认”" in result.reply
+    assert "请在确认弹窗中点击“确认合同”" in result.reply
 
     confirmed = ResearchOrchestratorV2.handle(
         run_dir,
@@ -361,6 +362,81 @@ def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tm
     assert (run_dir / CONTRACT_FILE).is_file()
 
 
+def test_task_1231_turn_gate_json_failure_still_drafts_before_confirmation(tmp_path: Path, monkeypatch):
+    research_intent = (
+        "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+        "目标是在相同评估协议下提升指标。"
+    )
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        user_text = messages[-1]["content"]
+        if "SourceActionPlanner" in system_text:
+            return {"reply": json.dumps({
+                "actions": [],
+                "user_visible_summary": "",
+                "confidence": 0.9,
+                "reason": "no source action",
+            }, ensure_ascii=False), "error": ""}
+        if "Repair one TurnGateDecision response" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        if "TurnGateDecision JSON" in system_text:
+            if user_text == research_intent:
+                return {"reply": '{"turn_type":"contract_update"', "error": ""}
+            return {"reply": json.dumps(_turn_gate_payload(
+                turn_type="contract_confirmation",
+                contract_action="confirm_contract",
+                allowed=False,
+            ), ensure_ascii=False), "error": ""}
+        if "Need Discovery" in system_text:
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=["image_level_auroc"],
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_1231"
+    run_dir.mkdir()
+    prior_dialogue = [
+        {"role": "user", "content": "你好，你是谁？"},
+        {"role": "assistant", "content": "我是 AutoAD Researcher。"},
+        {"role": "user", "content": "https://github.com/openvinotoolkit/anomalib"},
+        {"role": "assistant", "content": "已登记该仓库资料。"},
+    ]
+
+    drafted = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=research_intent,
+        transcript_tail=prior_dialogue,
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert drafted.reply_kind == "intent_contract_confirmation"
+    assert drafted.intent_contract["ready_for_plan"] is True
+    assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
+    assert not (run_dir / CONTRACT_FILE).exists()
+
+    confirmed = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="确认",
+        transcript_tail=[
+            *prior_dialogue,
+            {"role": "user", "content": research_intent},
+            {"role": "assistant", "content": drafted.reply},
+        ],
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert confirmed.reply_kind == "intent_contract_confirmed"
+    assert confirmed.intent_contract_confirmed is True
+    assert "没有开始整理" not in confirmed.reply
+    assert (run_dir / CONTRACT_FILE).is_file()
+
+
 def test_format_contract_does_not_pressure_user_for_method_or_module():
     contract = ResearchIntentContract(
         run_id="run_contract",
@@ -441,6 +517,97 @@ def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
     assert "missing_required_fields" not in reply
     assert "reply_to_user" in system_text
     assert "行为准则" in system_text
+
+
+def test_reply_planner_uses_recent_dialogue_for_short_challenge_instead_of_failed_job(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        captured["messages"] = messages
+        return {"reply": json.dumps(_reply_payload(
+            "上一轮我让你确认，但当时没有保存可确认的草案，这是状态不一致。现在我会先恢复草案再请求确认。"
+        ), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "parse_quality"},
+            "recent_dialogue": [
+                {"role": "user", "content": "我想基于 PatchCore 在 MVTec AD 上提升 image-level AUROC。"},
+                {"role": "assistant", "content": "研究方向已经整理好了，请确认是否一致。"},
+                {"role": "user", "content": "确认"},
+                {"role": "assistant", "content": "目前还没有开始整理研究任务合同。"},
+            ],
+            "turn_gate_decision": {
+                "turn_type": "frustration",
+                "contract_action": "answer_without_contract_update",
+            },
+            "failed_jobs": [{"job_id": "job_000001", "job_type": "web_fetch", "error": "parse failed"}],
+            "unusable_parsed_sources": [],
+        },
+        "？？？？",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    system_text = "\n".join(
+        message["content"]
+        for message in captured["messages"]
+        if message["role"] == "system"
+    )
+    assert kind == "answer"
+    assert "状态不一致" in reply
+    assert "失败任务" not in reply
+    assert "目前还没有开始整理研究任务合同" in system_text
+
+
+def test_reply_planner_llm_failure_prefers_turn_gate_recovery_instruction(monkeypatch):
+    calls = 0
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {"reply": "", "error": "provider unavailable"}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "parse_quality"},
+            "turn_gate_decision": {
+                "turn_type": "frustration",
+                "contract_action": "answer_without_contract_update",
+                "next_reply_instruction": "上一轮确认话术与草案状态不一致；请先解释并恢复草案。",
+            },
+            "failed_jobs": [{"job_id": "job_000001", "job_type": "web_fetch", "error": "parse failed"}],
+        },
+        "怎么回事",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert calls == 1
+    assert kind == "answer"
+    assert reply == "上一轮确认话术与草案状态不一致；请先解释并恢复草案。"
+    assert "失败任务" not in reply
+
+
+def test_context_builder_preserves_recent_dialogue_for_reply_planning(tmp_path: Path):
+    run_dir = tmp_path / "run_context"
+    run_dir.mkdir()
+    transcript = [
+        {"role": "user", "content": "研究方向已经说清楚了。"},
+        {"role": "assistant", "content": "请确认是否一致。"},
+        {"role": "tool", "content": "internal"},
+        {"role": "user", "content": "确认"},
+    ]
+
+    context = build_llm_context(run_dir, transcript_tail=transcript)
+
+    assert context["recent_dialogue"] == [
+        {"role": "user", "content": "研究方向已经说清楚了。"},
+        {"role": "assistant", "content": "请确认是否一致。"},
+        {"role": "user", "content": "确认"},
+    ]
 
 
 def test_reply_planner_streams_only_visible_reply_field(monkeypatch):
@@ -768,7 +935,7 @@ def test_reply_fallback_uses_known_parse_errors_without_guessing():
     assert "复杂排版" not in reply
 
 
-def test_parse_failure_question_bypasses_llm_speculation(monkeypatch):
+def test_explicit_parse_failure_question_bypasses_llm_speculation(monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         return {"reply": json.dumps({
             "reply_to_user": "可能是扫描版、加密/损坏，或者临时服务异常。",
@@ -797,7 +964,7 @@ def test_parse_failure_question_bypasses_llm_speculation(monkeypatch):
                 }
             ],
         },
-        "为什么失败了",
+        "为什么这个 PDF 解析失败了",
         api_key="sk-test",
         provider_url="https://example.test",
     )

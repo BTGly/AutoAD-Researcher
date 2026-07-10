@@ -414,7 +414,7 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
         lines.append("还缺少：" + ", ".join(contract.missing_required_fields))
         lines.append("你可以先回答最关键的一项：主要想优化指标、速度、显存、训练成本、复现跑通，还是稳定性/泛化？")
     else:
-        lines.append("如果以上正确，请回复“确认”。确认后只写入 contract，不会自动 patch 或运行实验。")
+        lines.append("如果以上正确，请在确认弹窗中点击“确认合同”。确认后只写入 contract，不会自动 patch 或运行实验。")
     return "\n".join(lines)
 
 

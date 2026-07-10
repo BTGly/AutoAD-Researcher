@@ -157,6 +157,9 @@ def test_v2_core_prompt_profiles_are_registered_with_io_contracts():
     assert "TurnGateDecision JSON" in registry.require("assistant.v2.turn_gate.v1").system_prompt
     assert "RequiredNeedSpec JSON" in registry.require("assistant.v2.need_discovery.v1").system_prompt
     assert "reply_to_user" in registry.require("assistant.v2.reply_plan.v1").system_prompt
+    assert "具体提升多少是可选目标" in registry.require("assistant.v2.need_discovery.v1").system_prompt
+    assert "优先理解当前用户消息与最近一轮 assistant 回复的关系" in registry.require("assistant.v2.reply_plan.v1").system_prompt
+    assert "你不能独立发起合同确认" in registry.require("assistant.v2.reply_plan.v1").system_prompt
     assert registry.require("assistant.v2.reply_plan.v1").visibility == "user_visible"
 
 

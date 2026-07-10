@@ -52,6 +52,53 @@ def test_need_discovery_does_not_require_target_module():
     assert "target_module" not in spec.blocking_needs
 
 
+def test_directional_metric_improvement_is_sufficient_plan_success_criteria():
+    spec = discover_required_needs(
+        user_input=(
+            "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+            "目标是在相同评估协议下提升指标。"
+        ),
+    )
+
+    success = _need(spec, "success_criteria")
+    assert success.current_value
+    assert success.blocking is False
+    assert "success_criteria" not in spec.blocking_needs
+    assert spec.ready_for_plan is True
+
+
+def test_llm_cannot_block_plan_on_missing_numeric_improvement_target(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps(_base_llm_spec([
+            {
+                "name": "success_criteria",
+                "category": "evaluation",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": None,
+                "source": "unknown",
+                "confidence": 0.0,
+                "blocking": True,
+                "question_to_user": "具体要提升多少 AUROC？",
+            }
+        ]), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    spec = discover_required_needs_with_llm(
+        user_input="目标是在相同评估协议下提升 image-level AUROC。",
+        current_stage_goal="generate_plan",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    success = _need(spec, "success_criteria")
+    assert success.current_value == "improve selected metrics under the same evaluation protocol"
+    assert success.blocking is False
+    assert success.question_to_user is None
+    assert spec.blocking_needs == []
+    assert spec.ready_for_plan is True
+
+
 def test_need_discovery_metrics_co_primary():
     spec = discover_required_needs(
         user_input="主要看 image AUROC 和 pixel AUROC，成功标准是都比原始 PatchCore 有提升。",
