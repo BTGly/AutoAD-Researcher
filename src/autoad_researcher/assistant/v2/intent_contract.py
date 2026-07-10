@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.v2.event_service import append_typed_event
 from autoad_researcher.source_normalizer import extract_first_url
 from autoad_researcher.assistant.v2.need_discovery import (
     RequiredNeedSpec,
@@ -160,7 +161,9 @@ def build_contract_from_context(
         answerability=llm_context.get("answerability", {}) or {},
         api_key=api_key,
         provider_url=provider_url,
+        run_dir=run_dir,
     )
+    _append_need_discovery_decided_event(run_dir, need_spec)
 
     need_fields = contract_fields_from_need_spec(need_spec)
     need_primary_metrics = _canonicalize_metric_list(_listify(need_fields.get("primary_metrics")))
@@ -358,7 +361,9 @@ def contract_fields_from_need_spec(spec: RequiredNeedSpec) -> dict[str, Any]:
 
 
 def save_contract_draft(run_dir: Path, contract: ResearchIntentContract) -> Path:
-    return _write_contract(run_dir / CONTRACT_DRAFT_FILE, contract)
+    path = _write_contract(run_dir / CONTRACT_DRAFT_FILE, contract)
+    _append_contract_draft_updated_event(run_dir, contract)
+    return path
 
 
 def save_confirmed_contract(run_dir: Path, contract: ResearchIntentContract) -> Path:
@@ -420,6 +425,38 @@ def _write_contract(path: Path, contract: ResearchIntentContract) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _append_need_discovery_decided_event(run_dir: Path, spec: RequiredNeedSpec) -> None:
+    append_typed_event(run_dir, "planner.need_discovery.decided", {
+        "current_stage_goal": spec.current_stage_goal,
+        "inferred_task_type": spec.inferred_task_type,
+        "need_count": len(spec.needs),
+        "blocking_needs": list(spec.blocking_needs),
+        "ready_for_plan": spec.ready_for_plan,
+        "ready_for_repo_analysis": spec.ready_for_repo_analysis,
+        "ready_for_experiment_design": spec.ready_for_experiment_design,
+        "ready_for_patch": spec.ready_for_patch,
+        "ready_for_run": spec.ready_for_run,
+    })
+
+
+def _append_contract_draft_updated_event(run_dir: Path, contract: ResearchIntentContract) -> None:
+    populated_fields = [
+        field
+        for field in CORE_REQUIRED_FIELDS
+        if getattr(contract, field, None) not in (None, "", [], {})
+    ]
+    append_typed_event(run_dir, "contract.draft.updated", {
+        "schema_version": contract.schema_version,
+        "populated_required_fields": populated_fields,
+        "missing_required_fields": list(contract.missing_required_fields),
+        "ready_for_plan": contract.ready_for_plan,
+        "ready_for_repo_analysis": contract.ready_for_repo_analysis,
+        "ready_for_experiment_agents": contract.ready_for_experiment_agents,
+        "primary_metrics_count": len(contract.primary_metrics),
+        "evidence_source_count": len(contract.evidence_sources),
+    })
 
 
 def _load_contract(path: Path) -> ResearchIntentContract | None:

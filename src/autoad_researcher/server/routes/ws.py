@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from autoad_researcher.assistant.v2.event_service import load_events_since
+from autoad_researcher.assistant.v2.event_service import event_to_ws_message, load_events_since
 from autoad_researcher.server.ws_manager import manager
 
 RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
@@ -22,7 +22,7 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
     for evt in load_events_since(run_dir, last_event_id):
         try:
             if not _is_transient_event(evt):
-                await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
+                await ws.send_json(event_to_ws_message(evt))
             last_event_id = evt["event_id"]
         except Exception:
             break
@@ -33,7 +33,7 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
         while True:
             try:
                 for evt in load_events_since(run_dir, last_event_id):
-                    await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
+                    await ws.send_json(event_to_ws_message(evt))
                     last_event_id = evt["event_id"]
             except Exception:
                 break

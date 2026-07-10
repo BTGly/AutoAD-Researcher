@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.assistant.prompt_selector import PromptSelector
+from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -52,6 +56,7 @@ def decide_turn_gate_with_llm(
     answerability: dict[str, Any],
     api_key: str,
     provider_url: str,
+    run_dir: Path | None = None,
 ) -> TurnGateDecision:
     """Decide turn routing through an LLM gate.
 
@@ -89,18 +94,40 @@ def decide_turn_gate_with_llm(
         created_jobs=created_jobs,
         answerability=answerability,
     )
+    selector = PromptSelector()
+    profile = selector.profile_for_v2_component("turn_gate")
+    system_prompt = messages[0]["content"] if messages else ""
+    model = "deepseek-v4-flash"
 
     from autoad_researcher.ui.chat_client import call_research_chat
 
+    started = time.perf_counter()
     result = call_research_chat(
         api_key,
         provider_url,
         messages,
-        model="deepseek-v4-flash",
+        model=model,
         timeout_s=30,
     )
-    payload = _parse_json_object(str(result.get("reply") or ""))
+    latency_ms = (time.perf_counter() - started) * 1000
+    reply_text = str(result.get("reply") or "")
+    payload = _parse_json_object(reply_text)
     if result.get("error") or payload is None:
+        append_llm_trace(
+            run_dir,
+            call_site="turn_gate",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="error",
+            schema_validation="skipped",
+            fallback_reason="llm_error_or_non_json",
+            latency_ms=latency_ms,
+        )
         return _offline_no_contract_decision(
             user_input=user_input,
             transcript_tail=transcript_tail,
@@ -109,11 +136,40 @@ def decide_turn_gate_with_llm(
     try:
         decision = TurnGateDecision.model_validate(payload)
     except Exception:
+        append_llm_trace(
+            run_dir,
+            call_site="turn_gate",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="ok",
+            schema_validation="error",
+            fallback_reason="schema_validation_error",
+            latency_ms=latency_ms,
+        )
         return _offline_no_contract_decision(
             user_input=user_input,
             transcript_tail=transcript_tail,
             existing_contract_draft=existing_contract_draft,
         )
+    append_llm_trace(
+        run_dir,
+        call_site="turn_gate",
+        prompt_id=profile.prompt_id,
+        prompt_version=profile.prompt_version,
+        prompt_text=system_prompt,
+        model=model,
+        provider_url=provider_url,
+        messages=messages,
+        raw_output=reply_text,
+        parse_status="ok",
+        schema_validation="ok",
+        latency_ms=latency_ms,
+    )
     return _validate_turn_gate_decision(decision)
 
 
@@ -126,20 +182,7 @@ def _build_turn_gate_messages(
     created_jobs: list[dict[str, Any]] | None = None,
     answerability: dict[str, Any],
 ) -> list[dict[str, str]]:
-    system = (
-        "你是 AutoAD Researcher 的 HF-2 Turn Gate。你只输出 TurnGateDecision JSON，不输出 Markdown。\n"
-        "你的职责是判断当前用户消息是否允许进入 ResearchIntentContract 合同链路；你不能直接修改合同。\n"
-        "你不是关键词分类器。不能仅因为出现 PatchCore、MVTec、AUROC、dataset、metric、实验、论文、仓库等词就判定为合同相关。\n"
-        "必须根据当前用户消息、最近上下文、已有合同草稿、上一轮助手行为和语用意图判断。\n"
-        "只有当用户明确表达研究目标、实验对象、评价指标、成功标准、执行边界、资料来源、确认/修改已有合同，或请求继续推进研究任务时，才允许进入合同链路。\n"
-        "资料登记、上传、fetch、parse、clone、repo analysis 本身只说明要处理 source；除非用户把这份资料明确绑定到 baseline/dataset/metric/成功标准/已有 draft，否则不要更新合同。\n"
-        "身份问题、玩笑、发泄、辱骂、寒暄、情绪表达、与研究合同无关的对话，不允许更新合同。\n"
-        "如果消息含义依赖上下文，例如“可以”“继续”“就这个”“按刚刚那个来”，必须结合 transcript_tail 判断上一轮 assistant 是否刚请求合同确认或研究推进。\n"
-        "不确定时优先 answer_without_contract_update 或 ask_clarifying_question，不能贸然 save draft。\n"
-        "LLM 不能直接确认最终合同；最终确认必须由 orchestrator 根据 existing draft 和明确确认意图执行。\n"
-        "Schema: {turn_type, contract_action, contract_update_allowed, need_discovery_allowed, save_draft_allowed, "
-        "user_intent_summary, evidence_from_current_turn, evidence_from_context, confidence, reason, next_reply_instruction}."
-    )
+    system = PromptSelector().build_system_prompt_for_v2_component("turn_gate")
     context = {
         "transcript_tail": transcript_tail or [],
         "existing_contract_draft": existing_contract_draft or {},

@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.assistant.prompt_selector import PromptSelector
+from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -131,6 +135,7 @@ def discover_required_needs_with_llm(
     run_artifacts_summary: dict[str, Any] | None = None,
     api_key: str = "",
     provider_url: str = "",
+    run_dir: Path | None = None,
 ) -> RequiredNeedSpec:
     """LLM-first requirement discovery with deterministic fallback.
 
@@ -165,24 +170,75 @@ def discover_required_needs_with_llm(
         answerability=answerability,
         run_artifacts_summary=run_artifacts_summary,
     )
+    selector = PromptSelector()
+    profile = selector.profile_for_v2_component("need_discovery")
+    system_prompt = messages[0]["content"] if messages else ""
+    model = "deepseek-v4-flash"
 
     from autoad_researcher.ui.chat_client import call_research_chat
 
+    started = time.perf_counter()
     result = call_research_chat(
         api_key,
         provider_url,
         messages,
-        model="deepseek-v4-flash",
+        model=model,
         timeout_s=30,
     )
-    payload = _parse_json_object(str(result.get("reply") or ""))
+    latency_ms = (time.perf_counter() - started) * 1000
+    reply_text = str(result.get("reply") or "")
+    payload = _parse_json_object(reply_text)
     if result.get("error") or payload is None:
+        append_llm_trace(
+            run_dir,
+            call_site="need_discovery",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="error",
+            schema_validation="skipped",
+            fallback_reason="llm_error_or_non_json",
+            latency_ms=latency_ms,
+        )
         return discover_required_needs(**fallback_kwargs)
     try:
         spec = RequiredNeedSpec.model_validate(payload)
     except Exception:
+        append_llm_trace(
+            run_dir,
+            call_site="need_discovery",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="ok",
+            schema_validation="error",
+            fallback_reason="schema_validation_error",
+            latency_ms=latency_ms,
+        )
         return discover_required_needs(**fallback_kwargs)
     spec.current_stage_goal = current_stage_goal
+    append_llm_trace(
+        run_dir,
+        call_site="need_discovery",
+        prompt_id=profile.prompt_id,
+        prompt_version=profile.prompt_version,
+        prompt_text=system_prompt,
+        model=model,
+        provider_url=provider_url,
+        messages=messages,
+        raw_output=reply_text,
+        parse_status="ok",
+        schema_validation="ok",
+        latency_ms=latency_ms,
+    )
     return validate_need_spec(canonicalize_need_values(spec))
 
 
@@ -260,23 +316,7 @@ def _build_need_discovery_messages(
     answerability: dict[str, Any] | None,
     run_artifacts_summary: dict[str, Any] | None,
 ) -> list[dict[str, str]]:
-    system = (
-        "你是 AutoAD Researcher 的 Need Discovery 组件，只输出 RequiredNeedSpec JSON。\n"
-        "你的任务是在 HF-2 Turn Gate 已允许进入合同链路后，判断当前目标和阶段真正缺哪些关键事实、材料、资源和安全约束。\n"
-        "不要回答用户，不要输出 Markdown。\n"
-        "不要重新做 turn relevance 判断；如果你收到输入，说明上游 Turn Gate 已经允许 Need Discovery。\n"
-        "existing_contract_draft 中的 missing_required_fields 只是状态；即使 Turn Gate 已允许进入合同链路，也只能围绕本轮推进所需的最关键缺口提出 next_best_question。\n"
-        "规则边界：metric/dataset/baseline 名称可以标准化；不要用关键词或出现顺序强行决定用户意图。\n"
-        "improvement_idea 和 target_module 只能是 optional，不能 blocking。\n"
-        "plan 阶段不能要求用户提供 dataset_path、python_env、GPU、repo entrypoint 或 config；这些应是 required_later 或 auto_fillable。\n"
-        "run_experiment 阶段必须检查 dataset_path、python_env、time_budget、human_review_policy。\n"
-        "entrypoint/config 应由 repo analyzer 自动补，不能要求用户手写。\n"
-        "每轮只给 next_best_question 一个最关键问题。\n"
-        "JSON fields: task_summary, inferred_task_type, current_stage_goal, needs, blocking_needs, "
-        "next_best_question, ready_for_plan, ready_for_repo_analysis, ready_for_experiment_design, "
-        "ready_for_patch, ready_for_run. 每个 need 包含 name, category, required_for, necessity, "
-        "current_value, source, confidence, blocking, question_to_user."
-    )
+    system = PromptSelector().build_system_prompt_for_v2_component("need_discovery")
     context = {
         "current_stage_goal": current_stage_goal,
         "transcript_tail": transcript_tail or [],

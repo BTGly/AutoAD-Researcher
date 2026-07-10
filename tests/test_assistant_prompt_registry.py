@@ -134,6 +134,32 @@ def test_progress_digest_profile_is_user_visible_but_hides_raw_internals():
     assert "Use WhatWeKnow when available." in profile.system_prompt
 
 
+def test_v2_core_prompt_profiles_are_registered_with_io_contracts():
+    registry = get_default_prompt_registry()
+    expected = {
+        "assistant.v2.source_action_plan.v1": ("SourceActionPlan", "assistant_state", "registering_sources"),
+        "assistant.v2.turn_gate.v1": ("TurnGateDecision", "assistant_state", "understanding_intent"),
+        "assistant.v2.need_discovery.v1": ("RequiredNeedSpec", "schema_bound_draft", None),
+        "assistant.v2.reply_plan.v1": ("V2ReplyPlanJSON", "assistant_state", "guiding_materials"),
+    }
+
+    for prompt_id, (output_schema, layer, stage) in expected.items():
+        profile = registry.require(prompt_id)
+        assert profile.prompt_version == "v1"
+        assert profile.layer == layer
+        assert profile.assistant_stage == stage
+        assert profile.io.output_schema == output_schema
+        assert profile.io.input_schema
+        assert profile.io.forbidden_outputs
+        assert profile.source_references
+
+    assert "SourceActionPlanner" in registry.require("assistant.v2.source_action_plan.v1").system_prompt
+    assert "TurnGateDecision JSON" in registry.require("assistant.v2.turn_gate.v1").system_prompt
+    assert "RequiredNeedSpec JSON" in registry.require("assistant.v2.need_discovery.v1").system_prompt
+    assert "reply_to_user" in registry.require("assistant.v2.reply_plan.v1").system_prompt
+    assert registry.require("assistant.v2.reply_plan.v1").visibility == "user_visible"
+
+
 def test_prompt_io_contract_rejects_unsafe_artifact_paths():
     with pytest.raises(ValueError, match="run-relative"):
         PromptIOContract(required_artifacts=["/tmp/raw.txt"])
