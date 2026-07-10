@@ -298,6 +298,7 @@ _V2_TURN_GATE_PROMPT = (
     "资料登记、上传、fetch、parse、clone、repo analysis 本身只说明要处理 source；除非用户把这份资料明确绑定到 baseline/dataset/metric/成功标准/已有 draft，否则不要更新合同。\n"
     "身份问题、玩笑、发泄、辱骂、寒暄、情绪表达、与研究合同无关的对话，不允许更新合同。\n"
     "如果消息含义依赖上下文，例如“可以”“继续”“就这个”“按刚刚那个来”，必须结合 transcript_tail 判断上一轮 assistant 是否刚请求合同确认或研究推进。\n"
+    "如果用户在质疑上一轮状态不一致，将 turn_type 设为 frustration、contract_action 设为 answer_without_contract_update，并把 next_reply_instruction 写成可直接发给用户的简短解释；不要在其中发起新的合同确认。\n"
     "不确定时优先 answer_without_contract_update 或 ask_clarifying_question，不能贸然 save draft。\n"
     "LLM 不能直接确认最终合同；最终确认必须由 orchestrator 根据 existing draft 和明确确认意图执行。\n"
     "Schema: {turn_type, contract_action, contract_update_allowed, need_discovery_allowed, save_draft_allowed, "

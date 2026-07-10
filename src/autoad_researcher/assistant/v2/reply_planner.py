@@ -55,6 +55,10 @@ def plan_reply(
     if _is_explicit_parse_failure_question(user_input) and (failed_jobs or unusable):
         return _parse_failure_fallback(blocking, pending_jobs, failed_jobs, unusable)
 
+    turn_gate_recovery_reply = _turn_gate_recovery_reply(turn_gate)
+    if turn_gate_recovery_reply:
+        return "answer", turn_gate_recovery_reply
+
     if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
         if api_key:
             return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta, run_dir=run_dir)
@@ -112,7 +116,12 @@ def _llm_reply(
     ]
 
     from autoad_researcher.ui.chat_client import call_research_chat
-    visible_stream = _VisibleReplyDeltaFilter(on_delta) if on_delta is not None else None
+    defer_visible_stream = _should_defer_visible_stream(turn_gate, contract)
+    visible_stream = (
+        _VisibleReplyDeltaFilter(on_delta)
+        if on_delta is not None and not defer_visible_stream
+        else None
+    )
     started = time.perf_counter()
     result = call_research_chat(
         api_key,
@@ -128,6 +137,29 @@ def _llm_reply(
         reply_text = str(result["reply"])
         payload = _parse_llm_contract_reply(reply_text)
         if payload is not None:
+            if _requests_unbacked_confirmation(payload, contract):
+                append_llm_trace(
+                    run_dir,
+                    call_site="reply_planner",
+                    prompt_id=profile.prompt_id,
+                    prompt_version=profile.prompt_version,
+                    prompt_text=system,
+                    model=model,
+                    provider_url=provider_url,
+                    messages=messages,
+                    raw_output=reply_text,
+                    parse_status="ok",
+                    schema_validation="error",
+                    fallback_reason="unbacked_confirmation_request",
+                    latency_ms=latency_ms,
+                )
+                return _reply_failure_fallback(
+                    turn_gate,
+                    blocking,
+                    pending_jobs,
+                    failed_jobs,
+                    unusable,
+                )
             append_llm_trace(
                 run_dir,
                 call_site="reply_planner",
@@ -209,6 +241,28 @@ def _reply_failure_fallback(
         if instruction:
             return "answer", instruction
     return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable_sources)
+
+
+def _turn_gate_recovery_reply(turn_gate: dict[str, Any]) -> str:
+    if turn_gate.get("turn_type") != "frustration":
+        return ""
+    if turn_gate.get("contract_action") != "answer_without_contract_update":
+        return ""
+    return _clean_visible_text(turn_gate.get("next_reply_instruction"))
+
+
+def _requests_unbacked_confirmation(payload: dict[str, Any], contract: Any) -> bool:
+    return payload.get("ready_for_confirmation") is True and not _has_ready_contract(contract)
+
+
+def _has_ready_contract(contract: Any) -> bool:
+    return isinstance(contract, dict) and contract.get("ready_for_plan") is True
+
+
+def _should_defer_visible_stream(turn_gate: dict[str, Any], contract: Any) -> bool:
+    if _has_ready_contract(contract):
+        return False
+    return turn_gate.get("turn_type") in {"frustration", "ambiguous"}
 
 
 def _unified_fallback(

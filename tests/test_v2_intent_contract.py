@@ -561,13 +561,50 @@ def test_reply_planner_uses_recent_dialogue_for_short_challenge_instead_of_faile
     assert "目前还没有开始整理研究任务合同" in system_text
 
 
-def test_reply_planner_llm_failure_prefers_turn_gate_recovery_instruction(monkeypatch):
+def test_reply_planner_rejects_unbacked_confirmation_without_streaming_it(monkeypatch):
+    streamed: list[str] = []
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        on_delta = kwargs.get("on_delta")
+        assert on_delta is None
+        return {"reply": json.dumps(_reply_payload(
+            "研究方向已经整理好了，请确认。"
+        ) | {
+            "contract_updates": {"baseline": "PatchCore"},
+            "ready_for_confirmation": True,
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "parse_quality"},
+            "research_intent_contract": {},
+            "turn_gate_decision": {
+                "turn_type": "ambiguous",
+                "contract_action": "answer_without_contract_update",
+                "next_reply_instruction": "上一轮确认话术与草案状态不一致；我会先恢复草案。",
+            },
+            "failed_jobs": [{"job_id": "job_000001", "job_type": "web_fetch", "error": "parse failed"}],
+        },
+        "？？？？",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        on_delta=streamed.append,
+    )
+
+    assert kind == "answer"
+    assert reply == "上一轮确认话术与草案状态不一致；我会先恢复草案。"
+    assert streamed == []
+    assert "请确认" not in reply
+
+
+def test_reply_planner_prefers_turn_gate_recovery_instruction_without_second_llm(monkeypatch):
     calls = 0
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         nonlocal calls
         calls += 1
-        return {"reply": "", "error": "provider unavailable"}
+        raise AssertionError("ReplyPlanner LLM should not run after TurnGate resolved a frustration reply")
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     kind, reply = plan_reply(
@@ -585,7 +622,7 @@ def test_reply_planner_llm_failure_prefers_turn_gate_recovery_instruction(monkey
         provider_url="https://example.test",
     )
 
-    assert calls == 1
+    assert calls == 0
     assert kind == "answer"
     assert reply == "上一轮确认话术与草案状态不一致；请先解释并恢复草案。"
     assert "失败任务" not in reply
