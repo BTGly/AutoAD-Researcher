@@ -17,6 +17,7 @@ from autoad_researcher.assistant.v2.source_service import register_source_intake
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.intent_contract import (
+    ResearchIntentContract,
     build_contract_from_context,
     format_contract_for_user,
     load_contract_draft,
@@ -145,9 +146,28 @@ class ResearchOrchestratorV2:
 
         if turn_decision.contract_action == "confirm_contract":
             contract = existing_draft
+            draft_persisted = contract is not None
+            if contract is None:
+                recovered_update = build_contract_from_context(
+                    run_dir=run_dir,
+                    user_input=user_input,
+                    llm_context=ctx,
+                    transcript_tail=transcript_tail,
+                    existing_contract_draft=None,
+                    api_key=api_key,
+                    provider_url=provider_url,
+                )
+                contract = merge_contract_draft(None, recovered_update)
+                if _has_contract_content(contract):
+                    save_contract_draft(run_dir, contract)
+                    draft_persisted = True
+                else:
+                    contract = None
             if contract is not None:
                 ctx["research_intent_contract"] = contract.model_dump(mode="json")
             if contract is not None and contract.ready_for_plan:
+                if not draft_persisted:
+                    save_contract_draft(run_dir, contract)
                 save_confirmed_contract(run_dir, contract)
                 return OrchestratorResult(
                     reply=(
@@ -217,7 +237,7 @@ class ResearchOrchestratorV2:
             provider_url=provider_url,
         )
         contract = merge_contract_draft(existing_draft, contract_update)
-        if turn_decision.save_draft_allowed:
+        if turn_decision.save_draft_allowed or contract.ready_for_plan:
             save_contract_draft(run_dir, contract)
         ctx["research_intent_contract"] = contract.model_dump(mode="json")
 
@@ -260,6 +280,16 @@ def _suggest_next_actions(ctx: dict, reply_kind: str) -> list[str]:
     elif blocking == "parse":
         actions.append("parse registered sources")
     return actions
+
+
+def _has_contract_content(contract: ResearchIntentContract) -> bool:
+    return any((
+        contract.research_goal,
+        contract.baseline,
+        contract.dataset,
+        contract.primary_metrics,
+        contract.success_criteria,
+    ))
 
 
 def _append_source_action_decided_event(run_dir: Path, plan: SourceActionPlan) -> None:

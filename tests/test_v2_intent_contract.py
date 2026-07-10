@@ -282,6 +282,85 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
     assert loaded.ready_for_plan is True
 
 
+def test_orchestrator_persists_ready_draft_before_requesting_confirmation(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        if "TurnGateDecision JSON" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(allowed=True) | {
+                "save_draft_allowed": False,
+            }, ensure_ascii=False), "error": ""}
+        if "Need Discovery" in system_text:
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=["image_level_auroc"],
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=(
+            "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+            "目标是在相同评估协议下提升指标。"
+        ),
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.reply_kind == "intent_contract_confirmation"
+    assert result.intent_contract["ready_for_plan"] is True
+    assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
+
+
+def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tmp_path: Path, monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        if "TurnGateDecision JSON" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(
+                turn_type="contract_confirmation",
+                contract_action="confirm_contract",
+                allowed=False,
+            ), ensure_ascii=False), "error": ""}
+        if "Need Discovery" in system_text:
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=["image_level_auroc"],
+            ), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    research_intent = (
+        "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+        "目标是在相同评估协议下提升指标。"
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="确认",
+        transcript_tail=[
+            {"role": "user", "content": research_intent},
+            {"role": "assistant", "content": "我整理好了研究方向，请确认是否一致。"},
+        ],
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.reply_kind == "intent_contract_confirmed"
+    assert result.intent_contract_confirmed is True
+    assert result.intent_contract["baseline"] == "PatchCore"
+    assert result.intent_contract["dataset"] == "MVTec AD"
+    assert result.intent_contract["primary_metrics"] == ["image_level_auroc"]
+    assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
+    assert (run_dir / CONTRACT_FILE).is_file()
+
+
 def test_format_contract_does_not_pressure_user_for_method_or_module():
     contract = ResearchIntentContract(
         run_id="run_contract",
