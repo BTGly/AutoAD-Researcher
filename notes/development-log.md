@@ -22,3 +22,4 @@
 | 2026-07-07 | [2026-07-07.md](2026-07-07.md) | Pending material web_search request execution and status updates |
 | 2026-07-08 | [2026-07-08.md](2026-07-08.md) | Removed Streamlit surface; added FastAPI/React current-task list, switching, rename, archive, restore, delete, transcript reload, and task workspace migration |
 | 2026-07-10 | [2026-07-10.md](2026-07-10.md) | Simplified queued-message withdrawal to one lossless return-to-composer action |
+| 2026-07-13 | [2026-07-13.md](2026-07-13.md) | Minimum AutoAD control plane: canonical stores, fenced Worker, ExperimentSession/readiness, and contract bridge |
