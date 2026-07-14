@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,11 @@ from autoad_researcher.assistant.v2.intent_contract import (
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
 from autoad_researcher.assistant.v2.turn_gate import decide_turn_gate_with_llm
 from autoad_researcher.ui.sources import load_source_registry, remove_source
+from autoad_researcher.task_workspace.task_profile import (
+    apply_automatic_task_profile,
+    build_automatic_task_profile,
+    task_profile_needs_automatic_title,
+)
 
 
 @dataclass
@@ -51,7 +57,7 @@ class OrchestratorResult:
     next_actions: list[str] = field(default_factory=list)
     intent_contract: dict[str, Any] = field(default_factory=dict)
     intent_contract_confirmed: bool = False
-    task_naming_eligible: bool = False
+    task_update: dict[str, Any] = field(default_factory=dict)
 
 
 class ResearchOrchestratorV2:
@@ -70,6 +76,8 @@ class ResearchOrchestratorV2:
         provider_url: str = "",
         model: str = "deepseek-v4-flash",
         on_reply_delta: Callable[[str], None] | None = None,
+        on_progress: Callable[[str], None] | None = None,
+        on_task_updated: Callable[[dict[str, Any]], None] | None = None,
     ) -> OrchestratorResult:
         user_input = user_input.strip()
         if not user_input:
@@ -143,6 +151,12 @@ class ResearchOrchestratorV2:
         )
         _append_turn_gate_decided_event(run_dir, turn_decision)
         ctx["turn_gate_decision"] = turn_decision.model_dump(mode="json")
+        _emit_progress(
+            on_progress,
+            "正在核对实验约束……"
+            if turn_decision.contract_action == "update_contract"
+            else "正在准备回复……",
+        )
 
         confirmed_contract = load_confirmed_contract(run_dir)
         if confirmed_contract is not None and (
@@ -362,6 +376,13 @@ class ResearchOrchestratorV2:
         if turn_decision.save_draft_allowed or contract.ready_for_plan:
             save_contract_draft(run_dir, contract)
         ctx["research_intent_contract"] = contract.model_dump(mode="json")
+        task_update = _maybe_update_task_profile(
+            run_dir=run_dir,
+            turn_decision=turn_decision,
+            contract=contract,
+            on_task_updated=on_task_updated,
+        )
+        _emit_progress(on_progress, "正在准备回复……")
 
         # Source intake turn: brief status, don't reprint contract
         if created_sources or created_jobs:
@@ -402,10 +423,7 @@ class ResearchOrchestratorV2:
             next_actions=_suggest_next_actions(ctx, reply_kind),
             intent_contract=contract.model_dump(mode="json"),
             intent_contract_confirmed=False,
-            task_naming_eligible=(
-                turn_decision.contract_action == "update_contract"
-                and _has_contract_content(contract)
-            ),
+            task_update=task_update,
         )
 
 
@@ -430,6 +448,60 @@ def _has_contract_content(contract: ResearchIntentContract) -> bool:
         contract.primary_metrics,
         contract.success_criteria,
     ))
+
+
+def _maybe_update_task_profile(
+    *,
+    run_dir: Path,
+    turn_decision,
+    contract: ResearchIntentContract,
+    on_task_updated: Callable[[dict[str, Any]], None] | None,
+) -> dict[str, Any]:
+    if (
+        turn_decision.contract_action != "update_contract"
+        or not task_profile_needs_automatic_title(run_dir)
+    ):
+        return {}
+    generated = build_automatic_task_profile(
+        run_id=run_dir.name,
+        suggested_title=turn_decision.suggested_task_title,
+        suggested_summary=turn_decision.suggested_task_summary,
+        user_intent_summary=turn_decision.user_intent_summary,
+        task_profile=turn_decision.task_profile_proposal,
+        task_profile_evidence=turn_decision.task_profile_evidence,
+        contract=contract.model_dump(mode="json"),
+    )
+    if generated is None:
+        return {}
+    updated = apply_automatic_task_profile(
+        run_dir=run_dir,
+        generated_profile=generated,
+        updated_at=datetime.now(timezone.utc),
+    )
+    if updated is None:
+        return {}
+    payload = {
+        "run_id": updated.run_id,
+        "task_title": updated.task_title,
+        "task_summary": updated.task_summary,
+        "task_source": updated.source,
+        "updated_at": updated.updated_at.isoformat() if updated.updated_at is not None else None,
+    }
+    if on_task_updated is not None:
+        try:
+            on_task_updated(payload)
+        except Exception:
+            pass
+    return payload
+
+
+def _emit_progress(callback: Callable[[str], None] | None, message: str) -> None:
+    if callback is None:
+        return
+    try:
+        callback(message)
+    except Exception:
+        pass
 
 
 def _append_source_action_decided_event(run_dir: Path, plan: SourceActionPlan) -> None:

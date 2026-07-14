@@ -48,6 +48,8 @@ class TurnGateDecision(BaseModel):
     ] = "general_research"
     task_profile_evidence: str | None = None
     requires_need_discovery_enrichment: bool = False
+    suggested_task_title: str | None = None
+    suggested_task_summary: str | None = None
     user_intent_summary: str = ""
     evidence_from_current_turn: list[str] = Field(default_factory=list)
     evidence_from_context: list[str] = Field(default_factory=list)
@@ -255,6 +257,9 @@ def _build_turn_gate_messages(
     schema_instruction = (
         "Return exactly one JSON object and no Markdown. It must validate against this JSON Schema:\n"
         + json.dumps(TurnGateDecision.model_json_schema(), ensure_ascii=False, sort_keys=True)
+        + "\nFor a recognizable research topic, suggested_task_title may provide a concise user-facing title "
+        "and suggested_task_summary a one-sentence summary. Ordinary chat must leave both null. "
+        "Do not include a path, run_id, credential, or generic title."
         + "\nValid ordinary-chat example:\n"
         + json.dumps({
             "turn_type": "ordinary_chat",
@@ -266,6 +271,8 @@ def _build_turn_gate_messages(
             "task_profile_proposal": "general_research",
             "task_profile_evidence": None,
             "requires_need_discovery_enrichment": False,
+            "suggested_task_title": None,
+            "suggested_task_summary": None,
             "user_intent_summary": "ordinary conversation",
             "evidence_from_current_turn": [],
             "evidence_from_context": [],
@@ -284,6 +291,8 @@ def _build_turn_gate_messages(
             "task_profile_proposal": "empirical_model_research",
             "task_profile_evidence": "PatchCore",
             "requires_need_discovery_enrichment": False,
+            "suggested_task_title": "PatchCore MVTec AUROC优化",
+            "suggested_task_summary": "以 PatchCore 为基线改进 MVTec AD 的图像级 AUROC。",
             "user_intent_summary": "empirical model improvement",
             "evidence_from_current_turn": ["PatchCore"],
             "evidence_from_context": [],

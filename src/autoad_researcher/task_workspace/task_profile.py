@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from autoad_researcher.core.control_plane import RunMutationLock
 from autoad_researcher.core.run_lifecycle import run_operation_lease
@@ -25,6 +25,7 @@ _TASK_TITLE_MAX_CHARS = 30
 _TASK_SUMMARY_MAX_CHARS = 200
 _SK_SECRET_PATTERN = re.compile(r"sk-[a-zA-Z0-9]{8,}")
 _RUN_ID_PREFIX_PATTERN = re.compile(r"^run_\d{8}_\d{4}", re.IGNORECASE)
+_WINDOWS_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 _TASK_PROFILE_FILENAME = "task_profile.json"
 _TASK_ARCHIVE_FILENAME = "task_archive.json"
 _SLUG_PATTERN = re.compile(r"[^a-z0-9_.-]+")
@@ -39,7 +40,15 @@ class TaskProfile(BaseModel):
     run_id: str = Field(min_length=1)
     task_title: str = Field(min_length=1, max_length=_TASK_TITLE_MAX_CHARS)
     task_summary: str = Field(min_length=1, max_length=_TASK_SUMMARY_MAX_CHARS)
-    source: Literal["llm_first_user_instruction", "manual", "fallback", "ui", "legacy_import"]
+    source: Literal[
+        "llm_first_user_instruction",
+        "router_suggested",
+        "deterministic_projection",
+        "manual",
+        "fallback",
+        "ui",
+        "legacy_import",
+    ]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime | None = None
 
@@ -50,6 +59,8 @@ class TaskProfile(BaseModel):
             raise ValueError("task_title must not contain secret-like text (sk-…)")
         if _RUN_ID_PREFIX_PATTERN.match(v):
             raise ValueError("task_title must not be a run_id")
+        if v.startswith("/") or _WINDOWS_PATH_PATTERN.match(v) or "../" in v or "..\\" in v:
+            raise ValueError("task_title must not contain a path")
         return v
 
     @field_validator("task_summary")
@@ -58,6 +69,12 @@ class TaskProfile(BaseModel):
         if _SK_SECRET_PATTERN.search(v):
             raise ValueError("task_summary must not contain secret-like text (sk-…)")
         return v
+
+    @model_validator(mode="after")
+    def _reject_exact_run_id_in_title(self) -> "TaskProfile":
+        if self.run_id and self.run_id in self.task_title:
+            raise ValueError("task_title must not contain run_id")
+        return self
 
 
 class TaskListItem(BaseModel):
@@ -269,27 +286,75 @@ def rename_task_title(*, run_dir: Path, new_title: str, updated_at: datetime) ->
         return profile
 
 
-def task_profile_needs_generated_title(run_dir: Path) -> bool:
-    """Return whether the persisted UI placeholder is eligible for automatic naming."""
+def task_profile_needs_automatic_title(run_dir: Path) -> bool:
+    """Return whether automatic naming may create or improve the current title."""
     profile, warning = safe_load_task_profile(run_dir)
     return bool(
         warning is None
         and profile is not None
-        and profile.source == "ui"
-        and profile.task_title == "未命名研究任务"
+        and (
+            (profile.source == "ui" and profile.task_title == "未命名研究任务")
+            or profile.source == "deterministic_projection"
+        )
     )
 
 
-def apply_generated_task_profile_if_placeholder(
+def build_automatic_task_profile(
+    *,
+    run_id: str,
+    suggested_title: str | None,
+    suggested_summary: str | None,
+    user_intent_summary: str | None,
+    task_profile: str,
+    task_profile_evidence: str | None,
+    contract: dict[str, Any],
+) -> TaskProfile | None:
+    """Validate a Router title or derive one only from validated contract fields."""
+
+    route_title = (suggested_title or "").strip()
+    route_summary = (suggested_summary or user_intent_summary or "").strip()
+    if route_title and route_title not in {"研究任务", "异常检测研究", "未命名研究任务"}:
+        candidate = _validated_automatic_profile(
+            run_id=run_id,
+            title=route_title,
+            summary=route_summary or f"围绕“{route_title}”开展研究。",
+            source="router_suggested",
+        )
+        if candidate is not None:
+            return candidate
+
+    title = _deterministic_task_title(
+        task_profile=task_profile,
+        task_profile_evidence=task_profile_evidence,
+        contract=contract,
+    )
+    if not title:
+        return None
+    summary = _first_non_empty(
+        contract.get("research_goal"),
+        contract.get("success_criteria"),
+        user_intent_summary,
+        f"围绕“{title}”开展研究。",
+    )
+    return _validated_automatic_profile(
+        run_id=run_id,
+        title=title,
+        summary=summary,
+        source="deterministic_projection",
+    )
+
+
+def apply_automatic_task_profile(
     *,
     run_dir: Path,
     generated_profile: TaskProfile,
     updated_at: datetime,
 ) -> TaskProfile | None:
-    """Persist an LLM-generated profile only while the original UI placeholder remains."""
+    """Apply automatic naming according to the persisted source priority."""
+
     if (
         generated_profile.run_id != run_dir.name
-        or generated_profile.source != "llm_first_user_instruction"
+        or generated_profile.source not in {"router_suggested", "deterministic_projection"}
         or generated_profile.task_title == "未命名研究任务"
     ):
         return None
@@ -299,19 +364,108 @@ def apply_generated_task_profile_if_placeholder(
         if (
             warning is not None
             or existing is None
-            or existing.source != "ui"
-            or existing.task_title != "未命名研究任务"
+            or not _automatic_update_allowed(existing, generated_profile)
         ):
             return None
         profile = existing.model_copy(update={
             "task_title": generated_profile.task_title,
             "task_summary": generated_profile.task_summary,
-            "source": "llm_first_user_instruction",
+            "source": generated_profile.source,
             "updated_at": updated_at,
         })
         profile = TaskProfile.model_validate(profile.model_dump())
         _write_task_profile(run_dir, profile)
         return profile
+
+
+def _automatic_update_allowed(existing: TaskProfile, generated: TaskProfile) -> bool:
+    if existing.source == "ui" and existing.task_title == "未命名研究任务":
+        return True
+    return (
+        existing.source == "deterministic_projection"
+        and generated.source == "router_suggested"
+    )
+
+
+def _validated_automatic_profile(
+    *,
+    run_id: str,
+    title: str,
+    summary: str,
+    source: Literal["router_suggested", "deterministic_projection"],
+) -> TaskProfile | None:
+    try:
+        return TaskProfile(
+            run_id=run_id,
+            task_title=title,
+            task_summary=summary[:_TASK_SUMMARY_MAX_CHARS],
+            source=source,
+        )
+    except Exception:
+        return None
+
+
+def _deterministic_task_title(
+    *,
+    task_profile: str,
+    task_profile_evidence: str | None,
+    contract: dict[str, Any],
+) -> str:
+    baseline = _title_component(contract.get("baseline"))
+    dataset = _dataset_title(_title_component(contract.get("dataset")))
+    research_object = _title_component(contract.get("research_object"))
+    profile_evidence = _title_component(task_profile_evidence)
+    metrics = contract.get("primary_metrics")
+    metric = ""
+    if isinstance(metrics, list) and metrics:
+        metric = _metric_title(str(metrics[0]))
+
+    if task_profile == "empirical_model_research" and baseline:
+        core = " ".join(part for part in (baseline, dataset, metric) if part)
+        return _fit_title(f"{core}优化")
+    if task_profile == "systems_optimization":
+        target = research_object or profile_evidence
+        return _fit_title(f"{target}性能优化") if target else ""
+    if task_profile == "code_diagnosis":
+        target = research_object or profile_evidence
+        return _fit_title(f"{target}问题诊断") if target else ""
+    target = research_object or profile_evidence
+    return _fit_title(f"{target}研究") if target else ""
+
+
+def _metric_title(metric: str) -> str:
+    return {
+        "image_level_auroc": "image AUROC",
+        "pixel_level_auroc": "pixel AUROC",
+        "inference_latency": "推理延迟",
+        "peak_vram": "显存",
+    }.get(metric, "")
+
+
+def _dataset_title(dataset: str) -> str:
+    return {"MVTec AD": "MVTec"}.get(dataset, dataset)
+
+
+def _title_component(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.strip().split())
+    if not text or _SK_SECRET_PATTERN.search(text):
+        return ""
+    if text.startswith("/") or _WINDOWS_PATH_PATTERN.match(text) or "../" in text or "..\\" in text:
+        return ""
+    return text
+
+
+def _fit_title(value: str) -> str:
+    return value[:_TASK_TITLE_MAX_CHARS].strip()
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def list_all_tasks(*, runs_root: Path, include_archived: bool = False) -> list[TaskListItem]:
@@ -396,87 +550,6 @@ def fallback_task_profile(run_id: str) -> TaskProfile:
         task_summary="尚未生成任务摘要。请在研究助手中描述研究目标，系统将自动生成任务名。",
         source="fallback",
     )
-
-
-# ---------------------------------------------------------------------------
-# LLM-based generation
-# ---------------------------------------------------------------------------
-
-
-_GENERATE_SYSTEM_PROMPT = """你是一个任务命名助手。根据用户的研究描述，生成一个简短的任务名和一句话摘要。
-
-要求：
-- task_title: 中文 6-14 字，或英文 3-8 个词
-- 必须具体表达本次研究目标，不能泛泛写成"研究任务""异常检测研究"
-- 不能包含 run_id
-- 不能包含路径
-- 不能包含 API key
-- task_summary: 一句话描述研究目标，不超过 100 字
-
-仅输出 JSON，不要输出解释、markdown 或其他文字。格式：
-{"task_title": "...", "task_summary": "..."}"""
-
-
-def generate_task_profile_from_first_message(
-    run_dir: Path,
-    api_key: str,
-    provider_base_url: str,
-    first_user_message: str,
-    model: str = "deepseek-chat",
-    timeout_s: int = 15,
-) -> TaskProfile:
-    """Call LLM to generate a task profile from the first user message.
-
-    On any failure (network, timeout, malformed JSON, validation error)
-    returns a fallback profile instead of raising.
-    """
-    run_id = run_dir.name
-
-    from autoad_researcher.ui.chat_client import call_research_chat
-
-    result = call_research_chat(
-        api_key,
-        provider_base_url,
-        [
-            {"role": "system", "content": _GENERATE_SYSTEM_PROMPT},
-            {"role": "user", "content": first_user_message},
-        ],
-        model=model,
-        timeout_s=timeout_s,
-        priority="background",
-        response_format_json=True,
-        max_tokens=256,
-        temperature=0.1,
-    )
-    if result.get("error") or not result.get("reply"):
-        return fallback_task_profile(run_id)
-    content = str(result["reply"])
-
-    # Extract JSON block
-    json_match = re.search(r"\{[^{}]*\}", content, re.DOTALL)
-    if not json_match:
-        return fallback_task_profile(run_id)
-
-    try:
-        parsed = json.loads(json_match.group(0))
-    except json.JSONDecodeError:
-        return fallback_task_profile(run_id)
-
-    title = str(parsed.get("task_title", "")).strip()
-    summary = str(parsed.get("task_summary", "")).strip()
-
-    if not title or not summary:
-        return fallback_task_profile(run_id)
-
-    try:
-        return TaskProfile(
-            run_id=run_id,
-            task_title=title,
-            task_summary=summary,
-            source="llm_first_user_instruction",
-        )
-    except Exception:
-        return fallback_task_profile(run_id)
 
 
 # ---------------------------------------------------------------------------

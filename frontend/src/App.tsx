@@ -38,6 +38,7 @@ import {
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
+import { applyAssistantProgress, applyTaskUpdated } from './lib/wsUpdates';
 import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, DraftState, ExperimentControlState } from './lib/types';
 
 interface ArtifactEntry {
@@ -542,6 +543,14 @@ export default function App() {
       || msg.type.startsWith('control_plane.')
     ) {
       refreshSidebar();
+    }
+    if (msg.type === 'task.updated') {
+      setTasks(prev => applyTaskUpdated(prev, msg));
+    }
+    if (msg.type === 'assistant.progress') {
+      const assistantId = msg.message_id;
+      if (!assistantId || completedAssistantIdsRef.current.has(assistantId)) return;
+      setMessages(prev => applyAssistantProgress(prev, msg));
     }
     if (msg.type === 'assistant.delta' && msg.content) {
       const assistantId = msg.message_id;

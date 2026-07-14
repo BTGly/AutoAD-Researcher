@@ -16,11 +16,6 @@ from autoad_researcher.server.models import ChatRequest, ChatResponse
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_lifecycle import active_run_lease
 from autoad_researcher.server.ws_manager import manager
-from autoad_researcher.task_workspace.task_profile import (
-    apply_generated_task_profile_if_placeholder,
-    generate_task_profile_from_first_message,
-    task_profile_needs_generated_title,
-)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -106,23 +101,27 @@ def _single_chat_turn(run_id: str):
 
 async def _chat_send_active(req: ChatRequest, request: Request) -> ChatResponse:
     run_dir = Path(RUNS_ROOT) / req.run_id
-
+    message_id = _resolve_message_id(req.request_id)
+    loop = asyncio.get_running_loop()
+    await manager.broadcast(
+        req.run_id,
+        _assistant_progress_message(message_id, "正在理解你的任务……"),
+    )
     api_key, provider_url, model = _extract_api_headers(request)
     stored_transcript_tail = _load_transcript_tail(run_dir)
     transcript_tail = req.transcript_tail or stored_transcript_tail
-    message_id = _resolve_message_id(req.request_id)
-    loop = asyncio.get_running_loop()
 
     def on_reply_delta(delta: str) -> None:
         if not delta:
             return
-        try:
-            asyncio.run_coroutine_threadsafe(
-                manager.broadcast(req.run_id, _assistant_delta_message(message_id, delta)),
-                loop,
-            )
-        except RuntimeError:
-            return
+        _schedule_broadcast(loop, req.run_id, _assistant_delta_message(message_id, delta))
+
+    def on_progress(message: str) -> None:
+        if message:
+            _schedule_broadcast(loop, req.run_id, _assistant_progress_message(message_id, message))
+
+    def on_task_updated(profile: dict[str, Any]) -> None:
+        _schedule_broadcast(loop, req.run_id, _task_updated_message(profile))
 
     result = await _run_sync_cancellation_safe(
         ResearchOrchestratorV2.handle,
@@ -134,17 +133,11 @@ async def _chat_send_active(req: ChatRequest, request: Request) -> ChatResponse:
         provider_url=provider_url,
         model=model,
         on_reply_delta=on_reply_delta,
+        on_progress=on_progress,
+        on_task_updated=on_task_updated,
     )
     _append_transcript(run_dir, "user", req.user_input)
     _append_transcript(run_dir, "assistant", result.reply)
-    await _maybe_auto_name_task(
-        run_dir=run_dir,
-        user_input=req.user_input,
-        eligible=result.task_naming_eligible,
-        api_key=api_key,
-        provider_url=provider_url,
-        model=model,
-    )
 
     # Broadcast created_sources and created_jobs
     for src in result.created_sources:
@@ -172,39 +165,6 @@ async def _chat_send_active(req: ChatRequest, request: Request) -> ChatResponse:
         reply=result.reply,
         reply_kind=result.reply_kind,
     )
-
-
-async def _maybe_auto_name_task(
-    *,
-    run_dir: Path,
-    user_input: str,
-    eligible: bool,
-    api_key: str,
-    provider_url: str,
-    model: str,
-) -> bool:
-    """Best-effort naming for a contract-bearing turn while preserving manual titles."""
-    if not eligible or not api_key or not task_profile_needs_generated_title(run_dir):
-        return False
-
-    generated = await _run_sync_cancellation_safe(
-        generate_task_profile_from_first_message,
-        run_dir,
-        api_key,
-        provider_url,
-        user_input,
-        model,
-    )
-    try:
-        updated = await _run_sync_cancellation_safe(
-            apply_generated_task_profile_if_placeholder,
-            run_dir=run_dir,
-            generated_profile=generated,
-            updated_at=datetime.now(timezone.utc),
-        )
-    except Exception:
-        return False
-    return updated is not None
 
 
 async def _run_sync_cancellation_safe(func, /, *args, **kwargs):
@@ -267,6 +227,18 @@ def _assistant_delta_message(message_id: str, delta: str) -> dict[str, str]:
     }
 
 
+def _assistant_progress_message(message_id: str, content: str) -> dict[str, str]:
+    return {
+        "type": "assistant.progress",
+        "message_id": message_id,
+        "content": content,
+    }
+
+
+def _task_updated_message(profile: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "task.updated", **profile}
+
+
 def _assistant_done_message(message_id: str, reply_kind: str, content: str) -> dict[str, str]:
     return {
         "type": "assistant.done",
@@ -274,3 +246,14 @@ def _assistant_done_message(message_id: str, reply_kind: str, content: str) -> d
         "reply_kind": reply_kind,
         "content": content,
     }
+
+
+def _schedule_broadcast(
+    loop: asyncio.AbstractEventLoop,
+    run_id: str,
+    message: dict[str, Any],
+) -> None:
+    try:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(run_id, message), loop)
+    except RuntimeError:
+        return

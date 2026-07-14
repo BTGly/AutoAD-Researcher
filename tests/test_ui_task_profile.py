@@ -9,12 +9,13 @@ from pydantic import ValidationError
 
 from autoad_researcher.ui.task_profile import (
     TaskProfile,
+    apply_automatic_task_profile,
     archive_task,
+    build_automatic_task_profile,
     build_run_id_from_optional_name,
     create_task_profile,
     fallback_task_profile,
     format_task_list_label,
-    generate_task_profile_from_first_message,
     get_task_display_info,
     get_task_title,
     load_task_archive_state,
@@ -25,6 +26,7 @@ from autoad_researcher.ui.task_profile import (
     safe_load_task_profile,
     save_task_profile,
     slugify_task_name,
+    task_profile_needs_automatic_title,
     delete_archived_task,
 )
 
@@ -468,119 +470,63 @@ class TestUIHelpers:
 
 
 # ---------------------------------------------------------------------------
-# LLM generation
+# Router and deterministic automatic naming
 # ---------------------------------------------------------------------------
 
 
-class TestGenerateTaskProfile:
-    def test_malformed_json_returns_fallback(self, tmp_path, monkeypatch):
-        """When LLM returns garbage, fallback is returned."""
-        def mock_call(*args, **kwargs):
-            return {"reply": "not valid json at all", "error": ""}
-
-        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
-        run_dir = _tmp_run_dir(tmp_path)
-        profile = generate_task_profile_from_first_message(
-            run_dir=run_dir,
-            api_key="sk-test",
-            provider_base_url="https://api.example.com",
-            first_user_message="我想降低 PatchCore 的显存占用",
+class TestAutomaticTaskProfile:
+    def test_valid_router_suggestion_has_highest_automatic_priority(self):
+        profile = build_automatic_task_profile(
+            run_id="run_20260703_1200_a3b2",
+            suggested_title="PatchCore MVTec AUROC优化",
+            suggested_summary="提升 MVTec AD 的图像级 AUROC。",
+            user_intent_summary="模型实验",
+            task_profile="empirical_model_research",
+            task_profile_evidence="PatchCore",
+            contract={"baseline": "PatchCore", "dataset": "MVTec AD"},
         )
-        assert profile.source == "fallback"
 
-    def test_empty_response_returns_fallback(self, tmp_path, monkeypatch):
-        def mock_call(*args, **kwargs):
-            return {"reply": "{}", "error": ""}
+        assert profile is not None
+        assert profile.source == "router_suggested"
+        assert profile.task_title == "PatchCore MVTec AUROC优化"
 
-        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
-        run_dir = _tmp_run_dir(tmp_path)
-        profile = generate_task_profile_from_first_message(
-            run_dir=run_dir,
-            api_key="sk-test",
-            provider_base_url="https://api.example.com",
-            first_user_message="测试",
+    def test_invalid_router_title_falls_back_to_contract_projection(self):
+        profile = build_automatic_task_profile(
+            run_id="run_20260703_1200_a3b2",
+            suggested_title="/tmp/private/model",
+            suggested_summary="不能采用这个路径标题。",
+            user_intent_summary="模型实验",
+            task_profile="empirical_model_research",
+            task_profile_evidence="PatchCore",
+            contract={
+                "baseline": "PatchCore",
+                "dataset": "MVTec AD",
+                "primary_metrics": ["image_level_auroc"],
+                "research_goal": "提升 image-level AUROC。",
+            },
         )
-        assert profile.source == "fallback"
 
-    def test_network_error_returns_fallback(self, tmp_path, monkeypatch):
-        def mock_call(*args, **kwargs):
-            return {"reply": "", "error": "模型请求超时，请重试。"}
+        assert profile is not None
+        assert profile.source == "deterministic_projection"
+        assert profile.task_title == "PatchCore MVTec image AUROC优化"
 
-        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
-        run_dir = _tmp_run_dir(tmp_path)
-        profile = generate_task_profile_from_first_message(
-            run_dir=run_dir,
-            api_key="sk-test",
-            provider_base_url="https://api.example.com",
-            first_user_message="测试",
+    @pytest.mark.parametrize("title", [
+        "使用 sk-abc123def456 优化",
+        "run_20260703_1200_a3b2",
+        "研究任务",
+    ])
+    def test_unsafe_or_generic_router_title_does_not_bypass_validation(self, title):
+        profile = build_automatic_task_profile(
+            run_id="run_20260703_1200_a3b2",
+            suggested_title=title,
+            suggested_summary="test",
+            user_intent_summary=None,
+            task_profile="general_research",
+            task_profile_evidence=None,
+            contract={},
         )
-        assert profile.source == "fallback"
 
-    def test_http_error_returns_fallback(self, tmp_path, monkeypatch):
-        def mock_call(*args, **kwargs):
-            return {"reply": "", "error": "模型服务返回 HTTP 500。"}
-
-        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
-        run_dir = _tmp_run_dir(tmp_path)
-        profile = generate_task_profile_from_first_message(
-            run_dir=run_dir,
-            api_key="sk-test",
-            provider_base_url="https://api.example.com",
-            first_user_message="测试",
-        )
-        assert profile.source == "fallback"
-
-    def test_valid_json_parsed(self, tmp_path, monkeypatch):
-        def mock_call(*args, **kwargs):
-            return {
-                "reply": '{"task_title": "降低 PatchCore 显存", "task_summary": "优化显存同时保持 AUROC。","extra_junk": "ignored"}',
-                "error": "",
-            }
-
-        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
-        run_dir = _tmp_run_dir(tmp_path)
-        profile = generate_task_profile_from_first_message(
-            run_dir=run_dir,
-            api_key="sk-test",
-            provider_base_url="https://api.example.com",
-            first_user_message="我想降低 PatchCore 的显存占用",
-        )
-        assert profile.source == "llm_first_user_instruction"
-        assert profile.task_title == "降低 PatchCore 显存"
-
-    def test_llm_sk_secret_rejected(self, tmp_path, monkeypatch):
-        def mock_call(*args, **kwargs):
-            return {
-                "reply": '{"task_title": "使用 sk-abc123def456 优化", "task_summary": "test"}',
-                "error": "",
-            }
-
-        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
-        run_dir = _tmp_run_dir(tmp_path)
-        profile = generate_task_profile_from_first_message(
-            run_dir=run_dir,
-            api_key="sk-test",
-            provider_base_url="https://api.example.com",
-            first_user_message="测试",
-        )
-        assert profile.source == "fallback"
-
-    def test_llm_run_id_in_title_rejected(self, tmp_path, monkeypatch):
-        def mock_call(*args, **kwargs):
-            return {
-                "reply": '{"task_title": "run_20260703_1200_a3b2", "task_summary": "test"}',
-                "error": "",
-            }
-
-        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
-        run_dir = _tmp_run_dir(tmp_path)
-        profile = generate_task_profile_from_first_message(
-            run_dir=run_dir,
-            api_key="sk-test",
-            provider_base_url="https://api.example.com",
-            first_user_message="测试",
-        )
-        assert profile.source == "fallback"
+        assert profile is None
 
 
 # ---------------------------------------------------------------------------
@@ -615,12 +561,7 @@ def test_task_profile_implementation_moved_out_of_ui_package():
     assert legacy_profile.create_task_profile is task_workspace_profile.create_task_profile
 
 
-def test_generated_profile_replaces_only_persisted_ui_placeholder(tmp_path: Path):
-    from autoad_researcher.task_workspace.task_profile import (
-        apply_generated_task_profile_if_placeholder,
-        task_profile_needs_generated_title,
-    )
-
+def test_router_profile_replaces_ui_placeholder_and_persists_source(tmp_path: Path):
     run_dir = _tmp_run_dir(tmp_path, "run_auto_name")
     created_at = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
     updated_at = datetime(2026, 7, 13, 10, 1, tzinfo=timezone.utc)
@@ -634,11 +575,11 @@ def test_generated_profile_replaces_only_persisted_ui_placeholder(tmp_path: Path
         run_id=run_dir.name,
         task_title="PatchCore 指标优化",
         task_summary="在 MVTec AD 上提升 PatchCore 的 image-level AUROC。",
-        source="llm_first_user_instruction",
+        source="router_suggested",
     )
 
-    assert task_profile_needs_generated_title(run_dir) is True
-    updated = apply_generated_task_profile_if_placeholder(
+    assert task_profile_needs_automatic_title(run_dir) is True
+    updated = apply_automatic_task_profile(
         run_dir=run_dir,
         generated_profile=generated,
         updated_at=updated_at,
@@ -647,18 +588,13 @@ def test_generated_profile_replaces_only_persisted_ui_placeholder(tmp_path: Path
     assert updated is not None
     assert updated.task_title == "PatchCore 指标优化"
     assert updated.task_summary == generated.task_summary
-    assert updated.source == "llm_first_user_instruction"
+    assert updated.source == "router_suggested"
     assert updated.created_at == created_at
     assert updated.updated_at == updated_at
-    assert task_profile_needs_generated_title(run_dir) is False
+    assert task_profile_needs_automatic_title(run_dir) is False
 
 
-def test_generated_profile_cannot_overwrite_manual_title(tmp_path: Path):
-    from autoad_researcher.task_workspace.task_profile import (
-        apply_generated_task_profile_if_placeholder,
-        task_profile_needs_generated_title,
-    )
-
+def test_automatic_profile_cannot_overwrite_manual_title(tmp_path: Path):
     run_dir = _tmp_run_dir(tmp_path, "run_manual_name")
     create_task_profile(
         run_dir=run_dir,
@@ -675,13 +611,53 @@ def test_generated_profile_cannot_overwrite_manual_title(tmp_path: Path):
         run_id=run_dir.name,
         task_title="模型生成名称",
         task_summary="不应覆盖手动名称。",
-        source="llm_first_user_instruction",
+        source="router_suggested",
     )
 
-    assert task_profile_needs_generated_title(run_dir) is False
-    assert apply_generated_task_profile_if_placeholder(
+    assert task_profile_needs_automatic_title(run_dir) is False
+    assert apply_automatic_task_profile(
         run_dir=run_dir,
         generated_profile=generated,
         updated_at=datetime(2026, 7, 13, 10, 2, tzinfo=timezone.utc),
     ) is None
     assert load_task_profile(run_dir) == manual
+
+
+def test_router_profile_can_upgrade_deterministic_but_not_reverse(tmp_path: Path):
+    run_dir = _tmp_run_dir(tmp_path, "run_priority")
+    created_at = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    create_task_profile(
+        run_dir=run_dir,
+        run_id=run_dir.name,
+        task_title=None,
+        created_at=created_at,
+    )
+    deterministic = TaskProfile(
+        run_id=run_dir.name,
+        task_title="PatchCore性能优化",
+        task_summary="确定性投影。",
+        source="deterministic_projection",
+    )
+    assert apply_automatic_task_profile(
+        run_dir=run_dir,
+        generated_profile=deterministic,
+        updated_at=created_at,
+    ) is not None
+    router = TaskProfile(
+        run_id=run_dir.name,
+        task_title="PatchCore MVTec AUROC优化",
+        task_summary="Router 建议。",
+        source="router_suggested",
+    )
+    upgraded = apply_automatic_task_profile(
+        run_dir=run_dir,
+        generated_profile=router,
+        updated_at=datetime(2026, 7, 13, 10, 1, tzinfo=timezone.utc),
+    )
+    assert upgraded is not None
+    assert upgraded.source == "router_suggested"
+    assert apply_automatic_task_profile(
+        run_dir=run_dir,
+        generated_profile=deterministic,
+        updated_at=datetime(2026, 7, 13, 10, 2, tzinfo=timezone.utc),
+    ) is None

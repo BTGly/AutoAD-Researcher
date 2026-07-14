@@ -7,9 +7,11 @@ from fastapi import HTTPException
 
 from autoad_researcher.server.routes.chat import (
     _append_transcript,
+    _assistant_progress_message,
     _load_transcript_tail,
     _run_sync_cancellation_safe,
     _single_chat_turn,
+    _task_updated_message,
 )
 
 
@@ -76,58 +78,118 @@ def test_cancelled_http_task_keeps_same_run_guard_until_worker_thread_exits():
     asyncio.run(scenario())
 
 
-def test_auto_name_task_uses_selected_model_and_persists_title(tmp_path: Path, monkeypatch):
-    import asyncio
+def test_progress_and_task_updated_message_shapes_are_user_facing():
+    assert _assistant_progress_message("assistant-1", "正在理解你的任务……") == {
+        "type": "assistant.progress",
+        "message_id": "assistant-1",
+        "content": "正在理解你的任务……",
+    }
 
-    from autoad_researcher.server.routes import chat as chat_route
-    from autoad_researcher.task_workspace.task_profile import (
-        TaskProfile,
-        create_task_profile,
-        load_task_profile,
-    )
 
-    run_dir = tmp_path / "run_auto_name"
+def test_validated_route_updates_placeholder_without_a_naming_model_call(tmp_path: Path):
+    from datetime import datetime, timezone
+
+    from autoad_researcher.assistant.v2.intent_contract import ResearchIntentContract
+    from autoad_researcher.assistant.v2.orchestrator import _maybe_update_task_profile
+    from autoad_researcher.assistant.v2.turn_gate import TurnGateDecision
+    from autoad_researcher.task_workspace.task_profile import create_task_profile, load_task_profile
+
+    run_dir = tmp_path / "run_route_name"
+    run_dir.mkdir()
     create_task_profile(
         run_dir=run_dir,
         run_id=run_dir.name,
         task_title=None,
-        created_at=chat_route.datetime(2026, 7, 13, tzinfo=chat_route.timezone.utc),
+        created_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
     )
-    captured: dict[str, str] = {}
+    decision = TurnGateDecision(
+        turn_type="contract_update",
+        contract_action="update_contract",
+        contract_update_allowed=True,
+        need_discovery_allowed=True,
+        save_draft_allowed=True,
+        task_profile_proposal="empirical_model_research",
+        task_profile_evidence="PatchCore",
+        suggested_task_title="PatchCore MVTec AUROC优化",
+        suggested_task_summary="提升 MVTec AD 的图像级 AUROC。",
+    )
+    callback_payloads: list[dict] = []
 
-    def fake_generate(run_dir_arg, api_key, provider_url, user_input, model):
-        captured.update({
-            "run_id": run_dir_arg.name,
-            "api_key": api_key,
-            "provider_url": provider_url,
-            "user_input": user_input,
-            "model": model,
-        })
-        return TaskProfile(
-            run_id=run_dir_arg.name,
-            task_title="PatchCore 指标优化",
-            task_summary="在 MVTec AD 上提升 image-level AUROC。",
-            source="llm_first_user_instruction",
-        )
-
-    monkeypatch.setattr(chat_route, "generate_task_profile_from_first_message", fake_generate)
-    applied = asyncio.run(chat_route._maybe_auto_name_task(
+    payload = _maybe_update_task_profile(
         run_dir=run_dir,
-        user_input="我想提升 PatchCore 的 image-level AUROC",
-        eligible=True,
-        api_key="sk-test",
-        provider_url="https://provider.test",
-        model="selected-model",
-    ))
+        turn_decision=decision,
+        contract=ResearchIntentContract(
+            run_id=run_dir.name,
+            research_goal="提升图像级 AUROC",
+            baseline="PatchCore",
+            dataset="MVTec AD",
+            primary_metrics=["image_level_auroc"],
+        ),
+        on_task_updated=callback_payloads.append,
+    )
 
-    assert applied is True
-    assert captured["model"] == "selected-model"
-    assert captured["user_input"] == "我想提升 PatchCore 的 image-level AUROC"
-    assert load_task_profile(run_dir).task_title == "PatchCore 指标优化"
+    assert payload["task_title"] == "PatchCore MVTec AUROC优化"
+    assert payload["task_source"] == "router_suggested"
+    assert callback_payloads == [payload]
+    persisted = load_task_profile(run_dir)
+    assert persisted is not None
+    assert persisted.run_id == run_dir.name
+    assert persisted.task_title == payload["task_title"]
+
+
+def test_ordinary_chat_does_not_name_placeholder(tmp_path: Path):
+    from datetime import datetime, timezone
+
+    from autoad_researcher.assistant.v2.intent_contract import ResearchIntentContract
+    from autoad_researcher.assistant.v2.orchestrator import _maybe_update_task_profile
+    from autoad_researcher.assistant.v2.turn_gate import TurnGateDecision
+    from autoad_researcher.task_workspace.task_profile import create_task_profile, load_task_profile
+
+    run_dir = tmp_path / "run_chat_name"
+    run_dir.mkdir()
+    create_task_profile(
+        run_dir=run_dir,
+        run_id=run_dir.name,
+        task_title=None,
+        created_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+    )
+    payload = _maybe_update_task_profile(
+        run_dir=run_dir,
+        turn_decision=TurnGateDecision(
+            turn_type="ordinary_chat",
+            contract_action="answer_without_contract_update",
+            contract_update_allowed=False,
+            need_discovery_allowed=False,
+            save_draft_allowed=False,
+            suggested_task_title="不应采用的闲聊标题",
+        ),
+        contract=ResearchIntentContract(run_id=run_dir.name),
+        on_task_updated=None,
+    )
+
+    assert payload == {}
+    persisted = load_task_profile(run_dir)
+    assert persisted is not None
+    assert persisted.task_title == "未命名研究任务"
+    assert _task_updated_message({
+        "run_id": "run_one",
+        "task_title": "PatchCore MVTec AUROC优化",
+        "task_summary": "提升 image AUROC。",
+        "task_source": "router_suggested",
+        "updated_at": "2026-07-14T00:00:00+00:00",
+    }) == {
+        "type": "task.updated",
+        "run_id": "run_one",
+        "task_title": "PatchCore MVTec AUROC优化",
+        "task_summary": "提升 image AUROC。",
+        "task_source": "router_suggested",
+        "updated_at": "2026-07-14T00:00:00+00:00",
+    }
 
 
 def test_chat_route_forwards_selected_model_to_orchestrator(tmp_path: Path, monkeypatch):
     import asyncio
+    import time
 
     from starlette.requests import Request
 
@@ -142,8 +204,12 @@ def test_chat_route_forwards_selected_model_to_orchestrator(tmp_path: Path, monk
         captured.update(kwargs)
         return OrchestratorResult(reply="ok", reply_kind="answer")
 
-    async def fake_broadcast(run_id: str, message: dict[str, str]):
-        return None
+    broadcasts: list[dict[str, object]] = []
+    broadcast_times: list[float] = []
+
+    async def fake_broadcast(run_id: str, message: dict[str, object]):
+        broadcasts.append(message)
+        broadcast_times.append(time.perf_counter())
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "runs" / "run_model_forward").mkdir(parents=True)
@@ -161,6 +227,7 @@ def test_chat_route_forwards_selected_model_to_orchestrator(tmp_path: Path, monk
         "query_string": b"",
     })
 
+    started = time.perf_counter()
     response = asyncio.run(chat_route.chat_send(
         ChatRequest(user_input="你好", run_id="run_model_forward"),
         request,
@@ -169,3 +236,16 @@ def test_chat_route_forwards_selected_model_to_orchestrator(tmp_path: Path, monk
     assert response.reply == "ok"
     assert captured["model"] == "selected-model"
     assert captured["provider_url"] == "https://provider.test"
+    assert callable(captured["on_progress"])
+    assert callable(captured["on_task_updated"])
+    assert broadcasts[0] == {
+        "type": "assistant.progress",
+        "message_id": broadcasts[0]["message_id"],
+        "content": "正在理解你的任务……",
+    }
+    assert broadcast_times[0] - started < 0.3
+    transcript = _load_transcript_tail(tmp_path / "runs" / "run_model_forward")
+    assert transcript == [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "ok"},
+    ]

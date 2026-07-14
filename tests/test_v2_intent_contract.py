@@ -2061,7 +2061,6 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
     persisted = load_contract_draft(run_dir)
     draft_state = load_research_draft_state(run_dir)
     assert result.reply_kind == "intent_contract_confirmation"
-    assert result.task_naming_eligible is True
     assert selected_models == ["selected-model", "selected-model"]
     assert persisted is not None
     assert persisted.ready_for_plan is True

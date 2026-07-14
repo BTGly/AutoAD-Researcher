@@ -156,6 +156,11 @@ export interface WSMessage {
   delay?: number;
   confirmation_id?: string;
   decision?: 'approved' | 'rejected';
+  run_id?: string;
+  task_title?: string;
+  task_summary?: string;
+  task_source?: string;
+  updated_at?: string | null;
 }
 
 export interface ExperimentConfig {
