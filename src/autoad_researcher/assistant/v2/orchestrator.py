@@ -13,6 +13,9 @@ from typing import Any
 
 from autoad_researcher.assistant.v2.source_action_planner import SourceActionPlan, plan_source_actions
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
+    ConfirmationConflict,
+    apply_confirmation_action_proposal,
+    load_active_contract_confirmation,
     load_pending_contract_confirmation,
     recover_contract_confirmation,
     request_contract_confirmation,
@@ -26,6 +29,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     ResearchIntentContract,
     build_contract_from_context,
     format_contract_for_user,
+    load_confirmed_contract,
     load_contract_draft,
     merge_contract_draft,
     save_contract_draft,
@@ -137,6 +141,105 @@ class ResearchOrchestratorV2:
         )
         _append_turn_gate_decided_event(run_dir, turn_decision)
         ctx["turn_gate_decision"] = turn_decision.model_dump(mode="json")
+
+        confirmed_contract = load_confirmed_contract(run_dir)
+        if confirmed_contract is not None and (
+            turn_decision.contract_action == "update_contract"
+            or turn_decision.confirmation_action_proposal != "none"
+        ):
+            return OrchestratorResult(
+                reply=(
+                    "当前任务的研究合同已经确认，不能在同一任务中覆盖。"
+                    "如果要切换研究方向，请使用页面顶部的“新建任务”创建新任务；旧合同和实验准备状态会继续保留。"
+                ),
+                reply_kind="confirmed_contract_immutable",
+                created_sources=created_sources,
+                created_jobs=created_jobs,
+                evidence_used=ctx.get("usable_evidence", []),
+                answerability=ctx.get("answerability", {}),
+                next_actions=[],
+                intent_contract=confirmed_contract.model_dump(mode="json"),
+                intent_contract_confirmed=True,
+            )
+
+        active_confirmation = load_active_contract_confirmation(run_dir)
+        if active_confirmation is not None and turn_decision.confirmation_action_proposal != "none":
+            evidence_quote = _current_turn_evidence_quote(
+                user_input,
+                turn_decision.evidence_from_current_turn,
+            )
+            try:
+                confirmation_state = apply_confirmation_action_proposal(
+                    run_dir,
+                    action=turn_decision.confirmation_action_proposal,
+                    confirmation_id=str(active_confirmation["confirmation_id"]),
+                    draft_sha256=str(active_confirmation["draft_hash"]),
+                    user_text=user_input,
+                    evidence_quote=evidence_quote,
+                )
+            except ConfirmationConflict as exc:
+                ctx["confirmation_action_error"] = exc.detail()
+                contract = existing_draft
+                if contract is not None:
+                    ctx["research_intent_contract"] = contract.model_dump(mode="json")
+                reply_kind, reply = plan_reply(
+                    ctx,
+                    user_input,
+                    api_key=api_key,
+                    provider_url=provider_url,
+                    model=model,
+                    on_delta=on_reply_delta,
+                    run_dir=run_dir,
+                )
+                return OrchestratorResult(
+                    reply=reply,
+                    reply_kind=reply_kind,
+                    evidence_used=ctx.get("usable_evidence", []),
+                    answerability=ctx.get("answerability", {}),
+                    intent_contract=contract.model_dump(mode="json") if contract is not None else {},
+                )
+            else:
+                ctx["contract_confirmation_state"] = confirmation_state
+                if turn_decision.confirmation_action_proposal == "suspend":
+                    contract = existing_draft
+                    if contract is not None:
+                        ctx["research_intent_contract"] = contract.model_dump(mode="json")
+                    reply_kind, reply = plan_reply(
+                        ctx,
+                        user_input,
+                        api_key=api_key,
+                        provider_url=provider_url,
+                        model=model,
+                        on_delta=on_reply_delta,
+                        run_dir=run_dir,
+                    )
+                    return OrchestratorResult(
+                        reply=reply,
+                        reply_kind=reply_kind,
+                        evidence_used=ctx.get("usable_evidence", []),
+                        answerability=ctx.get("answerability", {}),
+                        intent_contract=contract.model_dump(mode="json") if contract is not None else {},
+                    )
+                if turn_decision.confirmation_action_proposal == "resume":
+                    contract = existing_draft
+                    if contract is not None and confirmation_state["status"] == "pending":
+                        return OrchestratorResult(
+                            reply=format_contract_for_user(contract),
+                            reply_kind="intent_contract_confirmation",
+                            evidence_used=ctx.get("usable_evidence", []),
+                            answerability=ctx.get("answerability", {}),
+                            intent_contract=contract.model_dump(mode="json"),
+                        )
+                elif turn_decision.confirmation_action_proposal == "supersede":
+                    existing_draft = None
+                    ctx.pop("research_intent_contract", None)
+                    if not turn_decision.contract_update_allowed:
+                        return OrchestratorResult(
+                            reply="已停止旧草案的确认，旧记录仍会保留。要开始新方向时，请直接说明新的研究目标。",
+                            reply_kind="intent_contract_superseded",
+                            evidence_used=ctx.get("usable_evidence", []),
+                            answerability=ctx.get("answerability", {}),
+                        )
 
         if created_sources or created_jobs:
             if not turn_decision.contract_update_allowed or not turn_decision.need_discovery_allowed:
@@ -262,8 +365,20 @@ class ResearchOrchestratorV2:
         if created_sources or created_jobs:
             reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
         elif contract.ready_for_plan:
-            request_contract_confirmation(run_dir, contract)
-            reply_kind, reply = "intent_contract_confirmation", format_contract_for_user(contract)
+            confirmation_state = request_contract_confirmation(run_dir, contract)
+            if confirmation_state["status"] == "pending":
+                reply_kind, reply = "intent_contract_confirmation", format_contract_for_user(contract)
+            else:
+                ctx["contract_confirmation_state"] = confirmation_state
+                reply_kind, reply = plan_reply(
+                    ctx,
+                    user_input,
+                    api_key=api_key,
+                    provider_url=provider_url,
+                    model=model,
+                    on_delta=on_reply_delta,
+                    run_dir=run_dir,
+                )
         else:
             reply_kind, reply = plan_reply(
                 ctx,
@@ -307,6 +422,7 @@ def _suggest_next_actions(ctx: dict, reply_kind: str) -> list[str]:
 def _has_contract_content(contract: ResearchIntentContract) -> bool:
     return any((
         contract.research_goal,
+        contract.research_object,
         contract.baseline,
         contract.dataset,
         contract.primary_metrics,
@@ -333,8 +449,17 @@ def _append_turn_gate_decided_event(run_dir: Path, decision) -> None:
         "contract_update_allowed": decision.contract_update_allowed,
         "need_discovery_allowed": decision.need_discovery_allowed,
         "save_draft_allowed": decision.save_draft_allowed,
+        "confirmation_action_proposal": decision.confirmation_action_proposal,
         "confidence": decision.confidence,
     })
+
+
+def _current_turn_evidence_quote(user_input: str, candidates: list[str]) -> str | None:
+    for candidate in candidates:
+        quote = str(candidate).strip()
+        if quote and quote in user_input:
+            return quote
+    return None
 
 
 def _unique_strings(values: list[str | None]) -> list[str]:

@@ -202,8 +202,8 @@ def test_v2_prompt_profiles_match_reviewed_content_hashes():
     registry = get_default_prompt_registry()
     expected = {
         "assistant.v2.source_action_plan.v1": "12672a757d47ef7c181d3e9b87c1b6b75a86ed3be85f57f2b783f7824b4db763",
-        "assistant.v2.turn_gate.v1": "dcf065b1be45747330a72d6517587d846b7cd17d9f60c7b99e1e67ad0902c79d",
-        "assistant.v2.need_discovery.v1": "46648a0c0a7fdfcaada2f0f76d687ca36ef72ae4db67e7950e37a7415c3d6cf4",
+        "assistant.v2.turn_gate.v1": "fb37980b53ae4164fc3ff5e1c81b8dc51fc41ac87eb969df4039bbb13a2d376e",
+        "assistant.v2.need_discovery.v1": "583a477ce4b6ae5449ed76f2ab1f4a46d34870d7500e83efe855142369073158",
         "assistant.v2.reply_plan.v1": "ec993d78d020dd0aab7e8ae2dba813f278c4b211ea38dfadaf60a1faf6619570",
     }
 

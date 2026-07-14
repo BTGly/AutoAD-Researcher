@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
+    ConfirmationConflict,
     decide_contract_confirmation as decide_contract_confirmation_saga,
 )
 from autoad_researcher.assistant.v2.draft_service import load_research_draft_state
@@ -57,8 +58,13 @@ async def decide_contract_confirmation(run_id: str, request: ContractConfirmatio
             confirmation_id=request.confirmation_id,
             decision=request.decision,
         )
+    except ConfirmationConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "confirmation_state_conflict", "message": str(exc)},
+        ) from exc
     result["message"] = (
         "研究任务合同已确认。" if request.decision == "approved" else "已返回继续修改研究任务合同。"
     )

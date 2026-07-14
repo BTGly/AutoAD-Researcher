@@ -32,6 +32,22 @@ from autoad_researcher.core.control_plane.unit_of_work import ControlPlaneUnitOf
 
 
 PROJECTION_FILE = "contract_confirmation.json"
+ConfirmationAction = Literal["none", "suspend", "resume", "supersede"]
+ConfirmationConflictCode = Literal[
+    "confirmation_stale",
+    "confirmation_state_conflict",
+    "confirmed_contract_immutable",
+]
+
+
+class ConfirmationConflict(ValueError):
+    def __init__(self, code: ConfirmationConflictCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+    def detail(self) -> dict[str, str]:
+        return {"code": self.code, "message": self.message}
 
 
 def _utcnow() -> datetime:
@@ -43,16 +59,34 @@ def request_contract_confirmation(
     contract: ResearchIntentContract,
 ) -> dict[str, Any]:
     current = _utcnow()
+    superseded_projection: ContractConfirmationProjection | None = None
     with ControlPlaneUnitOfWork(run_dir) as uow:
         draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
         draft_hash = confirmation_draft_sha256(draft)
         if draft_hash != confirmation_draft_sha256(contract):
-            raise ValueError("contract confirmation input does not match durable draft")
+            raise ConfirmationConflict(
+                "confirmation_stale",
+                "contract confirmation input does not match durable draft",
+            )
         projection = _recover_projection_unlocked(run_dir, uow, now=current)
         if projection is not None and projection.status == "confirmed":
-            raise ValueError("run already has an immutable confirmed contract")
-        if projection is not None and projection.status == "pending" and projection.draft_sha256 == draft_hash:
-            return _pending_state(projection, draft)
+            raise ConfirmationConflict(
+                "confirmed_contract_immutable",
+                "run already has an immutable confirmed contract",
+            )
+        if (
+            projection is not None
+            and projection.status in {"pending", "needs_clarification"}
+            and projection.draft_sha256 == draft_hash
+        ):
+            return _confirmation_state(projection, draft)
+        if projection is not None and projection.status in {"pending", "needs_clarification"}:
+            superseded_projection = projection.model_copy(update={
+                "status": "superseded",
+                "resolved_at": current,
+                "lifecycle_revision": projection.lifecycle_revision + 1,
+            })
+            _write_projection_unlocked(run_dir, superseded_projection)
         projection = ContractConfirmationProjection(
             confirmation_id=f"contract_confirmation_{uuid4().hex}",
             draft_sha256=draft_hash,
@@ -61,6 +95,13 @@ def request_contract_confirmation(
         )
         _write_projection_unlocked(run_dir, projection)
 
+    if superseded_projection is not None:
+        _append_confirmation_lifecycle_event(
+            run_dir,
+            "contract.confirmation.superseded",
+            superseded_projection,
+            reason="draft_hash_changed",
+        )
     try:
         ControlPlaneEventStore(run_dir).append_once(
             "contract.confirmation.requested",
@@ -78,20 +119,105 @@ def request_contract_confirmation(
         )
     except (ControlPlaneError, OSError):
         projection = _mark_audit_repair_required(run_dir, projection.confirmation_id)
-    return _pending_state(projection, draft)
+    return _confirmation_state(projection, draft)
 
 
 def load_pending_contract_confirmation(run_dir: Path) -> dict[str, Any] | None:
+    state = load_active_contract_confirmation(run_dir)
+    if state is None or state["status"] != "pending":
+        return None
+    return state
+
+
+def load_active_contract_confirmation(run_dir: Path) -> dict[str, Any] | None:
     if not run_dir.exists():
         return None
     with ControlPlaneUnitOfWork(run_dir) as uow:
         projection = _recover_projection_unlocked(run_dir, uow, now=_utcnow())
-        if projection is None or projection.status != "pending":
+        if projection is None or projection.status not in {"pending", "needs_clarification"}:
             return None
         draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
         if confirmation_draft_sha256(draft) != projection.draft_sha256:
             return None
-        return _pending_state(projection, draft)
+        return _confirmation_state(projection, draft)
+
+
+def apply_confirmation_action_proposal(
+    run_dir: Path,
+    *,
+    action: ConfirmationAction,
+    confirmation_id: str,
+    draft_sha256: str,
+    user_text: str,
+    evidence_quote: str | None,
+) -> dict[str, Any]:
+    """Apply a model proposal only after deterministic state/evidence checks."""
+
+    if action == "none":
+        state = load_active_contract_confirmation(run_dir)
+        if state is None:
+            raise ConfirmationConflict("confirmation_state_conflict", "no active confirmation")
+        return state
+    _validate_action_evidence(user_text, evidence_quote)
+    current = _utcnow()
+    event_type: str | None = None
+    with ControlPlaneUnitOfWork(run_dir) as uow:
+        projection = _recover_projection_unlocked(run_dir, uow, now=current)
+        if projection is None:
+            raise ConfirmationConflict("confirmation_state_conflict", "no active confirmation")
+        if projection.confirmation_id != confirmation_id or projection.draft_sha256 != draft_sha256:
+            raise ConfirmationConflict("confirmation_stale", "contract confirmation is stale")
+        if projection.status == "confirmed":
+            raise ConfirmationConflict(
+                "confirmed_contract_immutable",
+                "confirmed contract cannot be suspended, resumed, or superseded",
+            )
+        draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
+        if confirmation_draft_sha256(draft) != projection.draft_sha256:
+            raise ConfirmationConflict("confirmation_stale", "contract confirmation draft hash is stale")
+
+        if action == "suspend":
+            if projection.status == "needs_clarification":
+                return _confirmation_state(projection, draft)
+            if projection.status != "pending":
+                raise ConfirmationConflict("confirmation_state_conflict", "only a pending confirmation can be suspended")
+            projection = projection.model_copy(update={
+                "status": "needs_clarification",
+                "lifecycle_revision": projection.lifecycle_revision + 1,
+            })
+            event_type = "contract.confirmation.suspended"
+        elif action == "resume":
+            if projection.status == "pending":
+                return _confirmation_state(projection, draft)
+            if projection.status != "needs_clarification":
+                raise ConfirmationConflict("confirmation_state_conflict", "only a suspended confirmation can be resumed")
+            projection = projection.model_copy(update={
+                "status": "pending",
+                "lifecycle_revision": projection.lifecycle_revision + 1,
+            })
+            event_type = "contract.confirmation.resumed"
+        else:
+            if projection.status == "superseded":
+                return _confirmation_state(projection, draft)
+            if projection.status not in {"pending", "needs_clarification"}:
+                raise ConfirmationConflict("confirmation_state_conflict", "confirmation cannot be superseded from its current state")
+            projection = projection.model_copy(update={
+                "status": "superseded",
+                "resolved_at": current,
+                "lifecycle_revision": projection.lifecycle_revision + 1,
+            })
+            event_type = "contract.confirmation.superseded"
+        _write_projection_unlocked(run_dir, projection)
+
+    if event_type is not None:
+        _append_confirmation_lifecycle_event(
+            run_dir,
+            event_type,
+            projection,
+            reason="user_evidence",
+            evidence_quote=evidence_quote,
+        )
+    return _confirmation_state(projection, draft)
 
 
 def decide_contract_confirmation(
@@ -104,13 +230,21 @@ def decide_contract_confirmation(
     with ControlPlaneUnitOfWork(run_dir) as uow:
         projection = _recover_projection_unlocked(run_dir, uow, now=current)
         if projection is None:
-            raise ValueError("no pending contract confirmation")
+            raise ConfirmationConflict("confirmation_state_conflict", "no pending contract confirmation")
         if projection.confirmation_id != confirmation_id:
-            raise ValueError("contract confirmation is stale")
+            raise ConfirmationConflict("confirmation_stale", "contract confirmation is stale")
         if projection.status != "pending":
+            if projection.status not in {"confirmed", "rejected"}:
+                raise ConfirmationConflict(
+                    "confirmation_state_conflict",
+                    "contract confirmation is not actionable in its current state",
+                )
             expected = "approved" if projection.status == "confirmed" else "rejected"
             if decision != expected:
-                raise ValueError("contract confirmation decision conflicts with persisted result")
+                raise ConfirmationConflict(
+                    "confirmation_state_conflict",
+                    "contract confirmation decision conflicts with persisted result",
+                )
             return _resolved_state(projection)
 
         contract_hash: str | None = None
@@ -118,14 +252,20 @@ def decide_contract_confirmation(
             draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
             draft_hash = confirmation_draft_sha256(draft)
             if draft_hash != projection.draft_sha256:
-                raise ValueError("contract confirmation draft hash is stale")
+                raise ConfirmationConflict("confirmation_stale", "contract confirmation draft hash is stale")
             missing = missing_contract_planning_fields(draft)
             if missing:
-                raise ValueError(f"contract draft is not ready for confirmation: {', '.join(missing)}")
+                raise ConfirmationConflict(
+                    "confirmation_state_conflict",
+                    f"contract draft is not ready for confirmation: {', '.join(missing)}",
+                )
             contract_hash = confirmed_contract_sha256(draft)
             existing = _load_contract_file_optional_strict(run_dir / CONTRACT_FILE)
             if existing is not None and confirmed_contract_sha256(existing) != contract_hash:
-                raise CorruptAuthoritativeStore("one run cannot replace its confirmed contract")
+                raise ConfirmationConflict(
+                    "confirmed_contract_immutable",
+                    "one run cannot replace its confirmed contract",
+                )
             if existing is None:
                 atomic_write_json(run_dir / CONTRACT_FILE, draft.model_dump(mode="json"))
             bridge_error: str | None = None
@@ -308,20 +448,60 @@ def _mark_audit_repair_required(
         return projection
 
 
-def _pending_state(
+def _confirmation_state(
     projection: ContractConfirmationProjection,
     contract: ResearchIntentContract,
 ) -> dict[str, Any]:
     return {
         "confirmation_id": projection.confirmation_id,
         "draft_hash": projection.draft_sha256,
-        "status": "pending",
+        "status": projection.status,
         "requested_at": projection.requested_at.isoformat(),
+        "resolved_at": projection.resolved_at.isoformat() if projection.resolved_at else None,
         "repair_required": projection.audit_repair_required,
+        "lifecycle_revision": projection.lifecycle_revision,
         "semantic_projection": build_confirmation_semantic_projection(contract).model_dump(
             mode="json"
         ),
     }
+
+
+def _validate_action_evidence(user_text: str, evidence_quote: str | None) -> None:
+    quote = (evidence_quote or "").strip()
+    text = user_text.strip()
+    if len(quote) < 2 or quote not in text:
+        raise ConfirmationConflict(
+            "confirmation_state_conflict",
+            "confirmation action lacks exact current-turn user evidence",
+        )
+
+
+def _append_confirmation_lifecycle_event(
+    run_dir: Path,
+    event_type: str,
+    projection: ContractConfirmationProjection,
+    *,
+    reason: str,
+    evidence_quote: str | None = None,
+) -> None:
+    try:
+        ControlPlaneEventStore(run_dir).append_once(
+            event_type,
+            f"{event_type}:{projection.confirmation_id}:{projection.lifecycle_revision}",
+            {
+                "confirmation_id": projection.confirmation_id,
+                "draft_sha256": projection.draft_sha256,
+                "status": projection.status,
+                "lifecycle_revision": projection.lifecycle_revision,
+                "reason": reason,
+                "evidence_quote": evidence_quote,
+            },
+        )
+    except (ControlPlaneError, OSError):
+        try:
+            _mark_audit_repair_required(run_dir, projection.confirmation_id)
+        except CorruptAuthoritativeStore:
+            pass
 
 
 def _resolved_state(projection: ContractConfirmationProjection) -> dict[str, Any]:

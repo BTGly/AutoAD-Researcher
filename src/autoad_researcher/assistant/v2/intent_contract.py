@@ -210,9 +210,35 @@ def build_contract_from_context(
         model=model,
         run_dir=run_dir,
     )
-    _append_need_discovery_decided_event(run_dir, need_spec)
-
     need_fields = contract_fields_from_need_spec(need_spec)
+    evaluation_constraints, evaluation_conflicts = _evaluation_constraints_from_context(
+        need_spec,
+        current_user_text=user_input,
+        context_text=combined_user_text,
+        has_existing_constraints=bool(
+            existing_contract_draft is not None
+            and any(
+                getattr(existing_contract_draft.evaluation_constraints, name).value is not None
+                for name in (
+                    "preserve_test_set",
+                    "preserve_metric_definition",
+                    "preserve_dataset_split",
+                )
+            )
+        ),
+    )
+    for conflict in evaluation_conflicts:
+        need_spec.needs.append(RequirementNeed(
+            name=f"{conflict}_conflict",
+            category="evaluation",
+            required_for="plan",
+            necessity="required_now",
+            source="unknown",
+            question_to_user="你对评估约束给出了相互冲突的要求，请明确哪些设置必须保持不变。",
+        ))
+    if evaluation_conflicts:
+        need_spec = validate_need_spec(need_spec)
+    _append_need_discovery_decided_event(run_dir, need_spec)
     need_primary_metrics = _canonicalize_metric_list(_listify(need_fields.get("primary_metrics")))
     need_secondary_metrics = _canonicalize_metric_list(_listify(need_fields.get("secondary_metrics")))
     confirmed_metrics = _canonicalize_metric_list(_listify(confirmed.get("metrics")))
@@ -288,7 +314,8 @@ def build_contract_from_context(
         baseline=baseline,
         baseline_repo=baseline_repo,
         dataset=dataset,
-        evaluation_protocol=_clean_str(need_fields.get("evaluation_protocol")) or _infer_evaluation_protocol(combined_user_text),
+        evaluation_protocol=_evaluation_protocol_from_constraints(evaluation_constraints),
+        evaluation_constraints=evaluation_constraints,
         primary_metrics=primary_metrics,
         primary_metric=primary_metric,
         secondary_metrics=metric_intent.secondary_metrics,
@@ -388,6 +415,12 @@ def merge_contract_draft(
         merged.primary_metric = merged.primary_metrics[0] if len(merged.primary_metrics) == 1 else None
     if update.need_spec.needs:
         merged.need_spec = update.need_spec
+
+    merged.evaluation_constraints = _merge_evaluation_constraints(
+        merged.evaluation_constraints,
+        update.evaluation_constraints,
+    )
+    merged.evaluation_protocol = _evaluation_protocol_from_constraints(merged.evaluation_constraints)
 
     merged.evidence_sources = _merge_evidence_sources(merged.evidence_sources, update.evidence_sources)
     _refresh_contract_state(merged)
@@ -978,21 +1011,128 @@ def _normalize_success_criteria(value: str | None, text: str, primary_metrics: l
     return value
 
 
-def _infer_evaluation_protocol(text: str) -> str | None:
-    if any(token in text for token in (
-        "不改测试",
-        "不能改测试",
-        "不改指标",
-        "不能改指标",
-        "不能作弊",
-        "不改评价",
-        "官方评价",
-        "原始设置",
-        "原设置",
-        "保持 baseline",
-    )):
-        return "keep baseline/original evaluation protocol; no test split or metric changes"
+def _evaluation_constraints_from_context(
+    spec: RequiredNeedSpec,
+    *,
+    current_user_text: str,
+    context_text: str,
+    has_existing_constraints: bool,
+) -> tuple[EvaluationConstraints, list[str]]:
+    values: dict[str, EvaluationConstraint] = {}
+    conflicts: list[str] = []
+    patterns: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+        "preserve_test_set": (
+            (r"保持测试集(?:不变)?", r"不(?:修改|改变|调整)测试集", r"测试集(?:保持)?不变"),
+            (r"(?:可以|允许)(?:修改|改变|调整)测试集",),
+        ),
+        "preserve_metric_definition": (
+            (r"保持指标定义(?:不变)?", r"不(?:修改|改变|调整)指标定义", r"指标定义(?:保持)?不变"),
+            (r"(?:可以|允许)(?:修改|改变|调整)指标定义",),
+        ),
+        "preserve_dataset_split": (
+            (r"保持(?:数据集)?划分(?:不变)?", r"不(?:修改|改变|调整)(?:数据集)?划分", r"(?:数据集)?划分(?:保持)?不变"),
+            (r"(?:可以|允许)(?:修改|改变|调整)(?:数据集)?划分",),
+        ),
+    }
+    text = current_user_text
+    if not has_existing_constraints and not any(
+        _first_regex_evidence(text, true_patterns + false_patterns)
+        for true_patterns, false_patterns in patterns.values()
+    ) and re.search(r"保持([^。！？\n]{1,120})不变", text) is None:
+        text = context_text
+    shared_preserve = re.search(r"保持([^。！？\n]{1,120})不变", text)
+    shared_negative_preserve = re.search(
+        r"(?:不|不能|不要)(?:修改|改变|调整|改)([^。！？\n]{1,120})",
+        text,
+    )
+    shared_terms = {
+        "preserve_test_set": ("测试集",),
+        "preserve_metric_definition": ("指标定义",),
+        "preserve_dataset_split": ("数据划分", "数据集划分"),
+    }
+    need_by_name = {need.name: need for need in spec.needs}
+    for name, (true_patterns, false_patterns) in patterns.items():
+        matched_true = _first_regex_evidence(text, true_patterns)
+        if (
+            matched_true is None
+            and shared_preserve is not None
+            and any(term in shared_preserve.group(1) for term in shared_terms[name])
+        ):
+            matched_true = shared_preserve.group(0)
+        if (
+            matched_true is None
+            and shared_negative_preserve is not None
+            and any(term in shared_negative_preserve.group(1) for term in shared_terms[name])
+        ):
+            matched_true = shared_negative_preserve.group(0)
+        matched_false = _first_regex_evidence(text, false_patterns)
+        if matched_true and matched_false:
+            conflicts.append(name)
+            values[name] = EvaluationConstraint()
+            continue
+        if matched_true or matched_false:
+            values[name] = EvaluationConstraint(
+                value=bool(matched_true),
+                source="user",
+                evidence_quote=matched_true or matched_false,
+            )
+            continue
+        proposed = need_by_name.get(name)
+        if proposed is not None and isinstance(proposed.current_value, bool):
+            values[name] = EvaluationConstraint(
+                value=proposed.current_value,
+                source=proposed.source,
+                evidence_quote=proposed.evidence_quote,
+            )
+            continue
+        values[name] = EvaluationConstraint()
+    return EvaluationConstraints(**values), conflicts
+
+
+def _first_regex_evidence(text: str, patterns: tuple[str, ...]) -> str | None:
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(0)
     return None
+
+
+def _evaluation_protocol_from_constraints(constraints: EvaluationConstraints) -> str | None:
+    labels = {
+        "preserve_test_set": "keep test set unchanged",
+        "preserve_metric_definition": "keep metric definition unchanged",
+        "preserve_dataset_split": "keep dataset split unchanged",
+    }
+    relaxed_labels = {
+        "preserve_test_set": "test set may change",
+        "preserve_metric_definition": "metric definition may change",
+        "preserve_dataset_split": "dataset split may change",
+    }
+    parts: list[str] = []
+    for name in labels:
+        value = getattr(constraints, name).value
+        if value is True:
+            parts.append(labels[name])
+        elif value is False:
+            parts.append(relaxed_labels[name])
+    return "; ".join(parts) or None
+
+
+def _merge_evaluation_constraints(
+    existing: EvaluationConstraints,
+    update: EvaluationConstraints,
+) -> EvaluationConstraints:
+    merged: dict[str, EvaluationConstraint] = {}
+    for name in ("preserve_test_set", "preserve_metric_definition", "preserve_dataset_split"):
+        current = getattr(existing, name)
+        latest = getattr(update, name)
+        if latest.value is not None and latest.source in {"user", "user_confirmed"} and latest.evidence_quote:
+            merged[name] = latest.model_copy(deep=True)
+        elif current.value is not None:
+            merged[name] = current.model_copy(deep=True)
+        else:
+            merged[name] = latest.model_copy(deep=True)
+    return EvaluationConstraints(**merged)
 
 
 def _infer_compute_environment(text: str, confirmed: dict[str, Any]) -> dict[str, Any]:
@@ -1007,7 +1147,14 @@ def _infer_compute_environment(text: str, confirmed: dict[str, Any]) -> dict[str
 
 
 def _infer_execution_mode(text: str) -> Literal["plan_only", "approve_each_step", "agent_assisted_after_approval"]:
-    if any(token in text for token in ("每步审批", "每一步审批", "每步确认")):
+    if any(token in text for token in (
+        "每步审批",
+        "每一步审批",
+        "每步确认",
+        "每一步确认",
+        "逐步确认",
+        "代码修改需要逐步确认",
+    )):
         return "approve_each_step"
     if any(token in text for token in ("允许实验", "自动尝试", "后续 agents")):
         return "agent_assisted_after_approval"

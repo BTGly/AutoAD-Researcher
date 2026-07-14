@@ -114,7 +114,14 @@ def discover_required_needs(
     """
 
     if llm_payload is not None:
-        spec = canonicalize_need_values(RequiredNeedSpec.model_validate(llm_payload))
+        spec = RequiredNeedSpec.model_validate(llm_payload)
+        _apply_execution_authorization_evidence(
+            spec,
+            current_user_text=user_input,
+            context_text=_combined_user_text(user_input, transcript_tail),
+            existing_execution_mode=(existing_contract_draft or {}).get("execution_mode"),
+        )
+        spec = canonicalize_need_values(spec)
         _recover_directional_plan_success_criteria(spec, _combined_user_text(user_input, transcript_tail))
         return validate_need_spec(spec, user_text=_combined_user_text(user_input, transcript_tail))
 
@@ -122,7 +129,14 @@ def discover_required_needs(
     draft = existing_contract_draft or {}
     sources = source_registry or []
     evidence = usable_evidence or []
-    values = _autofill_values(text, draft, sources, evidence, run_artifacts_summary or {})
+    values = _autofill_values(
+        text,
+        draft,
+        sources,
+        evidence,
+        run_artifacts_summary or {},
+        current_user_text=user_input,
+    )
     task_type = _infer_task_type(text, values)
     profile = _task_profile_for_type(task_type)
     profile_evidence = _evidence_excerpt(text)
@@ -257,6 +271,12 @@ def discover_required_needs_with_llm(
         parse_status="ok",
         schema_validation="ok",
         latency_ms=latency_ms,
+    )
+    _apply_execution_authorization_evidence(
+        spec,
+        current_user_text=user_input,
+        context_text=_combined_user_text(user_input, transcript_tail),
+        existing_execution_mode=(existing_contract_draft or {}).get("execution_mode"),
     )
     spec = canonicalize_need_values(spec)
     _recover_directional_plan_success_criteria(spec, _combined_user_text(user_input, transcript_tail))
@@ -479,9 +499,32 @@ def _autofill_values(
     source_registry: list[dict[str, Any]],
     usable_evidence: list[dict[str, Any]],
     run_artifacts_summary: dict[str, Any],
+    *,
+    current_user_text: str,
 ) -> dict[str, Any]:
     current_metrics = canonicalize_metrics(text)
     current_success_criteria = _success_criteria_from_text(text)
+    execution_mode, execution_evidence, execution_conflict = _execution_mode_observation(current_user_text)
+    use_existing_execution = (
+        execution_mode is None
+        and not execution_conflict
+        and draft.get("execution_mode") in {
+            "plan_only",
+            "approve_each_step",
+            "agent_assisted_after_approval",
+        }
+    )
+    if execution_mode is None and not execution_conflict and not use_existing_execution:
+        execution_mode, execution_evidence, execution_conflict = _execution_mode_observation(text)
+    if execution_mode is not None:
+        resolved_execution_mode = execution_mode
+        execution_source: NeedSource = "user"
+    elif use_existing_execution:
+        resolved_execution_mode = draft.get("execution_mode")
+        execution_source = "artifact"
+    else:
+        resolved_execution_mode = "plan_only"
+        execution_source = "default"
     values: dict[str, Any] = {
         "research_goal": draft.get("research_goal") or _goal_from_text(text),
         "research_object": draft.get("research_object") or _research_object_from_text(text),
@@ -491,13 +534,16 @@ def _autofill_values(
         "dataset": draft.get("dataset") or _dataset_from_text(text),
         "metrics": current_metrics or draft.get("primary_metrics") or draft.get("primary_metric"),
         "success_criteria": current_success_criteria or draft.get("success_criteria"),
-        "execution_mode": draft.get("execution_mode") or _execution_mode_from_text(text),
+        "execution_mode": resolved_execution_mode,
+        "execution_mode_source": execution_source,
+        "execution_mode_evidence": execution_evidence,
+        "execution_mode_conflict": execution_conflict,
         "allowed_change_scope": draft.get("allowed_change_scope"),
         "forbidden_change_scope": draft.get("forbidden_change_scope"),
         "dataset_path": run_artifacts_summary.get("dataset_path"),
         "python_env": run_artifacts_summary.get("python_env"),
         "time_budget": run_artifacts_summary.get("time_budget"),
-        "human_review_policy": draft.get("execution_mode") or _execution_mode_from_text(text),
+        "human_review_policy": resolved_execution_mode,
     }
     repo = _repo_from_sources(source_registry)
     if repo:
@@ -523,13 +569,23 @@ def _build_stage_needs(
         ),
         _need(
             "execution_mode", "execution", "plan", "required_now", values.get("execution_mode") or "plan_only",
-            "default" if values.get("execution_mode") == "plan_only" else "user",
-            evidence_quote=None if values.get("execution_mode") == "plan_only" else evidence,
+            values.get("execution_mode_source") or "default",
+            evidence_quote=values.get("execution_mode_evidence"),
         ),
         _need("improvement_idea", "intent", "experiment_design", "optional", None, "unknown"),
         _need("target_module", "experiment_object", "patch", "optional", None, "unknown"),
         _need("forbidden_change_scope", "safety", "plan", "auto_fillable", values.get("forbidden_change_scope"), "default"),
     ]
+    if values.get("execution_mode_conflict"):
+        needs.append(_need(
+            "execution_mode_conflict",
+            "execution",
+            "plan",
+            "required_now",
+            None,
+            "unknown",
+            "你同时给出了不同的执行授权，请明确选择仅规划、逐步确认，或确认后协助执行。",
+        ))
 
     if task_type in {"image_anomaly_detection_improvement", "experiment_improvement", "baseline_reproduction"}:
         needs.extend([
@@ -939,14 +995,92 @@ def _numeric_improvement_criteria_from_text(text: str) -> str | None:
     )
 
 
+def _execution_mode_observation(text: str) -> tuple[str | None, str | None, bool]:
+    phrases: dict[str, tuple[str, ...]] = {
+        "plan_only": ("先不要自动改代码", "先帮我整理方案", "只写方案", "plan_only"),
+        "approve_each_step": (
+            "每步审批",
+            "每一步审批",
+            "每步确认",
+            "每一步确认",
+            "逐步确认",
+            "代码修改需要逐步确认",
+        ),
+        "agent_assisted_after_approval": ("允许实验", "自动尝试", "确认后自动执行"),
+    }
+    matches = [
+        (mode, phrase)
+        for mode, candidates in phrases.items()
+        for phrase in candidates
+        if phrase in text
+    ]
+    modes = {mode for mode, _phrase in matches}
+    if len(modes) > 1:
+        return None, None, True
+    if not matches:
+        return None, None, False
+    mode, phrase = matches[0]
+    return mode, phrase, False
+
+
+def _apply_execution_authorization_evidence(
+    spec: RequiredNeedSpec,
+    *,
+    current_user_text: str,
+    context_text: str,
+    existing_execution_mode: Any = None,
+) -> None:
+    mode, evidence, conflict = _execution_mode_observation(current_user_text)
+    source: NeedSource = "user"
+    if mode is None and not conflict and existing_execution_mode in {
+        "plan_only",
+        "approve_each_step",
+        "agent_assisted_after_approval",
+    }:
+        mode = str(existing_execution_mode)
+        evidence = None
+        source = "artifact"
+    elif mode is None and not conflict:
+        mode, evidence, conflict = _execution_mode_observation(context_text)
+    if conflict:
+        if not any(need.name == "execution_mode_conflict" for need in spec.needs):
+            spec.needs.append(RequirementNeed(
+                name="execution_mode_conflict",
+                category="execution",
+                required_for="plan",
+                necessity="required_now",
+                source="unknown",
+                question_to_user=(
+                    "你同时给出了不同的执行授权，请明确选择仅规划、逐步确认，"
+                    "或确认后协助执行。"
+                ),
+            ))
+        return
+    if mode is None:
+        return
+    need = next((item for item in spec.needs if item.name == "execution_mode"), None)
+    if need is None:
+        spec.needs.append(RequirementNeed(
+            name="execution_mode",
+            category="execution",
+            required_for="plan",
+            necessity="required_now",
+            current_value=mode,
+            source=source,
+            confidence=1.0,
+            evidence_quote=evidence,
+        ))
+        return
+    need.current_value = mode
+    need.source = source
+    need.confidence = 1.0
+    need.evidence_quote = evidence
+    need.question_to_user = None
+
+
 def _execution_mode_from_text(text: str) -> str:
-    if any(token in text for token in ("先不要自动改代码", "先帮我整理方案", "只写方案", "plan_only")):
-        return "plan_only"
-    if any(token in text for token in ("每步审批", "每一步审批", "每步确认")):
-        return "approve_each_step"
-    if any(token in text for token in ("允许实验", "自动尝试")):
-        return "agent_assisted_after_approval"
-    return "plan_only"
+    mode, _evidence, _conflict = _execution_mode_observation(text)
+    return mode or "plan_only"
 
 
 def _repo_from_sources(sources: list[dict[str, Any]]) -> str | None:

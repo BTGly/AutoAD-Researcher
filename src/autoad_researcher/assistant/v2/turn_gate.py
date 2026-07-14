@@ -38,6 +38,7 @@ class TurnGateDecision(BaseModel):
     contract_update_allowed: bool
     need_discovery_allowed: bool
     save_draft_allowed: bool
+    confirmation_action_proposal: Literal["none", "suspend", "resume", "supersede"] = "none"
     user_intent_summary: str = ""
     evidence_from_current_turn: list[str] = Field(default_factory=list)
     evidence_from_context: list[str] = Field(default_factory=list)

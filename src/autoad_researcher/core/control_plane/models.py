@@ -209,13 +209,14 @@ class ContractConfirmationProjection(BaseModel):
     schema_version: Literal[1] = 1
     confirmation_id: str = Field(min_length=1)
     draft_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    status: Literal["pending", "rejected", "confirmed"]
+    status: Literal["pending", "needs_clarification", "superseded", "rejected", "confirmed"]
     decision: Literal["approved", "rejected"] | None = None
     contract_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     requested_at: datetime
     resolved_at: datetime | None = None
     inconsistency: str | None = None
     audit_repair_required: bool = False
+    lifecycle_revision: int = Field(default=0, ge=0)
 
 
 class MaterializationRequestRecord(BaseModel):

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
-from autoad_researcher.assistant.v2.contract_confirmation_service import load_pending_contract_confirmation
+from autoad_researcher.assistant.v2.contract_confirmation_service import load_active_contract_confirmation
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.intent_contract import CORE_REQUIRED_FIELDS, load_contract_draft
 from autoad_researcher.ui.sources import load_source_registry
@@ -75,7 +75,7 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
     usable = ctx.get("usable_evidence", []) or []
     pending_jobs = ctx.get("pending_jobs", []) or []
     failed_jobs = ctx.get("failed_jobs", []) or []
-    pending_confirmation = load_pending_contract_confirmation(run_dir)
+    active_confirmation = load_active_contract_confirmation(run_dir)
     confirmation = None
     advisory_enrichment: list[dict[str, Any]] = []
 
@@ -106,10 +106,10 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         }
         missing = list(contract.missing_required_fields)
         ready = contract.ready_for_plan
-        if pending_confirmation is not None:
-            semantic_projection = pending_confirmation.pop("semantic_projection")
+        if active_confirmation is not None:
+            semantic_projection = active_confirmation.pop("semantic_projection")
             confirmation = {
-                **pending_confirmation,
+                **active_confirmation,
                 "fields": _render_authorization_fields(semantic_projection),
             }
             advisory_enrichment = _render_advisory_enrichment(fields, semantic_projection)

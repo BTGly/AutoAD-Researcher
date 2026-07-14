@@ -1630,7 +1630,9 @@ def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, mon
     assert result.intent_contract["primary_metric"] is None
     assert result.intent_contract["metric_priority"] == "co_primary"
     assert result.intent_contract["success_criteria"]
-    assert result.intent_contract["evaluation_protocol"] == "keep baseline/original evaluation protocol; no test split or metric changes"
+    assert result.intent_contract["evaluation_protocol"] == (
+        "keep test set unchanged; keep metric definition unchanged"
+    )
 
 
 def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path, monkeypatch):
@@ -2015,7 +2017,237 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
     assert persisted.ready_for_plan is True
     assert "5%" in (persisted.success_criteria or "")
     assert "未指定绝对百分点或相对比例" in (persisted.success_criteria or "")
+    assert persisted.execution_mode == "approve_each_step"
+    assert persisted.evaluation_constraints.preserve_test_set.value is True
+    assert persisted.evaluation_constraints.preserve_metric_definition.value is True
+    assert persisted.evaluation_constraints.preserve_dataset_split.value is True
+    assert persisted.evaluation_constraints.preserve_test_set.source == "user"
+    assert persisted.evaluation_constraints.preserve_test_set.evidence_quote in transcript_tail[-2]["content"]
+    assert persisted.evaluation_protocol == (
+        "keep test set unchanged; keep metric definition unchanged; keep dataset split unchanged"
+    )
     assert draft_state["confirmation"]["status"] == "pending"
     assert "确认弹窗" in result.reply
     assert "HF-2" not in result.reply
     assert "plan_only" not in result.reply
+
+
+def test_unspecified_evaluation_constraints_remain_unknown(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input=(
+            "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+            "目标是在相同评估协议下提升指标。"
+        ),
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert contract.evaluation_constraints.preserve_test_set.value is None
+    assert contract.evaluation_constraints.preserve_metric_definition.value is None
+    assert contract.evaluation_constraints.preserve_dataset_split.value is None
+    assert contract.evaluation_protocol is None
+
+
+def test_explicit_evaluation_constraint_false_is_distinct_from_unknown(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input=(
+            "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+            "目标是在相同评估协议下提升指标；允许修改测试集。"
+        ),
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    constraint = contract.evaluation_constraints.preserve_test_set
+    assert constraint.value is False
+    assert constraint.source == "user"
+    assert constraint.evidence_quote == "允许修改测试集"
+    assert contract.evaluation_constraints.preserve_metric_definition.value is None
+
+
+def test_conflicting_evaluation_constraints_require_clarification(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input=(
+            "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+            "目标是在相同评估协议下提升指标；保持测试集不变，但也允许修改测试集。"
+        ),
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert contract.evaluation_constraints.preserve_test_set.value is None
+    assert "preserve_test_set_conflict" in contract.missing_required_fields
+    assert contract.ready_for_plan is False
+
+
+def test_conflicting_execution_authorizations_require_clarification(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = build_contract_from_context(
+        run_dir=run_dir,
+        user_input=(
+            "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
+            "目标是在相同评估协议下提升指标。只写方案，但代码修改需要逐步确认。"
+        ),
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert "execution_mode_conflict" in contract.missing_required_fields
+    assert contract.ready_for_plan is False
+
+
+def test_existing_authorization_state_beats_stale_conflicting_transcript(tmp_path: Path):
+    from autoad_researcher.assistant.v2.intent_contract import EvaluationConstraint
+
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    existing = ResearchIntentContract(
+        authorization_schema_version=2,
+        run_id=run_dir.name,
+        task_profile="empirical_model_research",
+        research_goal="提升 PatchCore 指标",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
+        success_criteria="improve image_level_auroc",
+        execution_mode="approve_each_step",
+        evaluation_constraints={
+            "preserve_test_set": EvaluationConstraint(
+                value=True,
+                source="user",
+                evidence_quote="保持测试集不变",
+            ),
+        },
+    )
+
+    update = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="成功标准补充为提升 5%",
+        transcript_tail=[
+            {"role": "user", "content": "一开始只写方案"},
+            {"role": "user", "content": "后来改为代码修改需要逐步确认，保持测试集不变"},
+        ],
+        existing_contract_draft=existing,
+        llm_context={"confirmed_from_user": {}},
+    )
+    merged = merge_contract_draft(existing, update)
+
+    assert "execution_mode_conflict" not in merged.missing_required_fields
+    assert merged.execution_mode == "approve_each_step"
+    assert merged.evaluation_constraints.preserve_test_set.value is True
+
+
+def test_orchestrator_suspends_confirmation_without_mutating_draft(tmp_path: Path, monkeypatch):
+    from autoad_researcher.assistant.v2.contract_confirmation_service import (
+        load_active_contract_confirmation,
+        request_contract_confirmation,
+    )
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        if "SourceActionPlanner" in system_text:
+            return {"reply": json.dumps({
+                "actions": [],
+                "user_visible_summary": "",
+                "confidence": 0.9,
+                "reason": "no source action",
+            }, ensure_ascii=False), "error": ""}
+        if "TurnGateDecision JSON" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(
+                turn_type="ordinary_chat",
+                contract_action="answer_without_contract_update",
+                allowed=False,
+            ) | {
+                "confirmation_action_proposal": "suspend",
+                "evidence_from_current_turn": ["我先聊晚餐"],
+            }, ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload("可以，研究草案会保留。"), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = ResearchIntentContract(
+        run_id=run_dir.name,
+        research_goal="提升 PatchCore 指标",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
+        success_criteria="improve image_level_auroc",
+        ready_for_plan=True,
+    )
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="我先聊晚餐",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    active = load_active_contract_confirmation(run_dir)
+    assert result.reply == "可以，研究草案会保留。"
+    assert active["status"] == "needs_clarification"
+    assert active["confirmation_id"] == pending["confirmation_id"]
+    assert load_contract_draft(run_dir) == contract
+
+
+def test_orchestrator_redirects_confirmed_topic_change_to_new_task(tmp_path: Path, monkeypatch):
+    from autoad_researcher.assistant.v2.contract_confirmation_service import (
+        request_contract_confirmation,
+        resolve_contract_confirmation,
+    )
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        if "SourceActionPlanner" in system_text:
+            return {"reply": json.dumps({
+                "actions": [],
+                "user_visible_summary": "",
+                "confidence": 0.9,
+                "reason": "no source action",
+            }, ensure_ascii=False), "error": ""}
+        if "TurnGateDecision JSON" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload() | {
+                "confirmation_action_proposal": "supersede",
+                "evidence_from_current_turn": ["改做算子优化"],
+            }, ensure_ascii=False), "error": ""}
+        raise AssertionError("confirmed topic change must not enter Need Discovery or Reply Planner")
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = ResearchIntentContract(
+        run_id=run_dir.name,
+        research_goal="提升 PatchCore 指标",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
+        success_criteria="improve image_level_auroc",
+        ready_for_plan=True,
+    )
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+    resolve_contract_confirmation(
+        run_dir,
+        confirmation_id=pending["confirmation_id"],
+        decision="approved",
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="我想改做算子优化",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.reply_kind == "confirmed_contract_immutable"
+    assert result.intent_contract_confirmed is True
+    assert "新建任务" in result.reply
+    assert load_confirmed_contract(run_dir) == contract

@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
+    ConfirmationConflict,
+    apply_confirmation_action_proposal,
+    load_active_contract_confirmation,
     load_pending_contract_confirmation,
     request_contract_confirmation,
     resolve_contract_confirmation,
@@ -17,6 +20,7 @@ from autoad_researcher.assistant.v2.contract_hashing import (
 from autoad_researcher.assistant.v2.event_service import event_to_ws_message, load_events_since
 from autoad_researcher.assistant.v2.intent_contract import (
     CONTRACT_FILE,
+    EvaluationConstraint,
     ResearchIntentContract,
     save_contract_draft,
 )
@@ -77,12 +81,22 @@ def test_v2_authorization_hash_binds_task_profile_fields():
         success_criteria="latency improves by 10%",
     )
     changed = contract.model_copy(update={"target_platform": "NVIDIA A100"})
+    constrained = contract.model_copy(update={
+        "evaluation_constraints": contract.evaluation_constraints.model_copy(update={
+            "preserve_test_set": EvaluationConstraint(
+                value=True,
+                source="user",
+                evidence_quote="保持测试集不变",
+            ),
+        }),
+    })
 
     projection = build_confirmation_semantic_projection(contract).model_dump(mode="json")
     assert projection["authorization_schema_version"] == 2
     assert projection["research_object"] == "AI 算子"
     assert confirmation_draft_sha256(changed) != confirmation_draft_sha256(contract)
     assert confirmed_contract_sha256(changed) != confirmed_contract_sha256(contract)
+    assert confirmation_draft_sha256(constrained) != confirmation_draft_sha256(contract)
 
 
 def test_contract_confirmation_state_is_persisted_deduplicated_and_replayable(tmp_path: Path):
@@ -115,6 +129,7 @@ def test_contract_confirmation_state_is_persisted_deduplicated_and_replayable(tm
     events = load_events_since(run_dir)
     assert [event["type"] for event in events if event["type"].startswith("contract.confirmation")] == [
         "contract.confirmation.requested",
+        "contract.confirmation.superseded",
         "contract.confirmation.requested",
         "contract.confirmation.resolved",
     ]
@@ -142,6 +157,125 @@ def test_confirmation_request_must_match_the_durable_draft(tmp_path: Path):
     assert confirmation_draft_sha256(durable) == confirmation_draft_sha256(
         _ready_contract(run_dir.name)
     )
+
+
+def test_confirmation_can_suspend_and_resume_without_changing_identity_or_hash(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = _ready_contract(run_dir.name)
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+
+    suspended = apply_confirmation_action_proposal(
+        run_dir,
+        action="suspend",
+        confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
+        user_text="我先聊晚餐，研究任务稍后继续",
+        evidence_quote="我先聊晚餐",
+    )
+
+    assert suspended["status"] == "needs_clarification"
+    assert suspended["confirmation_id"] == pending["confirmation_id"]
+    assert suspended["draft_hash"] == pending["draft_hash"]
+    assert load_pending_contract_confirmation(run_dir) is None
+    assert load_active_contract_confirmation(run_dir)["status"] == "needs_clarification"
+
+    resumed = apply_confirmation_action_proposal(
+        run_dir,
+        action="resume",
+        confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
+        user_text="继续刚才的研究任务",
+        evidence_quote="继续刚才的研究任务",
+    )
+
+    assert resumed["status"] == "pending"
+    assert resumed["confirmation_id"] == pending["confirmation_id"]
+    assert resumed["draft_hash"] == pending["draft_hash"]
+    lifecycle_events = [
+        event["type"]
+        for event in load_events_since(run_dir)
+        if event["type"] in {
+            "contract.confirmation.suspended",
+            "contract.confirmation.resumed",
+        }
+    ]
+    assert lifecycle_events == [
+        "contract.confirmation.suspended",
+        "contract.confirmation.resumed",
+    ]
+
+
+def test_confirmation_action_requires_exact_current_turn_evidence(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = _ready_contract(run_dir.name)
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+
+    with pytest.raises(ConfirmationConflict) as exc_info:
+        apply_confirmation_action_proposal(
+            run_dir,
+            action="supersede",
+            confirmation_id=pending["confirmation_id"],
+            draft_sha256=pending["draft_hash"],
+            user_text="继续当前任务",
+            evidence_quote="用户明确换题",
+        )
+
+    assert exc_info.value.code == "confirmation_state_conflict"
+    assert load_pending_contract_confirmation(run_dir)["confirmation_id"] == pending["confirmation_id"]
+
+
+def test_confirmation_supersede_is_terminal_and_audited(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = _ready_contract(run_dir.name)
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+
+    superseded = apply_confirmation_action_proposal(
+        run_dir,
+        action="supersede",
+        confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
+        user_text="放弃这个研究方向",
+        evidence_quote="放弃这个研究方向",
+    )
+
+    assert superseded["status"] == "superseded"
+    assert load_active_contract_confirmation(run_dir) is None
+    assert [
+        event["type"]
+        for event in load_events_since(run_dir)
+        if event["type"] == "contract.confirmation.superseded"
+    ] == ["contract.confirmation.superseded"]
+
+
+def test_confirmed_contract_rejects_lifecycle_changes(tmp_path: Path):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = _ready_contract(run_dir.name)
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+    resolve_contract_confirmation(
+        run_dir,
+        confirmation_id=pending["confirmation_id"],
+        decision="approved",
+    )
+
+    with pytest.raises(ConfirmationConflict) as exc_info:
+        apply_confirmation_action_proposal(
+            run_dir,
+            action="supersede",
+            confirmation_id=pending["confirmation_id"],
+            draft_sha256=pending["draft_hash"],
+            user_text="换一个研究方向",
+            evidence_quote="换一个研究方向",
+        )
+
+    assert exc_info.value.code == "confirmed_contract_immutable"
 
 
 @pytest.mark.asyncio
@@ -203,4 +337,41 @@ async def test_confirmation_route_rejects_stale_confirmation(tmp_path: Path, mon
         )
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "confirmation_stale",
+        "message": "contract confirmation is stale",
+    }
     assert not (run_dir / CONTRACT_FILE).exists()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_route_returns_structured_state_conflict_for_suspended_draft(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(draft_route, "RUNS_ROOT", str(tmp_path))
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    contract = _ready_contract(run_dir.name)
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+    apply_confirmation_action_proposal(
+        run_dir,
+        action="suspend",
+        confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
+        user_text="先暂停确认",
+        evidence_quote="先暂停确认",
+    )
+
+    with pytest.raises(draft_route.HTTPException) as exc_info:
+        await draft_route.decide_contract_confirmation(
+            run_dir.name,
+            draft_route.ContractConfirmationDecision(
+                confirmation_id=pending["confirmation_id"],
+                decision="approved",
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "confirmation_state_conflict"
