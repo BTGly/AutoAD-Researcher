@@ -216,6 +216,7 @@ def collect_materialization_input_unlocked(
             raise ValueError(f"resolver identity/schema mismatch for {resolver_id!r}")
         if len(set(snapshot.layers)) != len(snapshot.layers):
             raise ValueError(f"resolver {resolver_id!r} returned duplicate layers")
+        _validate_snapshot_trust(snapshot)
         _validate_snapshot_evidence(run_dir, snapshot)
         components[resolver_id] = snapshot
         schema_versions[resolver_id] = resolver.schema_version
@@ -287,6 +288,8 @@ def materialize_claimed_experiment_prepare(
         _write_immutable_json(attempt_dir / "readiness.json", candidate)
         candidate_hash = domain_sha256("autoad:experiment_readiness_candidate:v1", candidate)
 
+    publication_input = collect_materialization_input_unlocked(run_dir, resolver_tuple)
+    publication_hash = materialization_input_sha256(publication_input)
     publication_time = now or _utcnow()
     with ControlPlaneUnitOfWork(run_dir) as uow:
         job_store = uow.jobs
@@ -299,8 +302,7 @@ def materialize_claimed_experiment_prepare(
             publication_time,
         )
         claim, attempt_dir = job_store._load_active_claim_unlocked(active_job)
-        publication_input = collect_materialization_input_unlocked(run_dir, resolver_tuple)
-        publication_hash = materialization_input_sha256(publication_input)
+        _validate_materialization_input_references_unlocked(run_dir, publication_input)
         if initial_hash != publication_hash:
             return _finish_stale_unlocked(
                 run_dir,
@@ -387,12 +389,13 @@ def assert_readiness_current(
     readiness: ExperimentReadiness | None = None,
     resolvers: Iterable[LocalReadinessResolver] = (),
 ) -> ExperimentReadiness:
+    current_input = collect_materialization_input_unlocked(run_dir, tuple(resolvers))
+    current_hash = materialization_input_sha256(current_input)
     with RunMutationLock(run_dir, mode="shared"):
         canonical = readiness or load_readiness_unlocked(run_dir)
         if canonical is None:
             raise ReadinessStaleError("experiment readiness has not been materialized")
-        current_input = collect_materialization_input_unlocked(run_dir, tuple(resolvers))
-        current_hash = materialization_input_sha256(current_input)
+        _validate_materialization_input_references_unlocked(run_dir, current_input)
         if canonical.materialization_input_sha256 != current_hash:
             raise ReadinessStaleError(
                 "experiment readiness input is stale; rematerialization is required"
@@ -448,7 +451,17 @@ def _build_readiness(
         blocking_reasons=[f"missing_contract_field:{field}" for field in missing],
     )
     implementation = _resolver_layer(input_snapshot, "implementation")
-    execution = _resolver_layer(input_snapshot, "execution")
+    execution_specific = _resolver_layer(input_snapshot, "execution")
+    execution_blockers = [
+        *(["implementation_not_ready"] if not implementation.ready else []),
+        *execution_specific.blocking_reasons,
+    ]
+    execution = ReadinessLayer(
+        layer="execution",
+        ready=implementation.ready and execution_specific.ready,
+        facts=execution_specific.facts,
+        blocking_reasons=execution_blockers,
+    )
     authorization = ExecutionAuthorization(
         execution_mode=contract.execution_mode,
         authorized=False,
@@ -577,20 +590,80 @@ def _session_status_for_job(run_dir: Path, job: PipelineJob, contract_sha256: st
 
 
 def _validate_snapshot_evidence(run_dir: Path, snapshot: ResolverSnapshot) -> None:
+    references = [
+        *snapshot.observed_inputs,
+        *(evidence for fact in snapshot.facts for evidence in fact.evidence),
+    ]
+    for evidence in references:
+        path = resolve_control_plane_path(run_dir, evidence.artifact_path, require_exists=True)
+        if not path.is_file():
+            raise ValueError(f"readiness evidence is not a regular file: {evidence.artifact_path}")
+        if path.stat().st_size > MAX_RESOLVER_READ_BYTES:
+            raise ValueError(
+                f"readiness evidence exceeds {MAX_RESOLVER_READ_BYTES} bytes: "
+                f"{evidence.artifact_path}"
+            )
+        if evidence.sha256 is not None:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            if actual != evidence.sha256:
+                raise ValueError(f"readiness evidence hash mismatch: {evidence.artifact_path}")
+
+
+def _validate_snapshot_trust(snapshot: ResolverSnapshot) -> None:
+    if not snapshot.observed_inputs:
+        raise ValueError(
+            f"resolver {snapshot.resolver_id!r} must declare observed_inputs"
+        )
+    observed_keys: set[tuple[str, str]] = set()
+    for evidence in snapshot.observed_inputs:
+        if evidence.sha256 is None:
+            raise ValueError(
+                f"resolver {snapshot.resolver_id!r} observed input has no sha256"
+            )
+        key = (evidence.artifact_path, evidence.sha256)
+        if key in observed_keys:
+            raise ValueError(
+                f"resolver {snapshot.resolver_id!r} returned duplicate observed inputs"
+            )
+        observed_keys.add(key)
+
     for fact in snapshot.facts:
-        for evidence in fact.evidence:
-            path = resolve_control_plane_path(run_dir, evidence.artifact_path, require_exists=True)
-            if not path.is_file():
-                raise ValueError(f"readiness evidence is not a regular file: {evidence.artifact_path}")
-            if path.stat().st_size > MAX_RESOLVER_READ_BYTES:
+        if fact.status == "verified":
+            if not fact.evidence:
                 raise ValueError(
-                    f"readiness evidence exceeds {MAX_RESOLVER_READ_BYTES} bytes: "
-                    f"{evidence.artifact_path}"
+                    f"verified resolver fact {snapshot.resolver_id}:{fact.name} has no evidence"
                 )
-            if evidence.sha256 is not None:
-                actual = hashlib.sha256(path.read_bytes()).hexdigest()
-                if actual != evidence.sha256:
-                    raise ValueError(f"readiness evidence hash mismatch: {evidence.artifact_path}")
+            if any(evidence.sha256 is None for evidence in fact.evidence):
+                raise ValueError(
+                    f"verified resolver fact {snapshot.resolver_id}:{fact.name} has unhashed evidence"
+                )
+        if fact.status == "conflict":
+            keys = {
+                (evidence.artifact_path, evidence.sha256)
+                for evidence in fact.evidence
+                if evidence.sha256 is not None
+            }
+            if len(keys) < 2 or len(keys) != len(fact.evidence):
+                raise ValueError(
+                    f"conflict resolver fact {snapshot.resolver_id}:{fact.name} "
+                    "requires two distinct hashed evidence references"
+                )
+        if fact.status == "unavailable_due_to_dependency" and fact.value is not None:
+            raise ValueError(
+                f"dependency-unavailable fact {snapshot.resolver_id}:{fact.name} cannot have a value"
+            )
+
+
+def _validate_materialization_input_references_unlocked(
+    run_dir: Path,
+    snapshot: MaterializationInputSnapshot,
+) -> None:
+    contract = load_confirmed_contract_strict_unlocked(run_dir)
+    if confirmed_contract_sha256(contract) != snapshot.contract_sha256:
+        raise ReadinessStaleError("confirmed contract changed during readiness materialization")
+    for component in snapshot.components.values():
+        _validate_snapshot_trust(component)
+        _validate_snapshot_evidence(run_dir, component)
 
 
 def _readiness_semantic_sha256(readiness: ExperimentReadiness) -> str:

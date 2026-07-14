@@ -130,6 +130,7 @@ class ResolverSnapshot(BaseModel):
     resolver_id: str = Field(min_length=1)
     schema_version: str = Field(min_length=1)
     layers: list[Literal["implementation", "execution"]] = Field(min_length=1)
+    observed_inputs: list[ReadinessEvidenceRef] = Field(default_factory=list)
     facts: list[ReadinessFact] = Field(default_factory=list)
 
 
@@ -138,7 +139,7 @@ class MaterializationInputSnapshot(BaseModel):
 
     schema_version: Literal[1] = 1
     materializer_version: Literal["experiment_readiness:v1"] = "experiment_readiness:v1"
-    fact_policy_version: Literal["readiness_fact_policy:v1"] = "readiness_fact_policy:v1"
+    fact_policy_version: Literal["readiness_fact_policy:v2"] = "readiness_fact_policy:v2"
     resolver_schema_versions: dict[str, str] = Field(default_factory=dict)
     contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     components: dict[str, ResolverSnapshot] = Field(default_factory=dict)

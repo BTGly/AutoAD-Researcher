@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,14 +14,17 @@ from autoad_researcher.assistant.v2.intent_contract import (
 from autoad_researcher.core.control_plane import (
     CorruptAuthoritativeStore,
     PipelineJobStore,
+    ReadinessEvidenceRef,
     ReadinessFact,
     ReadinessStaleError,
     ResolverSnapshot,
 )
+from autoad_researcher.core.control_plane.lock import run_lock_active
 from autoad_researcher.core.control_plane.io import atomic_write_json
 from autoad_researcher.core.control_plane.readiness import (
     ResolverReadContext,
     assert_readiness_current,
+    collect_materialization_input_unlocked,
     ensure_experiment_session,
     load_experiment_readiness,
     load_experiment_session,
@@ -64,12 +68,24 @@ class _VerifiedResolver:
     schema_version = "configured_snapshot:v1"
 
     def resolve(self, context: ResolverReadContext) -> ResolverSnapshot:
+        assert not run_lock_active(context.run_dir)
         context.check_deadline()
+        data = context.read_bytes("producer/configured.json")
+        evidence = ReadinessEvidenceRef(
+            artifact_path="producer/configured.json",
+            sha256=hashlib.sha256(data).hexdigest(),
+        )
         return ResolverSnapshot(
             resolver_id=self.resolver_id,
             schema_version=self.schema_version,
             layers=["implementation", "execution"],
-            facts=[ReadinessFact(name="configured_fact", status="verified", value="ready")],
+            observed_inputs=[evidence],
+            facts=[ReadinessFact(
+                name="configured_fact",
+                status="verified",
+                value="ready",
+                evidence=[evidence],
+            )],
         )
 
 
@@ -81,13 +97,20 @@ class _ChangingResolver:
         self.calls = 0
 
     def resolve(self, context: ResolverReadContext) -> ResolverSnapshot:
+        assert not run_lock_active(context.run_dir)
         context.check_deadline()
+        data = context.read_bytes("producer/changing.json")
+        evidence = ReadinessEvidenceRef(
+            artifact_path="producer/changing.json",
+            sha256=hashlib.sha256(data).hexdigest(),
+        )
         self.calls += 1
         return ResolverSnapshot(
             resolver_id=self.resolver_id,
             schema_version=self.schema_version,
             layers=["implementation"],
-            facts=[ReadinessFact(name="generation", status="verified", value=self.calls)],
+            observed_inputs=[evidence],
+            facts=[ReadinessFact(name="generation", status="unverified", value=self.calls)],
         )
 
 
@@ -96,13 +119,30 @@ class _FileResolver:
     schema_version = "producer_snapshot:v1"
 
     def resolve(self, context: ResolverReadContext) -> ResolverSnapshot:
+        assert not run_lock_active(context.run_dir)
         value = context.read_bytes("producer/value.txt", max_bytes=64).decode("utf-8")
+        evidence = ReadinessEvidenceRef(
+            artifact_path="producer/value.txt",
+            sha256=hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        )
         return ResolverSnapshot(
             resolver_id=self.resolver_id,
             schema_version=self.schema_version,
             layers=["implementation"],
-            facts=[ReadinessFact(name="producer_value", status="verified", value=value)],
+            observed_inputs=[evidence],
+            facts=[ReadinessFact(
+                name="producer_value",
+                status="verified",
+                value=value,
+                evidence=[evidence],
+            )],
         )
+
+
+def _write_resolver_input(run_dir: Path, name: str, content: str = "v1") -> None:
+    path = run_dir / "producer" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
 
 
 def test_ensure_reuses_one_session_and_prepare_job_and_rejects_contract_replacement(tmp_path: Path):
@@ -152,6 +192,7 @@ def test_worker_materializes_planning_and_fails_closed_without_resolvers(tmp_pat
 
 def test_explicit_local_resolver_can_verify_implementation_and_execution(tmp_path: Path):
     run_dir = _run_dir(tmp_path)
+    _write_resolver_input(run_dir, "configured.json")
     session, claimed = _prepare(run_dir)
 
     outcome = materialize_claimed_experiment_prepare(
@@ -170,8 +211,119 @@ def test_explicit_local_resolver_can_verify_implementation_and_execution(tmp_pat
     assert readiness.execution_authorization.authorized is False
 
 
+def test_execution_only_resolver_cannot_bypass_implementation_readiness(tmp_path: Path):
+    run_dir = _run_dir(tmp_path)
+    _write_resolver_input(run_dir, "configured.json")
+    _, claimed = _prepare(run_dir)
+    resolver = _VerifiedResolver()
+
+    class ExecutionOnlyResolver:
+        resolver_id = resolver.resolver_id
+        schema_version = resolver.schema_version
+
+        def resolve(self, context: ResolverReadContext) -> ResolverSnapshot:
+            snapshot = resolver.resolve(context)
+            return snapshot.model_copy(update={"layers": ["execution"]})
+
+    materialize_claimed_experiment_prepare(run_dir, claimed, [ExecutionOnlyResolver()])
+
+    readiness = load_experiment_readiness(run_dir)
+    assert readiness is not None
+    assert readiness.implementation_readiness.ready is False
+    assert readiness.execution_readiness.ready is False
+    assert readiness.execution_readiness.blocking_reasons == ["implementation_not_ready"]
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "message"),
+    [
+        (
+            {
+                "resolver_id": "invalid_snapshot",
+                "schema_version": "invalid_snapshot:v1",
+                "layers": ["implementation"],
+                "observed_inputs": [
+                    {"artifact_path": "producer/invalid.json", "sha256": "a" * 64}
+                ],
+                "facts": [{"name": "verified", "status": "verified", "value": True}],
+            },
+            "has no evidence",
+        ),
+        (
+            {
+                "resolver_id": "invalid_snapshot",
+                "schema_version": "invalid_snapshot:v1",
+                "layers": ["implementation"],
+                "observed_inputs": [{"artifact_path": "producer/invalid.json"}],
+                "facts": [{"name": "missing", "status": "missing"}],
+            },
+            "observed input has no sha256",
+        ),
+        (
+            {
+                "resolver_id": "invalid_snapshot",
+                "schema_version": "invalid_snapshot:v1",
+                "layers": ["implementation"],
+                "observed_inputs": [
+                    {"artifact_path": "producer/invalid.json", "sha256": "a" * 64}
+                ],
+                "facts": [
+                    {
+                        "name": "dependency",
+                        "status": "unavailable_due_to_dependency",
+                        "value": "fabricated",
+                    }
+                ],
+            },
+            "cannot have a value",
+        ),
+        (
+            {
+                "resolver_id": "invalid_snapshot",
+                "schema_version": "invalid_snapshot:v1",
+                "layers": ["implementation"],
+                "observed_inputs": [
+                    {"artifact_path": "producer/invalid.json", "sha256": "a" * 64}
+                ],
+                "facts": [
+                    {
+                        "name": "conflict",
+                        "status": "conflict",
+                        "evidence": [
+                            {"artifact_path": "producer/invalid.json", "sha256": "a" * 64},
+                            {"artifact_path": "producer/invalid.json", "sha256": "a" * 64},
+                        ],
+                    }
+                ],
+            },
+            "requires two distinct hashed evidence",
+        ),
+    ],
+)
+def test_resolver_snapshot_trust_invariants(
+    tmp_path: Path,
+    snapshot: dict,
+    message: str,
+):
+    run_dir = _run_dir(tmp_path)
+    _write_resolver_input(run_dir, "invalid.json")
+    save_confirmed_contract(run_dir, _contract(run_dir))
+
+    class InvalidResolver:
+        resolver_id = "invalid_snapshot"
+        schema_version = "invalid_snapshot:v1"
+
+        def resolve(self, context: ResolverReadContext):
+            assert not run_lock_active(context.run_dir)
+            return snapshot
+
+    with pytest.raises(ValueError, match=message):
+        collect_materialization_input_unlocked(run_dir, [InvalidResolver()])
+
+
 def test_changed_input_is_fenced_and_candidate_does_not_replace_canonical(tmp_path: Path):
     run_dir = _run_dir(tmp_path)
+    _write_resolver_input(run_dir, "changing.json")
     session, claimed = _prepare(run_dir)
 
     outcome = materialize_claimed_experiment_prepare(
