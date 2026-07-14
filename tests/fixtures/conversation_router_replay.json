@@ -121,5 +121,30 @@
     },
     "expected_action": "update_contract",
     "expected_recovery": []
+  },
+  {
+    "name": "exact_top_level_profile_evidence_recovers_nested_quote",
+    "user_input": "不对啊，我真的想做 AI infra、AI 算子优化、底层的，你有什么建议吗？",
+    "context_user_text": "",
+    "payload": {
+      "turn_gate": {
+        "turn_type": "contract_update",
+        "contract_action": "update_contract",
+        "contract_update_allowed": true,
+        "need_discovery_allowed": true,
+        "save_draft_allowed": true,
+        "task_profile_proposal": "systems_optimization",
+        "task_profile_evidence": "我想做 AI infra 和算子优化",
+        "evidence_from_current_turn": ["我想做 AI infra 和算子优化"]
+      },
+      "source_action_plan": {},
+      "task_profile_proposal": "systems_optimization",
+      "task_profile_evidence": "我真的想做 AI infra、AI 算子优化、底层的",
+      "suggested_task_title": "AI Infra 与算子优化研究",
+      "suggested_task_summary": "研究 AI infra 与底层算子优化。",
+      "requires_need_discovery_enrichment": false
+    },
+    "expected_action": "update_contract",
+    "expected_recovery": ["reused_exact_task_profile_evidence"]
   }
 ]

@@ -271,6 +271,10 @@ def _validate_route_payload(
 
     exact_current = _exact_evidence(route.turn_gate.evidence_from_current_turn, user_input)
     exact_context = _exact_evidence(route.turn_gate.evidence_from_context, context_user_text)
+    profile_evidence = (route.task_profile_evidence or "").strip()
+    if profile_evidence and profile_evidence in user_input and profile_evidence not in exact_current:
+        exact_current.append(profile_evidence)
+        recovery_reasons.append("reused_exact_task_profile_evidence")
     route = route.model_copy(update={
         "turn_gate": route.turn_gate.model_copy(update={
             "evidence_from_current_turn": exact_current,
@@ -324,10 +328,14 @@ def _build_conversation_route_messages(
     schema = (
         "Return exactly one JSON object and no Markdown. It must validate against this JSON Schema:\n"
         + json.dumps(ConversationRouteDecision.model_json_schema(), ensure_ascii=False, sort_keys=True)
+        + "\nFor any mutating contract or confirmation action, evidence_from_current_turn must contain the complete "
+        "current user message copied verbatim, with identical spaces, case, and punctuation."
         + "\nValid ordinary-chat example:\n"
         + json.dumps(_ordinary_route_example(), ensure_ascii=False, sort_keys=True)
         + "\nValid research-update example:\n"
         + json.dumps(_contract_route_example(), ensure_ascii=False, sort_keys=True)
+        + "\nValid correction-to-a-new-research-direction example:\n"
+        + json.dumps(_research_correction_route_example(), ensure_ascii=False, sort_keys=True)
     )
     context = {
         "transcript_tail": transcript_tail or [],
@@ -409,6 +417,29 @@ def _contract_route_example() -> dict[str, Any]:
         "reason": "The user supplied research-contract evidence.",
     })
     return example
+
+
+def _research_correction_route_example() -> dict[str, Any]:
+    user_message = "不对啊，我真的想做 AI infra、AI 算子优化、底层的，你有什么建议吗？"
+    return {
+        "turn_gate": {
+            "turn_type": "contract_update",
+            "contract_action": "update_contract",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": True,
+            "save_draft_allowed": True,
+            "task_profile_proposal": "systems_optimization",
+            "task_profile_evidence": "我真的想做 AI infra、AI 算子优化、底层的",
+            "requires_need_discovery_enrichment": True,
+            "evidence_from_current_turn": [user_message],
+        },
+        "source_action_plan": {},
+        "task_profile_proposal": "systems_optimization",
+        "task_profile_evidence": "我真的想做 AI infra、AI 算子优化、底层的",
+        "suggested_task_title": "AI Infra 与算子优化研究",
+        "suggested_task_summary": "研究 AI infra 与底层算子优化方向。",
+        "requires_need_discovery_enrichment": True,
+    }
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

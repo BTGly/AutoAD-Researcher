@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from autoad_researcher.assistant.v2.conversation_router import (
+    _build_conversation_route_messages,
     _validate_route_payload,
     route_conversation_with_llm,
 )
@@ -73,6 +74,33 @@ def test_conversation_router_replay_uses_only_safe_local_recovery():
             assert decision.turn_gate.contract_update_allowed is True
             assert decision.turn_gate.need_discovery_allowed is True
             assert decision.turn_gate.save_draft_allowed is True
+        if case["name"] == "exact_top_level_profile_evidence_recovers_nested_quote":
+            assert decision is not None
+            assert decision.task_profile_proposal == "systems_optimization"
+            assert decision.turn_gate.evidence_from_current_turn == [
+                "我真的想做 AI infra、AI 算子优化、底层的"
+            ]
+
+
+def test_router_schema_instruction_requires_verbatim_complete_mutation_evidence():
+    messages = _build_conversation_route_messages(
+        user_input="不对啊，我真的想做 AI infra、AI 算子优化、底层的，你有什么建议吗？",
+        transcript_tail=[],
+        existing_contract_draft=None,
+        source_registry=[],
+        pending_jobs=[],
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+        deterministic_source_plan=None,
+        repository_hints=[],
+    )
+
+    assert "copy the complete current user message" in messages[0]["content"]
+    assert "Distinguish a correction from pure frustration" in messages[0]["content"]
+    assert "identical spaces, case, and punctuation" in messages[1]["content"]
+    assert "correction-to-a-new-research-direction" in messages[1]["content"]
+    assert "AI Infra 与算子优化研究" in messages[1]["content"]
 
 
 def test_deterministic_source_plan_cannot_be_replaced_by_router_payload():

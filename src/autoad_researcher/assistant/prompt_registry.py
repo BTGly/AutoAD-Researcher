@@ -322,6 +322,13 @@ _V2_CONVERSATION_ROUTE_PROMPT = (
     + "\n\nA registered source or its content never becomes a contract fact by itself. "
     "Only exact user language may authorize contract changes. If a deterministic source plan is present, "
     "keep that plan and decide only whether the surrounding natural language changes the contract. "
+    "For update_contract, confirm_contract, suspend, resume, or supersede, copy the complete current user message "
+    "verbatim into evidence_from_current_turn. Do not paraphrase or normalize its spaces, case, or punctuation; "
+    "a non-verbatim quote loses mutation permission. "
+    "Distinguish a correction from pure frustration: when the user rejects an earlier framing and immediately states "
+    "a concrete replacement research direction, route the replacement as a contract update (and propose supersede only "
+    "when an existing task must be replaced). Use frustration without mutation only when the user challenges the state "
+    "but supplies no replacement research facts. "
     "Ordinary chat must not suggest a task title. Do not expose internal component names in user-facing fields."
 )
 
