@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Iterable, Protocol
@@ -34,8 +34,6 @@ from autoad_researcher.core.control_plane.io import (
 )
 from autoad_researcher.core.control_plane.job_store import (
     EXPERIMENT_PREPARE_JOB_TYPE,
-    MAX_AUTOMATIC_RECOVERIES,
-    RECOVERY_BACKOFF_SECONDS,
     PipelineJobStore,
 )
 from autoad_researcher.core.control_plane.lock import RunMutationLock
@@ -525,14 +523,13 @@ def _finish_stale_unlocked(
     candidate_sha256: str,
     now: datetime,
 ) -> MaterializationOutcome:
-    count = job.consecutive_stale_count + 1
-    retry = count <= MAX_AUTOMATIC_RECOVERIES
+    updated = job_store._stale_input_transition(job, finished_at=now)
     transition_session_if_present_unlocked(
         run_dir,
         prepare_job_id=job.job_id,
-        status="queued" if retry else "failed",
+        status="queued" if updated.status == "queued" else "failed",
         now=now,
-        error=None if retry else "input_unstable",
+        error=updated.error,
     )
     job_store._ensure_attempt_result_unlocked(
         attempt_dir,
@@ -544,24 +541,9 @@ def _finish_stale_unlocked(
         publication_check_input_sha256=publication_check_input_sha256,
         candidate_sha256=candidate_sha256,
     )
-    next_eligible = (
-        now + timedelta(seconds=RECOVERY_BACKOFF_SECONDS[count - 1])
-        if retry
-        else None
-    )
-    updated = job_store._reset_for_requeue(
-        job,
-        pending_control_request_id=job.active_control_request_id if retry else None,
-        next_eligible_at=next_eligible,
-    ).model_copy(update={
-        "status": "queued" if retry else "failed",
-        "completed_at": None if retry else now,
-        "error": None if retry else "input_unstable",
-        "consecutive_stale_count": count,
-    })
     jobs[index] = updated
     job_store._write_unlocked(jobs)
-    if not retry and job.active_control_request_id is not None:
+    if updated.status == "failed" and job.active_control_request_id is not None:
         MaterializationRequestStore(run_dir).mark_terminal_unlocked(
             job.active_control_request_id,
             status="failed",

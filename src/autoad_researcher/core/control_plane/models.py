@@ -92,6 +92,7 @@ class AttemptResult(BaseModel):
     publication_check_input_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     candidate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     canonical_readiness_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    outputs: list[str] = Field(default_factory=list)
     started_at: datetime
     finished_at: datetime
     error: str | None = None

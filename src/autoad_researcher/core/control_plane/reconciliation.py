@@ -10,9 +10,7 @@ from autoad_researcher.assistant.v2.contract_confirmation_service import (
     recover_contract_confirmation,
 )
 from autoad_researcher.core.control_plane.event_store import ControlPlaneEventStore
-from autoad_researcher.core.control_plane.materialization_requests import (
-    MaterializationRequestStore,
-)
+from autoad_researcher.core.control_plane.materialization_requests import MaterializationRequestStore
 from autoad_researcher.core.control_plane.readiness import (
     load_experiment_readiness,
     load_experiment_session,
@@ -26,43 +24,40 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def reconcile_incomplete_experiment_attempts(run_dir: Path) -> int:
-    """Complete torn published/no-op attempts without requiring a live lease."""
+def reconcile_incomplete_terminal_attempts(run_dir: Path) -> int:
+    """Recover every torn terminal attempt without requiring a live lease."""
     repaired = 0
     with ControlPlaneUnitOfWork(run_dir) as uow:
         jobs = uow.jobs._load_unlocked()
-        request_store = MaterializationRequestStore(run_dir)
         for job in jobs:
-            if job.status != "running" or job.job_type != "experiment_prepare":
+            if job.status != "running":
                 continue
             claim, attempt_dir = uow.jobs._load_active_claim_unlocked(job)
             if not (attempt_dir / "attempt_result.json").is_file():
                 continue
             result = uow.jobs._load_attempt_result_unlocked(attempt_dir)
             uow.jobs._validate_attempt_result_identity_unlocked(result, claim, attempt_dir)
-            if result.status not in {"published", "no_op"}:
-                continue
-            request_id = job.active_control_request_id
-            completed = uow.jobs.recover_complete_from_terminal_attempt_unlocked(
+            recovered = uow.jobs.recover_from_terminal_attempt_unlocked(
                 job_id=job.job_id,
                 expected_attempt_count=job.attempt_count,
                 expected_claim_token=claim.claim_token,
             )
-            from autoad_researcher.core.control_plane.experiment_state import (
-                transition_session_if_present_unlocked,
-            )
+            if job.job_type == "experiment_prepare":
+                from autoad_researcher.core.control_plane.experiment_state import (
+                    transition_session_if_present_unlocked,
+                )
 
-            transition_session_if_present_unlocked(
-                run_dir,
-                prepare_job_id=completed.job_id,
-                status="materialized",
-                now=result.finished_at,
-            )
-            if request_id is not None:
-                request_store.mark_terminal_unlocked(
-                    request_id,
-                    status="completed",
+                session_status = {
+                    "queued": "queued",
+                    "completed": "materialized",
+                    "failed": "failed",
+                }[recovered.status]
+                transition_session_if_present_unlocked(
+                    run_dir,
+                    prepare_job_id=recovered.job_id,
+                    status=session_status,
                     now=result.finished_at,
+                    error=str(recovered.error) if recovered.error is not None else None,
                 )
             repaired += 1
     return repaired

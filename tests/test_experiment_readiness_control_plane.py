@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import hashlib
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,9 @@ from autoad_researcher.core.control_plane import (
 )
 from autoad_researcher.core.control_plane.lock import run_lock_active
 from autoad_researcher.core.control_plane.io import atomic_write_json
+from autoad_researcher.core.control_plane.materialization_requests import (
+    MaterializationRequestStore,
+)
 from autoad_researcher.core.control_plane.readiness import (
     ResolverReadContext,
     assert_readiness_current,
@@ -32,7 +35,8 @@ from autoad_researcher.core.control_plane.readiness import (
     repair_experiment_session_projection,
 )
 from autoad_researcher.core.control_plane.reconciliation import (
-    reconcile_incomplete_experiment_attempts,
+    reconcile_incomplete_terminal_attempts,
+    reconcile_materialization_requests,
 )
 from autoad_researcher.worker.main import _process_pending_jobs
 
@@ -413,7 +417,7 @@ def test_terminal_attempt_recovery_ignores_expired_live_lease_and_keeps_revision
     assert torn is not None and torn.status == "running"
     assert readiness is not None and readiness.revision == 1
 
-    assert reconcile_incomplete_experiment_attempts(run_dir) == 1
+    assert reconcile_incomplete_terminal_attempts(run_dir) == 1
 
     completed = store.get(claimed.job_id)
     repaired_session = load_experiment_session(run_dir)
@@ -421,3 +425,68 @@ def test_terminal_attempt_recovery_ignores_expired_live_lease_and_keeps_revision
     assert completed is not None and completed.status == "completed"
     assert repaired_session is not None and repaired_session.status == "materialized"
     assert repaired_readiness is not None and repaired_readiness.revision == 1
+
+
+def test_failed_attempt_recovery_repairs_session_and_exact_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_dir = _run_dir(tmp_path)
+    _, claimed = _prepare(run_dir)
+    store = PipelineJobStore(run_dir)
+    first_finished = datetime(2026, 7, 13, tzinfo=timezone.utc)
+    materialize_claimed_experiment_prepare(run_dir, claimed, now=first_finished)
+    request_store = MaterializationRequestStore(run_dir)
+    request = request_store.request(
+        request_id="request_recovery_failure",
+        force=True,
+        reason="verify terminal failure recovery",
+        now=first_finished + timedelta(seconds=1),
+    )
+    assert request.status == "scheduled"
+    retry = store.claim_next(
+        worker_id="worker_crash",
+        now=first_finished + timedelta(seconds=2),
+    )
+    assert retry is not None and retry.claim_token is not None
+    original_write = PipelineJobStore._write_unlocked
+    result_path = (
+        run_dir
+        / "experiment_agents"
+        / "attempts"
+        / retry.job_id
+        / f"attempt_{retry.attempt_count}_{retry.claim_token}"
+        / "attempt_result.json"
+    )
+
+    def crash_after_attempt_result(self, jobs):
+        if result_path.is_file() and any(
+            job.job_id == retry.job_id and job.status == "failed" for job in jobs
+        ):
+            raise RuntimeError("simulated Job Store crash after terminal attempt")
+        original_write(self, jobs)
+
+    monkeypatch.setattr(PipelineJobStore, "_write_unlocked", crash_after_attempt_result)
+    failed_at = first_finished + timedelta(seconds=3)
+    with pytest.raises(RuntimeError, match="after terminal attempt"):
+        store.fail(
+            retry.job_id,
+            claim_token=retry.claim_token,
+            expected_attempt_count=retry.attempt_count,
+            error="resolver_failure",
+            now=failed_at,
+        )
+    monkeypatch.setattr(PipelineJobStore, "_write_unlocked", original_write)
+    immutable_result = result_path.read_bytes()
+
+    assert reconcile_incomplete_terminal_attempts(run_dir) == 1
+    assert reconcile_materialization_requests(run_dir) == 1
+    recovered = store.get(retry.job_id)
+    recovered_session = load_experiment_session(run_dir)
+    recovered_request = request_store.get(request.request_id)
+    assert recovered is not None and recovered.status == "failed"
+    assert recovered.error == "resolver_failure"
+    assert recovered_session is not None and recovered_session.status == "failed"
+    assert recovered_request is not None and recovered_request.status == "failed"
+    assert recovered_request.error == "resolver_failure"
+    assert result_path.read_bytes() == immutable_result

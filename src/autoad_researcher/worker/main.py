@@ -38,7 +38,7 @@ from autoad_researcher.core.control_plane.readiness import (
 )
 from autoad_researcher.core.control_plane.reconciliation import (
     reconcile_control_plane_events,
-    reconcile_incomplete_experiment_attempts,
+    reconcile_incomplete_terminal_attempts,
     reconcile_materialization_requests,
 )
 from autoad_researcher.core.control_plane.validate import (
@@ -141,7 +141,7 @@ def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
     audit = _AuditWriter(run_dir)
     processed = 0
 
-    reconcile_incomplete_experiment_attempts(run_dir)
+    reconcile_incomplete_terminal_attempts(run_dir)
     reconcile_materialization_requests(run_dir)
 
     for result in store.reconcile_orphan_claims():

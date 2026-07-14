@@ -334,11 +334,13 @@ class PipelineJobStore:
                     )
                 self._load_attempt_result_unlocked(attempt_dir)
             else:
+                final_outputs = list(outputs) if outputs is not None else job.outputs
                 self._ensure_attempt_result_unlocked(
                     attempt_dir,
                     claim,
                     status="completed",
                     finished_at=current,
+                    outputs=final_outputs,
                 )
             completed = job.model_copy(update={
                 "status": "completed",
@@ -358,18 +360,18 @@ class PipelineJobStore:
             self._write_unlocked(jobs)
             return completed
 
-    def recover_complete_from_terminal_attempt_unlocked(
+    def recover_from_terminal_attempt_unlocked(
         self,
         *,
         job_id: str,
         expected_attempt_count: int,
         expected_claim_token: str,
     ) -> PipelineJob:
-        """Complete a torn publication from its immutable terminal artifacts.
+        """Recover a torn terminal transition from immutable attempt artifacts.
 
         This recovery fence deliberately does not require a live lease.  It is
-        valid only while the run lock is held and only for a published/no-op
-        experiment attempt whose canonical readiness hash still matches.
+        valid only while the run lock is held and while the Job still identifies
+        the exact running attempt that wrote the terminal result.
         """
         if not run_lock_active(self.run_dir):
             raise ControlPlaneLockError("terminal-attempt recovery requires the run lock")
@@ -377,7 +379,6 @@ class PipelineJobStore:
         index, job = self._find_job(jobs, job_id)
         if (
             job.status != "running"
-            or job.job_type != EXPERIMENT_PREPARE_JOB_TYPE
             or job.attempt_count != expected_attempt_count
             or job.claim_token != expected_claim_token
         ):
@@ -387,49 +388,40 @@ class PipelineJobStore:
         claim, attempt_dir = self._load_active_claim_unlocked(job)
         result = self._load_attempt_result_unlocked(attempt_dir)
         self._validate_attempt_result_identity_unlocked(result, claim, attempt_dir)
-        if result.status not in {"published", "no_op"}:
+        experiment = job.job_type == EXPERIMENT_PREPARE_JOB_TYPE
+        if result.status in {"published", "no_op"}:
+            if not experiment:
+                raise CorruptAuthoritativeStore(
+                    f"non-experiment job {job_id} has publication result {result.status}"
+                )
+            recovered = self._recover_published_job_unlocked(job, result)
+        elif result.status == "completed":
+            if experiment:
+                raise CorruptAuthoritativeStore(
+                    f"experiment job {job_id} has generic completed result"
+                )
+            recovered = self._completed_job_from_result(job, result)
+        elif result.status == "failed":
+            recovered = self._failed_job_from_result(job, result)
+        elif result.status == "stale_input":
+            if not experiment:
+                raise CorruptAuthoritativeStore(
+                    f"non-experiment job {job_id} has stale_input result"
+                )
+            recovered = self._stale_input_transition(job, finished_at=result.finished_at)
+        elif result.status == "lease_lost":
+            if not experiment:
+                raise CorruptAuthoritativeStore(
+                    f"non-experiment job {job_id} has lease_lost result"
+                )
+            recovered = self._lease_lost_transition(job, finished_at=result.finished_at)
+        else:
             raise CorruptAuthoritativeStore(
-                f"job {job_id} has non-publication terminal result {result.status}"
+                f"running job {job_id} has incompatible terminal result {result.status}"
             )
-        if result.canonical_readiness_sha256 is None:
-            raise CorruptAuthoritativeStore(
-                f"job {job_id} terminal result has no canonical readiness hash"
-            )
-
-        from autoad_researcher.core.control_plane.experiment_state import (
-            READINESS_RELATIVE_PATH,
-        )
-        from autoad_researcher.core.control_plane.hashing import domain_sha256
-        from autoad_researcher.core.control_plane.readiness import load_readiness_unlocked
-
-        readiness = load_readiness_unlocked(self.run_dir)
-        if readiness is None:
-            raise CorruptAuthoritativeStore(
-                f"job {job_id} terminal result has no canonical readiness"
-            )
-        readiness_hash = domain_sha256("autoad:experiment_readiness_artifact:v1", readiness)
-        if readiness_hash != result.canonical_readiness_sha256:
-            raise CorruptAuthoritativeStore(
-                f"job {job_id} canonical readiness hash does not match terminal result"
-            )
-
-        completed = job.model_copy(update={
-            "status": "completed",
-            "completed_at": result.finished_at,
-            "outputs": [READINESS_RELATIVE_PATH],
-            "error": None,
-            "claimed_by": None,
-            "claim_token": None,
-            "attempt_started_at": None,
-            "lease_expires_at": None,
-            "next_eligible_at": None,
-            "active_control_request_id": None,
-            "consecutive_stale_count": 0,
-            "consecutive_lease_expiry_count": 0,
-        })
-        jobs[index] = completed
+        jobs[index] = recovered
         self._write_unlocked(jobs)
-        return completed
+        return recovered
 
     def fail(
         self,
@@ -513,14 +505,13 @@ class PipelineJobStore:
                     transition_session_if_present_unlocked,
                 )
 
-                count = job.consecutive_lease_expiry_count + 1
-                retry = count <= MAX_AUTOMATIC_RECOVERIES
+                updated = self._lease_lost_transition(job, finished_at=current)
                 transition_session_if_present_unlocked(
                     self.run_dir,
                     prepare_job_id=job.job_id,
-                    status="queued" if retry else "failed",
+                    status="queued" if updated.status == "queued" else "failed",
                     now=current,
-                    error=None if retry else "repeated_lease_expiry",
+                    error=updated.error,
                 )
                 self._ensure_attempt_result_unlocked(
                     attempt_dir,
@@ -529,29 +520,18 @@ class PipelineJobStore:
                     finished_at=current,
                     error="maximum attempt wall time exceeded" if wall_expired else "job lease expired",
                 )
-                next_eligible = (
-                    current + timedelta(seconds=RECOVERY_BACKOFF_SECONDS[count - 1])
-                    if retry
-                    else None
-                )
-                updated = self._reset_for_requeue(
-                    job,
-                    pending_control_request_id=job.active_control_request_id if retry else None,
-                    next_eligible_at=next_eligible,
-                ).model_copy(update={
-                    "status": "queued" if retry else "failed",
-                    "completed_at": None if retry else current,
-                    "error": None if retry else "repeated_lease_expiry",
-                    "consecutive_lease_expiry_count": count,
-                })
                 jobs[index] = updated
-                if not retry and job.active_control_request_id is not None:
+                if updated.status == "failed" and job.active_control_request_id is not None:
                     terminal_request_ids.append(job.active_control_request_id)
                 transitions.append(JobTransition(
                     job_id=job.job_id,
                     from_status="running",
                     to_status=updated.status,
-                    reason="lease_expired" if retry else "repeated_lease_expiry",
+                    reason=(
+                        "lease_expired"
+                        if updated.status == "queued"
+                        else "repeated_lease_expiry"
+                    ),
                     attempt_count=job.attempt_count,
                 ))
             if transitions:
@@ -594,14 +574,13 @@ class PipelineJobStore:
                 transition_session_if_present_unlocked,
             )
 
-            count = job.consecutive_stale_count + 1
-            retry = count <= MAX_AUTOMATIC_RECOVERIES
+            updated = self._stale_input_transition(job, finished_at=current)
             transition_session_if_present_unlocked(
                 self.run_dir,
                 prepare_job_id=job.job_id,
-                status="queued" if retry else "failed",
+                status="queued" if updated.status == "queued" else "failed",
                 now=current,
-                error=None if retry else "input_unstable",
+                error=updated.error,
             )
             self._ensure_attempt_result_unlocked(
                 attempt_dir,
@@ -613,24 +592,9 @@ class PipelineJobStore:
                 publication_check_input_sha256=publication_check_input_sha256,
                 candidate_sha256=candidate_sha256,
             )
-            next_eligible = (
-                current + timedelta(seconds=RECOVERY_BACKOFF_SECONDS[count - 1])
-                if retry
-                else None
-            )
-            updated = self._reset_for_requeue(
-                job,
-                pending_control_request_id=job.active_control_request_id if retry else None,
-                next_eligible_at=next_eligible,
-            ).model_copy(update={
-                "status": "queued" if retry else "failed",
-                "completed_at": None if retry else current,
-                "error": None if retry else "input_unstable",
-                "consecutive_stale_count": count,
-            })
             jobs[index] = updated
             self._write_unlocked(jobs)
-            if not retry and job.active_control_request_id is not None:
+            if updated.status == "failed" and job.active_control_request_id is not None:
                 from autoad_researcher.core.control_plane.materialization_requests import (
                     MaterializationRequestStore,
                 )
@@ -645,7 +609,7 @@ class PipelineJobStore:
                 job_id=job.job_id,
                 from_status="running",
                 to_status=updated.status,
-                reason="stale_input" if retry else "input_unstable",
+                reason="stale_input" if updated.status == "queued" else "input_unstable",
                 attempt_count=job.attempt_count,
             )
 
@@ -832,6 +796,116 @@ class PipelineJobStore:
             "next_eligible_at": next_eligible_at,
         })
 
+    def _lease_lost_transition(
+        self,
+        job: PipelineJob,
+        *,
+        finished_at: datetime,
+    ) -> PipelineJob:
+        count = job.consecutive_lease_expiry_count + 1
+        retry = count <= MAX_AUTOMATIC_RECOVERIES
+        next_eligible_at = (
+            finished_at + timedelta(seconds=RECOVERY_BACKOFF_SECONDS[count - 1])
+            if retry
+            else None
+        )
+        return self._reset_for_requeue(
+            job,
+            pending_control_request_id=job.active_control_request_id if retry else None,
+            next_eligible_at=next_eligible_at,
+        ).model_copy(update={
+            "status": "queued" if retry else "failed",
+            "completed_at": None if retry else finished_at,
+            "error": None if retry else "repeated_lease_expiry",
+            "consecutive_lease_expiry_count": count,
+        })
+
+    def _stale_input_transition(
+        self,
+        job: PipelineJob,
+        *,
+        finished_at: datetime,
+    ) -> PipelineJob:
+        count = job.consecutive_stale_count + 1
+        retry = count <= MAX_AUTOMATIC_RECOVERIES
+        next_eligible_at = (
+            finished_at + timedelta(seconds=RECOVERY_BACKOFF_SECONDS[count - 1])
+            if retry
+            else None
+        )
+        return self._reset_for_requeue(
+            job,
+            pending_control_request_id=job.active_control_request_id if retry else None,
+            next_eligible_at=next_eligible_at,
+        ).model_copy(update={
+            "status": "queued" if retry else "failed",
+            "completed_at": None if retry else finished_at,
+            "error": None if retry else "input_unstable",
+            "consecutive_stale_count": count,
+        })
+
+    @staticmethod
+    def _completed_job_from_result(job: PipelineJob, result: AttemptResult) -> PipelineJob:
+        return job.model_copy(update={
+            "status": "completed",
+            "completed_at": result.finished_at,
+            "outputs": list(result.outputs),
+            "error": None,
+            "claimed_by": None,
+            "claim_token": None,
+            "attempt_started_at": None,
+            "lease_expires_at": None,
+            "next_eligible_at": None,
+            "active_control_request_id": None,
+            "consecutive_stale_count": 0,
+            "consecutive_lease_expiry_count": 0,
+        })
+
+    @staticmethod
+    def _failed_job_from_result(job: PipelineJob, result: AttemptResult) -> PipelineJob:
+        return job.model_copy(update={
+            "status": "failed",
+            "completed_at": result.finished_at,
+            "error": result.error,
+            "outputs": [],
+            "claimed_by": None,
+            "claim_token": None,
+            "attempt_started_at": None,
+            "lease_expires_at": None,
+            "next_eligible_at": None,
+            "active_control_request_id": None,
+        })
+
+    def _recover_published_job_unlocked(
+        self,
+        job: PipelineJob,
+        result: AttemptResult,
+    ) -> PipelineJob:
+        if result.canonical_readiness_sha256 is None:
+            raise CorruptAuthoritativeStore(
+                f"job {job.job_id} terminal result has no canonical readiness hash"
+            )
+        from autoad_researcher.core.control_plane.experiment_state import (
+            READINESS_RELATIVE_PATH,
+        )
+        from autoad_researcher.core.control_plane.hashing import domain_sha256
+        from autoad_researcher.core.control_plane.readiness import load_readiness_unlocked
+
+        readiness = load_readiness_unlocked(self.run_dir)
+        if readiness is None:
+            raise CorruptAuthoritativeStore(
+                f"job {job.job_id} terminal result has no canonical readiness"
+            )
+        readiness_hash = domain_sha256("autoad:experiment_readiness_artifact:v1", readiness)
+        if readiness_hash != result.canonical_readiness_sha256:
+            raise CorruptAuthoritativeStore(
+                f"job {job.job_id} canonical readiness hash does not match terminal result"
+            )
+        return self._completed_job_from_result(
+            job,
+            result.model_copy(update={"outputs": [READINESS_RELATIVE_PATH]}),
+        )
+
     def _attempt_dir(self, job_id: str, attempt_count: int, claim_token: str) -> Path:
         return self.attempts_root / job_id / f"attempt_{attempt_count}_{claim_token}"
 
@@ -915,6 +989,7 @@ class PipelineJobStore:
         publication_check_input_sha256: str | None = None,
         candidate_sha256: str | None = None,
         canonical_readiness_sha256: str | None = None,
+        outputs: list[str] | None = None,
     ) -> AttemptResult:
         path = attempt_dir / "attempt_result.json"
         if path.is_file():
@@ -923,6 +998,10 @@ class PipelineJobStore:
             if existing.status != status:
                 raise CorruptAuthoritativeStore(
                     f"attempt result status conflict at {path}: {existing.status} != {status}"
+                )
+            if outputs is not None and existing.outputs != outputs:
+                raise CorruptAuthoritativeStore(
+                    f"attempt result outputs conflict at {path}"
                 )
             return existing
         result = AttemptResult(
@@ -939,6 +1018,7 @@ class PipelineJobStore:
             publication_check_input_sha256=publication_check_input_sha256,
             candidate_sha256=candidate_sha256,
             canonical_readiness_sha256=canonical_readiness_sha256,
+            outputs=list(outputs or []),
         )
         self._write_immutable_model_unlocked(path, result)
         return result
