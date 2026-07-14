@@ -305,8 +305,11 @@ _V2_TURN_GATE_PROMPT = (
     "提出 suspend/resume/supersede 时，evidence_from_current_turn 必须逐字引用本轮用户原文；不确定时提议 none。\n"
     "不确定时优先 answer_without_contract_update 或 ask_clarifying_question，不能贸然 save draft。\n"
     "LLM 不能直接确认最终合同；最终确认必须由 orchestrator 根据 existing draft 和明确确认意图执行。\n"
+    "task_profile_proposal 只是语义提议，必须提供逐字 task_profile_evidence；证据不足时使用 general_research。"
+    "只有任务类型或关键缺口确实存在语义歧义时，requires_need_discovery_enrichment 才能为 true。\n"
     "Schema: {turn_type, contract_action, contract_update_allowed, need_discovery_allowed, save_draft_allowed, confirmation_action_proposal, "
-    "user_intent_summary, evidence_from_current_turn, evidence_from_context, confidence, reason, next_reply_instruction}."
+    "task_profile_proposal, task_profile_evidence, requires_need_discovery_enrichment, user_intent_summary, "
+    "evidence_from_current_turn, evidence_from_context, confidence, reason, next_reply_instruction}."
 )
 
 

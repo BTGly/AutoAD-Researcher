@@ -1,8 +1,26 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from autoad_researcher.assistant.v2.turn_gate import decide_turn_gate_with_llm
+from autoad_researcher.assistant.v2.turn_gate import (
+    _validate_turn_gate_payload,
+    decide_turn_gate_with_llm,
+)
+
+
+def test_turn_gate_replay_fixture_uses_only_safe_local_recovery():
+    fixture_path = Path(__file__).parent / "fixtures" / "turn_gate_replay.json"
+    cases = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    for case in cases:
+        decision, _errors, _recovery = _validate_turn_gate_payload(
+            case["payload"],
+            user_input=case["user_input"],
+            context_user_text=case["context_user_text"],
+        )
+        expected = case["expected_action"]
+        assert (decision.contract_action if decision is not None else None) == expected, case["name"]
 
 
 def test_turn_gate_without_api_does_not_update_natural_language_contract():
@@ -101,7 +119,7 @@ def test_turn_gate_invalid_llm_output_falls_back_to_no_contract_update(monkeypat
 
     assert decision.contract_action == "answer_without_contract_update"
     assert decision.save_draft_allowed is False
-    assert calls == 2
+    assert calls == 1
 
 
 def test_turn_gate_ignores_only_extra_fields_without_repair_call(monkeypatch):
@@ -145,39 +163,24 @@ def test_turn_gate_ignores_only_extra_fields_without_repair_call(monkeypatch):
     assert calls == 1
 
 
-def test_turn_gate_repairs_missing_required_field_once(monkeypatch):
-    replies = [
-        {
-            "turn_type": "contract_update",
-            "contract_update_allowed": True,
-            "need_discovery_allowed": True,
-            "save_draft_allowed": True,
-            "user_intent_summary": "research intent supplied",
-            "evidence_from_current_turn": [],
-            "evidence_from_context": [],
-            "confidence": 0.9,
-            "reason": "research turn",
-            "next_reply_instruction": None,
-        },
-        {
-            "turn_type": "contract_update",
-            "contract_action": "update_contract",
-            "contract_update_allowed": True,
-            "need_discovery_allowed": True,
-            "save_draft_allowed": True,
-            "user_intent_summary": "research intent supplied",
-            "evidence_from_current_turn": [],
-            "evidence_from_context": [],
-            "confidence": 0.9,
-            "reason": "research turn",
-            "next_reply_instruction": None,
-        },
-    ]
+def test_turn_gate_missing_required_field_falls_back_without_repair(monkeypatch):
+    reply = {
+        "turn_type": "contract_update",
+        "contract_update_allowed": True,
+        "need_discovery_allowed": True,
+        "save_draft_allowed": True,
+        "user_intent_summary": "research intent supplied",
+        "evidence_from_current_turn": [],
+        "evidence_from_context": [],
+        "confidence": 0.9,
+        "reason": "research turn",
+        "next_reply_instruction": None,
+    }
     captured_system_prompts: list[str] = []
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         captured_system_prompts.append(messages[0]["content"])
-        return {"reply": json.dumps(replies.pop(0), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(reply, ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
 
@@ -192,10 +195,42 @@ def test_turn_gate_repairs_missing_required_field_once(monkeypatch):
         provider_url="https://example.test",
     )
 
-    assert decision.contract_action == "update_contract"
-    assert decision.contract_update_allowed is True
-    assert len(captured_system_prompts) == 2
-    assert "Repair one TurnGateDecision response" in captured_system_prompts[1]
+    assert decision.contract_action == "answer_without_contract_update"
+    assert decision.contract_update_allowed is False
+    assert len(captured_system_prompts) == 1
+
+
+def test_turn_gate_schema_and_examples_are_generated_from_model(monkeypatch):
+    captured: list[dict[str, str]] = []
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        captured.extend(messages)
+        return {"reply": json.dumps({
+            "turn_type": "ordinary_chat",
+            "contract_action": "answer_without_contract_update",
+            "contract_update_allowed": False,
+            "need_discovery_allowed": False,
+            "save_draft_allowed": False,
+            "evidence_from_current_turn": "你好",
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    decision = decide_turn_gate_with_llm(
+        user_input="你好",
+        transcript_tail=[],
+        existing_contract_draft=None,
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    schema_text = captured[1]["content"]
+    assert '"turn_type"' in schema_text
+    assert '"ordinary_chat"' in schema_text
+    assert '"contract_update"' in schema_text
+    assert decision.evidence_from_current_turn == ["你好"]
 
 
 def test_update_contract_action_normalizes_inconsistent_model_flags(monkeypatch):

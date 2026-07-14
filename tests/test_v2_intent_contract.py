@@ -538,7 +538,7 @@ def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tm
     assert (run_dir / CONTRACT_FILE).is_file()
 
 
-def test_task_1231_turn_gate_json_failure_still_drafts_before_confirmation(tmp_path: Path, monkeypatch):
+def test_task_1231_turn_gate_json_failure_fails_closed_without_repair(tmp_path: Path, monkeypatch):
     research_intent = (
         "我想基于 PatchCore 改进异常检测，在 MVTec AD 上测试，主要指标看 image-level AUROC，"
         "目标是在相同评估协议下提升指标。"
@@ -554,8 +554,6 @@ def test_task_1231_turn_gate_json_failure_still_drafts_before_confirmation(tmp_p
                 "confidence": 0.9,
                 "reason": "no source action",
             }, ensure_ascii=False), "error": ""}
-        if "Repair one TurnGateDecision response" in system_text:
-            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
         if "TurnGateDecision JSON" in system_text:
             if user_text == research_intent:
                 return {"reply": '{"turn_type":"contract_update"', "error": ""}
@@ -582,7 +580,7 @@ def test_task_1231_turn_gate_json_failure_still_drafts_before_confirmation(tmp_p
         {"role": "assistant", "content": "已登记该仓库资料。"},
     ]
 
-    drafted = ResearchOrchestratorV2.handle(
+    result = ResearchOrchestratorV2.handle(
         run_dir,
         user_input=research_intent,
         transcript_tail=prior_dialogue,
@@ -590,27 +588,10 @@ def test_task_1231_turn_gate_json_failure_still_drafts_before_confirmation(tmp_p
         provider_url="https://example.test",
     )
 
-    assert drafted.reply_kind == "intent_contract_confirmation"
-    assert drafted.intent_contract["ready_for_plan"] is True
-    assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
+    assert result.reply_kind == "answer"
+    assert result.intent_contract == {}
+    assert not (run_dir / CONTRACT_DRAFT_FILE).exists()
     assert not (run_dir / CONTRACT_FILE).exists()
-
-    confirmed = ResearchOrchestratorV2.handle(
-        run_dir,
-        user_input="确认",
-        transcript_tail=[
-            *prior_dialogue,
-            {"role": "user", "content": research_intent},
-            {"role": "assistant", "content": drafted.reply},
-        ],
-        api_key="sk-test",
-        provider_url="https://example.test",
-    )
-
-    assert confirmed.reply_kind == "intent_contract_confirmed"
-    assert confirmed.intent_contract_confirmed is True
-    assert "没有开始整理" not in confirmed.reply
-    assert (run_dir / CONTRACT_FILE).is_file()
 
 
 def test_format_contract_does_not_pressure_user_for_method_or_module():

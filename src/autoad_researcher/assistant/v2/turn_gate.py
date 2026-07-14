@@ -39,6 +39,14 @@ class TurnGateDecision(BaseModel):
     need_discovery_allowed: bool
     save_draft_allowed: bool
     confirmation_action_proposal: Literal["none", "suspend", "resume", "supersede"] = "none"
+    task_profile_proposal: Literal[
+        "empirical_model_research",
+        "systems_optimization",
+        "code_diagnosis",
+        "general_research",
+    ] = "general_research"
+    task_profile_evidence: str | None = None
+    requires_need_discovery_enrichment: bool = False
     user_intent_summary: str = ""
     evidence_from_current_turn: list[str] = Field(default_factory=list)
     evidence_from_context: list[str] = Field(default_factory=list)
@@ -126,28 +134,24 @@ def decide_turn_gate_with_llm(
             raw_output=reply_text,
             parse_status="error",
             schema_validation="skipped",
-            fallback_reason="llm_error" if result.get("error") else "json_repair_attempted",
+            fallback_reason="llm_error" if result.get("error") else "json_parse_fallback",
             latency_ms=latency_ms,
         )
-        if not result.get("error"):
-            repaired = _repair_turn_gate_decision(
-                call_research_chat=call_research_chat,
-                api_key=api_key,
-                provider_url=provider_url,
-                candidate_text=reply_text,
-                validation_errors=[{"loc": "root", "type": "json_parse_error"}],
-                profile=profile,
-                run_dir=run_dir,
-                model=model,
-            )
-            if repaired is not None:
-                return repaired
         return _offline_no_contract_decision(
             user_input=user_input,
             transcript_tail=transcript_tail,
             existing_contract_draft=existing_contract_draft,
         )
-    decision, validation_errors, recovered_extra_fields = _validate_turn_gate_payload(payload)
+    context_user_text = "\n".join(
+        str(item.get("content") or "")
+        for item in transcript_tail or []
+        if item.get("role") == "user"
+    )
+    decision, validation_errors, recovery_reasons = _validate_turn_gate_payload(
+        payload,
+        user_input=user_input,
+        context_user_text=context_user_text,
+    )
     if decision is None:
         append_llm_trace(
             run_dir,
@@ -162,21 +166,9 @@ def decide_turn_gate_with_llm(
             parse_status="ok",
             schema_validation="error",
             schema_validation_errors=validation_errors,
-            fallback_reason="schema_validation_repair_attempted",
+            fallback_reason="schema_validation_fallback",
             latency_ms=latency_ms,
         )
-        repaired = _repair_turn_gate_decision(
-            call_research_chat=call_research_chat,
-            api_key=api_key,
-            provider_url=provider_url,
-            candidate_text=reply_text,
-            validation_errors=validation_errors,
-            profile=profile,
-            run_dir=run_dir,
-            model=model,
-        )
-        if repaired is not None:
-            return repaired
         return _offline_no_contract_decision(
             user_input=user_input,
             transcript_tail=transcript_tail,
@@ -193,101 +185,45 @@ def decide_turn_gate_with_llm(
         messages=messages,
         raw_output=reply_text,
         parse_status="ok",
-        schema_validation="recovered" if recovered_extra_fields else "ok",
+        schema_validation="recovered" if recovery_reasons else "ok",
         schema_validation_errors=validation_errors,
-        fallback_reason="ignored_extra_fields" if recovered_extra_fields else "",
+        fallback_reason=",".join(recovery_reasons),
         latency_ms=latency_ms,
+    )
+    decision = _validate_task_profile_proposal(
+        decision,
+        user_input=user_input,
+        context_user_text=context_user_text,
     )
     return _validate_turn_gate_decision(decision)
 
 
 def _validate_turn_gate_payload(
     payload: dict[str, Any],
-) -> tuple[TurnGateDecision | None, list[dict[str, str]], bool]:
-    try:
-        return TurnGateDecision.model_validate(payload), [], False
-    except ValidationError as exc:
-        validation_errors = _validation_error_summary(exc)
-        if validation_errors and all(item["type"] == "extra_forbidden" for item in validation_errors):
-            known_payload = {
-                field_name: payload[field_name]
-                for field_name in TurnGateDecision.model_fields
-                if field_name in payload
-            }
-            try:
-                return TurnGateDecision.model_validate(known_payload), validation_errors, True
-            except ValidationError as filtered_exc:
-                return None, _validation_error_summary(filtered_exc), False
-        return None, validation_errors, False
-
-
-def _repair_turn_gate_decision(
     *,
-    call_research_chat,
-    api_key: str,
-    provider_url: str,
-    candidate_text: str,
-    validation_errors: list[dict[str, str]],
-    profile,
-    run_dir: Path | None,
-    model: str,
-) -> TurnGateDecision | None:
-    repair_system = (
-        "Repair one TurnGateDecision response. Preserve its semantic decision, but return exactly one JSON object "
-        "that validates against this schema. Do not add Markdown or commentary.\nJSON Schema:\n"
-        + json.dumps(TurnGateDecision.model_json_schema(), ensure_ascii=False, sort_keys=True)
-    )
-    repair_messages = [
-        {"role": "system", "content": repair_system},
-        {
-            "role": "user",
-            "content": (
-                "Validation issues:\n"
-                + json.dumps(validation_errors, ensure_ascii=False, sort_keys=True)
-                + "\nCandidate response:\n"
-                + candidate_text
-            ),
-        },
-    ]
-    started = time.perf_counter()
-    result = call_research_chat(
-        api_key,
-        provider_url,
-        repair_messages,
-        model=model,
-        timeout_s=30,
-    )
-    latency_ms = (time.perf_counter() - started) * 1000
-    reply_text = str(result.get("reply") or "")
-    payload = _parse_json_object(reply_text)
-    decision: TurnGateDecision | None = None
-    repair_errors: list[dict[str, str]] = []
-    recovered_extra_fields = False
-    if not result.get("error") and payload is not None:
-        decision, repair_errors, recovered_extra_fields = _validate_turn_gate_payload(payload)
-    parse_status = "ok" if payload is not None else "error"
-    schema_status = "recovered" if decision is not None else ("skipped" if payload is None else "error")
-    append_llm_trace(
-        run_dir,
-        call_site="turn_gate.repair",
-        prompt_id=profile.prompt_id,
-        prompt_version=profile.prompt_version,
-        prompt_text=repair_system,
-        model=model,
-        provider_url=provider_url,
-        messages=repair_messages,
-        raw_output=reply_text,
-        parse_status=parse_status,
-        schema_validation=schema_status,
-        schema_validation_errors=repair_errors,
-        fallback_reason=(
-            "ignored_extra_fields"
-            if decision is not None and recovered_extra_fields
-            else "" if decision is not None else "schema_validation_repair_failed"
-        ),
-        latency_ms=latency_ms,
-    )
-    return _validate_turn_gate_decision(decision) if decision is not None else None
+    user_input: str,
+    context_user_text: str,
+) -> tuple[TurnGateDecision | None, list[dict[str, str]], list[str]]:
+    known_payload = {
+        field_name: payload[field_name]
+        for field_name in TurnGateDecision.model_fields
+        if field_name in payload
+    }
+    recovery_reasons: list[str] = []
+    if len(known_payload) != len(payload):
+        recovery_reasons.append("ignored_extra_fields")
+    for field_name, evidence_text in (
+        ("evidence_from_current_turn", user_input),
+        ("evidence_from_context", context_user_text),
+    ):
+        candidate = known_payload.get(field_name)
+        if isinstance(candidate, str) and candidate and candidate in evidence_text:
+            known_payload[field_name] = [candidate]
+            recovery_reasons.append(f"normalized_{field_name}")
+    try:
+        return TurnGateDecision.model_validate(known_payload), [], recovery_reasons
+    except ValidationError as exc:
+        return None, _validation_error_summary(exc), recovery_reasons
 
 
 def _validation_error_summary(exc: ValidationError) -> list[dict[str, str]]:
@@ -310,6 +246,46 @@ def _build_turn_gate_messages(
     answerability: dict[str, Any],
 ) -> list[dict[str, str]]:
     system = PromptSelector().build_system_prompt_for_v2_component("turn_gate")
+    schema_instruction = (
+        "Return exactly one JSON object and no Markdown. It must validate against this JSON Schema:\n"
+        + json.dumps(TurnGateDecision.model_json_schema(), ensure_ascii=False, sort_keys=True)
+        + "\nValid ordinary-chat example:\n"
+        + json.dumps({
+            "turn_type": "ordinary_chat",
+            "contract_action": "answer_without_contract_update",
+            "contract_update_allowed": False,
+            "need_discovery_allowed": False,
+            "save_draft_allowed": False,
+            "confirmation_action_proposal": "none",
+            "task_profile_proposal": "general_research",
+            "task_profile_evidence": None,
+            "requires_need_discovery_enrichment": False,
+            "user_intent_summary": "ordinary conversation",
+            "evidence_from_current_turn": [],
+            "evidence_from_context": [],
+            "confidence": 0.9,
+            "reason": "The user is not changing the research contract.",
+            "next_reply_instruction": None,
+        }, ensure_ascii=False, sort_keys=True)
+        + "\nValid contract-update example:\n"
+        + json.dumps({
+            "turn_type": "contract_update",
+            "contract_action": "update_contract",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": True,
+            "save_draft_allowed": True,
+            "confirmation_action_proposal": "none",
+            "task_profile_proposal": "empirical_model_research",
+            "task_profile_evidence": "PatchCore",
+            "requires_need_discovery_enrichment": False,
+            "user_intent_summary": "empirical model improvement",
+            "evidence_from_current_turn": ["PatchCore"],
+            "evidence_from_context": [],
+            "confidence": 0.9,
+            "reason": "The user supplied research-contract evidence.",
+            "next_reply_instruction": None,
+        }, ensure_ascii=False, sort_keys=True)
+    )
     context = {
         "transcript_tail": transcript_tail or [],
         "existing_contract_draft": existing_contract_draft or {},
@@ -319,6 +295,7 @@ def _build_turn_gate_messages(
     }
     return [
         {"role": "system", "content": system},
+        {"role": "system", "content": schema_instruction},
         {"role": "system", "content": "Context JSON:\n" + _json_text(context)},
         {"role": "user", "content": user_input},
     ]
@@ -349,6 +326,25 @@ def _validate_turn_gate_decision(decision: TurnGateDecision) -> TurnGateDecision
             "contract_update_allowed": False,
             "need_discovery_allowed": False,
             "save_draft_allowed": False,
+        })
+    return decision
+
+
+def _validate_task_profile_proposal(
+    decision: TurnGateDecision,
+    *,
+    user_input: str,
+    context_user_text: str,
+) -> TurnGateDecision:
+    evidence = (decision.task_profile_evidence or "").strip()
+    if (
+        decision.task_profile_proposal != "general_research"
+        and (not evidence or (evidence not in user_input and evidence not in context_user_text))
+    ):
+        return decision.model_copy(update={
+            "task_profile_proposal": "general_research",
+            "task_profile_evidence": None,
+            "requires_need_discovery_enrichment": True,
         })
     return decision
 

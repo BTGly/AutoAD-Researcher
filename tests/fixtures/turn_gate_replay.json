@@ -1,0 +1,47 @@
+[
+  {
+    "name": "ordinary_chat",
+    "user_input": "啾咪呢",
+    "context_user_text": "我想改进异常检测模型",
+    "payload": {
+      "turn_type": "ordinary_chat",
+      "contract_action": "answer_without_contract_update",
+      "contract_update_allowed": false,
+      "need_discovery_allowed": false,
+      "save_draft_allowed": false,
+      "evidence_from_current_turn": ["啾咪呢"]
+    },
+    "expected_action": "answer_without_contract_update"
+  },
+  {
+    "name": "contract_update_with_scalar_evidence",
+    "user_input": "以 PatchCore 为 baseline",
+    "context_user_text": "",
+    "payload": {
+      "turn_type": "contract_update",
+      "contract_action": "update_contract",
+      "contract_update_allowed": true,
+      "need_discovery_allowed": true,
+      "save_draft_allowed": true,
+      "task_profile_proposal": "empirical_model_research",
+      "task_profile_evidence": "PatchCore",
+      "requires_need_discovery_enrichment": false,
+      "evidence_from_current_turn": "PatchCore",
+      "unknown_debug_field": "ignored"
+    },
+    "expected_action": "update_contract"
+  },
+  {
+    "name": "illegal_semantic_enum",
+    "user_input": "继续",
+    "context_user_text": "",
+    "payload": {
+      "turn_type": "research",
+      "contract_action": "update",
+      "contract_update_allowed": true,
+      "need_discovery_allowed": true,
+      "save_draft_allowed": true
+    },
+    "expected_action": null
+  }
+]
