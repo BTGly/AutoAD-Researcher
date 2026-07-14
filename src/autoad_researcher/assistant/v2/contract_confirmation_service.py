@@ -10,6 +10,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from autoad_researcher.assistant.v2.contract_hashing import (
+    build_confirmation_semantic_projection,
     confirmation_draft_sha256,
     confirmed_contract_sha256,
 )
@@ -41,14 +42,17 @@ def request_contract_confirmation(
     run_dir: Path,
     contract: ResearchIntentContract,
 ) -> dict[str, Any]:
-    draft_hash = confirmation_draft_sha256(contract)
     current = _utcnow()
     with ControlPlaneUnitOfWork(run_dir) as uow:
+        draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
+        draft_hash = confirmation_draft_sha256(draft)
+        if draft_hash != confirmation_draft_sha256(contract):
+            raise ValueError("contract confirmation input does not match durable draft")
         projection = _recover_projection_unlocked(run_dir, uow, now=current)
         if projection is not None and projection.status == "confirmed":
             raise ValueError("run already has an immutable confirmed contract")
         if projection is not None and projection.status == "pending" and projection.draft_sha256 == draft_hash:
-            return _pending_state(projection)
+            return _pending_state(projection, draft)
         projection = ContractConfirmationProjection(
             confirmation_id=f"contract_confirmation_{uuid4().hex}",
             draft_sha256=draft_hash,
@@ -64,17 +68,17 @@ def request_contract_confirmation(
             {
                 "confirmation_id": projection.confirmation_id,
                 "draft_hash": draft_hash,
-                "ready_for_plan": contract.ready_for_plan,
-                "ready_for_repo_analysis": contract.ready_for_repo_analysis,
-                "ready_for_experiment_agents": contract.ready_for_experiment_agents,
-                "missing_required_fields": list(contract.missing_required_fields),
-                "primary_metrics_count": len(contract.primary_metrics),
-                "has_baseline_repo": bool(contract.baseline_repo),
+                "ready_for_plan": draft.ready_for_plan,
+                "ready_for_repo_analysis": draft.ready_for_repo_analysis,
+                "ready_for_experiment_agents": draft.ready_for_experiment_agents,
+                "missing_required_fields": list(draft.missing_required_fields),
+                "primary_metrics_count": len(draft.primary_metrics),
+                "has_baseline_repo": bool(draft.baseline_repo),
             },
         )
     except (ControlPlaneError, OSError):
         projection = _mark_audit_repair_required(run_dir, projection.confirmation_id)
-    return _pending_state(projection)
+    return _pending_state(projection, draft)
 
 
 def load_pending_contract_confirmation(run_dir: Path) -> dict[str, Any] | None:
@@ -82,7 +86,12 @@ def load_pending_contract_confirmation(run_dir: Path) -> dict[str, Any] | None:
         return None
     with ControlPlaneUnitOfWork(run_dir) as uow:
         projection = _recover_projection_unlocked(run_dir, uow, now=_utcnow())
-        return _pending_state(projection) if projection is not None and projection.status == "pending" else None
+        if projection is None or projection.status != "pending":
+            return None
+        draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
+        if confirmation_draft_sha256(draft) != projection.draft_sha256:
+            return None
+        return _pending_state(projection, draft)
 
 
 def decide_contract_confirmation(
@@ -144,7 +153,12 @@ def decide_contract_confirmation(
         ControlPlaneEventStore(run_dir).append_once(
             "contract.confirmation.resolved",
             f"contract.confirmation.resolved:{confirmation_id}:{decision}",
-            {"confirmation_id": confirmation_id, "decision": decision},
+            {
+                "confirmation_id": confirmation_id,
+                "decision": decision,
+                "draft_sha256": projection.draft_sha256,
+                "contract_sha256": projection.contract_sha256,
+            },
         )
     except (ControlPlaneError, OSError):
         projection = _mark_audit_repair_required(run_dir, confirmation_id)
@@ -294,13 +308,19 @@ def _mark_audit_repair_required(
         return projection
 
 
-def _pending_state(projection: ContractConfirmationProjection) -> dict[str, Any]:
+def _pending_state(
+    projection: ContractConfirmationProjection,
+    contract: ResearchIntentContract,
+) -> dict[str, Any]:
     return {
         "confirmation_id": projection.confirmation_id,
         "draft_hash": projection.draft_sha256,
         "status": "pending",
         "requested_at": projection.requested_at.isoformat(),
         "repair_required": projection.audit_repair_required,
+        "semantic_projection": build_confirmation_semantic_projection(contract).model_dump(
+            mode="json"
+        ),
     }
 
 
@@ -310,4 +330,6 @@ def _resolved_state(projection: ContractConfirmationProjection) -> dict[str, Any
         "status": "approved" if projection.status == "confirmed" else "rejected",
         "resolved_at": projection.resolved_at.isoformat() if projection.resolved_at else None,
         "repair_required": projection.audit_repair_required,
+        "draft_sha256": projection.draft_sha256,
+        "contract_sha256": projection.contract_sha256,
     }

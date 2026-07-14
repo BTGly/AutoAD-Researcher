@@ -10,7 +10,9 @@ from autoad_researcher.assistant.v2.intent_contract import ResearchIntentContrac
 from autoad_researcher.core.control_plane.hashing import domain_sha256
 
 
-class _ContractSemanticPayload(BaseModel):
+class ConfirmationSemanticProjection(BaseModel):
+    """Public normalized authorization fields shared by hashing and display."""
+
     model_config = ConfigDict(extra="forbid")
 
     run_id: str
@@ -37,30 +39,34 @@ class _ContractSemanticPayload(BaseModel):
     forbidden_change_scope: list[str]
 
 
-class ConfirmationDraftHashPayload(_ContractSemanticPayload):
+class ConfirmationDraftHashPayload(ConfirmationSemanticProjection):
     hash_schema: Literal["research_intent_confirmation_draft:v1"] = "research_intent_confirmation_draft:v1"
 
 
-class ConfirmedContractHashPayload(_ContractSemanticPayload):
+class ConfirmedContractHashPayload(ConfirmationSemanticProjection):
     hash_schema: Literal["research_intent_contract:v1"] = "research_intent_contract:v1"
 
 
 def confirmation_draft_sha256(contract: ResearchIntentContract) -> str:
+    projection = build_confirmation_semantic_projection(contract)
     return domain_sha256(
         "autoad:research_intent_confirmation_draft:v1",
-        ConfirmationDraftHashPayload(**_semantic_values(contract)),
+        ConfirmationDraftHashPayload(**projection.model_dump(mode="python")),
     )
 
 
 def confirmed_contract_sha256(contract: ResearchIntentContract) -> str:
+    projection = build_confirmation_semantic_projection(contract)
     return domain_sha256(
         "autoad:research_intent_contract:v1",
-        ConfirmedContractHashPayload(**_semantic_values(contract)),
+        ConfirmedContractHashPayload(**projection.model_dump(mode="python")),
     )
 
 
-def _semantic_values(contract: ResearchIntentContract) -> dict[str, Any]:
-    return {
+def build_confirmation_semantic_projection(
+    contract: ResearchIntentContract,
+) -> ConfirmationSemanticProjection:
+    return ConfirmationSemanticProjection(**{
         "run_id": _required_string(contract.run_id),
         "task_domain": _optional_string(contract.task_domain),
         "research_goal": _optional_string(contract.research_goal),
@@ -83,7 +89,7 @@ def _semantic_values(contract: ResearchIntentContract) -> dict[str, Any]:
         "risk_preference": _optional_string(contract.risk_preference),
         "allowed_change_scope": sorted(set(_ordered_unique(contract.allowed_change_scope))),
         "forbidden_change_scope": sorted(set(_ordered_unique(contract.forbidden_change_scope))),
-    }
+    })
 
 
 def _required_string(value: str) -> str:

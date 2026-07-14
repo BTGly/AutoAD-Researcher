@@ -52,6 +52,7 @@ export interface DraftState {
   evidence: Array<{ source_id: string; type: string; artifact_path: string; summary: string }>;
   jobs: Array<{ job_id: string; source_id: string; job_type: string; status: string; error?: string }>;
   next_questions: string[];
+  advisory_enrichment?: DraftField[];
   confirmation?: ContractConfirmationState | null;
 }
 
@@ -60,6 +61,7 @@ export interface ContractConfirmationState {
   draft_hash: string;
   status: 'pending';
   requested_at: string | null;
+  fields: DraftField[];
 }
 
 export interface ExperimentControlState {

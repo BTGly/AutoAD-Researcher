@@ -181,7 +181,7 @@ class ResearchOrchestratorV2:
                 return OrchestratorResult(
                     reply=(
                         "已确认 ResearchIntentContract，并写入 `research_intent_contract.json`。"
-                        "不会自动 patch 或运行实验；后续 agents 将以这个合同作为输入。"
+                        "已创建实验准备任务；不会修改代码、创建 worktree、运行 baseline 或占用 GPU。"
                     ),
                     reply_kind="intent_contract_confirmed",
                     created_sources=created_sources,

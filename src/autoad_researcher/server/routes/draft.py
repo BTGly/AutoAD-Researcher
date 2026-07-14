@@ -37,6 +37,7 @@ async def get_draft(run_id: str):
             "jobs": [],
             "next_questions": [],
             "confirmation": None,
+            "advisory_enrichment": [],
         }
     return load_research_draft_state(run_dir)
 

@@ -75,6 +75,9 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
     usable = ctx.get("usable_evidence", []) or []
     pending_jobs = ctx.get("pending_jobs", []) or []
     failed_jobs = ctx.get("failed_jobs", []) or []
+    pending_confirmation = load_pending_contract_confirmation(run_dir)
+    confirmation = None
+    advisory_enrichment: list[dict[str, Any]] = []
 
     if contract is not None:
         primary_metrics = _augment_metrics_from_transcript(contract.primary_metrics, transcript)
@@ -103,6 +106,13 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         }
         missing = list(contract.missing_required_fields)
         ready = contract.ready_for_plan
+        if pending_confirmation is not None:
+            semantic_projection = pending_confirmation.pop("semantic_projection")
+            confirmation = {
+                **pending_confirmation,
+                "fields": _render_authorization_fields(semantic_projection),
+            }
+            advisory_enrichment = _render_advisory_enrichment(fields, semantic_projection)
     else:
         confirmed = extract_confirmed_from_chat(transcript)
         if _is_source_only_transcript(transcript, sources, pending_jobs, failed_jobs):
@@ -133,8 +143,48 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         "evidence": [_evidence_summary(item) for item in usable if isinstance(item, dict)],
         "jobs": [_job_summary(item) for item in [*pending_jobs, *failed_jobs] if isinstance(item, dict)],
         "next_questions": _next_questions(missing, fields, usable),
-        "confirmation": load_pending_contract_confirmation(run_dir),
+        "confirmation": confirmation,
+        "advisory_enrichment": advisory_enrichment,
     }
+
+
+def _render_authorization_fields(projection: dict[str, Any]) -> list[dict[str, Any]]:
+    rendered: list[dict[str, Any]] = []
+    for key, value in projection.items():
+        rendered.append({
+            "field": key,
+            "label": FIELD_LABELS.get(key, key),
+            "value": _format_authorization_value(value),
+            "status": "missing" if value in (None, "", [], {}) else "known",
+        })
+    return rendered
+
+
+def _render_advisory_enrichment(
+    display_fields: dict[str, Any],
+    authorization_projection: dict[str, Any],
+) -> list[dict[str, Any]]:
+    advisory: list[dict[str, Any]] = []
+    for key, value in display_fields.items():
+        if key not in authorization_projection or value == authorization_projection[key]:
+            continue
+        advisory.append({
+            "field": key,
+            "label": FIELD_LABELS.get(key, key),
+            "value": _format_value(key, value),
+            "status": "advisory_not_authorized",
+        })
+    return advisory
+
+
+def _format_authorization_value(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return "未设置"
+    if isinstance(value, list):
+        return "；".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 def _load_transcript(run_dir: Path) -> list[dict[str, Any]]:

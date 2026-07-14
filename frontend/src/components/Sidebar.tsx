@@ -224,6 +224,10 @@ function DraftPanel({
       <DraftSection title="核心信息" fields={coreFields} />
       <DraftSection title="方法线索" fields={methodFields} />
       <DraftSection title="执行与来源" fields={otherFields} />
+      <DraftSection
+        title="未进入本次授权的推断/建议"
+        fields={draft.advisory_enrichment || []}
+      />
 
       {experimentControl?.session && (
         <div className="sidebar-card">

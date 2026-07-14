@@ -10,7 +10,7 @@ interface Props {
 }
 
 export function ContractConfirmationModal({ draft, busy, error, onConfirm, onRevise }: Props) {
-  const fields = draft.fields.filter(field => field.status === 'known');
+  const fields = (draft.confirmation?.fields || []).filter(field => field.status === 'known');
 
   return (
     <div className="modal-overlay confirmation-overlay">
@@ -38,7 +38,7 @@ export function ContractConfirmationModal({ draft, busy, error, onConfirm, onRev
         </div>
 
         <p className="confirmation-boundary">
-          确认只会保存合同，不会自动修改代码或运行实验。
+          确认后会保存合同并创建实验准备任务；不会修改代码、创建 worktree、运行 baseline 或占用 GPU。
         </p>
         {error && <p className="confirmation-error" role="alert">{error}</p>}
 

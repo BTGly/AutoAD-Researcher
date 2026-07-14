@@ -366,7 +366,12 @@ def contract_fields_from_need_spec(spec: RequiredNeedSpec) -> dict[str, Any]:
 
 
 def save_contract_draft(run_dir: Path, contract: ResearchIntentContract) -> Path:
-    path = _write_contract(run_dir / CONTRACT_DRAFT_FILE, contract)
+    from autoad_researcher.core.control_plane.io import atomic_write_json
+    from autoad_researcher.core.control_plane.unit_of_work import ControlPlaneUnitOfWork
+
+    path = run_dir / CONTRACT_DRAFT_FILE
+    with ControlPlaneUnitOfWork(run_dir):
+        atomic_write_json(path, contract.model_dump(mode="json"))
     _append_contract_draft_updated_event(run_dir, contract)
     return path
 
@@ -445,17 +450,11 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
         lines.append("还缺少：" + ", ".join(contract.missing_required_fields))
         lines.append("你可以先回答最关键的一项：主要想优化指标、速度、显存、训练成本、复现跑通，还是稳定性/泛化？")
     else:
-        lines.append("如果以上正确，请在确认弹窗中点击“确认合同”。确认后只写入 contract，不会自动 patch 或运行实验。")
+        lines.append(
+            "如果以上正确，请在确认弹窗中点击“确认合同”。确认后会保存合同并创建实验准备任务；"
+            "不会修改代码、创建 worktree、运行 baseline 或占用 GPU。"
+        )
     return "\n".join(lines)
-
-
-def _write_contract(path: Path, contract: ResearchIntentContract) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(contract.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return path
 
 
 def _append_need_discovery_decided_event(run_dir: Path, spec: RequiredNeedSpec) -> None:

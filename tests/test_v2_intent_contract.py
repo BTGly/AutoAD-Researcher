@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from autoad_researcher.assistant.v2.intent_contract import (
     CONTRACT_DRAFT_FILE,
     CONTRACT_FILE,
@@ -12,6 +14,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     contract_fields_from_need_spec,
     format_contract_for_user,
     load_confirmed_contract,
+    load_contract_draft,
     merge_contract_draft,
     save_contract_draft,
 )
@@ -151,6 +154,84 @@ def test_draft_display_cleans_legacy_polluted_contract(tmp_path: Path):
     assert fields["success_criteria"]["value"] == "图像级 AUROC、像素级 AUROC 高于 PatchCore 基线（保持相同评估设置）"
     assert fields["user_improvement_hints"]["value"] == "特征适配器；合成异常特征；判别器/分数校准"
     assert "evaluation_protocol" not in fields
+
+
+def test_confirmation_display_uses_only_hash_bound_semantic_projection(tmp_path: Path):
+    from autoad_researcher.assistant.v2.contract_confirmation_service import (
+        request_contract_confirmation,
+    )
+    from autoad_researcher.assistant.v2.contract_hashing import confirmation_draft_sha256
+
+    run_dir = tmp_path / "run_contract"
+    (run_dir / "chat").mkdir(parents=True)
+    (run_dir / "chat" / "transcript.jsonl").write_text(
+        json.dumps(
+            {"role": "user", "content": "AUROC 有两种主流指标，这些论文方法都列上"},
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence_dir = run_dir / "evidence"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "evidence_index.jsonl").write_text(
+        json.dumps({
+            "source_id": "src_pdf",
+            "support_level": "supported",
+            "evidence_type": "paper_reading_summary",
+            "artifact_path": "summary.md",
+            "summary": "SimpleNet uses feature adaptor, Gaussian noise, and discriminator.",
+        }, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    contract = ResearchIntentContract(
+        run_id=run_dir.name,
+        research_goal="提升 baseline 在目标数据集上的表现",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
+        success_criteria="improve image AUROC",
+    )
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+
+    payload = load_research_draft_state(run_dir)
+    confirmation_fields = {
+        item["field"]: item for item in payload["confirmation"]["fields"]
+    }
+    advisory_fields = {
+        item["field"]: item for item in payload["advisory_enrichment"]
+    }
+
+    assert payload["confirmation"]["draft_hash"] == confirmation_draft_sha256(contract)
+    assert confirmation_fields["research_goal"]["value"] == contract.research_goal
+    assert confirmation_fields["primary_metrics"]["value"] == "image_level_auroc"
+    assert confirmation_fields["success_criteria"]["value"] == contract.success_criteria
+    assert "pixel_level_auroc" not in confirmation_fields["primary_metrics"]["value"]
+    assert advisory_fields["primary_metrics"]["status"] == "advisory_not_authorized"
+
+
+def test_contract_draft_atomic_replace_failure_preserves_previous_draft(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_dir = tmp_path / "run_contract"
+    run_dir.mkdir()
+    original = ResearchIntentContract(run_id=run_dir.name, research_goal="original")
+    replacement = ResearchIntentContract(run_id=run_dir.name, research_goal="replacement")
+    save_contract_draft(run_dir, original)
+
+    def fail_replace(source, destination):
+        raise OSError("simulated atomic replace failure")
+
+    monkeypatch.setattr("autoad_researcher.core.control_plane.io.os.replace", fail_replace)
+    with pytest.raises(OSError, match="atomic replace failure"):
+        save_contract_draft(run_dir, replacement)
+
+    loaded = load_contract_draft(run_dir)
+    assert loaded is not None and loaded.research_goal == "original"
+    assert not list(run_dir.glob(f".{CONTRACT_DRAFT_FILE}.*.tmp"))
 
 
 def test_draft_does_not_infer_baseline_from_source_only_repo_url(tmp_path: Path):
