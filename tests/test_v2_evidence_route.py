@@ -743,7 +743,7 @@ def test_worker_paper_summarize_job_writes_manifest_and_evidence(tmp_path: Path)
     assert any(item["evidence_type"] == "paper_artifact_manifest" for item in evidence)
 
 
-def test_reply_fallback_mentions_pending_jobs():
+def test_reply_fallback_summarizes_pending_jobs_without_internal_identifiers():
     _kind, reply = plan_reply(
         {
             "answerability": {"blocking_next_step": "parse"},
@@ -756,8 +756,10 @@ def test_reply_fallback_mentions_pending_jobs():
         "pdf什么时候解析完成",
     )
 
-    assert "paper_parse_mineru" in reply
-    assert "queued" in reply
+    assert "还有 1 项资料正在处理" in reply
+    assert "paper_parse_mineru" not in reply
+    assert "job_000001" not in reply
+    assert "queued" not in reply
     assert "不会声称已经读完相应资料" in reply
 
 

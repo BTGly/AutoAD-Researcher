@@ -742,23 +742,19 @@ def test_context_builder_preserves_recent_dialogue_for_reply_planning(tmp_path: 
     ]
 
 
-def test_reply_planner_streams_only_visible_reply_field(monkeypatch):
+def test_reply_planner_buffers_until_validated_then_emits_visible_reply(monkeypatch):
     streamed: list[str] = []
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         on_delta = kwargs.get("on_delta")
-        assert on_delta is not None
-        for chunk in [
-            '{"reply_to_user":"已记录',
-            '。", "contract_updates": {"baseline": "PatchCore"}, ',
-            '"missing_required_fields": []}',
-        ]:
-            on_delta(chunk)
+        assert on_delta is None
         return {
             "reply": json.dumps({
                 "reply_to_user": "已记录。",
                 "contract_updates": {"baseline": "PatchCore"},
                 "missing_required_fields": [],
+                "next_question": "",
+                "ready_for_confirmation": False,
             }, ensure_ascii=False),
             "error": "",
         }
@@ -794,6 +790,7 @@ def test_reply_planner_handles_reply_to_user_not_first_key_without_leaking(monke
                 "missing_required_fields": ["success_criteria"],
                 "reply_to_user": "我只展示这句。",
                 "next_question": "请确认成功标准。",
+                "ready_for_confirmation": False,
                 "ready_for_plan": False,
             }, ensure_ascii=False),
             "error": "",
@@ -827,14 +824,13 @@ def test_reply_stream_chunk_split_and_key_order_do_not_leak_internal_fields(monk
         "missing_required_fields": ["success_criteria"],
         "reply_to_user": "已记录用户可见内容。",
         "next_question": "",
+        "ready_for_confirmation": False,
         "ready_for_plan": False,
     }, ensure_ascii=False)
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         on_delta = kwargs.get("on_delta")
-        assert on_delta is not None
-        for chunk in [payload[:11], payload[11:39], payload[39:58], payload[58:77], payload[77:]]:
-            on_delta(chunk)
+        assert on_delta is None
         return {"reply": payload, "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -869,6 +865,7 @@ def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
                 "contract_updates": {"dataset": "MVTec AD"},
                 "missing_required_fields": ["dataset"],
                 "next_question": "请确认主要指标。",
+                "ready_for_confirmation": False,
             }, ensure_ascii=False),
             "error": None,
         }
@@ -953,6 +950,65 @@ def test_reply_planner_broken_json_internal_payload_uses_safe_fallback(monkeypat
     assert "PatchCore" not in reply
 
 
+@pytest.mark.parametrize("internal_text", [
+    "你可以轻松回应调侃，例如先开个玩笑。",
+    "请友好解释上一轮确认请求的目的。",
+    "HF-2 当前只需要确认研究意图。",
+    "当前状态: intake",
+])
+def test_reply_planner_never_passthroughs_internal_meta_instructions(monkeypatch, internal_text):
+    streamed: list[str] = []
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        assert kwargs.get("on_delta") is None
+        return {"reply": internal_text, "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {
+            "answerability": {"blocking_next_step": "intake"},
+            "research_intent_contract": {},
+        },
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        on_delta=streamed.append,
+    )
+
+    assert internal_text not in reply
+    assert "HF-2" not in reply
+    assert "当前状态:" not in reply
+    assert streamed == []
+
+
+def test_reply_planner_does_not_emit_before_full_schema_validation(monkeypatch):
+    streamed: list[str] = []
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        assert kwargs.get("on_delta") is None
+        return {
+            "reply": json.dumps({
+                "reply_to_user": "这句话也不能提前展示。",
+                "contract_updates": {},
+            }, ensure_ascii=False),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    _kind, reply = plan_reply(
+        {"answerability": {"blocking_next_step": "intake"}},
+        "继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        on_delta=streamed.append,
+    )
+
+    assert "这句话也不能提前展示" not in reply
+    assert streamed == []
+
+
 def test_assistant_delta_and_done_message_shapes_stay_compatible_for_reply_streaming():
     assert _assistant_delta_message("assistant_1", "hello") == {
         "type": "assistant.delta",
@@ -967,7 +1023,7 @@ def test_assistant_delta_and_done_message_shapes_stay_compatible_for_reply_strea
     }
 
 
-def test_reply_planner_parses_key_value_contract_payload(monkeypatch):
+def test_reply_planner_rejects_key_value_control_payload(monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         return {
             "reply": (
@@ -996,7 +1052,7 @@ def test_reply_planner_parses_key_value_contract_payload(monkeypatch):
         provider_url="https://example.test",
     )
 
-    assert reply == "我只能看到解析不可用，不能读论文细节。"
+    assert "以下资料暂时无法读取" in reply
     assert "reply_to_user" not in reply
     assert "contract_updates" not in reply
 
@@ -1135,9 +1191,9 @@ def test_repo_failure_question_does_not_append_pdf_conclusion():
 
     assert "网络/TLS" in reply
     assert "不像是仓库不存在" in reply
-    assert "git_clone(job_000002)" in reply
-    assert "git_clone(job_000004)" in reply
-    assert "dependency failed: job_000002" in reply
+    assert "job_000002" not in reply
+    assert "job_000004" not in reply
+    assert "git_clone" not in reply
     assert "镜像 URL" in reply
     assert "zip/tar" in reply
     assert "web_search 镜像/候选仓库" not in reply
@@ -1167,7 +1223,8 @@ def test_repo_failure_with_truncated_cloning_error_is_explained_as_transport_fai
 
     assert "网络/TLS" in reply
     assert "仓库不存在" in reply
-    assert "dependency failed: job_000001" in reply
+    assert "job_000001" not in reply
+    assert "后续仓库分析" in reply
 
 
 def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch):

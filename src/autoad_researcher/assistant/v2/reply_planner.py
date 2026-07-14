@@ -9,21 +9,29 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 
 
-_CONTRACT_REPLY_KEYS = {
-    "reply_to_user",
-    "contract_updates",
-    "missing_required_fields",
-    "new_user_confirmed_fields",
-    "next_question",
-    "optional_hints_detected",
-    "ready_for_confirmation",
-    "ready_for_experiment_agents",
-    "ready_for_plan",
-}
+class V2ReplyPlan(BaseModel):
+    """Strict internal envelope; only visible fields may reach the user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply_to_user: str
+    contract_updates: dict[str, Any]
+    missing_required_fields: list[str]
+    next_question: str
+    ready_for_confirmation: bool
+    new_user_confirmed_fields: list[str] = Field(default_factory=list)
+    optional_hints_detected: dict[str, Any] = Field(default_factory=dict)
+    ready_for_experiment_agents: bool = False
+    ready_for_plan: bool = False
+    primary_metrics: list[str] = Field(default_factory=list)
+    secondary_metrics: list[str] = Field(default_factory=list)
+    metric_priority: str | None = None
 
 
 def plan_reply(
@@ -129,12 +137,6 @@ def _llm_reply(
     ]
 
     from autoad_researcher.ui.chat_client import call_research_chat
-    defer_visible_stream = _should_defer_visible_stream(turn_gate, contract)
-    visible_stream = (
-        _VisibleReplyDeltaFilter(on_delta)
-        if on_delta is not None and not defer_visible_stream
-        else None
-    )
     started = time.perf_counter()
     result = call_research_chat(
         api_key,
@@ -142,13 +144,15 @@ def _llm_reply(
         messages,
         model=model,
         timeout_s=30,
-        on_delta=visible_stream.feed if visible_stream is not None else None,
+        # The response is an internal control envelope. Buffer it until the
+        # complete payload passes schema and authorization validation.
+        on_delta=None,
     )
     latency_ms = (time.perf_counter() - started) * 1000
 
     if result.get("reply") and not result.get("error"):
         reply_text = str(result["reply"])
-        payload = _parse_llm_contract_reply(reply_text)
+        payload, validation_errors = _parse_llm_contract_reply(reply_text)
         if payload is not None:
             if _requests_unbacked_confirmation(payload, contract):
                 append_llm_trace(
@@ -163,6 +167,7 @@ def _llm_reply(
                     raw_output=reply_text,
                     parse_status="ok",
                     schema_validation="error",
+                    schema_validation_errors=validation_errors,
                     fallback_reason="unbacked_confirmation_request",
                     latency_ms=latency_ms,
                 )
@@ -187,8 +192,10 @@ def _llm_reply(
                 schema_validation="ok",
                 latency_ms=latency_ms,
             )
-            return "answer", _visible_reply_from_llm_payload(payload)
-        internal_control_payload = _looks_like_internal_control_payload(reply_text)
+            visible_reply = _visible_reply_from_llm_payload(payload)
+            if on_delta is not None:
+                on_delta(visible_reply)
+            return "answer", visible_reply
         append_llm_trace(
             run_dir,
             call_site="reply_planner",
@@ -200,23 +207,18 @@ def _llm_reply(
             messages=messages,
             raw_output=reply_text,
             parse_status="error",
-            schema_validation="not_run",
-            fallback_reason=(
-                "internal_control_payload_parse_failed"
-                if internal_control_payload
-                else "non_json_reply_visible_passthrough"
-            ),
+            schema_validation="error" if validation_errors else "not_run",
+            schema_validation_errors=validation_errors,
+            fallback_reason="reply_plan_parse_or_schema_failed",
             latency_ms=latency_ms,
         )
-        if internal_control_payload:
-            return _reply_failure_fallback(
-                turn_gate,
-                blocking,
-                pending_jobs,
-                failed_jobs,
-                unusable,
-            )
-        return "answer", reply_text
+        return _reply_failure_fallback(
+            turn_gate,
+            blocking,
+            pending_jobs,
+            failed_jobs,
+            unusable,
+        )
 
     append_llm_trace(
         run_dir,
@@ -254,18 +256,12 @@ def _reply_failure_fallback(
     return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable_sources)
 
 
-def _requests_unbacked_confirmation(payload: dict[str, Any], contract: Any) -> bool:
-    return payload.get("ready_for_confirmation") is True and not _has_ready_contract(contract)
+def _requests_unbacked_confirmation(payload: V2ReplyPlan, contract: Any) -> bool:
+    return payload.ready_for_confirmation is True and not _has_ready_contract(contract)
 
 
 def _has_ready_contract(contract: Any) -> bool:
     return isinstance(contract, dict) and contract.get("ready_for_plan") is True
-
-
-def _should_defer_visible_stream(turn_gate: dict[str, Any], contract: Any) -> bool:
-    if _has_ready_contract(contract):
-        return False
-    return turn_gate.get("turn_type") in {"frustration", "ambiguous"}
 
 
 def _unified_fallback(
@@ -286,18 +282,10 @@ def _unified_fallback(
     if unparsed_count:
         parts.append(f"还有 {unparsed_count} 份资料尚未解析。")
     if pending_jobs:
-        job_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('status')}, {j.get('job_id')})"
-            for j in pending_jobs[:3]
-        )
-        parts.append(f"仍在处理的资料任务：{job_lines}。")
+        parts.append(f"还有 {len(pending_jobs)} 项资料正在处理。")
         parts.append("这些任务完成前，我不会声称已经读完相应资料。")
     if failed_jobs:
-        job_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
-            for j in failed_jobs[:3]
-        )
-        parts.append(f"资料处理失败：{job_lines}。")
+        parts.append(f"有 {len(failed_jobs)} 项资料处理失败；可以继续查看具体资料的失败原因。")
     if unusable_sources:
         labels = ", ".join(
             str(item.get("user_label") or item.get("source_id"))
@@ -329,37 +317,29 @@ def _parse_failure_fallback(
     failed_jobs: list[dict[str, Any]] | None = None,
     unusable_sources: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
-    parts = [f"当前状态: {blocking or 'idle'}"]
+    parts = ["目前有资料没有成功转换成可读内容。"]
     pending_jobs = pending_jobs or []
     failed_jobs = failed_jobs or []
     unusable_sources = unusable_sources or []
 
     if failed_jobs:
-        job_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
-            for j in failed_jobs[:3]
-        )
-        parts.append(f"失败任务: {job_lines}")
+        parts.append(f"共有 {len(failed_jobs)} 项相关资料处理失败。")
     if pending_jobs:
-        job_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('status')}, {j.get('job_id')})"
-            for j in pending_jobs[:3]
-        )
-        parts.append(f"仍在运行/排队的任务: {job_lines}")
+        parts.append(f"另有 {len(pending_jobs)} 项资料仍在处理中。")
     if unusable_sources:
         labels = ", ".join(
             str(item.get("user_label") or item.get("source_id"))
             for item in unusable_sources[:3]
         )
-        parts.append(f"解析不可用 source: {labels}")
+        parts.append(f"暂时无法读取的资料：{labels}")
         known_reasons = _known_unusable_reasons(unusable_sources)
         if known_reasons:
             parts.append("已知原因: " + "；".join(known_reasons[:3]))
         else:
-            parts.append("当前只知道这些 PDF 没有产出可读 paper.md。")
-    parts.append("这些是当前 artifact 里能确认的原因；我不会补充 artifact 之外的猜测。")
+            parts.append("当前只能确认这些资料没有产出可读正文。")
+    parts.append("以上只基于当前保存的处理结果；我不会补充没有证据的原因。")
     if unusable_sources:
-        parts.append("因此这份 PDF 目前不能作为论文方法细节证据。")
+        parts.append("因此这些资料目前不能作为论文方法细节的依据。")
     return "answer", "\n".join(parts)
 
 
@@ -376,36 +356,20 @@ def _job_failure_fallback(
     network_failures = [job for job in root_clone_failures if _looks_like_network_clone_failure(str(job.get("error") or ""))]
 
     if network_failures:
-        parts = ["是的，从当前 job 记录看，主要失败原因是访问 GitHub 时的网络/TLS 传输失败。"]
+        parts = ["是的，从当前保存的处理结果看，主要原因是访问 GitHub 时的网络/TLS 传输失败。"]
     elif root_clone_failures:
         parts = ["当前根因在 git clone 阶段，仓库还没有成功拉到本地。"]
     else:
-        parts = [f"当前状态: {blocking or 'idle'}"]
+        parts = ["当前没有足够信息判断仓库获取失败的具体原因。"]
 
     if root_clone_failures:
-        root_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
-            for j in root_clone_failures[:3]
-        )
-        parts.append(f"直接失败任务: {root_lines}")
+        parts.append(f"仓库获取共失败 {len(root_clone_failures)} 次。")
     elif failed_jobs:
-        job_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
-            for j in failed_jobs[:5]
-        )
-        parts.append(f"失败任务: {job_lines}")
+        parts.append(f"有 {len(failed_jobs)} 项相关资料处理失败。")
     if dependent_failures:
-        dep_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
-            for j in dependent_failures[:3]
-        )
-        parts.append(f"级联失败任务: {dep_lines}")
+        parts.append("后续仓库分析也因获取失败而没有继续。")
     if pending_jobs:
-        job_lines = ", ".join(
-            f"{j.get('job_type')}({j.get('status')}, {j.get('job_id')})"
-            for j in pending_jobs[:3]
-        )
-        parts.append(f"仍在运行/排队的任务: {job_lines}")
+        parts.append(f"另有 {len(pending_jobs)} 项资料仍在处理中。")
     if network_failures:
         parts.append("这更像是当前环境到 GitHub 的连接不稳定或被中断，不像是仓库不存在。")
         parts.append(
@@ -486,76 +450,34 @@ def _json_text(value: Any) -> str:
         return "{}"
 
 
-def _parse_llm_contract_reply(text: str) -> dict[str, Any] | None:
+def _parse_llm_contract_reply(text: str) -> tuple[V2ReplyPlan | None, list[dict[str, str]]]:
     stripped = text.strip()
     if not stripped:
-        return None
+        return None, []
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
     if fenced:
         stripped = fenced.group(1).strip()
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
-        payload = _parse_key_value_contract_reply(stripped)
-    return payload if isinstance(payload, dict) else None
-
-
-def _looks_like_internal_control_payload(text: str) -> bool:
-    if not text.strip():
-        return False
-    quoted_key = r'"(?:' + "|".join(re.escape(key) for key in _CONTRACT_REPLY_KEYS - {"reply_to_user"}) + r')"\s*:'
-    line_key = r"(?m)^\s*(?:" + "|".join(re.escape(key) for key in _CONTRACT_REPLY_KEYS - {"reply_to_user"}) + r")\s*:"
-    return bool(re.search(quoted_key, text) or re.search(line_key, text))
-
-
-def _parse_key_value_contract_reply(text: str) -> dict[str, Any] | None:
-    """Parse LLM key/value output when it ignores the requested JSON envelope."""
-    payload: dict[str, Any] = {}
-    current_key: str | None = None
-    current_lines: list[str] = []
-
-    def flush() -> None:
-        nonlocal current_key, current_lines
-        if current_key is None:
-            return
-        raw_value = "\n".join(current_lines).strip()
-        payload[current_key] = _parse_loose_value(raw_value)
-        current_key = None
-        current_lines = []
-
-    for line in text.splitlines():
-        match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$", line)
-        if match and match.group(1) in _CONTRACT_REPLY_KEYS:
-            flush()
-            current_key = match.group(1)
-            current_lines = [match.group(2)]
-        elif current_key is not None:
-            current_lines.append(line)
-    flush()
-    return payload if "reply_to_user" in payload else None
-
-
-def _parse_loose_value(value: str) -> Any:
-    stripped = value.strip()
-    if stripped in {"", "null", "None"}:
-        return None
-    if stripped in {"true", "True"}:
-        return True
-    if stripped in {"false", "False"}:
-        return False
+        return None, []
     try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
-        return stripped[1:-1]
-    return stripped
+        return V2ReplyPlan.model_validate(payload), []
+    except ValidationError as exc:
+        errors = [
+            {
+                "loc": ".".join(str(part) for part in error.get("loc", ())) or "root",
+                "type": str(error.get("type") or "validation_error"),
+            }
+            for error in exc.errors()
+        ]
+        return None, errors
 
 
-def _visible_reply_from_llm_payload(payload: dict[str, Any]) -> str:
+def _visible_reply_from_llm_payload(payload: V2ReplyPlan) -> str:
     parts: list[str] = []
-    reply = _clean_visible_text(payload.get("reply_to_user"))
-    question = _clean_visible_text(payload.get("next_question"))
+    reply = _clean_visible_text(payload.reply_to_user)
+    question = _clean_visible_text(payload.next_question)
     if reply:
         parts.append(reply)
     if question and question != reply:
@@ -569,99 +491,6 @@ def _clean_visible_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
-
-
-class _VisibleReplyDeltaFilter:
-    """Forward only user-visible reply_to_user text from streamed control output."""
-
-    def __init__(self, emit: Callable[[str], None]) -> None:
-        self._emit = emit
-        self._buffer = ""
-        self._emitted = ""
-
-    def feed(self, delta: str) -> None:
-        if not delta:
-            return
-        self._buffer += delta
-        visible = _extract_streamable_reply_to_user(self._buffer)
-        if visible is None or len(visible) <= len(self._emitted):
-            return
-        piece = visible[len(self._emitted):]
-        self._emitted = visible
-        if piece:
-            self._emit(piece)
-
-
-def _extract_streamable_reply_to_user(text: str) -> str | None:
-    json_visible = _extract_json_reply_to_user(text)
-    if json_visible is not None:
-        return json_visible
-    return _extract_key_value_reply_to_user(text)
-
-
-def _extract_json_reply_to_user(text: str) -> str | None:
-    match = re.search(r'"reply_to_user"\s*:\s*"', text)
-    if not match:
-        return None
-    return _partial_json_string_value(text, match.end())
-
-
-def _partial_json_string_value(text: str, start: int) -> str:
-    out: list[str] = []
-    i = start
-    while i < len(text):
-        ch = text[i]
-        if ch == '"':
-            return "".join(out)
-        if ch == "\\":
-            if i + 1 >= len(text):
-                break
-            nxt = text[i + 1]
-            if nxt == "u":
-                if i + 5 >= len(text):
-                    break
-                code = text[i + 2:i + 6]
-                try:
-                    out.append(chr(int(code, 16)))
-                except ValueError:
-                    break
-                i += 6
-                continue
-            out.append({
-                '"': '"',
-                "\\": "\\",
-                "/": "/",
-                "b": "\b",
-                "f": "\f",
-                "n": "\n",
-                "r": "\r",
-                "t": "\t",
-            }.get(nxt, nxt))
-            i += 2
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def _extract_key_value_reply_to_user(text: str) -> str | None:
-    match = re.search(r"(?m)^reply_to_user\s*:\s*", text)
-    if not match:
-        return None
-    segment = text[match.end():]
-    for next_key in re.finditer(r"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*", segment):
-        key = next_key.group(1)
-        if key in _CONTRACT_REPLY_KEYS and key != "reply_to_user":
-            return segment[:next_key.start()]
-
-    last_newline = segment.rfind("\n")
-    if last_newline >= 0:
-        tail = segment[last_newline + 1:].lstrip()
-        possible_keys = _CONTRACT_REPLY_KEYS - {"reply_to_user"}
-        if tail and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tail):
-            if any(key.startswith(tail) for key in possible_keys):
-                return segment[:last_newline + 1]
-    return segment
 
 
 def _known_unusable_reasons(unusable_sources: list[dict[str, Any]]) -> list[str]:

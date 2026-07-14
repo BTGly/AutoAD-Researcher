@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+STAGED_ONLY=false
+if [ "${1:-}" = "--staged-only" ]; then
+  STAGED_ONLY=true
+  shift
+fi
+
 if [ $# -lt 1 ]; then
-  echo "Usage: scripts/verify_and_push.sh \"commit message\""
+  echo "Usage: scripts/verify_and_push.sh [--staged-only] \"commit message\""
   exit 1
 fi
 
@@ -18,13 +24,21 @@ bash "$SCRIPT_DIR/verify.sh"
 echo "[gate] verification passed."
 
 echo "[gate] checking git changes..."
-if git diff --quiet && git diff --cached --quiet; then
+if [ "$STAGED_ONLY" = true ] && git diff --cached --quiet; then
+  echo "[gate] staged-only mode requires explicitly staged changes."
+  exit 1
+fi
+if [ "$STAGED_ONLY" = false ] && git diff --quiet && git diff --cached --quiet; then
   echo "[gate] no changes to commit."
   exit 0
 fi
 
-echo "[gate] staging changes..."
-git add .
+if [ "$STAGED_ONLY" = true ]; then
+  echo "[gate] using explicitly staged changes only."
+else
+  echo "[gate] staging changes..."
+  git add .
+fi
 
 echo "[gate] committing..."
 git commit -m "$COMMIT_MESSAGE"
