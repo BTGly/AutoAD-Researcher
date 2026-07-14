@@ -112,7 +112,10 @@ def test_ensure_reuses_one_session_and_prepare_job_and_rejects_contract_replacem
     assert len(PipelineJobStore(run_dir).list()) == 1
     assert PipelineJobStore(run_dir).get(first.prepare_job_id) is not None
 
-    save_confirmed_contract(run_dir, _contract(run_dir, goal="Replace authorization"))
+    atomic_write_json(
+        run_dir / "research_intent_contract.json",
+        _contract(run_dir, goal="Replace authorization").model_dump(mode="json"),
+    )
     with pytest.raises(CorruptAuthoritativeStore, match="cannot replace"):
         ensure_experiment_session(run_dir)
     assert len(PipelineJobStore(run_dir).list()) == 1

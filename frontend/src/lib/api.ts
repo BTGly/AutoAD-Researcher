@@ -1,4 +1,4 @@
-import type { TaskRun } from './types';
+import type { ExperimentControlState, TaskRun } from './types';
 
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
@@ -154,6 +154,29 @@ export async function decideContractConfirmation(
     body: JSON.stringify({ confirmation_id: confirmationId, decision }),
   });
   if (!res.ok) throw new Error(`Contract confirmation error: ${res.status}`);
+  return res.json();
+}
+
+export async function getExperimentSession(runId: string): Promise<ExperimentControlState> {
+  const res = await fetch(`/api/runs/${runId}/experiment-session`);
+  if (!res.ok) return { session: null, readiness: null, job: null, requests: [] };
+  return res.json();
+}
+
+export async function requestExperimentMaterialization(
+  runId: string,
+  requestId: string,
+  force: boolean,
+  reason: string,
+  retry = false,
+): Promise<any> {
+  const action = retry ? 'retry' : 'materialize';
+  const res = await fetch(`/api/runs/${runId}/experiment-session/${action}`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ request_id: requestId, force, reason }),
+  });
+  if (!res.ok) throw new Error(`Experiment materialization error: ${res.status}`);
   return res.json();
 }
 

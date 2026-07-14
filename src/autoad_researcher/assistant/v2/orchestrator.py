@@ -13,6 +13,8 @@ from typing import Any
 
 from autoad_researcher.assistant.v2.source_action_planner import SourceActionPlan, plan_source_actions
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
+    load_pending_contract_confirmation,
+    recover_contract_confirmation,
     request_contract_confirmation,
     resolve_pending_contract_confirmation,
 )
@@ -26,7 +28,6 @@ from autoad_researcher.assistant.v2.intent_contract import (
     format_contract_for_user,
     load_contract_draft,
     merge_contract_draft,
-    save_confirmed_contract,
     save_contract_draft,
 )
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
@@ -172,8 +173,11 @@ class ResearchOrchestratorV2:
             if contract is not None and contract.ready_for_plan:
                 if not draft_persisted:
                     save_contract_draft(run_dir, contract)
-                save_confirmed_contract(run_dir, contract)
-                resolve_pending_contract_confirmation(run_dir, decision="approved")
+                projection = recover_contract_confirmation(run_dir)
+                if projection is None or projection.status != "confirmed":
+                    if load_pending_contract_confirmation(run_dir) is None:
+                        request_contract_confirmation(run_dir, contract)
+                    resolve_pending_contract_confirmation(run_dir, decision="approved")
                 return OrchestratorResult(
                     reply=(
                         "已确认 ResearchIntentContract，并写入 `research_intent_contract.json`。"

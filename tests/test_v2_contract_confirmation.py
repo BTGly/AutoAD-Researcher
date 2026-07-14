@@ -88,6 +88,15 @@ async def test_confirmation_route_approves_current_ready_draft(tmp_path: Path, m
     assert (run_dir / CONTRACT_FILE).is_file()
     assert load_pending_contract_confirmation(run_dir) is None
 
+    replay = await draft_route.decide_contract_confirmation(
+        run_dir.name,
+        draft_route.ContractConfirmationDecision(
+            confirmation_id=pending["confirmation_id"],
+            decision="approved",
+        ),
+    )
+    assert replay["status"] == "approved"
+
 
 @pytest.mark.asyncio
 async def test_confirmation_route_rejects_stale_confirmation(tmp_path: Path, monkeypatch):

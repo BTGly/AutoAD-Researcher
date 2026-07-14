@@ -15,12 +15,27 @@ from autoad_researcher.ui.sources import load_source_registry
 
 
 FIELD_LABELS = {
+    "task_domain": "任务领域",
     "research_goal": "研究目标",
     "baseline": "基线方法",
+    "baseline_repo": "基线仓库",
+    "baseline_commit": "基线提交",
+    "baseline_entrypoint": "基线入口",
+    "baseline_config": "基线配置",
     "dataset": "数据集",
+    "evaluation_protocol": "评估协议",
     "primary_metrics": "主要指标",
+    "secondary_metrics": "次要指标",
+    "metric_priority": "指标优先级",
     "success_criteria": "成功标准",
+    "compute_environment": "计算环境",
     "execution_mode": "执行模式",
+    "user_improvement_hints": "用户改进线索",
+    "user_target_module_hints": "用户目标模块线索",
+    "preferred_method_hints": "偏好方法线索",
+    "risk_preference": "风险偏好",
+    "allowed_change_scope": "允许修改范围",
+    "forbidden_change_scope": "禁止修改范围",
 }
 
 METRIC_LABELS = {
@@ -37,6 +52,20 @@ HINT_LABELS = {
     "sampling": "采样/coreset 策略",
 }
 
+OMIT_WHEN_MISSING_FIELDS = {
+    "baseline_commit",
+    "baseline_entrypoint",
+    "baseline_config",
+    "evaluation_protocol",
+    "secondary_metrics",
+    "metric_priority",
+    "compute_environment",
+    "preferred_method_hints",
+    "user_improvement_hints",
+    "user_target_module_hints",
+    "risk_preference",
+}
+
 
 def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
     transcript = _load_transcript(run_dir)
@@ -50,15 +79,27 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
     if contract is not None:
         primary_metrics = _augment_metrics_from_transcript(contract.primary_metrics, transcript)
         fields = {
+            "task_domain": contract.task_domain,
             "research_goal": _display_goal(contract.research_goal, contract.baseline, contract.dataset, primary_metrics),
             "baseline": contract.baseline,
-            "dataset": contract.dataset,
-            "primary_metrics": primary_metrics,
-            "success_criteria": _display_success_criteria(contract.success_criteria, contract.baseline, primary_metrics),
-            "execution_mode": contract.execution_mode,
             "baseline_repo": contract.baseline_repo,
+            "baseline_commit": contract.baseline_commit,
+            "baseline_entrypoint": contract.baseline_entrypoint,
+            "baseline_config": contract.baseline_config,
+            "dataset": contract.dataset,
+            "evaluation_protocol": contract.evaluation_protocol,
+            "primary_metrics": primary_metrics,
+            "secondary_metrics": contract.secondary_metrics,
+            "metric_priority": contract.metric_priority,
+            "success_criteria": _display_success_criteria(contract.success_criteria, contract.baseline, primary_metrics),
+            "compute_environment": contract.compute_environment,
+            "execution_mode": contract.execution_mode,
             "user_improvement_hints": contract.user_improvement_hints or _improvement_hints_from_transcript_and_evidence(transcript, usable),
+            "user_target_module_hints": contract.user_target_module_hints,
             "preferred_method_hints": contract.preferred_method_hints or _method_hints_from_evidence(usable),
+            "risk_preference": contract.risk_preference,
+            "allowed_change_scope": contract.allowed_change_scope,
+            "forbidden_change_scope": contract.forbidden_change_scope,
         }
         missing = list(contract.missing_required_fields)
         ready = contract.ready_for_plan
@@ -169,20 +210,34 @@ def _missing_fields(fields: dict[str, Any]) -> list[str]:
 
 def _render_fields(fields: dict[str, Any]) -> list[dict[str, Any]]:
     ordered = [
+        ("task_domain", "任务领域"),
         ("research_goal", "研究目标"),
         ("baseline", "基线方法"),
-        ("dataset", "数据集"),
-        ("primary_metrics", "主要指标"),
-        ("success_criteria", "成功标准"),
-        ("execution_mode", "执行模式"),
         ("baseline_repo", "基线仓库"),
+        ("baseline_commit", "基线提交"),
+        ("baseline_entrypoint", "基线入口"),
+        ("baseline_config", "基线配置"),
+        ("dataset", "数据集"),
+        ("evaluation_protocol", "评估协议"),
+        ("primary_metrics", "主要指标"),
+        ("secondary_metrics", "次要指标"),
+        ("metric_priority", "指标优先级"),
+        ("success_criteria", "成功标准"),
+        ("compute_environment", "计算环境"),
+        ("execution_mode", "执行模式"),
         ("preferred_method_hints", "论文/方法线索"),
         ("user_improvement_hints", "用户改进想法"),
+        ("user_target_module_hints", "用户目标模块线索"),
+        ("risk_preference", "风险偏好"),
+        ("allowed_change_scope", "允许修改范围"),
+        ("forbidden_change_scope", "禁止修改范围"),
     ]
     rendered: list[dict[str, Any]] = []
     for key, label in ordered:
+        if key not in fields:
+            continue
         value = fields.get(key)
-        if key in {"preferred_method_hints", "user_improvement_hints"} and value in (None, "", [], {}):
+        if key in OMIT_WHEN_MISSING_FIELDS and value in (None, "", [], {}):
             continue
         rendered.append({
             "field": key,

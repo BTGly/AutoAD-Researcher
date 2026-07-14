@@ -39,6 +39,7 @@ from autoad_researcher.core.control_plane.job_store import (
     PipelineJobStore,
 )
 from autoad_researcher.core.control_plane.lock import RunMutationLock
+from autoad_researcher.core.control_plane.materialization_requests import MaterializationRequestStore
 from autoad_researcher.core.control_plane.models import (
     ExecutionAuthorization,
     ExperimentReadiness,
@@ -132,44 +133,53 @@ def load_experiment_readiness(run_dir: Path) -> ExperimentReadiness | None:
 def ensure_experiment_session(run_dir: Path, *, now: datetime | None = None) -> ExperimentSession:
     current = now or _utcnow()
     with ControlPlaneUnitOfWork(run_dir) as uow:
-        contract = load_confirmed_contract_strict_unlocked(run_dir)
-        contract_hash = confirmed_contract_sha256(contract)
-        session_id = f"experiment_session_{contract_hash[:16]}"
-        job_store = uow.jobs
-        jobs = job_store._load_unlocked()
-        job, created = job_store._enqueue_unlocked(
-            jobs,
-            source_id=f"experiment:{session_id}",
-            job_type=EXPERIMENT_PREPARE_JOB_TYPE,
-            evidence_role="experiment_readiness",
-            payload={"session_id": session_id, "contract_sha256": contract_hash},
-            idempotency_key=f"experiment_prepare:{contract_hash}",
-        )
-        existing = load_session_unlocked(run_dir)
-        if existing is not None:
-            if existing.contract_sha256 != contract_hash:
-                raise CorruptAuthoritativeStore("one run cannot replace its confirmed experiment contract")
-            if existing.session_id != session_id or existing.prepare_job_id != job.job_id:
-                raise CorruptAuthoritativeStore("experiment session identity does not match canonical job")
-            if created:
-                raise CorruptAuthoritativeStore("existing session unexpectedly created a second prepare job")
-            return existing
+        return ensure_experiment_session_unlocked(run_dir, uow, now=current)
 
+
+def ensure_experiment_session_unlocked(
+    run_dir: Path,
+    uow: ControlPlaneUnitOfWork,
+    *,
+    now: datetime,
+) -> ExperimentSession:
+    contract = load_confirmed_contract_strict_unlocked(run_dir)
+    contract_hash = confirmed_contract_sha256(contract)
+    session_id = f"experiment_session_{contract_hash[:16]}"
+    job_store = uow.jobs
+    jobs = job_store._load_unlocked()
+    job, created = job_store._enqueue_unlocked(
+        jobs,
+        source_id=f"experiment:{session_id}",
+        job_type=EXPERIMENT_PREPARE_JOB_TYPE,
+        evidence_role="experiment_readiness",
+        payload={"session_id": session_id, "contract_sha256": contract_hash},
+        idempotency_key=f"experiment_prepare:{contract_hash}",
+    )
+    existing = load_session_unlocked(run_dir)
+    if existing is not None:
+        if existing.contract_sha256 != contract_hash:
+            raise CorruptAuthoritativeStore("one run cannot replace its confirmed experiment contract")
+        if existing.session_id != session_id or existing.prepare_job_id != job.job_id:
+            raise CorruptAuthoritativeStore("experiment session identity does not match canonical job")
         if created:
-            job_store._write_unlocked(jobs)
-        status = _session_status_for_job(run_dir, job, contract_hash)
-        session = ExperimentSession(
-            session_id=session_id,
-            run_id=run_dir.name,
-            contract_sha256=contract_hash,
-            prepare_job_id=job.job_id,
-            status=status,
-            created_at=current,
-            updated_at=current,
-            error=str(job.error) if job.status == "failed" and job.error is not None else None,
-        )
-        write_session_unlocked(run_dir, session)
-        return session
+            raise CorruptAuthoritativeStore("existing session unexpectedly created a second prepare job")
+        return existing
+
+    if created:
+        job_store._write_unlocked(jobs)
+    status = _session_status_for_job(run_dir, job, contract_hash)
+    session = ExperimentSession(
+        session_id=session_id,
+        run_id=run_dir.name,
+        contract_sha256=contract_hash,
+        prepare_job_id=job.job_id,
+        status=status,
+        created_at=now,
+        updated_at=now,
+        error=str(job.error) if job.status == "failed" and job.error is not None else None,
+    )
+    write_session_unlocked(run_dir, session)
+    return session
 
 
 def collect_materialization_input_unlocked(
@@ -233,6 +243,16 @@ def materialize_claimed_experiment_prepare(
         raise ValueError("readiness materialization requires an experiment_prepare job")
     if claimed_job.claim_token is None:
         raise CorruptAuthoritativeStore("claimed experiment_prepare job has no claim token")
+    effective_force = force
+    if claimed_job.active_control_request_id is not None:
+        request_record = MaterializationRequestStore(run_dir).get(
+            claimed_job.active_control_request_id
+        )
+        if request_record is None or request_record.status != "scheduled":
+            raise CorruptAuthoritativeStore(
+                "active materialization request is missing or is not scheduled"
+            )
+        effective_force = effective_force or request_record.force
     resolver_tuple = tuple(resolvers)
     initial_input = collect_materialization_input_unlocked(run_dir, resolver_tuple)
     initial_hash = materialization_input_sha256(initial_input)
@@ -298,7 +318,7 @@ def materialize_claimed_experiment_prepare(
 
         canonical = load_readiness_unlocked(run_dir)
         no_op = bool(
-            not force
+            not effective_force
             and canonical is not None
             and canonical.materialization_input_sha256 == initial_hash
             and _readiness_semantic_sha256(canonical) == _readiness_semantic_sha256(candidate)
@@ -347,6 +367,12 @@ def materialize_claimed_experiment_prepare(
         })
         jobs[index] = completed
         job_store._write_unlocked(jobs)
+        if active_job.active_control_request_id is not None:
+            MaterializationRequestStore(run_dir).mark_terminal_unlocked(
+                active_job.active_control_request_id,
+                status="completed",
+                now=publication_time,
+            )
         return MaterializationOutcome(
             status=result_status,
             job_status="completed",
@@ -512,7 +538,7 @@ def _finish_stale_unlocked(
     )
     updated = job_store._reset_for_requeue(
         job,
-        pending_control_request_id=job.active_control_request_id,
+        pending_control_request_id=job.active_control_request_id if retry else None,
         next_eligible_at=next_eligible,
     ).model_copy(update={
         "status": "queued" if retry else "failed",
@@ -522,6 +548,13 @@ def _finish_stale_unlocked(
     })
     jobs[index] = updated
     job_store._write_unlocked(jobs)
+    if not retry and job.active_control_request_id is not None:
+        MaterializationRequestStore(run_dir).mark_terminal_unlocked(
+            job.active_control_request_id,
+            status="failed",
+            now=now,
+            error="input_unstable",
+        )
     return MaterializationOutcome(
         status="stale_input",
         job_status=updated.status,

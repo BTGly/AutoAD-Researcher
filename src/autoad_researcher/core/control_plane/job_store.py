@@ -405,6 +405,17 @@ class PipelineJobStore:
             })
             jobs[index] = failed
             self._write_unlocked(jobs)
+            if job.job_type == EXPERIMENT_PREPARE_JOB_TYPE and job.active_control_request_id is not None:
+                from autoad_researcher.core.control_plane.materialization_requests import (
+                    MaterializationRequestStore,
+                )
+
+                MaterializationRequestStore(self.run_dir).mark_terminal_unlocked(
+                    job.active_control_request_id,
+                    status="failed",
+                    now=current,
+                    error=error,
+                )
             return failed
 
     def requeue_expired(self, *, now: datetime | None = None) -> list[JobTransition]:
@@ -412,6 +423,7 @@ class PipelineJobStore:
         with RunMutationLock(self.run_dir, mode="exclusive"):
             jobs = self._load_unlocked()
             transitions: list[JobTransition] = []
+            terminal_request_ids: list[str] = []
             for index, job in enumerate(jobs):
                 if job.status != "running" or job.job_type != EXPERIMENT_PREPARE_JOB_TYPE:
                     continue
@@ -450,7 +462,7 @@ class PipelineJobStore:
                 )
                 updated = self._reset_for_requeue(
                     job,
-                    pending_control_request_id=job.active_control_request_id,
+                    pending_control_request_id=job.active_control_request_id if retry else None,
                     next_eligible_at=next_eligible,
                 ).model_copy(update={
                     "status": "queued" if retry else "failed",
@@ -459,6 +471,8 @@ class PipelineJobStore:
                     "consecutive_lease_expiry_count": count,
                 })
                 jobs[index] = updated
+                if not retry and job.active_control_request_id is not None:
+                    terminal_request_ids.append(job.active_control_request_id)
                 transitions.append(JobTransition(
                     job_id=job.job_id,
                     from_status="running",
@@ -468,6 +482,18 @@ class PipelineJobStore:
                 ))
             if transitions:
                 self._write_unlocked(jobs)
+                from autoad_researcher.core.control_plane.materialization_requests import (
+                    MaterializationRequestStore,
+                )
+
+                request_store = MaterializationRequestStore(self.run_dir)
+                for request_id in terminal_request_ids:
+                    request_store.mark_terminal_unlocked(
+                        request_id,
+                        status="failed",
+                        now=current,
+                        error="repeated_lease_expiry",
+                    )
             return transitions
 
     def requeue_stale_input(
@@ -520,7 +546,7 @@ class PipelineJobStore:
             )
             updated = self._reset_for_requeue(
                 job,
-                pending_control_request_id=job.active_control_request_id,
+                pending_control_request_id=job.active_control_request_id if retry else None,
                 next_eligible_at=next_eligible,
             ).model_copy(update={
                 "status": "queued" if retry else "failed",
@@ -530,6 +556,17 @@ class PipelineJobStore:
             })
             jobs[index] = updated
             self._write_unlocked(jobs)
+            if not retry and job.active_control_request_id is not None:
+                from autoad_researcher.core.control_plane.materialization_requests import (
+                    MaterializationRequestStore,
+                )
+
+                MaterializationRequestStore(self.run_dir).mark_terminal_unlocked(
+                    job.active_control_request_id,
+                    status="failed",
+                    now=current,
+                    error="input_unstable",
+                )
             return JobTransition(
                 job_id=job.job_id,
                 from_status="running",

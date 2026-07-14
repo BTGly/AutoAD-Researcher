@@ -372,7 +372,22 @@ def save_contract_draft(run_dir: Path, contract: ResearchIntentContract) -> Path
 
 
 def save_confirmed_contract(run_dir: Path, contract: ResearchIntentContract) -> Path:
-    return _write_contract(run_dir / CONTRACT_FILE, contract)
+    from autoad_researcher.assistant.v2.contract_hashing import confirmed_contract_sha256
+    from autoad_researcher.core.control_plane.errors import CorruptAuthoritativeStore
+    from autoad_researcher.core.control_plane.io import atomic_write_json
+    from autoad_researcher.core.control_plane.unit_of_work import ControlPlaneUnitOfWork
+
+    path = run_dir / CONTRACT_FILE
+    with ControlPlaneUnitOfWork(run_dir):
+        existing = _load_contract(path)
+        if path.is_file() and existing is None:
+            raise CorruptAuthoritativeStore(f"invalid confirmed contract: {path}")
+        if existing is not None:
+            if confirmed_contract_sha256(existing) != confirmed_contract_sha256(contract):
+                raise CorruptAuthoritativeStore("one run cannot replace its confirmed contract")
+            return path
+        atomic_write_json(path, contract.model_dump(mode="json"))
+    return path
 
 
 def load_contract_draft(run_dir: Path) -> ResearchIntentContract | None:
@@ -395,16 +410,23 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
 
     lines = [
         "我整理到的研究意图合同如下：",
+        f"- task domain：{contract.task_domain or '待确认'}",
         f"- 研究目标：{contract.research_goal or '待确认'}",
         f"- baseline：{contract.baseline or '待确认'}",
         f"- baseline repo：{contract.baseline_repo or '未提供，可后续由 repo analyzer 补'}",
+        f"- baseline commit：{contract.baseline_commit or '未提供'}",
+        f"- baseline entrypoint：{contract.baseline_entrypoint or '未提供'}",
+        f"- baseline config：{contract.baseline_config or '未提供'}",
         f"- dataset：{contract.dataset or '待确认'}",
         f"- primary metrics：{', '.join(contract.primary_metrics) if contract.primary_metrics else '待确认'}",
+        f"- secondary metrics：{', '.join(contract.secondary_metrics) if contract.secondary_metrics else '未指定'}",
         f"- metric priority：{contract.metric_priority or '未指定'}",
         f"- success criteria：{contract.success_criteria or '待确认'}",
         f"- execution mode：{contract.execution_mode}",
         f"- evaluation protocol：{contract.evaluation_protocol or '可后续由 repo/实验 agents 补全'}",
         f"- compute environment：{contract.compute_environment or '可后续由环境检测补全'}",
+        f"- risk preference：{contract.risk_preference or '未指定'}",
+        "- allowed boundary：" + ", ".join(contract.allowed_change_scope),
         "- forbidden boundary：" + ", ".join(contract.forbidden_change_scope),
     ]
     if contract.user_improvement_hints:
@@ -415,6 +437,10 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
         lines.append("- 目标模块 hint：" + "；".join(contract.user_target_module_hints))
     else:
         lines.append("- 目标模块 hint：未提供；这不阻塞，后续 repo/experiment agents 会定位。")
+    if contract.preferred_method_hints:
+        lines.append("- 偏好方法 hint：" + "；".join(contract.preferred_method_hints))
+    else:
+        lines.append("- 偏好方法 hint：未提供。")
     if contract.missing_required_fields:
         lines.append("还缺少：" + ", ".join(contract.missing_required_fields))
         lines.append("你可以先回答最关键的一项：主要想优化指标、速度、显存、训练成本、复现跑通，还是稳定性/泛化？")

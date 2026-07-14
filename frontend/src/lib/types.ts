@@ -62,6 +62,33 @@ export interface ContractConfirmationState {
   requested_at: string | null;
 }
 
+export interface ExperimentControlState {
+  session: null | {
+    session_id: string;
+    prepare_job_id: string;
+    status: 'queued' | 'preparing' | 'materialized' | 'failed';
+    error?: string;
+  };
+  readiness: null | {
+    revision: number;
+    planning_readiness: { ready: boolean; blocking_reasons: string[] };
+    implementation_readiness: { ready: boolean; blocking_reasons: string[] };
+    execution_readiness: { ready: boolean; blocking_reasons: string[] };
+    execution_authorization: { authorized: boolean; reason: string };
+  };
+  job: null | {
+    job_id: string;
+    status: string;
+    attempt_count: number;
+    error?: string;
+  };
+  requests: Array<{
+    request_id: string;
+    status: string;
+    reason: string;
+  }>;
+}
+
 export interface JobItem {
   jobId: string;
   jobType: string;

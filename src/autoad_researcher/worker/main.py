@@ -36,6 +36,8 @@ from autoad_researcher.core.control_plane.readiness import (
     materialize_claimed_experiment_prepare,
     repair_experiment_session_projection,
 )
+from autoad_researcher.core.control_plane.reconciliation import reconcile_control_plane_events
+from autoad_researcher.core.control_plane.validate import validate_authoritative_control_plane_store
 
 RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
 
@@ -125,6 +127,7 @@ def main():
 
 
 def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
+    validate_authoritative_control_plane_store(run_dir)
     store = PipelineJobStore(run_dir)
     audit = _AuditWriter(run_dir)
     processed = 0
@@ -275,6 +278,12 @@ def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
         except JobClaimFenceError as exc:
             print(f"[worker] lost claim for {job_id}: {exc}", file=sys.stderr)
         processed += 1
+
+    if not audit.degraded:
+        try:
+            reconcile_control_plane_events(run_dir)
+        except (CorruptAuditProjection, EventIdempotencyConflict) as exc:
+            audit._degrade(exc)
 
     return processed
 

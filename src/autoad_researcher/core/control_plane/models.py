@@ -199,3 +199,34 @@ class MaterializationOutcome(BaseModel):
     readiness_path: str | None = None
     materialization_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     publication_check_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ContractConfirmationProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    confirmation_id: str = Field(min_length=1)
+    draft_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["pending", "rejected", "confirmed"]
+    decision: Literal["approved", "rejected"] | None = None
+    contract_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    requested_at: datetime
+    resolved_at: datetime | None = None
+    inconsistency: str | None = None
+    audit_repair_required: bool = False
+
+
+class MaterializationRequestRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    request_id: str = Field(min_length=1)
+    force: bool
+    reason: str = Field(min_length=1)
+    action: Literal["scheduled", "not_scheduled"]
+    status: Literal["scheduled", "not_scheduled", "completed", "failed"]
+    executed: bool
+    active_job_id: str = Field(pattern=r"^job_[0-9]{6}$")
+    created_at: datetime
+    completed_at: datetime | None = None
+    error: str | None = None

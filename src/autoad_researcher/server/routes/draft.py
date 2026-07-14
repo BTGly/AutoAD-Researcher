@@ -4,11 +4,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
-    load_pending_contract_confirmation,
-    resolve_contract_confirmation,
+    decide_contract_confirmation as decide_contract_confirmation_saga,
 )
 from autoad_researcher.assistant.v2.draft_service import load_research_draft_state
-from autoad_researcher.assistant.v2.intent_contract import load_contract_draft, save_confirmed_contract
 from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
 
@@ -52,25 +50,14 @@ async def decide_contract_confirmation(run_id: str, request: ContractConfirmatio
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="run not found")
 
-    pending = load_pending_contract_confirmation(run_dir)
-    if pending is None:
-        raise HTTPException(status_code=409, detail="no pending contract confirmation")
-    if pending.get("confirmation_id") != request.confirmation_id:
-        raise HTTPException(status_code=409, detail="contract confirmation is stale")
-
-    if request.decision == "approved":
-        contract = load_contract_draft(run_dir)
-        if contract is None:
-            raise HTTPException(status_code=409, detail="contract draft not found")
-        if not contract.ready_for_plan:
-            raise HTTPException(status_code=409, detail="contract draft is not ready for confirmation")
-        save_confirmed_contract(run_dir, contract)
-
-    result = resolve_contract_confirmation(
-        run_dir,
-        confirmation_id=request.confirmation_id,
-        decision=request.decision,
-    )
+    try:
+        result = decide_contract_confirmation_saga(
+            run_dir,
+            confirmation_id=request.confirmation_id,
+            decision=request.decision,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     result["message"] = (
         "研究任务合同已确认。" if request.decision == "approved" else "已返回继续修改研究任务合同。"
     )

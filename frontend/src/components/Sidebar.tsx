@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { SourceItem, JobItem, EvidenceItem, UnusableParsedSource, TabId, DraftField, DraftState } from '../lib/types';
+import type { SourceItem, JobItem, EvidenceItem, UnusableParsedSource, TabId, DraftField, DraftState, ExperimentControlState } from '../lib/types';
 
 interface Props {
   sources: SourceItem[];
@@ -9,6 +9,10 @@ interface Props {
   evidenceCount: number;
   draftReady: boolean;
   draft?: DraftState | null;
+  experimentControl?: ExperimentControlState | null;
+  experimentBusy?: boolean;
+  onMaterialize?: () => void;
+  onRetryMaterialization?: () => void;
   onDeleteSource?: (sourceId: string) => void;
   children?: React.ReactNode;
 }
@@ -21,7 +25,7 @@ interface DisplayMeta {
 const CORE_DRAFT_FIELDS = new Set(['research_goal', 'baseline', 'dataset', 'primary_metrics', 'success_criteria']);
 const METHOD_DRAFT_FIELDS = new Set(['preferred_method_hints', 'user_improvement_hints', 'target_module', 'improvement_idea']);
 
-export function Sidebar({ sources, jobs, evidence, unusableParsedSources, evidenceCount, draftReady, draft, onDeleteSource, children }: Props) {
+export function Sidebar({ sources, jobs, evidence, unusableParsedSources, evidenceCount, draftReady, draft, experimentControl, experimentBusy, onMaterialize, onRetryMaterialization, onDeleteSource, children }: Props) {
   const [tab, setTab] = useState<TabId>('sources');
 
   const tabs: { id: TabId; label: string; count: number }[] = [
@@ -49,7 +53,15 @@ export function Sidebar({ sources, jobs, evidence, unusableParsedSources, eviden
         {tab === 'sources' && <SourcesList sources={sources} onDeleteSource={onDeleteSource} />}
         {tab === 'jobs' && <JobsList jobs={jobs} />}
         {tab === 'evidence' && <EvidenceList evidence={evidence} unusableParsedSources={unusableParsedSources} />}
-        {tab === 'draft' && <DraftPanel draft={draft || null} />}
+        {tab === 'draft' && (
+          <DraftPanel
+            draft={draft || null}
+            experimentControl={experimentControl || null}
+            experimentBusy={Boolean(experimentBusy)}
+            onMaterialize={onMaterialize}
+            onRetryMaterialization={onRetryMaterialization}
+          />
+        )}
       </div>
       {children}
     </div>
@@ -178,7 +190,19 @@ function EvidenceList({ evidence, unusableParsedSources }: { evidence: EvidenceI
   );
 }
 
-function DraftPanel({ draft }: { draft: DraftState | null }) {
+function DraftPanel({
+  draft,
+  experimentControl,
+  experimentBusy,
+  onMaterialize,
+  onRetryMaterialization,
+}: {
+  draft: DraftState | null;
+  experimentControl: ExperimentControlState | null;
+  experimentBusy: boolean;
+  onMaterialize?: () => void;
+  onRetryMaterialization?: () => void;
+}) {
   if (!draft || !draft.has_draft) {
     return <EmptyState title="暂无研究计划草案" detail="当对话里出现基线、数据集、指标或资料线索后，草案会自动整理。" />;
   }
@@ -200,6 +224,29 @@ function DraftPanel({ draft }: { draft: DraftState | null }) {
       <DraftSection title="核心信息" fields={coreFields} />
       <DraftSection title="方法线索" fields={methodFields} />
       <DraftSection title="执行与来源" fields={otherFields} />
+
+      {experimentControl?.session && (
+        <div className="sidebar-card">
+          <div className="sidebar-card-head">
+            <div className="sidebar-title">实验准备控制面</div>
+            <Badge meta={jobStatusMeta(experimentControl.job?.status || experimentControl.session.status)} />
+          </div>
+          <div className="sidebar-muted">Session：{experimentControl.session.session_id}</div>
+          <div className="sidebar-muted">
+            planning：{experimentControl.readiness?.planning_readiness.ready ? 'ready' : 'blocked'} · implementation：{experimentControl.readiness?.implementation_readiness.ready ? 'ready' : 'blocked'} · execution：{experimentControl.readiness?.execution_readiness.ready ? 'ready' : 'blocked'}
+          </div>
+          {experimentControl.job?.status === 'completed' && onMaterialize && (
+            <button onClick={onMaterialize} disabled={experimentBusy}>
+              {experimentBusy ? '处理中...' : '重新物化 readiness'}
+            </button>
+          )}
+          {experimentControl.job?.status === 'failed' && onRetryMaterialization && (
+            <button onClick={onRetryMaterialization} disabled={experimentBusy}>
+              {experimentBusy ? '处理中...' : '重试实验准备'}
+            </button>
+          )}
+        </div>
+      )}
 
       {draft.missing.length > 0 && (
         <div className="sidebar-card warning">
@@ -304,6 +351,7 @@ function jobTypeMeta(jobType: string): DisplayMeta {
     repo_summarize: '分析仓库',
     web_search: '搜索资料',
     web_fetch: '抓取网页',
+    experiment_prepare: '物化实验 readiness',
   };
   return { label: labels[jobType] || jobType || '后台任务', tone: 'info' };
 }

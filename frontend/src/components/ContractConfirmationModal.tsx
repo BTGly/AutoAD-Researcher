@@ -9,17 +9,8 @@ interface Props {
   onRevise: () => void;
 }
 
-const SUMMARY_FIELDS = new Set([
-  'research_goal',
-  'baseline',
-  'dataset',
-  'primary_metrics',
-  'success_criteria',
-  'execution_mode',
-]);
-
 export function ContractConfirmationModal({ draft, busy, error, onConfirm, onRevise }: Props) {
-  const fields = draft.fields.filter(field => SUMMARY_FIELDS.has(field.field) && field.status === 'known');
+  const fields = draft.fields.filter(field => field.status === 'known');
 
   return (
     <div className="modal-overlay confirmation-overlay">

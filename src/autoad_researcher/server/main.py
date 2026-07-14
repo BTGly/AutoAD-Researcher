@@ -45,7 +45,7 @@ async def stop_embedded_worker():
         _worker_task = None
 
 
-from autoad_researcher.server.routes import artifacts, chat, draft, evidence, experiment_config, jobs, report_route, runs, sources, ws
+from autoad_researcher.server.routes import artifacts, chat, draft, evidence, experiment_config, experiment_control, jobs, report_route, runs, sources, ws
 
 app.include_router(chat.router)
 app.include_router(runs.router)
@@ -56,6 +56,7 @@ app.include_router(artifacts.router)
 app.include_router(evidence.router)
 app.include_router(ws.router)
 app.include_router(experiment_config.router)
+app.include_router(experiment_control.router)
 app.include_router(report_route.router)
 
 # Serve React frontend (production mode)

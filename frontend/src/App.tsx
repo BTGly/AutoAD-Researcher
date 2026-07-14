@@ -27,16 +27,18 @@ import {
   getEvidence,
   getEvidenceState,
   getDraft,
+  getExperimentSession,
   getJobs,
   getRuns,
   getSources,
   getTranscript,
   renameRun,
+  requestExperimentMaterialization,
   sendChat,
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, DraftState } from './lib/types';
+import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, DraftState, ExperimentControlState } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
@@ -58,6 +60,8 @@ export default function App() {
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [unusableParsedSources, setUnusableParsedSources] = useState<UnusableParsedSource[]>([]);
   const [draft, setDraft] = useState<DraftState | null>(null);
+  const [experimentControl, setExperimentControl] = useState<ExperimentControlState | null>(null);
+  const [experimentBusy, setExperimentBusy] = useState(false);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [confirmationError, setConfirmationError] = useState('');
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
@@ -106,6 +110,7 @@ export default function App() {
     const j = await getJobs(nextRunId).catch(() => []);
     const evidenceState = await getEvidenceState(nextRunId).catch(() => ({ usable_evidence: [], unusable_parsed_sources: [] }));
     const draftState = await getDraft(nextRunId).catch(() => null);
+    const experimentState = await getExperimentSession(nextRunId).catch(() => null);
     const e = Array.isArray(evidenceState.usable_evidence)
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
@@ -115,6 +120,7 @@ export default function App() {
     setEvidence(e.map(normalizeEvidence));
     setUnusableParsedSources((evidenceState.unusable_parsed_sources || []).map(normalizeUnusableParsedSource));
     setDraft(draftState);
+    setExperimentControl(experimentState);
   }, []);
 
   const refreshSidebar = useCallback(async () => {
@@ -136,6 +142,8 @@ export default function App() {
     setEvidence([]);
     setUnusableParsedSources([]);
     setDraft(null);
+    setExperimentControl(null);
+    setExperimentBusy(false);
     setConfirmationBusy(false);
     setConfirmationError('');
     setArtifacts([]);
@@ -422,6 +430,27 @@ export default function App() {
     }
   }, [addToast, draft?.confirmation?.confirmation_id, refreshSidebarForRun, runId]);
 
+  const handleExperimentMaterialization = useCallback(async (retry: boolean) => {
+    if (!runId) return;
+    setExperimentBusy(true);
+    const requestId = `remat_${generateId()}`;
+    try {
+      await requestExperimentMaterialization(
+        runId,
+        requestId,
+        retry,
+        retry ? 'explicit user retry' : 'explicit user rematerialization',
+        retry,
+      );
+      addToast(retry ? '实验准备任务已重新排队' : 'Readiness 已请求重新物化', 'success');
+    } catch {
+      addToast('物化请求未调度；任务可能已经在排队或运行', 'info');
+    } finally {
+      await refreshSidebarForRun(runId);
+      setExperimentBusy(false);
+    }
+  }, [addToast, refreshSidebarForRun, runId]);
+
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
     const jobId = msg.jobId || msg.job_id;
@@ -479,6 +508,8 @@ export default function App() {
       msg.type === 'contract.draft.updated'
       || msg.type === 'contract.confirmation.requested'
       || msg.type === 'contract.confirmation.resolved'
+      || msg.type === 'job.stale_input'
+      || msg.type.startsWith('control_plane.')
     ) {
       refreshSidebar();
     }
@@ -606,6 +637,10 @@ export default function App() {
               evidenceCount={evidence.length}
               draftReady={Boolean(draft?.has_draft)}
               draft={draft}
+              experimentControl={experimentControl}
+              experimentBusy={experimentBusy}
+              onMaterialize={() => handleExperimentMaterialization(false)}
+              onRetryMaterialization={() => handleExperimentMaterialization(true)}
               onDeleteSource={handleDeleteSource}
             >
               {artifacts.length > 0 && (
