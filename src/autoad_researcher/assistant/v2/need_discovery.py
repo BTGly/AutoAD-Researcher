@@ -7,9 +7,11 @@ or require optional method-design hints.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -105,6 +107,8 @@ def discover_required_needs(
     answerability: dict[str, Any] | None = None,
     run_artifacts_summary: dict[str, Any] | None = None,
     llm_payload: dict[str, Any] | None = None,
+    task_profile_proposal: TaskProfile | None = None,
+    task_profile_evidence: str | None = None,
 ) -> RequiredNeedSpec:
     """Discover and validate requirements for the current stage.
 
@@ -137,9 +141,20 @@ def discover_required_needs(
         run_artifacts_summary or {},
         current_user_text=user_input,
     )
-    task_type = _infer_task_type(text, values)
-    profile = _task_profile_for_type(task_type)
-    profile_evidence = _evidence_excerpt(text)
+    proposal_evidence = (task_profile_evidence or "").strip()
+    proposal_is_supported = bool(
+        task_profile_proposal
+        and task_profile_proposal != "general_research"
+        and proposal_evidence
+        and proposal_evidence in text
+    )
+    task_type = (
+        _task_type_for_profile(task_profile_proposal)
+        if proposal_is_supported
+        else _infer_task_type(text, values)
+    )
+    profile = task_profile_proposal if proposal_is_supported else _task_profile_for_type(task_type)
+    profile_evidence = proposal_evidence if proposal_is_supported else _evidence_excerpt(text)
     needs = _build_stage_needs(task_type, current_stage_goal, values, user_text=text)
     spec = RequiredNeedSpec(
         task_summary=_task_summary(task_type, values),
@@ -170,8 +185,11 @@ def discover_required_needs_with_llm(
     provider_url: str = "",
     model: str = "deepseek-v4-flash",
     run_dir: Path | None = None,
+    task_profile_proposal: TaskProfile | None = None,
+    task_profile_evidence: str | None = None,
+    requires_llm_enrichment: bool = False,
 ) -> RequiredNeedSpec:
-    """LLM-first requirement discovery with deterministic fallback.
+    """Deterministic-first requirement discovery with bounded LLM enrichment.
 
     The LLM proposes the task type, required needs, and next question. Core code
     validates the schema, canonicalizes enum-like values, and applies safety
@@ -189,9 +207,29 @@ def discover_required_needs_with_llm(
         "current_stage_goal": current_stage_goal,
         "answerability": answerability,
         "run_artifacts_summary": run_artifacts_summary,
+        "task_profile_proposal": task_profile_proposal,
+        "task_profile_evidence": task_profile_evidence,
     }
-    if not api_key:
-        return discover_required_needs(**fallback_kwargs)
+    fallback_spec = discover_required_needs(**fallback_kwargs)
+    if not api_key or not _should_enrich_need_spec(fallback_spec, requires_llm_enrichment):
+        return fallback_spec
+
+    cache_key = _need_discovery_cache_key(
+        user_input=user_input,
+        transcript_tail=transcript_tail,
+        existing_contract_draft=existing_contract_draft,
+        source_registry=source_registry,
+        usable_evidence=usable_evidence,
+        created_jobs=created_jobs,
+        current_stage_goal=current_stage_goal,
+        answerability=answerability,
+        run_artifacts_summary=run_artifacts_summary,
+        task_profile_proposal=task_profile_proposal,
+        task_profile_evidence=task_profile_evidence,
+    )
+    cached = _load_need_discovery_cache(run_dir, cache_key)
+    if cached is not None:
+        return validate_need_spec(cached, user_text=_combined_user_text(user_input, transcript_tail))
 
     messages = _build_need_discovery_messages(
         user_input=user_input,
@@ -203,6 +241,8 @@ def discover_required_needs_with_llm(
         current_stage_goal=current_stage_goal,
         answerability=answerability,
         run_artifacts_summary=run_artifacts_summary,
+        task_profile_proposal=task_profile_proposal,
+        task_profile_evidence=task_profile_evidence,
     )
     selector = PromptSelector()
     profile = selector.profile_for_v2_component("need_discovery")
@@ -216,7 +256,7 @@ def discover_required_needs_with_llm(
         provider_url,
         messages,
         model=model,
-        timeout_s=30,
+        timeout_s=8,
     )
     latency_ms = (time.perf_counter() - started) * 1000
     reply_text = str(result.get("reply") or "")
@@ -237,7 +277,7 @@ def discover_required_needs_with_llm(
             fallback_reason="llm_error_or_non_json",
             latency_ms=latency_ms,
         )
-        return discover_required_needs(**fallback_kwargs)
+        return fallback_spec
     try:
         spec = RequiredNeedSpec.model_validate(payload)
     except Exception:
@@ -256,7 +296,7 @@ def discover_required_needs_with_llm(
             fallback_reason="schema_validation_error",
             latency_ms=latency_ms,
         )
-        return discover_required_needs(**fallback_kwargs)
+        return fallback_spec
     spec.current_stage_goal = current_stage_goal
     append_llm_trace(
         run_dir,
@@ -280,7 +320,9 @@ def discover_required_needs_with_llm(
     )
     spec = canonicalize_need_values(spec)
     _recover_directional_plan_success_criteria(spec, _combined_user_text(user_input, transcript_tail))
-    return validate_need_spec(spec, user_text=_combined_user_text(user_input, transcript_tail))
+    spec = validate_need_spec(spec, user_text=_combined_user_text(user_input, transcript_tail))
+    _save_need_discovery_cache(run_dir, cache_key, spec)
+    return spec
 
 
 def canonicalize_need_values(spec: RequiredNeedSpec) -> RequiredNeedSpec:
@@ -394,6 +436,8 @@ def _build_need_discovery_messages(
     current_stage_goal: StageGoal,
     answerability: dict[str, Any] | None,
     run_artifacts_summary: dict[str, Any] | None,
+    task_profile_proposal: TaskProfile | None = None,
+    task_profile_evidence: str | None = None,
 ) -> list[dict[str, str]]:
     system = PromptSelector().build_system_prompt_for_v2_component("need_discovery")
     context = {
@@ -405,6 +449,8 @@ def _build_need_discovery_messages(
         "created_jobs": created_jobs or [],
         "answerability": answerability or {},
         "run_artifacts_summary": run_artifacts_summary or {},
+        "task_profile_proposal": task_profile_proposal,
+        "task_profile_evidence": task_profile_evidence,
     }
     return [
         {"role": "system", "content": system},
@@ -432,6 +478,45 @@ def _json_text(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except TypeError:
         return "{}"
+
+
+def _should_enrich_need_spec(_spec: RequiredNeedSpec, requested: bool) -> bool:
+    return requested
+
+
+def _need_discovery_cache_key(**payload: Any) -> str:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _need_discovery_cache_path(run_dir: Path, cache_key: str) -> Path:
+    return run_dir / "assistant" / "need_discovery_cache" / f"{cache_key}.json"
+
+
+def _load_need_discovery_cache(run_dir: Path | None, cache_key: str) -> RequiredNeedSpec | None:
+    if run_dir is None:
+        return None
+    path = _need_discovery_cache_path(run_dir, cache_key)
+    if not path.is_file():
+        return None
+    try:
+        return RequiredNeedSpec.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _save_need_discovery_cache(
+    run_dir: Path | None,
+    cache_key: str,
+    spec: RequiredNeedSpec,
+) -> None:
+    if run_dir is None:
+        return
+    path = _need_discovery_cache_path(run_dir, cache_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
+    temp.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    temp.replace(path)
 
 
 def canonicalize_metrics(value: Any) -> list[str]:
@@ -492,6 +577,7 @@ def _combined_user_text(user_input: str, transcript_tail: list[dict[str, Any]] |
     ]
     parts.append(user_input)
     return "\n".join(part for part in parts if part.strip())
+
 
 def _autofill_values(
     text: str,
@@ -869,6 +955,16 @@ def _task_profile_for_type(task_type: str) -> TaskProfile:
     if task_type == "systems_optimization":
         return "systems_optimization"
     if task_type == "code_diagnosis":
+        return "code_diagnosis"
+    return "general_research"
+
+
+def _task_type_for_profile(profile: TaskProfile | None) -> str:
+    if profile == "empirical_model_research":
+        return "experiment_improvement"
+    if profile == "systems_optimization":
+        return "systems_optimization"
+    if profile == "code_diagnosis":
         return "code_diagnosis"
     return "general_research"
 

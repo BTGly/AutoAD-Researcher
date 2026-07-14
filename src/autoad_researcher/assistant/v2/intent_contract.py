@@ -197,6 +197,7 @@ def build_contract_from_context(
         discovery_draft["dataset"] = confirmed["dataset"]
     if confirmed.get("metrics"):
         discovery_draft["primary_metrics"] = confirmed["metrics"]
+    turn_gate = llm_context.get("turn_gate_decision") or {}
     need_spec = discover_required_needs_with_llm(
         user_input=user_input,
         transcript_tail=transcript_tail,
@@ -209,6 +210,9 @@ def build_contract_from_context(
         provider_url=provider_url,
         model=model,
         run_dir=run_dir,
+        task_profile_proposal=turn_gate.get("task_profile_proposal"),
+        task_profile_evidence=turn_gate.get("task_profile_evidence"),
+        requires_llm_enrichment=bool(turn_gate.get("requires_need_discovery_enrichment")),
     )
     need_fields = contract_fields_from_need_spec(need_spec)
     evaluation_constraints, evaluation_conflicts = _evaluation_constraints_from_context(

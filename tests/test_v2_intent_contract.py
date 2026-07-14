@@ -1162,7 +1162,10 @@ def test_need_discovery_metrics_override_stale_chat_fact_metrics(tmp_path: Path,
             {"role": "user", "content": "我想测试 coreset sampling 是否能降低显存和运行时间。"},
             {"role": "assistant", "content": "已记录显存和运行时间。"},
         ],
-        llm_context={"confirmed_from_user": {"metrics": ["peak_vram"]}},
+        llm_context={
+            "confirmed_from_user": {"metrics": ["peak_vram"]},
+            "turn_gate_decision": {"requires_need_discovery_enrichment": True},
+        },
         api_key="sk-test",
         provider_url="https://example.test",
     )
@@ -1476,7 +1479,10 @@ def test_need_spec_maps_non_hardcoded_baseline_into_contract(tmp_path: Path, mon
     contract = build_contract_from_context(
         run_dir=run_dir,
         user_input="我要做一个视觉异常检测改进任务。",
-        llm_context={"confirmed_from_user": {}},
+        llm_context={
+            "confirmed_from_user": {},
+            "turn_gate_decision": {"requires_need_discovery_enrichment": True},
+        },
         api_key="sk-test",
         provider_url="https://example.test",
     )
@@ -1593,7 +1599,10 @@ def test_hf2_research_keyword_joke_with_api_is_decided_by_turn_gate(tmp_path: Pa
 def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         if "TurnGateDecision JSON" in messages[0]["content"]:
-            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+            return {"reply": json.dumps(
+                _turn_gate_payload() | {"requires_need_discovery_enrichment": True},
+                ensure_ascii=False,
+            ), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_need_spec_payload(
                 baseline="PatchCore",
@@ -1768,7 +1777,10 @@ def test_user_confirmed_field_not_overwritten_by_llm_inferred(tmp_path: Path, mo
     contract = build_contract_from_context(
         run_dir=run_dir,
         user_input="继续这个视觉异常检测任务",
-        llm_context={"confirmed_from_user": {"baseline": "PatchCore"}},
+        llm_context={
+            "confirmed_from_user": {"baseline": "PatchCore"},
+            "turn_gate_decision": {"requires_need_discovery_enrichment": True},
+        },
         api_key="sk-test",
         provider_url="https://example.test",
     )
@@ -2050,7 +2062,7 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
     draft_state = load_research_draft_state(run_dir)
     assert result.reply_kind == "intent_contract_confirmation"
     assert result.task_naming_eligible is True
-    assert selected_models == ["selected-model", "selected-model", "selected-model"]
+    assert selected_models == ["selected-model", "selected-model"]
     assert persisted is not None
     assert persisted.ready_for_plan is True
     assert "5%" in (persisted.success_criteria or "")

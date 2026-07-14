@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from autoad_researcher.assistant.v2.need_discovery import (
     canonicalize_metrics,
@@ -89,6 +90,7 @@ def test_llm_cannot_block_success_on_missing_numeric_target_but_general_profile_
         current_stage_goal="generate_plan",
         api_key="sk-test",
         provider_url="https://example.test",
+        requires_llm_enrichment=True,
     )
 
     success = _need(spec, "success_criteria")
@@ -187,6 +189,7 @@ def test_llm_need_discovery_can_omit_dataset_without_system_forcing_it(monkeypat
         current_stage_goal="clarify_intent",
         api_key="sk-test",
         provider_url="https://example.test",
+        requires_llm_enrichment=True,
     )
 
     assert spec.inferred_task_type == "code_diagnosis"
@@ -216,6 +219,7 @@ def test_llm_need_discovery_validator_downgrades_improvement_idea_blocking(monke
         user_input="我想先整理方案",
         api_key="sk-test",
         provider_url="https://example.test",
+        requires_llm_enrichment=True,
     )
 
     assert _need(spec, "improvement_idea").necessity == "optional"
@@ -247,6 +251,7 @@ def test_llm_need_discovery_validator_downgrades_plan_gpu_requirement(monkeypatc
         current_stage_goal="generate_plan",
         api_key="sk-test",
         provider_url="https://example.test",
+        requires_llm_enrichment=True,
     )
 
     assert _need(spec, "gpu").necessity == "required_later"
@@ -267,6 +272,7 @@ def test_llm_need_discovery_validator_blocks_missing_run_requirements(monkeypatc
         current_stage_goal="run_experiment",
         api_key="sk-test",
         provider_url="https://example.test",
+        requires_llm_enrichment=True,
     )
 
     assert "dataset_path" in spec.blocking_needs
@@ -282,6 +288,60 @@ def test_need_discovery_without_api_key_uses_deterministic_fallback():
     assert spec.inferred_task_type == "image_anomaly_detection_improvement"
     assert _need(spec, "baseline").current_value == "PatchCore"
     assert _need(spec, "dataset").current_value == "MVTec AD"
+
+
+def test_clear_patchcore_contract_skips_need_discovery_llm(monkeypatch):
+    calls = 0
+
+    def unexpected_call(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("clear contract must stay deterministic")
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", unexpected_call)
+    spec = discover_required_needs_with_llm(
+        user_input=(
+            "以 PatchCore 为 baseline，在 MVTec AD 上提升 image-level AUROC，"
+            "目标是在相同评估协议下提升 5%。"
+        ),
+        api_key="sk-test",
+        provider_url="https://example.test",
+        task_profile_proposal="empirical_model_research",
+        task_profile_evidence="PatchCore",
+        requires_llm_enrichment=False,
+    )
+
+    assert calls == 0
+    assert spec.task_profile == "empirical_model_research"
+    assert spec.ready_for_plan is True
+
+
+def test_need_discovery_enrichment_uses_short_timeout_and_success_cache(tmp_path: Path, monkeypatch):
+    calls = 0
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        assert kwargs["timeout_s"] == 8
+        return {"reply": json.dumps(_base_llm_spec([]), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_need_cache"
+    run_dir.mkdir()
+    kwargs = {
+        "user_input": "这是一个目前无法归类的新型研究对象",
+        "api_key": "sk-test",
+        "provider_url": "https://example.test",
+        "run_dir": run_dir,
+        "requires_llm_enrichment": True,
+    }
+
+    first = discover_required_needs_with_llm(**kwargs)
+    second = discover_required_needs_with_llm(**kwargs)
+
+    assert first.model_dump() == second.model_dump()
+    assert calls == 1
+    assert len(list((run_dir / "assistant" / "need_discovery_cache").glob("*.json"))) == 1
 
 
 def test_systems_optimization_requires_platform_workload_metric_and_success():
@@ -409,6 +469,7 @@ def test_explicit_numeric_target_overrides_generic_llm_success_criteria(monkeypa
         current_stage_goal="generate_plan",
         api_key="sk-test",
         provider_url="https://example.test",
+        requires_llm_enrichment=True,
     )
 
     success = _need(spec, "success_criteria")
