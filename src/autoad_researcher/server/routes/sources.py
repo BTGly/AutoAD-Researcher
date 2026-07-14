@@ -9,6 +9,7 @@ from autoad_researcher.assistant.v2.evidence_service import append_artifact_evid
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job
 from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_lifecycle import active_run_lease
 from autoad_researcher.ui.sources import remove_source, save_uploaded_file
 
 router = APIRouter(prefix="/api/runs", tags=["sources"])
@@ -37,6 +38,15 @@ async def upload_source(
     request: Request,
     x_autoad_filename: str = Header(default=""),
 ):
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        return await _upload_source_active(run_id, request, x_autoad_filename)
+
+
+async def _upload_source_active(
+    run_id: str,
+    request: Request,
+    x_autoad_filename: str = Header(default=""),
+):
     name = Path(unquote(x_autoad_filename)).name
     if not name:
         raise HTTPException(400, "X-AutoAD-Filename header is required")
@@ -47,8 +57,6 @@ async def upload_source(
         run_dir = run_dir_path(RUNS_ROOT, run_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    run_dir.mkdir(parents=True, exist_ok=True)
-
     uploaded = SimpleNamespace(name=name, getvalue=lambda: content)
     try:
         source = save_uploaded_file(run_dir, uploaded)
@@ -151,6 +159,11 @@ async def upload_source(
 
 @router.delete("/{run_id}/sources/{source_id}")
 async def delete_source(run_id: str, source_id: str):
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        return _delete_source_active(run_id, source_id)
+
+
+def _delete_source_active(run_id: str, source_id: str):
     try:
         run_dir = run_dir_path(RUNS_ROOT, run_id)
     except ValueError as exc:

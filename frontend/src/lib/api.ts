@@ -65,6 +65,7 @@ export async function sendChat(
   runId: string,
   requestId: string,
   transcriptTail: Array<{ role: string; content: string }> = [],
+  signal?: AbortSignal,
 ): Promise<{ reply: string; reply_kind: string }> {
   const res = await fetch('/api/chat/send', {
     method: 'POST',
@@ -75,6 +76,7 @@ export async function sendChat(
       request_id: requestId,
       transcript_tail: transcriptTail,
     }),
+    signal,
   });
   if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
   return res.json();
@@ -118,7 +120,7 @@ export async function restoreRun(runId: string): Promise<TaskRun> {
   return res.json();
 }
 
-export async function deleteRun(runId: string): Promise<{ run_id: string; deleted: boolean }> {
+export async function deleteRun(runId: string): Promise<{ run_id: string; status: 'deleting' | 'deleted'; deleted: boolean }> {
   const res = await fetch(`/api/runs/${runId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`Delete run error: ${res.status}`);
   return res.json();
@@ -136,11 +138,12 @@ export async function getSources(runId: string): Promise<any[]> {
   return res.json();
 }
 
-export async function uploadSource(runId: string, file: File): Promise<any> {
+export async function uploadSource(runId: string, file: File, signal?: AbortSignal): Promise<any> {
   const res = await fetch(`/api/runs/${runId}/sources/upload`, {
     method: 'POST',
     headers: { 'X-AutoAD-Filename': encodeURIComponent(file.name) },
     body: await file.arrayBuffer(),
+    signal,
   });
   if (!res.ok) throw new Error(`Upload source error: ${res.status}`);
   return res.json();

@@ -10,6 +10,7 @@ from autoad_researcher.assistant.v2.contract_confirmation_service import (
 from autoad_researcher.assistant.v2.draft_service import load_research_draft_state
 from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_lifecycle import active_run_lease
 
 router = APIRouter(prefix="/api/runs", tags=["draft"])
 
@@ -45,6 +46,11 @@ async def get_draft(run_id: str):
 
 @router.post("/{run_id}/draft/confirmation")
 async def decide_contract_confirmation(run_id: str, request: ContractConfirmationDecision):
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        return _decide_contract_confirmation_active(run_id, request)
+
+
+def _decide_contract_confirmation_active(run_id: str, request: ContractConfirmationDecision):
     try:
         run_dir = run_dir_path(RUNS_ROOT, run_id)
     except ValueError as exc:

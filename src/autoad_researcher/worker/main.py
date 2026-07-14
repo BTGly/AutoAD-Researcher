@@ -31,6 +31,7 @@ from autoad_researcher.core.control_plane import (
     JobTransition,
     PipelineJobStore,
 )
+from autoad_researcher.core.run_lifecycle import run_operation_lease
 from autoad_researcher.core.control_plane.io import atomic_write_json
 from autoad_researcher.core.control_plane.readiness import (
     materialize_claimed_experiment_prepare,
@@ -113,7 +114,7 @@ def main():
             continue
 
         for run_dir in sorted(runs_dir.iterdir()):
-            if not run_dir.is_dir():
+            if not run_dir.is_dir() or run_dir.name.startswith("."):
                 continue
             if args.run_id and run_dir.name != args.run_id:
                 continue
@@ -136,6 +137,11 @@ def main():
 
 
 def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
+    with run_operation_lease(run_dir.parent, run_dir.name):
+        return _process_pending_jobs_active(run_dir, worker_id=worker_id)
+
+
+def _process_pending_jobs_active(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
     validate_authoritative_store_syntax(run_dir)
     store = PipelineJobStore(run_dir)
     audit = _AuditWriter(run_dir)

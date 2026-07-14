@@ -18,6 +18,7 @@ from autoad_researcher.core.control_plane.readiness import (
 from autoad_researcher.core.control_plane.snapshot import load_experiment_control_snapshot
 from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_lifecycle import active_run_lease
 
 
 router = APIRouter(prefix="/api/runs", tags=["experiment-control"])
@@ -66,6 +67,16 @@ async def retry_experiment_materialization(run_id: str, request: Materialization
 
 
 def _schedule(
+    run_id: str,
+    request: MaterializationCommand,
+    *,
+    require_failed: bool,
+):
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        return _schedule_active(run_id, request, require_failed=require_failed)
+
+
+def _schedule_active(
     run_id: str,
     request: MaterializationCommand,
     *,

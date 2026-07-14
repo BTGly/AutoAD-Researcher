@@ -4,16 +4,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.core.run_id import run_dir_path
+from autoad_researcher.core.run_lifecycle import (
+    begin_run_deletion,
+    create_run_lifecycle,
+    finalize_run_deletion,
+    lifecycle_exists,
+    run_operation_lease,
+)
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_lifecycle import active_run_lease
+from autoad_researcher.server.ws_manager import manager
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
 from autoad_researcher.task_workspace.task_profile import (
     archive_task,
     build_run_id_from_optional_name,
     create_task_profile,
+    ensure_legacy_task_profile,
     get_task_display_info,
     list_all_tasks,
     rename_task_title,
@@ -60,6 +71,15 @@ class TranscriptItem(BaseModel):
 @router.get("", response_model=list[RunInfo])
 async def list_runs(include_archived: bool = Query(default=False)):
     runs_dir = Path(RUNS_ROOT)
+    if runs_dir.is_dir():
+        for run_dir in sorted(runs_dir.iterdir()):
+            if not run_dir.is_dir() or run_dir.name.startswith("."):
+                continue
+            try:
+                with run_operation_lease(RUNS_ROOT, run_dir.name):
+                    ensure_legacy_task_profile(run_dir)
+            except (OSError, RuntimeError, ValueError):
+                continue
     items = list_all_tasks(runs_root=runs_dir, include_archived=include_archived)
     return [_run_info(item.run_dir) for item in items]
 
@@ -70,7 +90,7 @@ async def create_run(req: CreateRunRequest | None = None):
     task_title = req.task_title if req is not None else None
     run_id = build_run_id_from_optional_name(task_name=task_title, now=now)
     run_dir = run_dir_path(RUNS_ROOT, run_id)
-    if run_dir.exists():
+    if run_dir.exists() or lifecycle_exists(RUNS_ROOT, run_id):
         suffix = now.strftime("%f")
         run_id = f"{run_id}_{suffix}"
         run_dir = run_dir_path(RUNS_ROOT, run_id)
@@ -79,7 +99,12 @@ async def create_run(req: CreateRunRequest | None = None):
     (run_dir / "ui_chat").mkdir(exist_ok=True)
     (run_dir / "context").mkdir(exist_ok=True)
     (run_dir / "chat").mkdir(exist_ok=True)
-    create_task_profile(run_dir=run_dir, run_id=run_id, task_title=task_title, created_at=now)
+    try:
+        create_task_profile(run_dir=run_dir, run_id=run_id, task_title=task_title, created_at=now)
+        create_run_lifecycle(RUNS_ROOT, run_id, created_at=now)
+    except Exception:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise
     return _run_info(run_dir)
 
 
@@ -91,34 +116,48 @@ async def get_run(run_id: str):
 
 @router.patch("/{run_id}", response_model=RunInfo)
 async def rename_run(run_id: str, req: RenameRunRequest):
-    run_dir = _existing_run_dir(run_id)
-    rename_task_title(
-        run_dir=run_dir,
-        new_title=req.task_title,
-        updated_at=datetime.now(timezone.utc),
-    )
-    return _run_info(run_dir)
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        run_dir = _existing_run_dir(run_id)
+        rename_task_title(
+            run_dir=run_dir,
+            new_title=req.task_title,
+            updated_at=datetime.now(timezone.utc),
+        )
+        return _run_info(run_dir)
 
 
 @router.post("/{run_id}/archive", response_model=RunInfo)
 async def archive_run(run_id: str):
-    run_dir = _existing_run_dir(run_id)
-    archive_task(run_dir=run_dir, archived_at=datetime.now(timezone.utc))
-    return _run_info(run_dir)
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        run_dir = _existing_run_dir(run_id)
+        archive_task(run_dir=run_dir, archived_at=datetime.now(timezone.utc))
+        return _run_info(run_dir)
 
 
 @router.post("/{run_id}/restore", response_model=RunInfo)
 async def restore_run(run_id: str):
-    run_dir = _existing_run_dir(run_id)
-    restore_task(run_dir=run_dir)
-    return _run_info(run_dir)
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        run_dir = _existing_run_dir(run_id)
+        restore_task(run_dir=run_dir)
+        return _run_info(run_dir)
 
 
 @router.delete("/{run_id}")
-async def delete_run(run_id: str):
-    run_dir = _existing_run_dir(run_id)
-    shutil.rmtree(run_dir)
-    return {"run_id": run_id, "deleted": True}
+async def delete_run(run_id: str, background_tasks: BackgroundTasks):
+    try:
+        state = begin_run_deletion(RUNS_ROOT, run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    if state.status == "deleted":
+        return {"run_id": run_id, "status": "deleted", "deleted": True}
+    await manager.broadcast(run_id, {"type": "run.deleting", "run_id": run_id})
+    background_tasks.add_task(finalize_run_deletion, RUNS_ROOT, run_id)
+    return JSONResponse(
+        status_code=202,
+        content={"run_id": run_id, "status": "deleting", "deleted": False},
+    )
 
 
 @router.get("/{run_id}/transcript", response_model=list[TranscriptItem])

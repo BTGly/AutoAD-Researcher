@@ -258,7 +258,7 @@ class TestTaskListing:
 
         assert by_id["run_first"].task_title == "First Task"
         assert by_id["run_first"].source == "profile"
-        assert by_id["run_second"].task_title == "run_second"
+        assert by_id["run_second"].task_title == "历史研究任务"
         assert by_id["run_second"].source == "fallback"
 
     def test_list_all_tasks_skips_hidden_and_files(self, tmp_path):
@@ -279,7 +279,7 @@ class TestTaskListing:
         items = list_all_tasks(runs_root=tmp_path)
 
         assert len(items) == 1
-        assert items[0].task_title == "run_bad"
+        assert items[0].task_title == "历史研究任务"
         assert items[0].profile_warning is not None
 
     def test_list_all_tasks_sorts_by_updated_at_desc(self, tmp_path):
@@ -427,7 +427,7 @@ class TestUIHelpers:
     def test_get_display_info_fallback(self, tmp_path):
         run_dir = _tmp_run_dir(tmp_path)
         info = get_task_display_info(run_dir)
-        assert info["task_title"] == run_dir.name
+        assert info["task_title"] == "历史研究任务"
         assert info["task_source"] == "fallback"
         assert info["task_profile_warning"] is None
 
@@ -444,7 +444,7 @@ class TestUIHelpers:
 
         info = get_task_display_info(run_dir)
 
-        assert info["task_title"] == "run_bad_current"
+        assert info["task_title"] == "历史研究任务"
         assert info["task_source"] == "fallback"
         assert info["task_profile_warning"] == "task_profile_invalid:JSONDecodeError"
 
@@ -463,7 +463,7 @@ class TestUIHelpers:
         item = list_all_tasks(runs_root=tmp_path)[0]
         info = get_task_display_info(run_dir)
 
-        assert item.task_title == "run_legacy_consistent"
+        assert item.task_title == "历史研究任务"
         assert info["task_title"] == item.task_title
 
 

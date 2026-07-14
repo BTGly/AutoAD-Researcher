@@ -439,6 +439,7 @@ class _BodyRequest:
 @pytest.mark.asyncio
 async def test_upload_pdf_registers_source_and_parse_job(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sources_route, "RUNS_ROOT", str(tmp_path))
+    (tmp_path / "run_upload").mkdir()
 
     payload = await sources_route.upload_source(
         "run_upload",
@@ -471,6 +472,7 @@ async def test_upload_source_rejects_path_traversal_run_id(tmp_path: Path, monke
 @pytest.mark.asyncio
 async def test_upload_markdown_creates_text_evidence(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sources_route, "RUNS_ROOT", str(tmp_path))
+    (tmp_path / "run_upload").mkdir()
 
     payload = await sources_route.upload_source(
         "run_upload",
@@ -489,6 +491,7 @@ async def test_upload_markdown_creates_text_evidence(tmp_path: Path, monkeypatch
 @pytest.mark.asyncio
 async def test_upload_archive_bundle_queues_classification(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(sources_route, "RUNS_ROOT", str(tmp_path))
+    (tmp_path / "run_upload").mkdir()
 
     archive = tmp_path / "repo.zip"
     with zipfile.ZipFile(archive, "w") as zf:

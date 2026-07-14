@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import BackgroundTasks
 
 from autoad_researcher.server.routes import runs as runs_route
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
@@ -60,6 +61,8 @@ async def test_archive_restore_and_delete_session(tmp_path: Path, monkeypatch):
     restored = await runs_route.restore_run(created.run_id)
     assert restored.archived_at is None
 
-    deleted = await runs_route.delete_run(created.run_id)
-    assert deleted == {"run_id": created.run_id, "deleted": True}
+    background = BackgroundTasks()
+    deleted = await runs_route.delete_run(created.run_id, background)
+    assert deleted.status_code == 202
+    await background()
     assert not (tmp_path / created.run_id).exists()

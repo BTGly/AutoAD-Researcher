@@ -22,6 +22,7 @@ async def test_frontend_raw_file_upload_contract_preserves_encoded_filename(
     runs_root = tmp_path / "runs"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sources_route, "RUNS_ROOT", str(runs_root))
+    (runs_root / "run_file_ingress").mkdir(parents=True)
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -74,6 +75,7 @@ async def test_chat_link_ingress_registers_source_and_jobs_without_live_llm(
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     transport = httpx.ASGITransport(app=app)
     run_id = f"run_link_{expected_kind}"
+    (tmp_path / "runs" / run_id).mkdir(parents=True)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(

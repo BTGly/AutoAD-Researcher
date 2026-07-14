@@ -10,6 +10,8 @@ from fastapi import APIRouter, Request
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.server.models import ChatRequest, ChatResponse
+from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_lifecycle import active_run_lease
 from autoad_researcher.server.ws_manager import manager
 from autoad_researcher.task_workspace.task_profile import (
     apply_generated_task_profile_if_placeholder,
@@ -70,8 +72,12 @@ def _extract_experiment_headers(request: Request) -> dict[str, str]:
 
 @router.post("/send", response_model=ChatResponse)
 async def chat_send(req: ChatRequest, request: Request):
-    run_dir = Path("runs") / req.run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    with active_run_lease(req.run_id, runs_root=RUNS_ROOT):
+        return await _chat_send_active(req, request)
+
+
+async def _chat_send_active(req: ChatRequest, request: Request) -> ChatResponse:
+    run_dir = Path(RUNS_ROOT) / req.run_id
 
     api_key, provider_url, model = _extract_api_headers(request)
     stored_transcript_tail = _load_transcript_tail(run_dir)

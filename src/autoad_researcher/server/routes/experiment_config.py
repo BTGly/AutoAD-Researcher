@@ -3,13 +3,17 @@ import json
 
 from fastapi import APIRouter
 
+from autoad_researcher.core.run_id import run_dir_path
+from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_lifecycle import active_run_lease
+
 router = APIRouter(prefix="/api/runs/{run_id}", tags=["experiment-config"])
 
 CONFIG_FILENAME = "experiment_config.json"
 
 
 def _config_path(run_id: str) -> Path:
-    return Path("runs") / run_id / CONFIG_FILENAME
+    return run_dir_path(RUNS_ROOT, run_id) / CONFIG_FILENAME
 
 
 @router.get("/experiment-config")
@@ -25,7 +29,7 @@ async def get_experiment_config(run_id: str):
 
 @router.put("/experiment-config")
 async def save_experiment_config(run_id: str, config: dict):
-    path = _config_path(run_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
-    return {"status": "ok", "run_id": run_id}
+    with active_run_lease(run_id, runs_root=RUNS_ROOT):
+        path = _config_path(run_id)
+        path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        return {"status": "ok", "run_id": run_id}

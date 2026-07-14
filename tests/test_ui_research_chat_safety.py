@@ -249,7 +249,7 @@ def test_overview_bad_task_profile_falls_back_without_crashing(tmp_path: Path):
         context_data=None,
     )
 
-    assert overview["task_title"] == "run_bad_profile"
+    assert overview["task_title"] == "历史研究任务"
     assert overview["task_summary"]
     assert overview["developer"]["run_id"] == "run_bad_profile"
 

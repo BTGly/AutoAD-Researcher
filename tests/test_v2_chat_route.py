@@ -95,6 +95,7 @@ def test_chat_route_forwards_selected_model_to_orchestrator(tmp_path: Path, monk
         return None
 
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "runs" / "run_model_forward").mkdir(parents=True)
     monkeypatch.setattr(chat_route.ResearchOrchestratorV2, "handle", staticmethod(fake_handle))
     monkeypatch.setattr(chat_route.manager, "broadcast", fake_broadcast)
     request = Request({

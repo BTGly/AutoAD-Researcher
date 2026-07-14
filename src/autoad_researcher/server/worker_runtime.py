@@ -23,7 +23,7 @@ async def embedded_worker_loop() -> None:
     while True:
         if runs_root.exists():
             for run_dir in sorted(runs_root.iterdir()):
-                if run_dir.is_dir():
+                if run_dir.is_dir() and not run_dir.name.startswith("."):
                     try:
                         await asyncio.to_thread(_process_pending_jobs, run_dir)
                     except CorruptAuthoritativeStore as exc:

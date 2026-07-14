@@ -75,6 +75,8 @@ export default function App() {
   const currentRunIdRef = useRef('');
   const messagesRef = useRef<Message[]>([]);
   const activeChatTurnRunIdsRef = useRef(new Map<string, string>());
+  const activeRequestControllersByRunRef = useRef(new Map<string, Set<AbortController>>());
+  const deletedRunIdsRef = useRef(new Set<string>());
   const streamingHadDeltaIdsRef = useRef(new Set<string>());
   const completedAssistantIdsRef = useRef(new Set<string>());
   const drainingQueueRunIdRef = useRef<string | null>(null);
@@ -189,6 +191,7 @@ export default function App() {
       addToast('创建任务失败', 'error');
       return;
     }
+    deletedRunIdsRef.current.delete(created.run_id);
     await refreshTasks();
     await switchRun(created.run_id);
     addToast('任务已创建', 'success');
@@ -203,10 +206,21 @@ export default function App() {
   }, [addToast, runId]);
 
   const handleDeleteTask = useCallback(async (targetRunId: string) => {
-    const ok = window.confirm('删除这个 session 会移除该任务目录，确认删除？');
+    const activeControllers = activeRequestControllersByRunRef.current.get(targetRunId);
+    const isRunning = Boolean(activeControllers?.size)
+      || [...activeChatTurnRunIdsRef.current.values()].some(value => value === targetRunId);
+    const ok = window.confirm(isRunning
+      ? '这个任务仍在运行。停止当前请求并删除任务？'
+      : '删除这个 session 会移除该任务目录，确认删除？');
     if (!ok) return;
+    deletedRunIdsRef.current.add(targetRunId);
+    activeControllers?.forEach(controller => controller.abort());
+    activeRequestControllersByRunRef.current.delete(targetRunId);
+    setTasks(prev => prev.filter(task => task.run_id !== targetRunId));
     const deleted = await deleteRun(targetRunId).catch(() => null);
     if (!deleted) {
+      deletedRunIdsRef.current.delete(targetRunId);
+      await refreshTasks();
       addToast('删除失败', 'error');
       return;
     }
@@ -268,6 +282,10 @@ export default function App() {
     const assistantId = generateId();
     const assistantMsg: Message = { id: assistantId, role: 'assistant', content: '', timestamp: Date.now() };
     const transcriptTail = messagesRef.current.slice(-12).map(msg => ({ role: msg.role, content: msg.content }));
+    const controller = new AbortController();
+    const controllers = activeRequestControllersByRunRef.current.get(targetRunId) || new Set<AbortController>();
+    controllers.add(controller);
+    activeRequestControllersByRunRef.current.set(targetRunId, controllers);
     activeChatTurnRunIdsRef.current.set(assistantId, targetRunId);
     streamingHadDeltaIdsRef.current.delete(assistantId);
     completedAssistantIdsRef.current.delete(assistantId);
@@ -278,7 +296,7 @@ export default function App() {
     }
 
     try {
-      const res = await sendChat(text, targetRunId, assistantId, transcriptTail);
+      const res = await sendChat(text, targetRunId, assistantId, transcriptTail, controller.signal);
       if (
         currentRunIdRef.current === targetRunId
         && !streamingHadDeltaIdsRef.current.has(assistantId)
@@ -292,6 +310,7 @@ export default function App() {
       await refreshTasks();
       return true;
     } catch {
+      if (controller.signal.aborted || deletedRunIdsRef.current.has(targetRunId)) return false;
       if (currentRunIdRef.current === targetRunId) {
         setTaskStatus('Error');
         setMessages(prev => prev.map(msg => (
@@ -302,6 +321,9 @@ export default function App() {
       }
       return false;
     } finally {
+      const currentControllers = activeRequestControllersByRunRef.current.get(targetRunId);
+      currentControllers?.delete(controller);
+      if (currentControllers?.size === 0) activeRequestControllersByRunRef.current.delete(targetRunId);
       activeChatTurnRunIdsRef.current.delete(assistantId);
       streamingHadDeltaIdsRef.current.delete(assistantId);
       if (currentRunIdRef.current === targetRunId) {
@@ -374,10 +396,14 @@ export default function App() {
   // ── File upload — goes through real backend ──
   const handleFile = useCallback(async (file: File) => {
     const targetRunId = runId || 'run_default';
+    const controller = new AbortController();
+    const controllers = activeRequestControllersByRunRef.current.get(targetRunId) || new Set<AbortController>();
+    controllers.add(controller);
+    activeRequestControllersByRunRef.current.set(targetRunId, controllers);
     setMessages(prev => [...prev, { id: generateId(), role: 'user', content: '📎 ' + file.name, timestamp: Date.now() }]);
     setTaskStatus('Working');
     try {
-      const result = await uploadSource(targetRunId, file);
+      const result = await uploadSource(targetRunId, file, controller.signal);
       const jobs = Array.isArray(result.jobs) ? result.jobs : [];
       const source = result.source || {};
       const reply = jobs.length
@@ -392,9 +418,14 @@ export default function App() {
       await refreshSidebarForRun(targetRunId);
       setTaskStatus('Ready');
     } catch {
+      if (controller.signal.aborted || deletedRunIdsRef.current.has(targetRunId)) return;
       setTaskStatus('Error');
       setMessages(prev => [...prev, { id: generateId(), role: 'assistant', content: `上传失败：${file.name}` , timestamp: Date.now() }]);
       addToast('上传失败', 'error');
+    } finally {
+      const currentControllers = activeRequestControllersByRunRef.current.get(targetRunId);
+      currentControllers?.delete(controller);
+      if (currentControllers?.size === 0) activeRequestControllersByRunRef.current.delete(targetRunId);
     }
   }, [addToast, refreshSidebarForRun, runId]);
 
@@ -451,6 +482,7 @@ export default function App() {
 
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
+    if (deletedRunIdsRef.current.has(runId)) return;
     const jobId = msg.jobId || msg.job_id;
     const jobType = msg.jobType || msg.job_type;
     const sourceId = msg.sourceId || msg.source_id;
@@ -533,7 +565,7 @@ export default function App() {
     }
     if (msg.type === 'toast.success' && msg.message) addToast(msg.message, 'success');
     if (msg.type === 'toast.error' && msg.message) addToast(msg.message, 'error');
-  }, [addToast, refreshSidebar]);
+  }, [addToast, refreshSidebar, runId]);
 
   useWebSocket({ runId, onMessage: onWsMessage, enabled: !!runId });
 
