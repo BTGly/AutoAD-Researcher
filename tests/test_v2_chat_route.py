@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 from autoad_researcher.server.routes.chat import (
     _append_transcript,
     _load_transcript_tail,
+    _run_sync_cancellation_safe,
+    _single_chat_turn,
 )
 
 
@@ -23,6 +28,52 @@ def test_v2_chat_transcript_tail_round_trips_recent_messages(tmp_path: Path):
         {"role": "user", "content": "user 13"},
         {"role": "assistant", "content": "assistant 13"},
     ]
+
+
+def test_same_run_rejects_overlapping_chat_turn_but_other_run_is_allowed():
+    with _single_chat_turn("run_one"):
+        with _single_chat_turn("run_two"):
+            pass
+        with pytest.raises(HTTPException) as exc_info:
+            with _single_chat_turn("run_one"):
+                pass
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "chat_turn_in_progress"
+    with _single_chat_turn("run_one"):
+        pass
+
+
+def test_cancelled_http_task_keeps_same_run_guard_until_worker_thread_exits():
+    import asyncio
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_worker():
+        entered.set()
+        release.wait(timeout=2)
+        return "done"
+
+    async def scenario():
+        async def guarded_call():
+            with _single_chat_turn("run_cancelled"):
+                return await _run_sync_cancellation_safe(blocked_worker)
+
+        task = asyncio.create_task(guarded_call())
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        assert task.done() is False
+        with pytest.raises(HTTPException):
+            with _single_chat_turn("run_cancelled"):
+                pass
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
 
 
 def test_auto_name_task_uses_selected_model_and_persists_title(tmp_path: Path, monkeypatch):

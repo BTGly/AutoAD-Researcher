@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from autoad_researcher.assistant.llm_runtime import with_conversation_deadline
 from autoad_researcher.assistant.v2.source_action_planner import SourceActionPlan, plan_source_actions
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
     ConfirmationConflict,
@@ -57,6 +58,7 @@ class ResearchOrchestratorV2:
     """Single entry point for all research assistant interactions."""
 
     @classmethod
+    @with_conversation_deadline
     def handle(
         cls,
         run_dir: Path,

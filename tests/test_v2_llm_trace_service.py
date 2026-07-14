@@ -34,6 +34,18 @@ def test_llm_trace_writes_redacted_metadata(tmp_path: Path):
         schema_validation_errors=[{"loc": "contract_action", "type": "missing"}],
         fallback_reason="llm_error_or_non_json",
         latency_ms=12.5,
+        provider_request_id="provider-request-1",
+        http_status=503,
+        error_type="http_error",
+        queue_wait_ms=2.5,
+        ttfb_ms=8.0,
+        first_token_ms=9.0,
+        total_latency_ms=12.5,
+        retry_count=1,
+        retry_after_ms=1000.0,
+        circuit_breaker_state="closed",
+        provider_fallback_reason="provider_http_error",
+        compatibility_reason="response_format_not_supported",
     )
 
     assert record is not None
@@ -45,6 +57,15 @@ def test_llm_trace_writes_redacted_metadata(tmp_path: Path):
     assert record["prompt_hash"]
     assert record["raw_output_hash"]
     assert record["schema_validation_errors"] == [{"loc": "contract_action", "type": "missing"}]
+    assert record["provider_request_id"] == "provider-request-1"
+    assert record["http_status"] == 503
+    assert record["queue_wait_ms"] == 2.5
+    assert record["ttfb_ms"] == 8.0
+    assert record["first_token_ms"] == 9.0
+    assert record["total_latency_ms"] == 12.5
+    assert record["retry_count"] == 1
+    assert record["retry_after_ms"] == 1000.0
+    assert record["provider_fallback_reason"] == "provider_http_error"
 
     raw_trace_text = (run_dir / TRACE_DIR / TRACE_INDEX).read_text(encoding="utf-8")
     assert "sk-secret" not in raw_trace_text
@@ -61,7 +82,24 @@ def test_source_action_planner_trace_records_prompt_id_and_fallback(monkeypatch,
     run_dir.mkdir()
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
-        return {"reply": "not json with sk-output-secret", "error": ""}
+        return {
+            "reply": "not json with sk-output-secret",
+            "error": "",
+            "runtime": {
+                "provider_request_id": "req-source-1",
+                "http_status": 200,
+                "error_type": "",
+                "queue_wait_ms": 3.0,
+                "ttfb_ms": 11.0,
+                "first_token_ms": None,
+                "total_latency_ms": 15.0,
+                "retry_count": 0,
+                "retry_after_ms": None,
+                "circuit_breaker_state": "closed",
+                "fallback_reason": "",
+                "compatibility_reason": "",
+            },
+        }
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
 
@@ -87,6 +125,10 @@ def test_source_action_planner_trace_records_prompt_id_and_fallback(monkeypatch,
     assert record["prompt_render_mode"] == "profile_only"
     assert record["include_global"] is False
     assert record["provider_url_host"] == "example.test"
+    assert record["provider_request_id"] == "req-source-1"
+    assert record["queue_wait_ms"] == 3.0
+    assert record["ttfb_ms"] == 11.0
+    assert record["total_latency_ms"] == 15.0
 
     raw_trace_text = (run_dir / TRACE_DIR / TRACE_INDEX).read_text(encoding="utf-8")
     assert "sk-provider-secret" not in raw_trace_text

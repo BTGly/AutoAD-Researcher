@@ -322,7 +322,7 @@ def test_need_discovery_enrichment_uses_short_timeout_and_success_cache(tmp_path
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         nonlocal calls
         calls += 1
-        assert kwargs["timeout_s"] == 8
+        assert kwargs["timeout_s"] == 6
         return {"reply": json.dumps(_base_llm_spec([]), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)

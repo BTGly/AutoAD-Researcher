@@ -35,6 +35,18 @@ def append_llm_trace(
     prompt_render_mode: str = "profile_only",
     include_global: bool = False,
     raw_output_ref: str | None = None,
+    provider_request_id: str = "",
+    http_status: int | None = None,
+    error_type: str = "",
+    queue_wait_ms: float | None = None,
+    ttfb_ms: float | None = None,
+    first_token_ms: float | None = None,
+    total_latency_ms: float | None = None,
+    retry_count: int = 0,
+    retry_after_ms: float | None = None,
+    circuit_breaker_state: str = "",
+    provider_fallback_reason: str = "",
+    compatibility_reason: str = "",
 ) -> dict[str, Any] | None:
     """Append one redacted trace record.
 
@@ -66,6 +78,18 @@ def append_llm_trace(
         "schema_validation_errors": schema_validation_errors or [],
         "fallback_reason": fallback_reason,
         "latency_ms": latency_ms,
+        "provider_request_id": provider_request_id,
+        "http_status": http_status,
+        "error_type": error_type,
+        "queue_wait_ms": queue_wait_ms,
+        "ttfb_ms": ttfb_ms,
+        "first_token_ms": first_token_ms,
+        "total_latency_ms": total_latency_ms,
+        "retry_count": retry_count,
+        "retry_after_ms": retry_after_ms,
+        "circuit_breaker_state": circuit_breaker_state,
+        "provider_fallback_reason": provider_fallback_reason,
+        "compatibility_reason": compatibility_reason,
         "created_at_ms": int(time.time() * 1000),
     }
     trace_dir = run_dir / TRACE_DIR
@@ -109,6 +133,16 @@ def _append_trace_events(run_dir: Path, record: dict[str, Any]) -> None:
         "schema_validation_error_count": len(record.get("schema_validation_errors") or []),
         "fallback_reason": record["fallback_reason"],
         "latency_ms": record["latency_ms"],
+        "http_status": record["http_status"],
+        "error_type": record["error_type"],
+        "queue_wait_ms": record["queue_wait_ms"],
+        "ttfb_ms": record["ttfb_ms"],
+        "first_token_ms": record["first_token_ms"],
+        "total_latency_ms": record["total_latency_ms"],
+        "retry_count": record["retry_count"],
+        "circuit_breaker_state": record["circuit_breaker_state"],
+        "provider_fallback_reason": record["provider_fallback_reason"],
+        "compatibility_reason": record["compatibility_reason"],
     }
     append_typed_event(run_dir, "prompt.trace.created", summary)
     if record.get("schema_validation") == "error":

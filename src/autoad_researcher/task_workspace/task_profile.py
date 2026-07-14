@@ -7,9 +7,9 @@ remains the canonical artifact key for file paths, CLI, and approvals.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-import hashlib
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -432,43 +432,25 @@ def generate_task_profile_from_first_message(
     """
     run_id = run_dir.name
 
-    import httpx
+    from autoad_researcher.ui.chat_client import call_research_chat
 
-    base = provider_base_url.rstrip("/")
-    if base.endswith("/v1"):
-        url = base + "/chat/completions"
-    else:
-        url = base + "/v1/chat/completions"
-
-    try:
-        resp = httpx.post(
-            url,
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": _GENERATE_SYSTEM_PROMPT},
-                    {"role": "user", "content": first_user_message},
-                ],
-                "temperature": 0.1,
-                "max_tokens": 256,
-            },
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=timeout_s,
-        )
-    except Exception:
+    result = call_research_chat(
+        api_key,
+        provider_base_url,
+        [
+            {"role": "system", "content": _GENERATE_SYSTEM_PROMPT},
+            {"role": "user", "content": first_user_message},
+        ],
+        model=model,
+        timeout_s=timeout_s,
+        priority="background",
+        response_format_json=True,
+        max_tokens=256,
+        temperature=0.1,
+    )
+    if result.get("error") or not result.get("reply"):
         return fallback_task_profile(run_id)
-
-    if resp.status_code != 200:
-        return fallback_task_profile(run_id)
-
-    try:
-        body = resp.json()
-        content = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, ValueError):
-        return fallback_task_profile(run_id)
+    content = str(result["reply"])
 
     # Extract JSON block
     json_match = re.search(r"\{[^{}]*\}", content, re.DOTALL)

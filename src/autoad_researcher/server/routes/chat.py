@@ -1,12 +1,15 @@
 import asyncio
 import json
 import os
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
+from autoad_researcher.assistant.llm_runtime import conversation_deadline_scope
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.server.models import ChatRequest, ChatResponse
@@ -25,6 +28,8 @@ TRANSCRIPT_RELATIVE_PATH = Path("chat") / "transcript.jsonl"
 CONFIG_PATH = Path.home() / ".autoad" / "config.json"
 DEFAULT_PROVIDER = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
+_ACTIVE_CHAT_RUNS: set[str] = set()
+_ACTIVE_CHAT_RUNS_LOCK = threading.Lock()
 
 
 def _extract_api_headers(request: Request) -> tuple[str, str, str]:
@@ -73,7 +78,30 @@ def _extract_experiment_headers(request: Request) -> dict[str, str]:
 @router.post("/send", response_model=ChatResponse)
 async def chat_send(req: ChatRequest, request: Request):
     with active_run_lease(req.run_id, runs_root=RUNS_ROOT):
-        return await _chat_send_active(req, request)
+        with _single_chat_turn(req.run_id):
+            with conversation_deadline_scope():
+                return await _chat_send_active(req, request)
+
+
+@contextmanager
+def _single_chat_turn(run_id: str):
+    """Reject overlapping turns for one Run without serialising other Runs."""
+
+    with _ACTIVE_CHAT_RUNS_LOCK:
+        if run_id in _ACTIVE_CHAT_RUNS:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "chat_turn_in_progress",
+                    "message": "当前任务已有一条消息正在处理，请等待完成后再发送。",
+                },
+            )
+        _ACTIVE_CHAT_RUNS.add(run_id)
+    try:
+        yield
+    finally:
+        with _ACTIVE_CHAT_RUNS_LOCK:
+            _ACTIVE_CHAT_RUNS.discard(run_id)
 
 
 async def _chat_send_active(req: ChatRequest, request: Request) -> ChatResponse:
@@ -96,7 +124,7 @@ async def _chat_send_active(req: ChatRequest, request: Request) -> ChatResponse:
         except RuntimeError:
             return
 
-    result = await asyncio.to_thread(
+    result = await _run_sync_cancellation_safe(
         ResearchOrchestratorV2.handle,
         run_dir,
         user_input=req.user_input,
@@ -159,7 +187,7 @@ async def _maybe_auto_name_task(
     if not eligible or not api_key or not task_profile_needs_generated_title(run_dir):
         return False
 
-    generated = await asyncio.to_thread(
+    generated = await _run_sync_cancellation_safe(
         generate_task_profile_from_first_message,
         run_dir,
         api_key,
@@ -168,7 +196,7 @@ async def _maybe_auto_name_task(
         model,
     )
     try:
-        updated = await asyncio.to_thread(
+        updated = await _run_sync_cancellation_safe(
             apply_generated_task_profile_if_placeholder,
             run_dir=run_dir,
             generated_profile=generated,
@@ -177,6 +205,19 @@ async def _maybe_auto_name_task(
     except Exception:
         return False
     return updated is not None
+
+
+async def _run_sync_cancellation_safe(func, /, *args, **kwargs):
+    """Keep the operation lease held until a non-cancellable worker thread exits."""
+
+    task = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        finally:
+            raise
 
 
 def _load_transcript_tail(run_dir: Path, limit: int = 12) -> list[dict[str, Any]]:

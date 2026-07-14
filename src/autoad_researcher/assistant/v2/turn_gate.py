@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.assistant.llm_runtime import runtime_trace_fields
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -116,7 +117,9 @@ def decide_turn_gate_with_llm(
         provider_url,
         messages,
         model=model,
-        timeout_s=30,
+        timeout_s=8,
+        priority="routing",
+        response_format_json=True,
     )
     latency_ms = (time.perf_counter() - started) * 1000
     reply_text = str(result.get("reply") or "")
@@ -136,6 +139,7 @@ def decide_turn_gate_with_llm(
             schema_validation="skipped",
             fallback_reason="llm_error" if result.get("error") else "json_parse_fallback",
             latency_ms=latency_ms,
+            **runtime_trace_fields(result),
         )
         return _offline_no_contract_decision(
             user_input=user_input,
@@ -168,6 +172,7 @@ def decide_turn_gate_with_llm(
             schema_validation_errors=validation_errors,
             fallback_reason="schema_validation_fallback",
             latency_ms=latency_ms,
+            **runtime_trace_fields(result),
         )
         return _offline_no_contract_decision(
             user_input=user_input,
@@ -189,6 +194,7 @@ def decide_turn_gate_with_llm(
         schema_validation_errors=validation_errors,
         fallback_reason=",".join(recovery_reasons),
         latency_ms=latency_ms,
+        **runtime_trace_fields(result),
     )
     decision = _validate_task_profile_proposal(
         decision,

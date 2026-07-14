@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.assistant.llm_runtime import runtime_trace_fields
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from pydantic import BaseModel, ConfigDict, Field
@@ -256,7 +257,9 @@ def discover_required_needs_with_llm(
         provider_url,
         messages,
         model=model,
-        timeout_s=8,
+        timeout_s=6,
+        priority="contract",
+        response_format_json=True,
     )
     latency_ms = (time.perf_counter() - started) * 1000
     reply_text = str(result.get("reply") or "")
@@ -276,6 +279,7 @@ def discover_required_needs_with_llm(
             schema_validation="skipped",
             fallback_reason="llm_error_or_non_json",
             latency_ms=latency_ms,
+            **runtime_trace_fields(result),
         )
         return fallback_spec
     try:
@@ -295,6 +299,7 @@ def discover_required_needs_with_llm(
             schema_validation="error",
             fallback_reason="schema_validation_error",
             latency_ms=latency_ms,
+            **runtime_trace_fields(result),
         )
         return fallback_spec
     spec.current_stage_goal = current_stage_goal
@@ -311,6 +316,7 @@ def discover_required_needs_with_llm(
         parse_status="ok",
         schema_validation="ok",
         latency_ms=latency_ms,
+        **runtime_trace_fields(result),
     )
     _apply_execution_authorization_evidence(
         spec,

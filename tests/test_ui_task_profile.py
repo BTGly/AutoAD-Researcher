@@ -475,15 +475,10 @@ class TestUIHelpers:
 class TestGenerateTaskProfile:
     def test_malformed_json_returns_fallback(self, tmp_path, monkeypatch):
         """When LLM returns garbage, fallback is returned."""
-        import httpx
+        def mock_call(*args, **kwargs):
+            return {"reply": "not valid json at all", "error": ""}
 
-        def mock_post(*args, **kwargs):
-            resp = httpx.Response(200, json={
-                "choices": [{"message": {"content": "not valid json at all"}}]
-            })
-            return resp
-
-        monkeypatch.setattr(httpx, "post", mock_post)
+        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
         run_dir = _tmp_run_dir(tmp_path)
         profile = generate_task_profile_from_first_message(
             run_dir=run_dir,
@@ -494,15 +489,10 @@ class TestGenerateTaskProfile:
         assert profile.source == "fallback"
 
     def test_empty_response_returns_fallback(self, tmp_path, monkeypatch):
-        import httpx
+        def mock_call(*args, **kwargs):
+            return {"reply": "{}", "error": ""}
 
-        def mock_post(*args, **kwargs):
-            resp = httpx.Response(200, json={
-                "choices": [{"message": {"content": "{}"}}]
-            })
-            return resp
-
-        monkeypatch.setattr(httpx, "post", mock_post)
+        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
         run_dir = _tmp_run_dir(tmp_path)
         profile = generate_task_profile_from_first_message(
             run_dir=run_dir,
@@ -513,12 +503,10 @@ class TestGenerateTaskProfile:
         assert profile.source == "fallback"
 
     def test_network_error_returns_fallback(self, tmp_path, monkeypatch):
-        import httpx
+        def mock_call(*args, **kwargs):
+            return {"reply": "", "error": "模型请求超时，请重试。"}
 
-        def mock_post(*args, **kwargs):
-            raise httpx.TimeoutException("timeout")
-
-        monkeypatch.setattr(httpx, "post", mock_post)
+        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
         run_dir = _tmp_run_dir(tmp_path)
         profile = generate_task_profile_from_first_message(
             run_dir=run_dir,
@@ -529,13 +517,10 @@ class TestGenerateTaskProfile:
         assert profile.source == "fallback"
 
     def test_http_error_returns_fallback(self, tmp_path, monkeypatch):
-        import httpx
+        def mock_call(*args, **kwargs):
+            return {"reply": "", "error": "模型服务返回 HTTP 500。"}
 
-        def mock_post(*args, **kwargs):
-            resp = httpx.Response(500, json={"error": "server error"})
-            return resp
-
-        monkeypatch.setattr(httpx, "post", mock_post)
+        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
         run_dir = _tmp_run_dir(tmp_path)
         profile = generate_task_profile_from_first_message(
             run_dir=run_dir,
@@ -546,15 +531,13 @@ class TestGenerateTaskProfile:
         assert profile.source == "fallback"
 
     def test_valid_json_parsed(self, tmp_path, monkeypatch):
-        import httpx
+        def mock_call(*args, **kwargs):
+            return {
+                "reply": '{"task_title": "降低 PatchCore 显存", "task_summary": "优化显存同时保持 AUROC。","extra_junk": "ignored"}',
+                "error": "",
+            }
 
-        def mock_post(*args, **kwargs):
-            resp = httpx.Response(200, json={
-                "choices": [{"message": {"content": '{"task_title": "降低 PatchCore 显存", "task_summary": "优化显存同时保持 AUROC。","extra_junk": "ignored"}'}}]
-            })
-            return resp
-
-        monkeypatch.setattr(httpx, "post", mock_post)
+        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
         run_dir = _tmp_run_dir(tmp_path)
         profile = generate_task_profile_from_first_message(
             run_dir=run_dir,
@@ -566,15 +549,13 @@ class TestGenerateTaskProfile:
         assert profile.task_title == "降低 PatchCore 显存"
 
     def test_llm_sk_secret_rejected(self, tmp_path, monkeypatch):
-        import httpx
+        def mock_call(*args, **kwargs):
+            return {
+                "reply": '{"task_title": "使用 sk-abc123def456 优化", "task_summary": "test"}',
+                "error": "",
+            }
 
-        def mock_post(*args, **kwargs):
-            resp = httpx.Response(200, json={
-                "choices": [{"message": {"content": '{"task_title": "使用 sk-abc123def456 优化", "task_summary": "test"}'}}]
-            })
-            return resp
-
-        monkeypatch.setattr(httpx, "post", mock_post)
+        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
         run_dir = _tmp_run_dir(tmp_path)
         profile = generate_task_profile_from_first_message(
             run_dir=run_dir,
@@ -585,15 +566,13 @@ class TestGenerateTaskProfile:
         assert profile.source == "fallback"
 
     def test_llm_run_id_in_title_rejected(self, tmp_path, monkeypatch):
-        import httpx
+        def mock_call(*args, **kwargs):
+            return {
+                "reply": '{"task_title": "run_20260703_1200_a3b2", "task_summary": "test"}',
+                "error": "",
+            }
 
-        def mock_post(*args, **kwargs):
-            resp = httpx.Response(200, json={
-                "choices": [{"message": {"content": '{"task_title": "run_20260703_1200_a3b2", "task_summary": "test"}'}}]
-            })
-            return resp
-
-        monkeypatch.setattr(httpx, "post", mock_post)
+        monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", mock_call)
         run_dir = _tmp_run_dir(tmp_path)
         profile = generate_task_profile_from_first_message(
             run_dir=run_dir,

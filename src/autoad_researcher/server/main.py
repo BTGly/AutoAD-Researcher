@@ -39,6 +39,8 @@ async def start_embedded_worker():
 @app.on_event("shutdown")
 async def stop_embedded_worker():
     global _worker_task
+    from autoad_researcher.assistant.llm_runtime import reset_llm_call_broker
+
     if _worker_task is not None:
         _worker_task.cancel()
         try:
@@ -46,6 +48,7 @@ async def stop_embedded_worker():
         except asyncio.CancelledError:
             pass
         _worker_task = None
+    await asyncio.to_thread(reset_llm_call_broker)
 
 
 from autoad_researcher.server.routes import artifacts, chat, draft, evidence, experiment_config, experiment_control, jobs, report_route, runs, sources, ws

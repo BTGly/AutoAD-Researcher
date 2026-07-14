@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from autoad_researcher.assistant.llm_runtime import runtime_trace_fields
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 
@@ -147,6 +148,8 @@ def _llm_reply(
         # The response is an internal control envelope. Buffer it until the
         # complete payload passes schema and authorization validation.
         on_delta=None,
+        priority="interactive",
+        response_format_json=True,
     )
     latency_ms = (time.perf_counter() - started) * 1000
 
@@ -170,6 +173,7 @@ def _llm_reply(
                     schema_validation_errors=validation_errors,
                     fallback_reason="unbacked_confirmation_request",
                     latency_ms=latency_ms,
+                    **runtime_trace_fields(result),
                 )
                 return _reply_failure_fallback(
                     turn_gate,
@@ -191,6 +195,7 @@ def _llm_reply(
                 parse_status="ok",
                 schema_validation="ok",
                 latency_ms=latency_ms,
+                **runtime_trace_fields(result),
             )
             visible_reply = _visible_reply_from_llm_payload(payload)
             if on_delta is not None:
@@ -211,6 +216,7 @@ def _llm_reply(
             schema_validation_errors=validation_errors,
             fallback_reason="reply_plan_parse_or_schema_failed",
             latency_ms=latency_ms,
+            **runtime_trace_fields(result),
         )
         return _reply_failure_fallback(
             turn_gate,
@@ -234,6 +240,7 @@ def _llm_reply(
         schema_validation="skipped",
         fallback_reason="llm_error_or_empty_reply",
         latency_ms=latency_ms,
+        **runtime_trace_fields(result),
     )
     return _reply_failure_fallback(
         turn_gate,

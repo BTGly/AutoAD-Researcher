@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.assistant.llm_runtime import runtime_trace_fields
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 from autoad_researcher.source_normalizer import extract_first_source_candidate, extract_first_url, is_repository_url, normalize_repository_reference
@@ -154,7 +155,9 @@ def plan_source_actions(
         provider_url,
         messages,
         model=model,
-        timeout_s=30,
+        timeout_s=8,
+        priority="routing",
+        response_format_json=True,
     )
     latency_ms = (time.perf_counter() - started) * 1000
     reply_text = str(result.get("reply") or "")
@@ -174,6 +177,7 @@ def plan_source_actions(
             schema_validation="skipped",
             fallback_reason="llm_error_or_non_json",
             latency_ms=latency_ms,
+            **runtime_trace_fields(result),
         )
         return SourceActionPlan(
             actions=[],
@@ -197,6 +201,7 @@ def plan_source_actions(
             schema_validation="error",
             fallback_reason="schema_validation_error",
             latency_ms=latency_ms,
+            **runtime_trace_fields(result),
         )
         return SourceActionPlan(
             actions=[],
@@ -216,6 +221,7 @@ def plan_source_actions(
         parse_status="ok",
         schema_validation="ok",
         latency_ms=latency_ms,
+        **runtime_trace_fields(result),
     )
     return validate_source_action_plan(plan, repository_hints=repository_hints)
 
