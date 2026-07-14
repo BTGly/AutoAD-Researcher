@@ -67,7 +67,7 @@ def test_directional_metric_improvement_is_sufficient_plan_success_criteria():
     assert spec.ready_for_plan is True
 
 
-def test_llm_cannot_block_plan_on_missing_numeric_improvement_target(monkeypatch):
+def test_llm_cannot_block_success_on_missing_numeric_target_but_general_profile_stays_conservative(monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         return {"reply": json.dumps(_base_llm_spec([
             {
@@ -95,8 +95,8 @@ def test_llm_cannot_block_plan_on_missing_numeric_improvement_target(monkeypatch
     assert success.current_value == "improve selected metrics under the same evaluation protocol"
     assert success.blocking is False
     assert success.question_to_user is None
-    assert spec.blocking_needs == []
-    assert spec.ready_for_plan is True
+    assert set(spec.blocking_needs) == {"research_goal", "research_object"}
+    assert spec.ready_for_plan is False
 
 
 def test_need_discovery_metrics_co_primary():
@@ -220,7 +220,8 @@ def test_llm_need_discovery_validator_downgrades_improvement_idea_blocking(monke
 
     assert _need(spec, "improvement_idea").necessity == "optional"
     assert _need(spec, "improvement_idea").blocking is False
-    assert spec.blocking_needs == []
+    assert "improvement_idea" not in spec.blocking_needs
+    assert set(spec.blocking_needs) == {"research_goal", "research_object", "success_criteria"}
 
 
 def test_llm_need_discovery_validator_downgrades_plan_gpu_requirement(monkeypatch):
@@ -281,6 +282,87 @@ def test_need_discovery_without_api_key_uses_deterministic_fallback():
     assert spec.inferred_task_type == "image_anomaly_detection_improvement"
     assert _need(spec, "baseline").current_value == "PatchCore"
     assert _need(spec, "dataset").current_value == "MVTec AD"
+
+
+def test_systems_optimization_requires_platform_workload_metric_and_success():
+    spec = discover_required_needs(user_input="我想做AI算子优化")
+
+    assert spec.task_profile == "systems_optimization"
+    assert spec.task_profile_source == "llm_inferred"
+    assert _need(spec, "research_object").current_value == "AI算子"
+    assert set(spec.blocking_needs) == {"target_platform", "workload", "metrics", "success_criteria"}
+    assert spec.next_best_question == "这个优化面向什么目标平台或硬件环境？"
+    assert spec.ready_for_plan is False
+
+
+def test_systems_optimization_becomes_ready_only_after_task_specific_evidence():
+    text = (
+        "我要优化 AI 算子，目标平台是 NVIDIA H100，使用 attention 推理工作负载，"
+        "主要指标是 throughput，成功标准是吞吐量提升 10%。"
+    )
+    spec = discover_required_needs(user_input=text)
+
+    assert spec.task_profile == "systems_optimization"
+    assert _need(spec, "target_platform").current_value == "NVIDIA H100"
+    assert _need(spec, "workload").current_value == "attention 推理"
+    assert _need(spec, "metrics").current_value == ["inference_latency"]
+    assert "10%" in _need(spec, "success_criteria").current_value
+    assert spec.blocking_needs == []
+    assert spec.ready_for_plan is True
+
+
+def test_validator_downgrades_uncorroborated_low_gate_task_profile():
+    payload = _base_llm_spec([
+        {
+            "name": "research_object",
+            "category": "experiment_object",
+            "required_for": "plan",
+            "necessity": "required_now",
+            "current_value": "AI算子",
+            "source": "llm_inferred",
+            "confidence": 0.9,
+            "blocking": False,
+            "question_to_user": None,
+            "evidence_quote": None,
+        }
+    ]) | {
+        "inferred_task_type": "systems_optimization",
+        "task_profile": "systems_optimization",
+        "task_profile_source": "llm_inferred",
+        "task_profile_evidence": "用户明确说要做 AI 算子优化",
+        "ready_for_plan": True,
+    }
+
+    spec = discover_required_needs(user_input="先整理一个研究方案", llm_payload=payload)
+
+    assert spec.task_profile == "general_research"
+    assert spec.ready_for_plan is False
+    assert "research_goal" in spec.blocking_needs
+
+
+def test_user_sourced_need_without_exact_evidence_is_not_authoritative():
+    payload = _base_llm_spec([
+        {
+            "name": "research_goal",
+            "category": "intent",
+            "required_for": "plan",
+            "necessity": "required_now",
+            "current_value": "优化一个并未由用户提出的系统",
+            "source": "user",
+            "confidence": 1.0,
+            "blocking": False,
+            "question_to_user": None,
+            "evidence_quote": "用户并没有说过这句话",
+        }
+    ]) | {"ready_for_plan": True}
+
+    spec = discover_required_needs(user_input="先整理一个研究方案", llm_payload=payload)
+
+    goal = _need(spec, "research_goal")
+    assert goal.current_value is None
+    assert goal.source == "unknown"
+    assert goal.blocking is True
+    assert spec.ready_for_plan is False
 
 
 def _base_llm_spec(needs):

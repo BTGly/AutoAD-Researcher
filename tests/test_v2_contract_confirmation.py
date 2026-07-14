@@ -9,7 +9,11 @@ from autoad_researcher.assistant.v2.contract_confirmation_service import (
     request_contract_confirmation,
     resolve_contract_confirmation,
 )
-from autoad_researcher.assistant.v2.contract_hashing import confirmation_draft_sha256
+from autoad_researcher.assistant.v2.contract_hashing import (
+    build_confirmation_semantic_projection,
+    confirmation_draft_sha256,
+    confirmed_contract_sha256,
+)
 from autoad_researcher.assistant.v2.event_service import event_to_ws_message, load_events_since
 from autoad_researcher.assistant.v2.intent_contract import (
     CONTRACT_FILE,
@@ -29,6 +33,56 @@ def _ready_contract(run_id: str, *, goal: str = "提升 PatchCore 在 MVTec AD �
         success_criteria="improve image-level AUROC under the same evaluation protocol",
         ready_for_plan=True,
     )
+
+
+def test_v1_authorization_hash_fixture_remains_byte_stable_and_ignores_v2_fields():
+    contract = ResearchIntentContract(
+        run_id="run_hash_fixture",
+        task_domain="anomaly_detection",
+        research_goal="improve PatchCore on MVTec AD",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
+        success_criteria="improve image_level_auroc",
+        execution_mode="plan_only",
+    )
+
+    assert contract.authorization_schema_version == 1
+    assert confirmation_draft_sha256(contract) == "f2c47f14012e271b32c1d9a8851c320b247f8c822a9a41237d907c3e209f7f30"
+    assert confirmed_contract_sha256(contract) == "cce2795d6743dfc94be2ec627da7ada39ed7f339fd62b3af0b2fcb536fbbfa2b"
+
+    with_v2_only_values = contract.model_copy(update={
+        "task_profile": "systems_optimization",
+        "research_object": "AI operator",
+        "target_platform": "NVIDIA H100",
+        "workload": "attention inference",
+    })
+    assert confirmation_draft_sha256(with_v2_only_values) == confirmation_draft_sha256(contract)
+    assert confirmed_contract_sha256(with_v2_only_values) == confirmed_contract_sha256(contract)
+
+
+def test_v2_authorization_hash_binds_task_profile_fields():
+    contract = ResearchIntentContract(
+        authorization_schema_version=2,
+        run_id="run_v2_hash",
+        task_domain="systems_optimization",
+        task_profile="systems_optimization",
+        task_profile_source="user",
+        task_profile_evidence="我要优化 AI 算子",
+        research_goal="优化 AI 算子性能",
+        research_object="AI 算子",
+        target_platform="NVIDIA H100",
+        workload="attention inference",
+        primary_metrics=["inference_latency"],
+        success_criteria="latency improves by 10%",
+    )
+    changed = contract.model_copy(update={"target_platform": "NVIDIA A100"})
+
+    projection = build_confirmation_semantic_projection(contract).model_dump(mode="json")
+    assert projection["authorization_schema_version"] == 2
+    assert projection["research_object"] == "AI 算子"
+    assert confirmation_draft_sha256(changed) != confirmation_draft_sha256(contract)
+    assert confirmed_contract_sha256(changed) != confirmed_contract_sha256(contract)
 
 
 def test_contract_confirmation_state_is_persisted_deduplicated_and_replayable(tmp_path: Path):

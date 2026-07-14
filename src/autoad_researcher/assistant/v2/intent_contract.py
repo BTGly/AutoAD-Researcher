@@ -16,7 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.assistant.v2.event_service import append_typed_event
 from autoad_researcher.source_normalizer import extract_first_url
 from autoad_researcher.assistant.v2.need_discovery import (
+    NeedSource,
+    RequirementNeed,
     RequiredNeedSpec,
+    TaskProfile,
     canonicalize_metrics,
     discover_required_needs_with_llm,
     validate_need_spec,
@@ -93,16 +96,41 @@ class MetricIntent(BaseModel):
     extraction_source: Literal["llm", "fallback", "user_confirmed"] = "fallback"
 
 
+class EvaluationConstraint(BaseModel):
+    """Tri-state authorization evidence reserved for the v2 hash projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: bool | None = None
+    source: NeedSource = "unknown"
+    evidence_quote: str | None = None
+
+
+class EvaluationConstraints(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preserve_test_set: EvaluationConstraint = Field(default_factory=EvaluationConstraint)
+    preserve_metric_definition: EvaluationConstraint = Field(default_factory=EvaluationConstraint)
+    preserve_dataset_split: EvaluationConstraint = Field(default_factory=EvaluationConstraint)
+
+
 class ResearchIntentContract(BaseModel):
     """Intent contract for downstream plan/repo/experiment agents."""
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = 1
+    authorization_schema_version: Literal[1, 2] = 1
     run_id: str
 
     task_domain: str | None = "anomaly_detection"
+    task_profile: TaskProfile = "general_research"
+    task_profile_source: NeedSource = "unknown"
+    task_profile_evidence: str | None = None
     research_goal: str | None = None
+    research_object: str | None = None
+    target_platform: str | None = None
+    workload: str | None = None
     baseline: str | None = None
     baseline_repo: str | None = None
     baseline_commit: str | None = None
@@ -111,6 +139,7 @@ class ResearchIntentContract(BaseModel):
 
     dataset: str | None = None
     evaluation_protocol: str | None = None
+    evaluation_constraints: EvaluationConstraints = Field(default_factory=EvaluationConstraints)
     primary_metrics: list[str] = Field(default_factory=list)
     primary_metric: str | None = None
     secondary_metrics: list[str] = Field(default_factory=list)
@@ -155,12 +184,23 @@ def build_contract_from_context(
     confirmed = dict(llm_context.get("confirmed_from_user") or {})
     combined_user_text = _filtered_user_text(user_input, transcript_tail)
     sources = _load_source_registry_sources(run_dir)
+    discovery_draft = (
+        existing_contract_draft.model_dump(mode="json")
+        if existing_contract_draft is not None
+        else {}
+    )
+    if confirmed.get("research_goal"):
+        discovery_draft["research_goal"] = confirmed["research_goal"]
+    if confirmed.get("baseline"):
+        discovery_draft["baseline"] = confirmed["baseline"]
+    if confirmed.get("dataset"):
+        discovery_draft["dataset"] = confirmed["dataset"]
+    if confirmed.get("metrics"):
+        discovery_draft["primary_metrics"] = confirmed["metrics"]
     need_spec = discover_required_needs_with_llm(
         user_input=user_input,
         transcript_tail=transcript_tail,
-        existing_contract_draft=(
-            existing_contract_draft.model_dump(mode="json") if existing_contract_draft is not None else None
-        ),
+        existing_contract_draft=discovery_draft or None,
         source_registry=sources,
         usable_evidence=llm_context.get("usable_evidence", []) or [],
         current_stage_goal="generate_plan",
@@ -235,9 +275,16 @@ def build_contract_from_context(
     )
 
     contract = ResearchIntentContract(
+        authorization_schema_version=2,
         run_id=run_dir.name,
         task_domain=_task_domain_from_need_spec(need_spec) or _infer_task_domain(combined_user_text),
+        task_profile=need_spec.task_profile,
+        task_profile_source=need_spec.task_profile_source,
+        task_profile_evidence=need_spec.task_profile_evidence,
         research_goal=research_goal,
+        research_object=_clean_str(need_fields.get("research_object")),
+        target_platform=_clean_str(need_fields.get("target_platform")),
+        workload=_clean_str(need_fields.get("workload")),
         baseline=baseline,
         baseline_repo=baseline_repo,
         dataset=dataset,
@@ -279,10 +326,20 @@ def merge_contract_draft(
 
     merged = existing.model_copy(deep=True)
     update_data = update.model_dump(mode="python")
+    merged.authorization_schema_version = max(
+        existing.authorization_schema_version,
+        update.authorization_schema_version,
+    )
 
     scalar_fields = [
         "task_domain",
+        "task_profile",
+        "task_profile_source",
+        "task_profile_evidence",
         "research_goal",
+        "research_object",
+        "target_platform",
+        "workload",
         "baseline",
         "baseline_repo",
         "baseline_commit",
@@ -418,7 +475,11 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
     lines = [
         "我整理到的研究设定如下：",
         f"- 研究领域：{contract.task_domain or '待确认'}",
+        f"- 任务类型：{contract.task_profile}",
         f"- 研究目标：{contract.research_goal or '待确认'}",
+        f"- 研究对象：{contract.research_object or '待确认'}",
+        f"- 目标平台：{contract.target_platform or '未指定'}",
+        f"- 工作负载：{contract.workload or '未指定'}",
         f"- 基线方法：{contract.baseline or '待确认'}",
         f"- 基线仓库：{contract.baseline_repo or '未提供，可后续通过仓库分析补全'}",
         f"- 基线提交：{contract.baseline_commit or '未提供'}",
@@ -471,6 +532,8 @@ def _append_need_discovery_decided_event(run_dir: Path, spec: RequiredNeedSpec) 
     append_typed_event(run_dir, "planner.need_discovery.decided", {
         "current_stage_goal": spec.current_stage_goal,
         "inferred_task_type": spec.inferred_task_type,
+        "task_profile": spec.task_profile,
+        "task_profile_source": spec.task_profile_source,
         "need_count": len(spec.needs),
         "blocking_needs": list(spec.blocking_needs),
         "ready_for_plan": spec.ready_for_plan,
@@ -489,6 +552,8 @@ def _append_contract_draft_updated_event(run_dir: Path, contract: ResearchIntent
     ]
     append_typed_event(run_dir, "contract.draft.updated", {
         "schema_version": contract.schema_version,
+        "authorization_schema_version": contract.authorization_schema_version,
+        "task_profile": contract.task_profile,
         "populated_required_fields": populated_fields,
         "missing_required_fields": list(contract.missing_required_fields),
         "ready_for_plan": contract.ready_for_plan,
@@ -586,6 +651,9 @@ def _contract_evidence_sources(sources: list[dict[str, Any]], llm_context: dict[
 def _contract_field_for_need_name(name: str) -> str | None:
     mapping = {
         "research_goal": "research_goal",
+        "research_object": "research_object",
+        "target_platform": "target_platform",
+        "workload": "workload",
         "baseline": "baseline",
         "target_method": "baseline",
         "dataset": "dataset",
@@ -1049,7 +1117,28 @@ def _missing_core_fields(contract: ResearchIntentContract) -> list[str]:
         return list(contract.need_spec.blocking_needs)
 
     missing = []
-    for field in CORE_REQUIRED_FIELDS:
+    required_fields = CORE_REQUIRED_FIELDS
+    if contract.authorization_schema_version == 2:
+        required_fields = {
+            "empirical_model_research": CORE_REQUIRED_FIELDS,
+            "systems_optimization": [
+                "research_goal",
+                "research_object",
+                "target_platform",
+                "workload",
+                "primary_metrics",
+                "success_criteria",
+                "execution_mode",
+            ],
+            "general_research": [
+                "research_goal",
+                "research_object",
+                "success_criteria",
+                "execution_mode",
+            ],
+            "code_diagnosis": ["research_goal"],
+        }[contract.task_profile]
+    for field in required_fields:
         value = _required_field_value(contract, field)
         if value in (None, "", [], {}):
             missing.append(field)
@@ -1153,6 +1242,40 @@ def _refresh_contract_state(contract: ResearchIntentContract) -> None:
 
 def _sync_need_spec_from_contract(contract: ResearchIntentContract) -> RequiredNeedSpec:
     spec = contract.need_spec.model_copy(deep=True)
+    if contract.authorization_schema_version == 2 and contract.baseline and contract.dataset:
+        contract.task_profile = "empirical_model_research"
+        if contract.task_profile_source == "unknown":
+            contract.task_profile_source = "llm_inferred"
+        if spec.inferred_task_type == "general_research":
+            spec.inferred_task_type = "experiment_improvement"
+    spec.task_profile = contract.task_profile
+    spec.task_profile_source = contract.task_profile_source
+    spec.task_profile_evidence = contract.task_profile_evidence
+    existing_need_names = {need.name for need in spec.needs}
+    contract_need_fields = [
+        ("research_goal", "intent", contract.research_goal),
+        ("research_object", "experiment_object", contract.research_object),
+        ("target_platform", "environment", contract.target_platform),
+        ("workload", "experiment_object", contract.workload),
+        ("baseline", "experiment_object", contract.baseline),
+        ("dataset", "experiment_object", contract.dataset),
+        ("metrics", "evaluation", contract.primary_metrics),
+        ("success_criteria", "evaluation", contract.success_criteria),
+        ("execution_mode", "execution", contract.execution_mode),
+    ]
+    for name, category, value in contract_need_fields:
+        if name in existing_need_names or value in (None, "", [], {}):
+            continue
+        spec.needs.append(RequirementNeed(
+            name=name,
+            category=category,  # type: ignore[arg-type]
+            required_for="plan",
+            necessity="required_now",
+            current_value=value,
+            source="artifact",
+            confidence=1.0,
+        ))
+    spec = validate_need_spec(spec)
     for need in spec.needs:
         value = _contract_value_for_need(contract, need.name)
         if value not in (None, "", [], {}):
@@ -1166,6 +1289,9 @@ def _sync_need_spec_from_contract(contract: ResearchIntentContract) -> RequiredN
 def _contract_value_for_need(contract: ResearchIntentContract, name: str) -> Any:
     mapping = {
         "research_goal": contract.research_goal,
+        "research_object": contract.research_object,
+        "target_platform": contract.target_platform,
+        "workload": contract.workload,
         "baseline": contract.baseline,
         "dataset": contract.dataset,
         "metrics": contract.primary_metrics,

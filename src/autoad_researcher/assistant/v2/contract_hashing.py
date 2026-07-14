@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from autoad_researcher.assistant.v2.intent_contract import ResearchIntentContract
+from autoad_researcher.assistant.v2.intent_contract import EvaluationConstraints, ResearchIntentContract
 from autoad_researcher.core.control_plane.hashing import domain_sha256
 
 
@@ -47,8 +47,34 @@ class ConfirmedContractHashPayload(ConfirmationSemanticProjection):
     hash_schema: Literal["research_intent_contract:v1"] = "research_intent_contract:v1"
 
 
+class ConfirmationSemanticProjectionV2(ConfirmationSemanticProjection):
+    """Authorization v2 fields; the inherited v1 projection remains byte-stable."""
+
+    authorization_schema_version: Literal[2] = 2
+    task_profile: str
+    task_profile_source: str
+    task_profile_evidence: str | None
+    research_object: str | None
+    target_platform: str | None
+    workload: str | None
+    evaluation_constraints: EvaluationConstraints
+
+
+class ConfirmationDraftHashPayloadV2(ConfirmationSemanticProjectionV2):
+    hash_schema: Literal["research_intent_confirmation_draft:v2"] = "research_intent_confirmation_draft:v2"
+
+
+class ConfirmedContractHashPayloadV2(ConfirmationSemanticProjectionV2):
+    hash_schema: Literal["research_intent_contract:v2"] = "research_intent_contract:v2"
+
+
 def confirmation_draft_sha256(contract: ResearchIntentContract) -> str:
     projection = build_confirmation_semantic_projection(contract)
+    if contract.authorization_schema_version == 2:
+        return domain_sha256(
+            "autoad:research_intent_confirmation_draft:v2",
+            ConfirmationDraftHashPayloadV2(**projection.model_dump(mode="python")),
+        )
     return domain_sha256(
         "autoad:research_intent_confirmation_draft:v1",
         ConfirmationDraftHashPayload(**projection.model_dump(mode="python")),
@@ -57,6 +83,11 @@ def confirmation_draft_sha256(contract: ResearchIntentContract) -> str:
 
 def confirmed_contract_sha256(contract: ResearchIntentContract) -> str:
     projection = build_confirmation_semantic_projection(contract)
+    if contract.authorization_schema_version == 2:
+        return domain_sha256(
+            "autoad:research_intent_contract:v2",
+            ConfirmedContractHashPayloadV2(**projection.model_dump(mode="python")),
+        )
     return domain_sha256(
         "autoad:research_intent_contract:v1",
         ConfirmedContractHashPayload(**projection.model_dump(mode="python")),
@@ -65,8 +96,8 @@ def confirmed_contract_sha256(contract: ResearchIntentContract) -> str:
 
 def build_confirmation_semantic_projection(
     contract: ResearchIntentContract,
-) -> ConfirmationSemanticProjection:
-    return ConfirmationSemanticProjection(**{
+) -> ConfirmationSemanticProjection | ConfirmationSemanticProjectionV2:
+    v1_values = {
         "run_id": _required_string(contract.run_id),
         "task_domain": _optional_string(contract.task_domain),
         "research_goal": _optional_string(contract.research_goal),
@@ -89,6 +120,18 @@ def build_confirmation_semantic_projection(
         "risk_preference": _optional_string(contract.risk_preference),
         "allowed_change_scope": sorted(set(_ordered_unique(contract.allowed_change_scope))),
         "forbidden_change_scope": sorted(set(_ordered_unique(contract.forbidden_change_scope))),
+    }
+    if contract.authorization_schema_version == 1:
+        return ConfirmationSemanticProjection(**v1_values)
+    return ConfirmationSemanticProjectionV2(**v1_values, **{
+        "authorization_schema_version": 2,
+        "task_profile": _required_string(contract.task_profile),
+        "task_profile_source": _required_string(contract.task_profile_source),
+        "task_profile_evidence": _optional_string(contract.task_profile_evidence),
+        "research_object": _optional_string(contract.research_object),
+        "target_platform": _optional_string(contract.target_platform),
+        "workload": _optional_string(contract.workload),
+        "evaluation_constraints": contract.evaluation_constraints.model_copy(deep=True),
     })
 
 

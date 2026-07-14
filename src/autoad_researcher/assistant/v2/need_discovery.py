@@ -38,6 +38,12 @@ RequiredFor = Literal[
 ]
 Necessity = Literal["required_now", "required_later", "optional", "auto_fillable"]
 NeedSource = Literal["user_confirmed", "user", "llm_inferred", "artifact", "repo", "paper", "default", "unknown"]
+TaskProfile = Literal[
+    "empirical_model_research",
+    "systems_optimization",
+    "code_diagnosis",
+    "general_research",
+]
 StageGoal = Literal[
     "clarify_intent",
     "generate_plan",
@@ -63,6 +69,7 @@ class RequirementNeed(BaseModel):
     confidence: float = 0.0
     blocking: bool = False
     question_to_user: str | None = None
+    evidence_quote: str | None = None
 
 
 class RequiredNeedSpec(BaseModel):
@@ -72,6 +79,9 @@ class RequiredNeedSpec(BaseModel):
 
     task_summary: str = ""
     inferred_task_type: str = "general_research"
+    task_profile: TaskProfile = "general_research"
+    task_profile_source: NeedSource = "unknown"
+    task_profile_evidence: str | None = None
     current_stage_goal: StageGoal = "generate_plan"
     needs: list[RequirementNeed] = Field(default_factory=list)
     blocking_needs: list[str] = Field(default_factory=list)
@@ -106,7 +116,7 @@ def discover_required_needs(
     if llm_payload is not None:
         spec = canonicalize_need_values(RequiredNeedSpec.model_validate(llm_payload))
         _recover_directional_plan_success_criteria(spec, _combined_user_text(user_input, transcript_tail))
-        return validate_need_spec(spec)
+        return validate_need_spec(spec, user_text=_combined_user_text(user_input, transcript_tail))
 
     text = _combined_user_text(user_input, transcript_tail)
     draft = existing_contract_draft or {}
@@ -114,16 +124,21 @@ def discover_required_needs(
     evidence = usable_evidence or []
     values = _autofill_values(text, draft, sources, evidence, run_artifacts_summary or {})
     task_type = _infer_task_type(text, values)
-    needs = _build_stage_needs(task_type, current_stage_goal, values)
+    profile = _task_profile_for_type(task_type)
+    profile_evidence = _evidence_excerpt(text)
+    needs = _build_stage_needs(task_type, current_stage_goal, values, user_text=text)
     spec = RequiredNeedSpec(
         task_summary=_task_summary(task_type, values),
         inferred_task_type=task_type,
+        task_profile=profile,
+        task_profile_source="llm_inferred",
+        task_profile_evidence=profile_evidence,
         current_stage_goal=current_stage_goal,
         needs=needs,
     )
     spec = canonicalize_need_values(spec)
     _recover_directional_plan_success_criteria(spec, text)
-    return validate_need_spec(spec)
+    return validate_need_spec(spec, user_text=text)
 
 
 def discover_required_needs_with_llm(
@@ -245,7 +260,7 @@ def discover_required_needs_with_llm(
     )
     spec = canonicalize_need_values(spec)
     _recover_directional_plan_success_criteria(spec, _combined_user_text(user_input, transcript_tail))
-    return validate_need_spec(spec)
+    return validate_need_spec(spec, user_text=_combined_user_text(user_input, transcript_tail))
 
 
 def canonicalize_need_values(spec: RequiredNeedSpec) -> RequiredNeedSpec:
@@ -265,13 +280,28 @@ def canonicalize_need_values(spec: RequiredNeedSpec) -> RequiredNeedSpec:
             need.current_value = "plan_only"
             need.source = "default"
             need.confidence = max(need.confidence, 0.8)
+            need.evidence_quote = None
     return updated
 
 
-def validate_need_spec(spec: RequiredNeedSpec) -> RequiredNeedSpec:
-    """Validate blocking state and readiness from schema fields."""
+def validate_need_spec(
+    spec: RequiredNeedSpec,
+    *,
+    user_text: str | None = None,
+) -> RequiredNeedSpec:
+    """Recompute the task profile, blocking state, and readiness.
+
+    Model-produced readiness flags are deliberately ignored. When user text is
+    available, a need marked as user-sourced must carry a quote that occurs in
+    that text; otherwise the unsupported value is discarded before readiness
+    is calculated.
+    """
 
     updated = spec.model_copy(deep=True)
+    if user_text is not None:
+        _validate_user_evidence(updated, user_text)
+    _select_task_profile(updated, user_text or "")
+    _ensure_profile_required_needs(updated)
     _ensure_stage_required_needs(updated)
     for need in updated.needs:
         if need.name in {"improvement_idea", "target_module"}:
@@ -293,7 +323,11 @@ def validate_need_spec(spec: RequiredNeedSpec) -> RequiredNeedSpec:
         if need.necessity in {"optional", "required_later", "auto_fillable"}:
             need.blocking = False
             continue
-        need.blocking = need.necessity == "required_now" and _is_empty_need_value(need.current_value)
+        need.blocking = need.necessity == "required_now" and (
+            _is_empty_need_value(need.current_value) or _is_template_only_need(need)
+        )
+        if not need.blocking and not _is_empty_need_value(need.current_value):
+            need.question_to_user = None
 
     updated.blocking_needs = [need.name for need in updated.needs if need.blocking]
     updated.next_best_question = _next_best_question(updated.needs)
@@ -325,6 +359,7 @@ def _recover_directional_plan_success_criteria(spec: RequiredNeedSpec, user_text
             need.source = "user"
             need.confidence = max(need.confidence, 0.9)
             need.question_to_user = None
+            need.evidence_quote = _evidence_excerpt(user_text)
         return
 
 
@@ -449,6 +484,9 @@ def _autofill_values(
     current_success_criteria = _success_criteria_from_text(text)
     values: dict[str, Any] = {
         "research_goal": draft.get("research_goal") or _goal_from_text(text),
+        "research_object": draft.get("research_object") or _research_object_from_text(text),
+        "target_platform": draft.get("target_platform") or _target_platform_from_text(text),
+        "workload": draft.get("workload") or _workload_from_text(text),
         "baseline": draft.get("baseline") or _baseline_from_text(text),
         "dataset": draft.get("dataset") or _dataset_from_text(text),
         "metrics": current_metrics or draft.get("primary_metrics") or draft.get("primary_metric"),
@@ -470,10 +508,24 @@ def _autofill_values(
     return values
 
 
-def _build_stage_needs(task_type: str, stage: StageGoal, values: dict[str, Any]) -> list[RequirementNeed]:
+def _build_stage_needs(
+    task_type: str,
+    stage: StageGoal,
+    values: dict[str, Any],
+    *,
+    user_text: str,
+) -> list[RequirementNeed]:
+    evidence = _evidence_excerpt(user_text)
     needs: list[RequirementNeed] = [
-        _need("research_goal", "intent", "plan", "required_now", values.get("research_goal"), "user"),
-        _need("execution_mode", "execution", "plan", "required_now", values.get("execution_mode") or "plan_only", "user"),
+        _need(
+            "research_goal", "intent", "plan", "required_now", values.get("research_goal"), "user",
+            evidence_quote=evidence,
+        ),
+        _need(
+            "execution_mode", "execution", "plan", "required_now", values.get("execution_mode") or "plan_only",
+            "default" if values.get("execution_mode") == "plan_only" else "user",
+            evidence_quote=None if values.get("execution_mode") == "plan_only" else evidence,
+        ),
         _need("improvement_idea", "intent", "experiment_design", "optional", None, "unknown"),
         _need("target_module", "experiment_object", "patch", "optional", None, "unknown"),
         _need("forbidden_change_scope", "safety", "plan", "auto_fillable", values.get("forbidden_change_scope"), "default"),
@@ -481,13 +533,30 @@ def _build_stage_needs(task_type: str, stage: StageGoal, values: dict[str, Any])
 
     if task_type in {"image_anomaly_detection_improvement", "experiment_improvement", "baseline_reproduction"}:
         needs.extend([
-            _need("baseline", "experiment_object", "plan", "required_now", values.get("baseline"), "user"),
-            _need("dataset", "experiment_object", "plan", "required_now", values.get("dataset"), "user"),
+            _need("baseline", "experiment_object", "plan", "required_now", values.get("baseline"), "user",
+                  evidence_quote=evidence),
+            _need("dataset", "experiment_object", "plan", "required_now", values.get("dataset"), "user",
+                  evidence_quote=evidence),
             _need("metrics", "evaluation", "plan", "required_now", values.get("metrics"), "user",
-                  "你这次主要看哪些评价指标？可以是 image AUROC、pixel AUROC、PRO，或速度/显存。多个指标也可以同时作为核心指标。"),
-            _need("success_criteria", "evaluation", "plan", "required_now", values.get("success_criteria"), "user"),
+                  "你这次主要看哪些评价指标？可以是 image AUROC、pixel AUROC、PRO，或速度/显存。多个指标也可以同时作为核心指标。",
+                  evidence_quote=evidence),
+            _need("success_criteria", "evaluation", "plan", "required_now", values.get("success_criteria"), "user",
+                  evidence_quote=evidence),
             _need("repo", "material", "repo_analysis", "required_later", values.get("repo"), "user"),
             _need("entrypoint", "experiment_object", "repo_analysis", "auto_fillable", values.get("entrypoint"), "repo"),
+        ])
+    elif task_type == "systems_optimization":
+        needs.extend([
+            _need("research_object", "experiment_object", "plan", "required_now", values.get("research_object"), "user",
+                  "具体要优化哪个系统、算子或运行时对象？", evidence_quote=evidence),
+            _need("target_platform", "environment", "plan", "required_now", values.get("target_platform"), "user",
+                  "这个优化面向什么目标平台或硬件环境？", evidence_quote=evidence),
+            _need("workload", "experiment_object", "plan", "required_now", values.get("workload"), "user",
+                  "准备用哪类工作负载或 benchmark 验证？", evidence_quote=evidence),
+            _need("metrics", "evaluation", "plan", "required_now", values.get("metrics"), "user",
+                  "你准备用哪些性能指标判断优化是否有效？", evidence_quote=evidence),
+            _need("success_criteria", "evaluation", "plan", "required_now", values.get("success_criteria"), "user",
+                  "达到什么结果算优化成功？", evidence_quote=evidence),
         ])
     elif task_type == "code_diagnosis":
         needs.extend([
@@ -496,8 +565,11 @@ def _build_stage_needs(task_type: str, stage: StageGoal, values: dict[str, Any])
         ])
     else:
         needs.extend([
+            _need("research_object", "experiment_object", "plan", "required_now", values.get("research_object"), "user",
+                  "这项研究具体面向什么对象或问题？", evidence_quote=evidence),
             _need("material", "material", "chat", "required_later", values.get("paper_summary") or values.get("repo"), "artifact"),
-            _need("success_criteria", "evaluation", "plan", "required_now", values.get("success_criteria"), "user"),
+            _need("success_criteria", "evaluation", "plan", "required_now", values.get("success_criteria"), "user",
+                  "你期望得到什么结果，达到什么标准算完成？", evidence_quote=evidence),
         ])
 
     if stage == "run_experiment":
@@ -525,6 +597,8 @@ def _need(
     value: Any,
     source: NeedSource,
     question: str | None = None,
+    *,
+    evidence_quote: str | None = None,
 ) -> RequirementNeed:
     return RequirementNeed(
         name=name,
@@ -536,6 +610,7 @@ def _need(
         confidence=0.9 if not _is_empty_need_value(value) else 0.0,
         blocking=False,
         question_to_user=question,
+        evidence_quote=evidence_quote if not _is_empty_need_value(value) else None,
     )
 
 
@@ -560,6 +635,163 @@ def _ensure_stage_required_needs(spec: RequiredNeedSpec) -> None:
                 ))
 
 
+def _ensure_profile_required_needs(spec: RequiredNeedSpec) -> None:
+    if spec.current_stage_goal not in {"clarify_intent", "generate_plan"}:
+        return
+    required_by_profile: dict[TaskProfile, list[tuple[str, NeedCategory, str]]] = {
+        "empirical_model_research": [
+            ("research_goal", "intent", "请说明这项模型实验的主要目标。"),
+            ("baseline", "experiment_object", "你希望以哪个方法或实现作为 baseline？"),
+            ("dataset", "experiment_object", "准备用哪个数据集评估？"),
+            ("metrics", "evaluation", "你准备用哪些指标评价结果？"),
+            ("success_criteria", "evaluation", "达到什么结果算实验成功？"),
+            ("execution_mode", "execution", "你希望只做规划、逐步确认，还是确认后由助手协助推进？"),
+        ],
+        "systems_optimization": [
+            ("research_goal", "intent", "请说明这项系统优化的主要目标。"),
+            ("research_object", "experiment_object", "具体要优化哪个系统、算子或运行时对象？"),
+            ("target_platform", "environment", "这个优化面向什么目标平台或硬件环境？"),
+            ("workload", "experiment_object", "准备用哪类工作负载或 benchmark 验证？"),
+            ("metrics", "evaluation", "你准备用哪些性能指标判断优化是否有效？"),
+            ("success_criteria", "evaluation", "达到什么结果算优化成功？"),
+            ("execution_mode", "execution", "你希望只做规划、逐步确认，还是确认后由助手协助推进？"),
+        ],
+        "general_research": [
+            ("research_goal", "intent", "请说明这项研究想解决的主要问题。"),
+            ("research_object", "experiment_object", "这项研究具体面向什么对象或问题？"),
+            ("success_criteria", "evaluation", "你期望得到什么结果，达到什么标准算完成？"),
+            ("execution_mode", "execution", "你希望只做规划、逐步确认，还是确认后由助手协助推进？"),
+        ],
+        "code_diagnosis": [],
+    }
+    profile_requirements = required_by_profile[spec.task_profile]
+    required_names = {name for name, _category, _question in profile_requirements}
+    profile_managed_names = {
+        name
+        for requirements in required_by_profile.values()
+        for name, _category, _question in requirements
+    }
+    for need in spec.needs:
+        if need.name in profile_managed_names and need.name not in required_names:
+            need.necessity = "optional"
+            need.blocking = False
+            need.question_to_user = None
+    existing = {need.name for need in spec.needs}
+    for name, category, question in profile_requirements:
+        if name in existing:
+            need = next(item for item in spec.needs if item.name == name)
+            need.required_for = "plan"
+            need.necessity = "required_now"
+            if not need.question_to_user:
+                need.question_to_user = question
+            continue
+        spec.needs.append(_need(
+            name,
+            category,
+            "plan",
+            "required_now",
+            "plan_only" if name == "execution_mode" else None,
+            "default" if name == "execution_mode" else "unknown",
+            question,
+        ))
+
+
+def _validate_user_evidence(spec: RequiredNeedSpec, user_text: str) -> None:
+    for need in spec.needs:
+        if need.source not in {"user", "user_confirmed"} or _is_empty_need_value(need.current_value):
+            continue
+        quote = (need.evidence_quote or "").strip()
+        if quote and quote in user_text:
+            continue
+        need.current_value = None
+        need.source = "unknown"
+        need.confidence = 0.0
+        need.evidence_quote = None
+    if spec.task_profile_source in {"user", "user_confirmed"}:
+        quote = (spec.task_profile_evidence or "").strip()
+        if not quote or quote not in user_text:
+            spec.task_profile = "general_research"
+            spec.task_profile_source = "unknown"
+            spec.task_profile_evidence = None
+
+
+def _select_task_profile(spec: RequiredNeedSpec, user_text: str) -> None:
+    proposed = spec.task_profile
+    if (
+        not user_text
+        and proposed != "general_research"
+        and (bool(spec.task_profile_evidence) or _profile_is_corroborated(spec, proposed, user_text))
+    ):
+        return
+    evidence = (spec.task_profile_evidence or "").strip()
+    evidence_is_valid = bool(evidence and evidence in user_text)
+    fallback_profile = _profile_from_user_text(user_text)
+    if (
+        proposed != "general_research"
+        and evidence_is_valid
+        and (_profile_is_corroborated(spec, proposed, user_text) or proposed == fallback_profile)
+    ):
+        return
+
+    selected = _task_profile_for_type(spec.inferred_task_type)
+    if selected != "general_research" and (
+        _profile_is_corroborated(spec, selected, user_text) or selected == fallback_profile
+    ):
+        spec.task_profile = selected
+        spec.task_profile_source = "llm_inferred"
+        spec.task_profile_evidence = _evidence_excerpt(user_text)
+        return
+    spec.task_profile = "general_research"
+    spec.task_profile_source = "unknown"
+    spec.task_profile_evidence = None
+
+
+def _profile_is_corroborated(spec: RequiredNeedSpec, profile: TaskProfile, user_text: str) -> bool:
+    populated = {
+        need.name
+        for need in spec.needs
+        if not _is_empty_need_value(need.current_value)
+        and (
+            need.source in {"user", "user_confirmed", "artifact", "repo", "paper"}
+            or (
+                need.source == "llm_inferred"
+                and bool(need.evidence_quote)
+                and str(need.evidence_quote).strip() in user_text
+            )
+        )
+    }
+    if profile == "empirical_model_research":
+        return bool(populated & {"baseline", "dataset", "metrics", "target_method"})
+    if profile == "systems_optimization":
+        return bool(populated & {"research_object", "target_platform", "workload"})
+    if profile == "code_diagnosis":
+        return spec.inferred_task_type == "code_diagnosis" or bool(populated & {"error_log", "repo"})
+    return True
+
+
+def _profile_from_user_text(user_text: str) -> TaskProfile:
+    if not user_text.strip():
+        return "general_research"
+    values = {
+        "baseline": _baseline_from_text(user_text),
+        "dataset": _dataset_from_text(user_text),
+        "research_object": _research_object_from_text(user_text),
+    }
+    return _task_profile_for_type(_infer_task_type(user_text, values))
+
+
+def _is_template_only_need(need: RequirementNeed) -> bool:
+    value = str(need.current_value or "").strip()
+    if value == "improve primary metric under the same evaluation protocol":
+        return True
+    if need.source in {"user", "user_confirmed", "artifact", "repo", "paper"}:
+        return False
+    return value in {
+        "提升 baseline 在目标数据集上的表现",
+        "improve selected metrics under the same evaluation protocol",
+    }
+
+
 def _infer_task_type(text: str, values: dict[str, Any]) -> str:
     lowered = text.lower()
     if "报错" in text or "bug" in lowered or "traceback" in lowered:
@@ -570,6 +802,18 @@ def _infer_task_type(text: str, values: dict[str, Any]) -> str:
         return "experiment_improvement"
     if "复现" in text:
         return "baseline_reproduction"
+    if values.get("research_object") and _looks_like_systems_optimization(text):
+        return "systems_optimization"
+    return "general_research"
+
+
+def _task_profile_for_type(task_type: str) -> TaskProfile:
+    if task_type in {"image_anomaly_detection_improvement", "experiment_improvement", "baseline_reproduction"}:
+        return "empirical_model_research"
+    if task_type == "systems_optimization":
+        return "systems_optimization"
+    if task_type == "code_diagnosis":
+        return "code_diagnosis"
     return "general_research"
 
 
@@ -584,6 +828,9 @@ def _task_summary(task_type: str, values: dict[str, Any]) -> str:
 
 
 def _goal_from_text(text: str) -> str | None:
+    research_object = _research_object_from_text(text)
+    if research_object and _looks_like_systems_optimization(text):
+        return f"优化 {research_object} 在目标平台和工作负载下的性能"
     if any(token in text for token in ("提升", "优化", "改进", "提高")):
         return "提升 baseline 在目标数据集上的表现"
     if "复现" in text:
@@ -593,6 +840,62 @@ def _goal_from_text(text: str) -> str | None:
     if "方案" in text:
         return "整理研究方案"
     return None
+
+
+def _looks_like_systems_optimization(text: str) -> bool:
+    lowered = text.lower()
+    return bool(
+        re.search(r"(?:ai|人工智能)?\s*算子", lowered)
+        or any(term in lowered for term in ("kernel optimization", "compiler optimization", "runtime optimization"))
+        or any(term in text for term in ("内核优化", "编译器优化", "运行时优化"))
+    )
+
+
+def _research_object_from_text(text: str) -> str | None:
+    patterns = [
+        r"(?i)(?:AI|人工智能)?\s*算子",
+        r"(?i)attention\s*(?:kernel|算子)?",
+        r"(?i)(?:gemm|matmul|convolution|conv)\s*(?:kernel|算子)?",
+        r"(?:编译器|运行时|推理引擎)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return re.sub(r"\s+", " ", match.group(0)).strip()
+    return None
+
+
+def _target_platform_from_text(text: str) -> str | None:
+    patterns = [
+        r"(?i)NVIDIA\s+(?:H100|A100|L40S|[A-Z0-9-]+)",
+        r"(?i)(?:CUDA|ROCm|x86|ARM)\s*[A-Za-z0-9._-]*",
+        r"(?:昇腾|寒武纪|海光)[A-Za-z0-9._-]*",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return re.sub(r"\s+", " ", match.group(0)).strip()
+    return None
+
+
+def _workload_from_text(text: str) -> str | None:
+    patterns = [
+        r"(?i)(?:attention|gemm|matmul|convolution|conv)\s*(?:推理|训练|workload|benchmark|工作负载)",
+        r"(?i)(?:MLPerf|SPEC(?:\s+CPU)?|TPC-[A-Z]+)",
+        r"(?:推理|训练)(?:服务|工作负载|负载)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return re.sub(r"\s+", " ", match.group(0)).strip()
+    return None
+
+
+def _evidence_excerpt(text: str) -> str | None:
+    normalized = text.strip()
+    if not normalized:
+        return None
+    return normalized[-1000:]
 
 
 def _baseline_from_text(text: str) -> str | None:

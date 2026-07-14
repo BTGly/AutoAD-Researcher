@@ -70,6 +70,44 @@ def test_build_contract_ready_for_plan_without_improvement_or_target_module(tmp_
     assert contract.missing_required_fields == []
 
 
+def test_systems_contract_uses_task_specific_readiness_and_v2_authorization(tmp_path: Path):
+    run_dir = tmp_path / "run_systems_contract"
+    run_dir.mkdir()
+
+    incomplete = build_contract_from_context(
+        run_dir=run_dir,
+        user_input="我想做AI算子优化",
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert incomplete.authorization_schema_version == 2
+    assert incomplete.task_profile == "systems_optimization"
+    assert incomplete.research_object == "AI算子"
+    assert set(incomplete.missing_required_fields) == {
+        "target_platform",
+        "workload",
+        "metrics",
+        "success_criteria",
+    }
+    assert incomplete.ready_for_plan is False
+
+    complete = build_contract_from_context(
+        run_dir=run_dir,
+        user_input=(
+            "我要优化 AI 算子，目标平台是 NVIDIA H100，使用 attention 推理工作负载，"
+            "主要指标是 throughput，成功标准是吞吐量提升 10%。"
+        ),
+        llm_context={"confirmed_from_user": {}},
+    )
+
+    assert complete.task_profile == "systems_optimization"
+    assert complete.target_platform == "NVIDIA H100"
+    assert complete.workload == "attention 推理"
+    assert complete.primary_metrics == ["inference_latency"]
+    assert complete.missing_required_fields == []
+    assert complete.ready_for_plan is True
+
+
 def test_contract_cleans_patchcore_simplenet_conversation_state(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
