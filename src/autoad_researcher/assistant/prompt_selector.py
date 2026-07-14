@@ -44,6 +44,7 @@ _RESEARCH_CHAT_MODE_TO_PROMPT: dict[str, str] = {
 RESEARCH_CHAT_MODE_TO_PROMPT_ID: dict[str, str] = _RESEARCH_CHAT_MODE_TO_PROMPT
 
 _V2_COMPONENT_TO_PROMPT: dict[str, str] = {
+    "conversation_router": "assistant.v2.conversation_route.v1",
     "source_action_planner": "assistant.v2.source_action_plan.v1",
     "turn_gate": "assistant.v2.turn_gate.v1",
     "need_discovery": "assistant.v2.need_discovery.v1",

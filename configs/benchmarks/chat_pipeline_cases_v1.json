@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"case_id": "ordinary_chat", "user_input": "今天不聊科研，随便聊聊电影。", "expected_router": true},
+    {"case_id": "research_keyword_joke", "user_input": "你是 PatchCore 战神哈哈哈。", "expected_router": true},
+    {"case_id": "identity_question", "user_input": "你是谁，能做什么？", "expected_router": true},
+    {"case_id": "frustration", "user_input": "为什么前端名字还是没更新？", "expected_router": true},
+    {"case_id": "model_research", "user_input": "我想以 PatchCore 为 baseline，在 MVTec AD 上提升 image-level AUROC。", "expected_router": true},
+    {"case_id": "systems_vague", "user_input": "我想做 AI infra 和底层优化，你有什么建议？", "expected_router": true},
+    {"case_id": "systems_explicit", "user_input": "我要在 H100 上优化 Triton LayerNorm，工作负载是 batch 32，主要看端到端延迟。", "expected_router": true},
+    {"case_id": "code_diagnosis", "user_input": "请分析这个 Python 服务为什么偶发死锁，当前只诊断不要改代码。", "expected_router": true},
+    {"case_id": "contract_question", "user_input": "当前研究目标里还缺哪些关键信息？", "expected_router": true},
+    {"case_id": "source_search", "user_input": "帮我搜索 PatchCore 后续改进论文。", "expected_router": true},
+    {"case_id": "plain_url", "user_input": "https://example.com/research/patchcore", "expected_router": false},
+    {"case_id": "git_url", "user_input": "https://github.com/amazon-science/patchcore-inspection.git", "expected_router": false},
+    {"case_id": "url_with_instruction", "user_input": "请登记 https://example.com/paper 并把它作为候选资料，不要自动写入合同。", "expected_router": true},
+    {"case_id": "attachment", "user_input": "请读取附件。", "attachments": ["paper.pdf"], "expected_router": false},
+    {"case_id": "context_continue", "user_input": "按刚才那个继续。", "transcript_tail": [{"role": "user", "content": "我想优化 CUDA 算子。"}, {"role": "assistant", "content": "请说明目标硬件和工作负载。"}], "expected_router": true},
+    {"case_id": "text_confirmation", "user_input": "确认。", "transcript_tail": [{"role": "user", "content": "我想复现 PatchCore。"}, {"role": "assistant", "content": "请确认当前草案。"}], "expected_router": true},
+    {"case_id": "switch_topic", "user_input": "先放下异常检测，改聊 AI 算子优化。", "expected_router": true},
+    {"case_id": "numeric_goal", "user_input": "我要把 image-level AUROC 提升 5%。", "transcript_tail": [{"role": "user", "content": "基线是 PatchCore，数据集是 MVTec AD。"}], "expected_router": true},
+    {"case_id": "paper_method_question", "user_input": "这篇论文的核心方法是什么，为什么可能适合 PatchCore？", "expected_router": true},
+    {"case_id": "casual_coding", "user_input": "给我解释一下 Python context manager，暂时和科研任务无关。", "expected_router": true}
+  ]
+}

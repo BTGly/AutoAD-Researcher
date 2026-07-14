@@ -21,6 +21,8 @@ test -d scripts
 test -f scripts/verify.sh
 test -f scripts/verify_and_push.sh
 test -f scripts/verify_hitl_artifacts.py
+test -f scripts/bench_chat_pipeline.py
+test -f configs/benchmarks/chat_pipeline_cases_v1.json
 test -f .github/workflows/verify.yml
 test -f .gitignore
 

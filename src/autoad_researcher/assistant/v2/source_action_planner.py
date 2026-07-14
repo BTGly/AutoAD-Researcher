@@ -116,7 +116,7 @@ def plan_source_actions(
     they remain ordinary chat.
     """
 
-    explicit = _explicit_source_plan(
+    explicit = plan_explicit_source_actions(
         user_input=user_input,
         attachments=attachments,
         source_registry=source_registry,
@@ -340,7 +340,7 @@ def _build_source_action_messages(
     ]
 
 
-def _explicit_source_plan(
+def plan_explicit_source_actions(
     *,
     user_input: str,
     attachments: list[str] | None,
@@ -386,6 +386,16 @@ def _explicit_source_plan(
         confidence=1.0,
         reason="Structured URL signal.",
     )
+
+
+def explicit_source_input_is_url_only(user_input: str) -> bool:
+    """Return True only when the complete input is one syntactically valid URL."""
+
+    text = user_input.strip().strip("<>()[]{}\"'")
+    candidate = extract_first_source_candidate(text)
+    if candidate is None:
+        return False
+    return text == candidate.raw_ref
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

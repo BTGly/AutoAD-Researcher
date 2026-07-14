@@ -77,30 +77,39 @@ def test_orchestrator_persists_low_frequency_typed_events_without_token_deltas(m
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
+        if "ConversationRouter" in system_text:
             return {
                 "reply": json.dumps({
-                    "actions": [],
-                    "user_visible_summary": "",
-                    "confidence": 0.7,
-                    "reason": "no source action",
-                }, ensure_ascii=False),
-                "error": "",
-            }
-        if "TurnGateDecision JSON" in system_text:
-            return {
-                "reply": json.dumps({
-                    "turn_type": "contract_update",
-                    "contract_action": "update_contract",
-                    "contract_update_allowed": True,
-                    "need_discovery_allowed": True,
-                    "save_draft_allowed": True,
-                    "user_intent_summary": "research contract update",
-                    "evidence_from_current_turn": [],
-                    "evidence_from_context": [],
-                    "confidence": 0.9,
-                    "reason": "research turn",
-                    "next_reply_instruction": None,
+                    "turn_gate": {
+                        "turn_type": "contract_update",
+                        "contract_action": "update_contract",
+                        "contract_update_allowed": True,
+                        "need_discovery_allowed": True,
+                        "save_draft_allowed": True,
+                        "confirmation_action_proposal": "none",
+                        "task_profile_proposal": "empirical_model_research",
+                        "task_profile_evidence": "PatchCore",
+                        "requires_need_discovery_enrichment": False,
+                        "suggested_task_title": "PatchCore MVTec AUROC优化",
+                        "suggested_task_summary": "提升 MVTec AD 的图像级 AUROC。",
+                        "user_intent_summary": "research contract update",
+                        "evidence_from_current_turn": ["PatchCore"],
+                        "evidence_from_context": [],
+                        "confidence": 0.9,
+                        "reason": "research turn",
+                        "next_reply_instruction": None,
+                    },
+                    "source_action_plan": {
+                        "actions": [],
+                        "user_visible_summary": "",
+                        "confidence": 0.7,
+                        "reason": "no source action",
+                    },
+                    "task_profile_proposal": "empirical_model_research",
+                    "task_profile_evidence": "PatchCore",
+                    "suggested_task_title": "PatchCore MVTec AUROC优化",
+                    "suggested_task_summary": "提升 MVTec AD 的图像级 AUROC。",
+                    "requires_need_discovery_enrichment": False,
                 }, ensure_ascii=False),
                 "error": "",
             }
@@ -123,8 +132,9 @@ def test_orchestrator_persists_low_frequency_typed_events_without_token_deltas(m
     assert result.reply_kind == "intent_contract_confirmation"
 
     event_types = [event["type"] for event in load_events_since(run_dir)]
-    assert "planner.source_action.decided" in event_types
-    assert "planner.turn_gate.decided" in event_types
+    assert "planner.conversation_route.decided" in event_types
+    assert "planner.source_action.decided" not in event_types
+    assert "planner.turn_gate.decided" not in event_types
     assert "planner.need_discovery.decided" in event_types
     assert "contract.draft.updated" in event_types
     assert "contract.confirmation.requested" in event_types

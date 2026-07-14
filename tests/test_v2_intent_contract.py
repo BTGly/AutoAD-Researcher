@@ -407,14 +407,17 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
         user_text = messages[-1]["content"]
-        if "TurnGateDecision JSON" in system_text:
+        if "ConversationRouter" in system_text:
             if user_text == "确认":
                 return {"reply": json.dumps(_turn_gate_payload(
                     turn_type="contract_confirmation",
                     contract_action="confirm_contract",
                     allowed=False,
+                    evidence_from_current_turn=[user_text],
                 ), ensure_ascii=False), "error": ""}
-            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+            return {"reply": json.dumps(_turn_gate_payload(
+                evidence_from_current_turn=[user_text],
+            ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
                 baseline="PatchCore",
@@ -462,10 +465,13 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
 def test_orchestrator_persists_ready_draft_before_requesting_confirmation(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
-        if "TurnGateDecision JSON" in system_text:
-            return {"reply": json.dumps(_turn_gate_payload(allowed=True) | {
-                "save_draft_allowed": False,
-            }, ensure_ascii=False), "error": ""}
+        user_text = messages[-1]["content"]
+        if "ConversationRouter" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(
+                allowed=True,
+                save_draft_allowed=False,
+                evidence_from_current_turn=[user_text],
+            ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
                 baseline="PatchCore",
@@ -496,11 +502,13 @@ def test_orchestrator_persists_ready_draft_before_requesting_confirmation(tmp_pa
 def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
-        if "TurnGateDecision JSON" in system_text:
+        user_text = messages[-1]["content"]
+        if "ConversationRouter" in system_text:
             return {"reply": json.dumps(_turn_gate_payload(
                 turn_type="contract_confirmation",
                 contract_action="confirm_contract",
                 allowed=False,
+                evidence_from_current_turn=[user_text],
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
@@ -547,14 +555,14 @@ def test_task_1231_turn_gate_json_failure_fails_closed_without_repair(tmp_path: 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
         user_text = messages[-1]["content"]
-        if "SourceActionPlanner" in system_text:
+        if "SourceActionPlanner" in system_text and "ConversationRouter" not in system_text:
             return {"reply": json.dumps({
                 "actions": [],
                 "user_visible_summary": "",
                 "confidence": 0.9,
                 "reason": "no source action",
             }, ensure_ascii=False), "error": ""}
-        if "TurnGateDecision JSON" in system_text:
+        if "ConversationRouter" in system_text:
             if user_text == research_intent:
                 return {"reply": '{"turn_type":"contract_update"', "error": ""}
             return {"reply": json.dumps(_turn_gate_payload(
@@ -1310,8 +1318,10 @@ def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
         user_text = messages[-1]["content"]
-        if "TurnGateDecision JSON" in system_text:
-            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        if "ConversationRouter" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(
+                evidence_from_current_turn=[user_text],
+            ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             metrics = (
                 ["image_level_auroc", "pixel_level_auroc"]
@@ -1571,7 +1581,7 @@ def test_hf2_research_keyword_joke_without_api_is_unknown_not_contract_update(tm
 
 def test_hf2_research_keyword_joke_with_api_is_decided_by_turn_gate(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
-        if "TurnGateDecision JSON" in messages[0]["content"]:
+        if "ConversationRouter" in messages[0]["content"]:
             return {"reply": json.dumps(_turn_gate_payload(
                 turn_type="joke",
                 contract_action="answer_without_contract_update",
@@ -1598,11 +1608,11 @@ def test_hf2_research_keyword_joke_with_api_is_decided_by_turn_gate(tmp_path: Pa
 
 def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
-        if "TurnGateDecision JSON" in messages[0]["content"]:
-            return {"reply": json.dumps(
-                _turn_gate_payload() | {"requires_need_discovery_enrichment": True},
-                ensure_ascii=False,
-            ), "error": ""}
+        if "ConversationRouter" in messages[0]["content"]:
+            return {"reply": json.dumps(_turn_gate_payload(
+                requires_need_discovery_enrichment=True,
+                evidence_from_current_turn=[messages[-1]["content"]],
+            ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_need_spec_payload(
                 baseline="PatchCore",
@@ -1638,8 +1648,11 @@ def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path
 
 def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
-        if "TurnGateDecision JSON" in messages[0]["content"]:
-            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        user_text = messages[-1]["content"]
+        if "ConversationRouter" in messages[0]["content"]:
+            return {"reply": json.dumps(_turn_gate_payload(
+                evidence_from_current_turn=[user_text],
+            ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_need_spec_payload(
                 baseline="PatchCore",
@@ -1684,8 +1697,11 @@ def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, mon
 
 def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
-        if "TurnGateDecision JSON" in messages[0]["content"]:
-            return {"reply": json.dumps(_turn_gate_payload(), ensure_ascii=False), "error": ""}
+        user_text = messages[-1]["content"]
+        if "ConversationRouter" in messages[0]["content"]:
+            return {"reply": json.dumps(_turn_gate_payload(
+                evidence_from_current_turn=[user_text],
+            ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_incomplete_need_spec_payload(), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("还需要确认数据集和指标。", "你主要看哪些指标？"), ensure_ascii=False), "error": ""}
@@ -1789,7 +1805,7 @@ def test_user_confirmed_field_not_overwritten_by_llm_inferred(tmp_path: Path, mo
     assert contract.dataset == "VisA"
 
 
-def _turn_gate_payload(
+def _turn_gate_decision_payload(
     *,
     turn_type: str = "contract_update",
     contract_action: str = "update_contract",
@@ -1803,11 +1819,58 @@ def _turn_gate_payload(
         "need_discovery_allowed": allowed,
         "save_draft_allowed": allowed,
         "user_intent_summary": "测试 turn gate 决策",
-        "evidence_from_current_turn": ["test"],
+        "evidence_from_current_turn": [],
         "evidence_from_context": [],
         "confidence": 0.9,
         "reason": "test",
         "next_reply_instruction": instruction,
+    }
+
+
+def _turn_gate_payload(
+    *,
+    turn_type: str = "contract_update",
+    contract_action: str = "update_contract",
+    allowed: bool = True,
+    instruction: str | None = None,
+    **overrides,
+) -> dict:
+    turn_gate = _turn_gate_decision_payload(
+        turn_type=turn_type,
+        contract_action=contract_action,
+        allowed=allowed,
+        instruction=instruction,
+    )
+    turn_gate.update(overrides)
+    return _conversation_route_payload(turn_gate)
+
+
+def _conversation_route_payload(turn_gate: dict, *, source_action_plan: dict | None = None) -> dict:
+    task_profile = turn_gate.get("task_profile_proposal", "empirical_model_research")
+    evidence = turn_gate.get("task_profile_evidence")
+    enrichment = bool(turn_gate.get("requires_need_discovery_enrichment", False))
+    normalized_gate = {
+        "confirmation_action_proposal": "none",
+        "task_profile_proposal": task_profile,
+        "task_profile_evidence": evidence,
+        "requires_need_discovery_enrichment": enrichment,
+        "suggested_task_title": None,
+        "suggested_task_summary": None,
+        **turn_gate,
+    }
+    return {
+        "turn_gate": normalized_gate,
+        "source_action_plan": source_action_plan or {
+            "actions": [],
+            "user_visible_summary": "",
+            "confidence": 0.9,
+            "reason": "No source action.",
+        },
+        "task_profile_proposal": task_profile,
+        "task_profile_evidence": evidence,
+        "suggested_task_title": normalized_gate.get("suggested_task_title"),
+        "suggested_task_summary": normalized_gate.get("suggested_task_summary"),
+        "requires_need_discovery_enrichment": enrichment,
     }
 
 
@@ -2002,27 +2065,35 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         selected_models.append(kwargs["model"])
         system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
+        if "SourceActionPlanner" in system_text and "ConversationRouter" not in system_text:
             return {"reply": json.dumps({
                 "actions": [],
                 "user_visible_summary": "",
                 "confidence": 0.95,
                 "reason": "no source action",
             }, ensure_ascii=False), "error": ""}
-        if "TurnGateDecision JSON" in system_text:
-            return {"reply": json.dumps({
+        if "ConversationRouter" in system_text:
+            turn_gate = _turn_gate_decision_payload(
+                instruction="更新成功标准。",
+            )
+            turn_gate.update({
                 "turn_type": "contract_update",
                 "contract_action": "update_contract",
                 "contract_update_allowed": True,
-                "need_discovery_allowed": False,
+                "need_discovery_allowed": True,
                 "save_draft_allowed": True,
+                "task_profile_proposal": "empirical_model_research",
+                "task_profile_evidence": "PatchCore",
                 "user_intent_summary": "用户补充了数值成功标准。",
                 "evidence_from_current_turn": ["我要提升5%"],
                 "evidence_from_context": ["PatchCore", "MVTec AD", "image-level AUROC"],
                 "confidence": 0.93,
                 "reason": "research contract update",
-                "next_reply_instruction": "更新成功标准。",
-            }, ensure_ascii=False), "error": ""}
+            })
+            return {"reply": json.dumps(
+                _conversation_route_payload(turn_gate),
+                ensure_ascii=False,
+            ), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
                 baseline="PatchCore",
@@ -2061,7 +2132,7 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
     persisted = load_contract_draft(run_dir)
     draft_state = load_research_draft_state(run_dir)
     assert result.reply_kind == "intent_contract_confirmation"
-    assert selected_models == ["selected-model", "selected-model"]
+    assert selected_models == ["selected-model"]
     assert persisted is not None
     assert persisted.ready_for_plan is True
     assert "5%" in (persisted.success_criteria or "")
@@ -2200,22 +2271,21 @@ def test_orchestrator_suspends_confirmation_without_mutating_draft(tmp_path: Pat
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
+        if "SourceActionPlanner" in system_text and "ConversationRouter" not in system_text:
             return {"reply": json.dumps({
                 "actions": [],
                 "user_visible_summary": "",
                 "confidence": 0.9,
                 "reason": "no source action",
             }, ensure_ascii=False), "error": ""}
-        if "TurnGateDecision JSON" in system_text:
+        if "ConversationRouter" in system_text:
             return {"reply": json.dumps(_turn_gate_payload(
                 turn_type="ordinary_chat",
                 contract_action="answer_without_contract_update",
                 allowed=False,
-            ) | {
-                "confirmation_action_proposal": "suspend",
-                "evidence_from_current_turn": ["我先聊晚餐"],
-            }, ensure_ascii=False), "error": ""}
+                confirmation_action_proposal="suspend",
+                evidence_from_current_turn=["我先聊晚餐"],
+            ), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("可以，研究草案会保留。"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -2255,18 +2325,18 @@ def test_orchestrator_redirects_confirmed_topic_change_to_new_task(tmp_path: Pat
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
+        if "SourceActionPlanner" in system_text and "ConversationRouter" not in system_text:
             return {"reply": json.dumps({
                 "actions": [],
                 "user_visible_summary": "",
                 "confidence": 0.9,
                 "reason": "no source action",
             }, ensure_ascii=False), "error": ""}
-        if "TurnGateDecision JSON" in system_text:
-            return {"reply": json.dumps(_turn_gate_payload() | {
-                "confirmation_action_proposal": "supersede",
-                "evidence_from_current_turn": ["改做算子优化"],
-            }, ensure_ascii=False), "error": ""}
+        if "ConversationRouter" in system_text:
+            return {"reply": json.dumps(_turn_gate_payload(
+                confirmation_action_proposal="supersede",
+                evidence_from_current_turn=["改做算子优化"],
+            ), ensure_ascii=False), "error": ""}
         raise AssertionError("confirmed topic change must not enter Need Discovery or Reply Planner")
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)

@@ -14,6 +14,7 @@ from autoad_researcher.assistant.prompt_selector import (
     V2_COMPONENT_TO_PROMPT_ID,
 )
 from autoad_researcher.assistant.session import AssistantMode
+from autoad_researcher.assistant.v2.conversation_router import _build_conversation_route_messages
 from autoad_researcher.assistant.v2.need_discovery import _build_need_discovery_messages
 from autoad_researcher.assistant.v2.reply_planner import _llm_reply
 from autoad_researcher.assistant.v2.source_action_planner import _build_source_action_messages
@@ -133,6 +134,7 @@ def test_selector_routes_v2_components_through_registry():
     selector = PromptSelector()
 
     assert V2_COMPONENT_TO_PROMPT_ID == {
+        "conversation_router": "assistant.v2.conversation_route.v1",
         "source_action_planner": "assistant.v2.source_action_plan.v1",
         "turn_gate": "assistant.v2.turn_gate.v1",
         "need_discovery": "assistant.v2.need_discovery.v1",
@@ -152,6 +154,18 @@ def test_selector_routes_v2_components_through_registry():
 def test_v2_message_builders_use_registered_prompt_profiles(monkeypatch):
     selector = PromptSelector()
 
+    route_messages = _build_conversation_route_messages(
+        user_input="继续",
+        transcript_tail=[],
+        existing_contract_draft={},
+        source_registry=[],
+        pending_jobs=[],
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+        deterministic_source_plan=None,
+        repository_hints=[],
+    )
     source_messages = _build_source_action_messages(
         user_input="clone repo",
         transcript_tail=[],
@@ -191,6 +205,7 @@ def test_v2_message_builders_use_registered_prompt_profiles(monkeypatch):
     _llm_reply({}, "你好", "sk-test", "https://example.test")
     reply_messages = captured["messages"]
 
+    assert route_messages[0]["content"] == selector.build_system_prompt_for_v2_component("conversation_router")
     assert source_messages[0]["content"] == selector.build_system_prompt_for_v2_component("source_action_planner")
     assert turn_messages[0]["content"] == selector.build_system_prompt_for_v2_component("turn_gate")
     assert need_messages[0]["content"] == selector.build_system_prompt_for_v2_component("need_discovery")

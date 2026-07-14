@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.llm_runtime import with_conversation_deadline
-from autoad_researcher.assistant.v2.source_action_planner import SourceActionPlan, plan_source_actions
+from autoad_researcher.assistant.v2.conversation_router import (
+    ConversationRouteDecision,
+    deterministic_source_route,
+    route_conversation_with_llm,
+)
+from autoad_researcher.assistant.v2.source_action_planner import (
+    SourceActionPlan,
+    explicit_source_input_is_url_only,
+    plan_explicit_source_actions,
+)
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
     ConfirmationConflict,
     apply_confirmation_action_proposal,
@@ -37,7 +46,6 @@ from autoad_researcher.assistant.v2.intent_contract import (
     save_contract_draft,
 )
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
-from autoad_researcher.assistant.v2.turn_gate import decide_turn_gate_with_llm
 from autoad_researcher.ui.sources import load_source_registry, remove_source
 from autoad_researcher.task_workspace.task_profile import (
     apply_automatic_task_profile,
@@ -83,8 +91,8 @@ class ResearchOrchestratorV2:
         if not user_input:
             return OrchestratorResult(reply="请输入问题。", reply_kind="answer")
 
-        created_sources: list[dict[str, Any]] = []
-        created_jobs: list[dict[str, Any]] = []
+        created_sources = []
+        created_jobs = []
         ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
         existing_draft = load_contract_draft(run_dir)
 
@@ -103,24 +111,87 @@ class ResearchOrchestratorV2:
                 intent_contract_confirmed=False,
             )
 
-        source_plan = plan_source_actions(
-            run_dir=run_dir,
+        source_registry = _source_registry_sources(run_dir)
+        explicit_source_plan = plan_explicit_source_actions(
             user_input=user_input,
             attachments=attachments,
+            source_registry=source_registry,
+        )
+        structured_source_only = bool(attachments) or bool(
+            explicit_source_plan is not None and explicit_source_input_is_url_only(user_input)
+        )
+        if structured_source_only and explicit_source_plan is not None:
+            route_decision = deterministic_source_route(explicit_source_plan)
+            source_plan = explicit_source_plan
+            created_sources, created_jobs = _execute_source_action_plan(
+                run_dir, user_input, source_plan
+            )
+            _append_conversation_route_decided_event(run_dir, route_decision, mode="deterministic")
+            if attachments:
+                return OrchestratorResult(
+                    reply="已收到附件；资料登记和解析状态会在右侧更新。",
+                    reply_kind="source_intake",
+                    created_sources=created_sources,
+                    created_jobs=created_jobs,
+                    evidence_used=ctx.get("usable_evidence", []),
+                    answerability=ctx.get("answerability", {}),
+                    intent_contract=(
+                        existing_draft.model_dump(mode="json")
+                        if existing_draft is not None else {}
+                    ),
+                )
+            reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
+            return OrchestratorResult(
+                reply=reply,
+                reply_kind=reply_kind,
+                created_sources=created_sources,
+                created_jobs=created_jobs,
+                evidence_used=ctx.get("usable_evidence", []),
+                answerability=ctx.get("answerability", {}),
+                next_actions=_suggest_next_actions(ctx, reply_kind),
+                intent_contract=(
+                    existing_draft.model_dump(mode="json")
+                    if existing_draft is not None else {}
+                ),
+            )
+
+        if explicit_source_plan is not None:
+            created_sources, created_jobs = _execute_source_action_plan(
+                run_dir, user_input, explicit_source_plan
+            )
+            if created_sources or created_jobs:
+                ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
+                source_registry = _source_registry_sources(run_dir)
+
+        route_decision = route_conversation_with_llm(
+            run_dir=run_dir,
+            user_input=user_input,
             transcript_tail=transcript_tail,
             existing_contract_draft=(
                 existing_draft.model_dump(mode="json") if existing_draft is not None else None
             ),
-            source_registry=_source_registry_sources(run_dir),
+            source_registry=source_registry,
             pending_jobs=ctx.get("pending_jobs", []) or [],
+            created_sources=created_sources,
+            created_jobs=created_jobs,
+            answerability=ctx.get("answerability", {}) or {},
             api_key=api_key,
             provider_url=provider_url,
             model=model,
+            deterministic_source_plan=explicit_source_plan,
         )
-        _append_source_action_decided_event(run_dir, source_plan)
-        created_sources, created_jobs = _execute_source_action_plan(run_dir, user_input, source_plan)
-        if created_sources or created_jobs:
-            ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
+        _append_conversation_route_decided_event(
+            run_dir,
+            route_decision,
+            mode="llm" if api_key else "fallback",
+        )
+        source_plan = route_decision.source_action_plan
+        if explicit_source_plan is None:
+            created_sources, created_jobs = _execute_source_action_plan(
+                run_dir, user_input, source_plan
+            )
+            if created_sources or created_jobs:
+                ctx = build_llm_context(run_dir, transcript_tail=transcript_tail)
         ctx["source_action_plan"] = source_plan.model_dump(mode="json")
 
         clarification = _source_plan_clarification(source_plan)
@@ -135,21 +206,7 @@ class ResearchOrchestratorV2:
                 intent_contract_confirmed=False,
             )
 
-        turn_decision = decide_turn_gate_with_llm(
-            user_input=user_input,
-            transcript_tail=transcript_tail,
-            existing_contract_draft=(
-                existing_draft.model_dump(mode="json") if existing_draft is not None else None
-            ),
-            created_sources=created_sources,
-            created_jobs=created_jobs,
-            answerability=ctx.get("answerability", {}) or {},
-            api_key=api_key,
-            provider_url=provider_url,
-            model=model,
-            run_dir=run_dir,
-        )
-        _append_turn_gate_decided_event(run_dir, turn_decision)
+        turn_decision = route_decision.turn_gate
         ctx["turn_gate_decision"] = turn_decision.model_dump(mode="json")
         _emit_progress(
             on_progress,
@@ -504,27 +561,30 @@ def _emit_progress(callback: Callable[[str], None] | None, message: str) -> None
         pass
 
 
-def _append_source_action_decided_event(run_dir: Path, plan: SourceActionPlan) -> None:
-    actions = plan.actions
-    append_typed_event(run_dir, "planner.source_action.decided", {
+def _append_conversation_route_decided_event(
+    run_dir: Path,
+    decision: ConversationRouteDecision,
+    *,
+    mode: str,
+) -> None:
+    actions = decision.source_action_plan.actions
+    turn = decision.turn_gate
+    append_typed_event(run_dir, "planner.conversation_route.decided", {
+        "routing_mode": mode,
         "action_count": len(actions),
         "action_types": _unique_strings([action.action_type for action in actions]),
         "source_kinds": _unique_strings([action.source_kind for action in actions if action.source_kind]),
         "requires_confirmation_count": sum(1 for action in actions if action.requires_confirmation),
-        "confidence": plan.confidence,
-        "has_user_visible_summary": bool(plan.user_visible_summary),
-    })
-
-
-def _append_turn_gate_decided_event(run_dir: Path, decision) -> None:
-    append_typed_event(run_dir, "planner.turn_gate.decided", {
-        "turn_type": decision.turn_type,
-        "contract_action": decision.contract_action,
-        "contract_update_allowed": decision.contract_update_allowed,
-        "need_discovery_allowed": decision.need_discovery_allowed,
-        "save_draft_allowed": decision.save_draft_allowed,
-        "confirmation_action_proposal": decision.confirmation_action_proposal,
-        "confidence": decision.confidence,
+        "source_confidence": decision.source_action_plan.confidence,
+        "turn_type": turn.turn_type,
+        "contract_action": turn.contract_action,
+        "contract_update_allowed": turn.contract_update_allowed,
+        "need_discovery_allowed": turn.need_discovery_allowed,
+        "save_draft_allowed": turn.save_draft_allowed,
+        "confirmation_action_proposal": turn.confirmation_action_proposal,
+        "task_profile_proposal": decision.task_profile_proposal,
+        "requires_need_discovery_enrichment": decision.requires_need_discovery_enrichment,
+        "turn_confidence": turn.confidence,
     })
 
 

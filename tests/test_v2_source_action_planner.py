@@ -8,6 +8,7 @@ from autoad_researcher.assistant.v2.intent_contract import load_contract_draft
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.source_action_planner import (
     SourceActionPlan,
+    explicit_source_input_is_url_only,
     load_repository_hints,
     plan_source_actions,
 )
@@ -17,9 +18,46 @@ from autoad_researcher.ui.sources import load_source_registry
 from autoad_researcher.worker.main import _run_web_search
 
 
+def _conversation_route_payload(*, source_action_plan: dict, user_input: str) -> dict:
+    return {
+        "turn_gate": {
+            "turn_type": "source_intake",
+            "contract_action": "answer_without_contract_update",
+            "contract_update_allowed": False,
+            "need_discovery_allowed": False,
+            "save_draft_allowed": False,
+            "confirmation_action_proposal": "none",
+            "task_profile_proposal": "general_research",
+            "task_profile_evidence": None,
+            "requires_need_discovery_enrichment": False,
+            "suggested_task_title": None,
+            "suggested_task_summary": None,
+            "user_intent_summary": user_input,
+            "evidence_from_current_turn": [],
+            "evidence_from_context": [],
+            "confidence": 0.9,
+            "reason": "Explicit source action.",
+            "next_reply_instruction": None,
+        },
+        "source_action_plan": source_action_plan,
+        "task_profile_proposal": "general_research",
+        "task_profile_evidence": None,
+        "suggested_task_title": None,
+        "suggested_task_summary": None,
+        "requires_need_discovery_enrichment": False,
+    }
+
+
 def test_natural_language_repo_request_is_not_classified_by_source_service():
     assert classify_input("你先 clone pathcore 的 github 仓库吧") == "general_chat"
     assert classify_input("搜索 MVTec AD 上能迁移到 PatchCore 的方法") == "general_chat"
+
+
+def test_url_only_detection_uses_the_exact_supplied_reference():
+    assert explicit_source_input_is_url_only("https://example.test/paper?lang=zh#section") is True
+    assert explicit_source_input_is_url_only("<https://gitlab.example.test/team/repo.git?ref=main>") is True
+    assert explicit_source_input_is_url_only("请读取 https://example.test/paper") is False
+    assert explicit_source_input_is_url_only("https://example.test/a https://example.test/b") is False
 
 
 def test_source_action_planner_exposes_configured_repository_hints(tmp_path: Path):
@@ -89,47 +127,31 @@ def test_orchestrator_creates_repo_jobs_from_llm_source_action(monkeypatch, tmp_
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
-            return {
-                "reply": json.dumps(
+        if "ConversationRouter" in system_text:
+            source_plan = {
+                "actions": [
                     {
-                        "actions": [
-                            {
-                                "action_type": "git_clone",
-                                "target": "PatchCore official repository",
-                                "repository_hint_id": "internal_benchmark_patchcore",
-                                "source_url": None,
-                                "query": None,
-                                "source_kind": "github_repo",
-                                "confidence": 0.86,
-                                "requires_confirmation": False,
-                                "rationale": "用户明确要求 clone 仓库。",
-                            }
-                        ],
-                        "user_visible_summary": "将登记并 clone PatchCore 仓库。",
+                        "action_type": "git_clone",
+                        "target": "PatchCore official repository",
+                        "repository_hint_id": "internal_benchmark_patchcore",
+                        "source_url": None,
+                        "query": None,
+                        "source_kind": "github_repo",
                         "confidence": 0.86,
-                        "reason": "Explicit clone request.",
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
+                        "requires_confirmation": False,
+                        "rationale": "用户明确要求 clone 仓库。",
+                    }
+                ],
+                "user_visible_summary": "将登记并 clone PatchCore 仓库。",
+                "confidence": 0.86,
+                "reason": "Explicit clone request.",
             }
-        if "TurnGateDecision JSON" in system_text:
             return {
                 "reply": json.dumps(
-                    {
-                        "turn_type": "source_intake",
-                        "contract_action": "update_contract",
-                        "contract_update_allowed": True,
-                        "need_discovery_allowed": True,
-                        "save_draft_allowed": True,
-                        "user_intent_summary": "structured source/job intake",
-                        "evidence_from_current_turn": ["created_sources_or_jobs"],
-                        "evidence_from_context": [],
-                        "confidence": 1.0,
-                        "reason": "Source/job events are structured system state.",
-                        "next_reply_instruction": None,
-                    },
+                    _conversation_route_payload(
+                        source_action_plan=source_plan,
+                        user_input="你先 clone pathcore 的 github 仓库吧",
+                    ),
                     ensure_ascii=False,
                 ),
                 "error": "",
@@ -245,47 +267,31 @@ def test_orchestrator_creates_web_search_job_from_llm_source_action(monkeypatch,
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
-            return {
-                "reply": json.dumps(
+        if "ConversationRouter" in system_text:
+            source_plan = {
+                "actions": [
                     {
-                        "actions": [
-                            {
-                                "action_type": "web_search",
-                                "target": "candidate papers",
-                                "source_url": None,
-                                "query": "MVTec AD PatchCore AUROC improvement methods",
-                                "repository_hint_id": None,
-                                "source_kind": None,
-                                "confidence": 0.9,
-                                "requires_confirmation": False,
-                                "rationale": "用户要求查找资料。",
-                            }
-                        ],
-                        "user_visible_summary": "将搜索候选资料。",
+                        "action_type": "web_search",
+                        "target": "candidate papers",
+                        "source_url": None,
+                        "query": "MVTec AD PatchCore AUROC improvement methods",
+                        "repository_hint_id": None,
+                        "source_kind": None,
                         "confidence": 0.9,
-                        "reason": "Explicit search request.",
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
+                        "requires_confirmation": False,
+                        "rationale": "用户要求查找资料。",
+                    }
+                ],
+                "user_visible_summary": "将搜索候选资料。",
+                "confidence": 0.9,
+                "reason": "Explicit search request.",
             }
-        if "TurnGateDecision JSON" in system_text:
             return {
                 "reply": json.dumps(
-                    {
-                        "turn_type": "source_intake",
-                        "contract_action": "update_contract",
-                        "contract_update_allowed": True,
-                        "need_discovery_allowed": True,
-                        "save_draft_allowed": True,
-                        "user_intent_summary": "structured source/job intake",
-                        "evidence_from_current_turn": ["created_sources_or_jobs"],
-                        "evidence_from_context": [],
-                        "confidence": 1.0,
-                        "reason": "Source/job events are structured system state.",
-                        "next_reply_instruction": None,
-                    },
+                    _conversation_route_payload(
+                        source_action_plan=source_plan,
+                        user_input="帮我搜一下 PatchCore 有哪些能提升 AUROC 的方法",
+                    ),
                     ensure_ascii=False,
                 ),
                 "error": "",

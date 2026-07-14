@@ -12,6 +12,7 @@ EVENTS_FILE = "events.jsonl"
 LOW_FREQUENCY_TYPED_EVENTS = {
     "planner.source_action.decided",
     "planner.turn_gate.decided",
+    "planner.conversation_route.decided",
     "planner.need_discovery.decided",
     "contract.draft.updated",
     "contract.confirmation.requested",
