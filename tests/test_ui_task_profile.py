@@ -634,3 +634,75 @@ def test_task_profile_implementation_moved_out_of_ui_package():
 
     assert legacy_profile.TaskProfile is task_workspace_profile.TaskProfile
     assert legacy_profile.create_task_profile is task_workspace_profile.create_task_profile
+
+
+def test_generated_profile_replaces_only_persisted_ui_placeholder(tmp_path: Path):
+    from autoad_researcher.task_workspace.task_profile import (
+        apply_generated_task_profile_if_placeholder,
+        task_profile_needs_generated_title,
+    )
+
+    run_dir = _tmp_run_dir(tmp_path, "run_auto_name")
+    created_at = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
+    updated_at = datetime(2026, 7, 13, 10, 1, tzinfo=timezone.utc)
+    create_task_profile(
+        run_dir=run_dir,
+        run_id=run_dir.name,
+        task_title=None,
+        created_at=created_at,
+    )
+    generated = TaskProfile(
+        run_id=run_dir.name,
+        task_title="PatchCore 指标优化",
+        task_summary="在 MVTec AD 上提升 PatchCore 的 image-level AUROC。",
+        source="llm_first_user_instruction",
+    )
+
+    assert task_profile_needs_generated_title(run_dir) is True
+    updated = apply_generated_task_profile_if_placeholder(
+        run_dir=run_dir,
+        generated_profile=generated,
+        updated_at=updated_at,
+    )
+
+    assert updated is not None
+    assert updated.task_title == "PatchCore 指标优化"
+    assert updated.task_summary == generated.task_summary
+    assert updated.source == "llm_first_user_instruction"
+    assert updated.created_at == created_at
+    assert updated.updated_at == updated_at
+    assert task_profile_needs_generated_title(run_dir) is False
+
+
+def test_generated_profile_cannot_overwrite_manual_title(tmp_path: Path):
+    from autoad_researcher.task_workspace.task_profile import (
+        apply_generated_task_profile_if_placeholder,
+        task_profile_needs_generated_title,
+    )
+
+    run_dir = _tmp_run_dir(tmp_path, "run_manual_name")
+    create_task_profile(
+        run_dir=run_dir,
+        run_id=run_dir.name,
+        task_title=None,
+        created_at=datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc),
+    )
+    manual = rename_task_title(
+        run_dir=run_dir,
+        new_title="我的手动名称",
+        updated_at=datetime(2026, 7, 13, 10, 1, tzinfo=timezone.utc),
+    )
+    generated = TaskProfile(
+        run_id=run_dir.name,
+        task_title="模型生成名称",
+        task_summary="不应覆盖手动名称。",
+        source="llm_first_user_instruction",
+    )
+
+    assert task_profile_needs_generated_title(run_dir) is False
+    assert apply_generated_task_profile_if_placeholder(
+        run_dir=run_dir,
+        generated_profile=generated,
+        updated_at=datetime(2026, 7, 13, 10, 2, tzinfo=timezone.utc),
+    ) is None
+    assert load_task_profile(run_dir) == manual

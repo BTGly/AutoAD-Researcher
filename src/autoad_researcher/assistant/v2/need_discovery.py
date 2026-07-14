@@ -139,6 +139,7 @@ def discover_required_needs_with_llm(
     run_artifacts_summary: dict[str, Any] | None = None,
     api_key: str = "",
     provider_url: str = "",
+    model: str = "deepseek-v4-flash",
     run_dir: Path | None = None,
 ) -> RequiredNeedSpec:
     """LLM-first requirement discovery with deterministic fallback.
@@ -177,7 +178,6 @@ def discover_required_needs_with_llm(
     selector = PromptSelector()
     profile = selector.profile_for_v2_component("need_discovery")
     system_prompt = messages[0]["content"] if messages else ""
-    model = "deepseek-v4-flash"
 
     from autoad_researcher.ui.chat_client import call_research_chat
 

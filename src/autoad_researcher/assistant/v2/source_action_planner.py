@@ -106,6 +106,7 @@ def plan_source_actions(
     pending_jobs: list[dict[str, Any]] | None = None,
     api_key: str = "",
     provider_url: str = "",
+    model: str = "deepseek-v4-flash",
 ) -> SourceActionPlan:
     """Plan source/tool actions.
 
@@ -144,7 +145,6 @@ def plan_source_actions(
     selector = PromptSelector()
     profile = selector.profile_for_v2_component("source_action_planner")
     system_prompt = messages[0]["content"] if messages else ""
-    model = "deepseek-v4-flash"
 
     from autoad_researcher.ui.chat_client import call_research_chat
 

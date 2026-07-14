@@ -148,6 +148,7 @@ def build_contract_from_context(
     existing_contract_draft: ResearchIntentContract | None = None,
     api_key: str = "",
     provider_url: str = "",
+    model: str = "deepseek-v4-flash",
 ) -> ResearchIntentContract:
     """Build a deterministic draft from confirmed chat facts and artifacts."""
 
@@ -166,6 +167,7 @@ def build_contract_from_context(
         answerability=llm_context.get("answerability", {}) or {},
         api_key=api_key,
         provider_url=provider_url,
+        model=model,
         run_dir=run_dir,
     )
     _append_need_discovery_decided_event(run_dir, need_spec)

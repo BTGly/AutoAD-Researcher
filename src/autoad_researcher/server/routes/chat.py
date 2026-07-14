@@ -7,10 +7,15 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.server.models import ChatRequest, ChatResponse
-from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.server.ws_manager import manager
+from autoad_researcher.task_workspace.task_profile import (
+    apply_generated_task_profile_if_placeholder,
+    generate_task_profile_from_first_message,
+    task_profile_needs_generated_title,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -68,7 +73,7 @@ async def chat_send(req: ChatRequest, request: Request):
     run_dir = Path("runs") / req.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    api_key, provider_url, _ = _extract_api_headers(request)
+    api_key, provider_url, model = _extract_api_headers(request)
     stored_transcript_tail = _load_transcript_tail(run_dir)
     transcript_tail = req.transcript_tail or stored_transcript_tail
     message_id = _resolve_message_id(req.request_id)
@@ -93,10 +98,19 @@ async def chat_send(req: ChatRequest, request: Request):
         transcript_tail=transcript_tail,
         api_key=api_key,
         provider_url=provider_url,
+        model=model,
         on_reply_delta=on_reply_delta,
     )
     _append_transcript(run_dir, "user", req.user_input)
     _append_transcript(run_dir, "assistant", result.reply)
+    await _maybe_auto_name_task(
+        run_dir=run_dir,
+        user_input=req.user_input,
+        eligible=result.task_naming_eligible,
+        api_key=api_key,
+        provider_url=provider_url,
+        model=model,
+    )
 
     # Broadcast created_sources and created_jobs
     for src in result.created_sources:
@@ -124,6 +138,39 @@ async def chat_send(req: ChatRequest, request: Request):
         reply=result.reply,
         reply_kind=result.reply_kind,
     )
+
+
+async def _maybe_auto_name_task(
+    *,
+    run_dir: Path,
+    user_input: str,
+    eligible: bool,
+    api_key: str,
+    provider_url: str,
+    model: str,
+) -> bool:
+    """Best-effort naming for a contract-bearing turn while preserving manual titles."""
+    if not eligible or not api_key or not task_profile_needs_generated_title(run_dir):
+        return False
+
+    generated = await asyncio.to_thread(
+        generate_task_profile_from_first_message,
+        run_dir,
+        api_key,
+        provider_url,
+        user_input,
+        model,
+    )
+    try:
+        updated = await asyncio.to_thread(
+            apply_generated_task_profile_if_placeholder,
+            run_dir=run_dir,
+            generated_profile=generated,
+            updated_at=datetime.now(timezone.utc),
+        )
+    except Exception:
+        return False
+    return updated is not None
 
 
 def _load_transcript_tail(run_dir: Path, limit: int = 12) -> list[dict[str, Any]]:

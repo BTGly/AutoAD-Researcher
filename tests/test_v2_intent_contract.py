@@ -563,6 +563,7 @@ def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         captured["messages"] = messages
+        captured["model"] = kwargs["model"]
         return {
             "reply": json.dumps({
                 "reply_to_user": "请确认主要目标。",
@@ -590,10 +591,12 @@ def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
         "我想做异常检测",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="selected-model",
     )
 
     system_text = "\n".join(m["content"] for m in captured["messages"] if m["role"] == "system")
     assert kind == "answer"
+    assert captured["model"] == "selected-model"
     assert len(reply) > 10  # has meaningful content
     assert "reply_to_user" not in reply
     assert "contract_updates" not in reply
@@ -1847,7 +1850,10 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
     tmp_path: Path,
     monkeypatch,
 ):
+    selected_models: list[str] = []
+
     def fake_call(api_key, provider_base_url, messages, **kwargs):
+        selected_models.append(kwargs["model"])
         system_text = messages[0]["content"]
         if "SourceActionPlanner" in system_text:
             return {"reply": json.dumps({
@@ -1902,11 +1908,14 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
         transcript_tail=transcript_tail,
         api_key="sk-test",
         provider_url="https://example.test",
+        model="selected-model",
     )
 
     persisted = load_contract_draft(run_dir)
     draft_state = load_research_draft_state(run_dir)
     assert result.reply_kind == "intent_contract_confirmation"
+    assert result.task_naming_eligible is True
+    assert selected_models == ["selected-model", "selected-model", "selected-model"]
     assert persisted is not None
     assert persisted.ready_for_plan is True
     assert "5%" in (persisted.success_criteria or "")

@@ -56,6 +56,7 @@ def decide_turn_gate_with_llm(
     answerability: dict[str, Any],
     api_key: str,
     provider_url: str,
+    model: str = "deepseek-v4-flash",
     run_dir: Path | None = None,
 ) -> TurnGateDecision:
     """Decide turn routing through an LLM gate.
@@ -97,7 +98,6 @@ def decide_turn_gate_with_llm(
     selector = PromptSelector()
     profile = selector.profile_for_v2_component("turn_gate")
     system_prompt = messages[0]["content"] if messages else ""
-    model = "deepseek-v4-flash"
 
     from autoad_researcher.ui.chat_client import call_research_chat
 

@@ -32,6 +32,7 @@ def plan_reply(
     *,
     api_key: str = "",
     provider_url: str = "",
+    model: str = "deepseek-v4-flash",
     on_delta: Callable[[str], None] | None = None,
     run_dir: Path | None = None,
 ) -> tuple[str, str]:
@@ -57,11 +58,27 @@ def plan_reply(
 
     if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
         if api_key:
-            return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta, run_dir=run_dir)
+            return _llm_reply(
+                llm_context,
+                user_input,
+                api_key,
+                provider_url,
+                model=model,
+                on_delta=on_delta,
+                run_dir=run_dir,
+            )
         return "answer", _non_contract_fallback(turn_gate)
 
     if api_key:
-        return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta, run_dir=run_dir)
+        return _llm_reply(
+            llm_context,
+            user_input,
+            api_key,
+            provider_url,
+            model=model,
+            on_delta=on_delta,
+            run_dir=run_dir,
+        )
 
     return _unified_fallback(blocking, len(unparsed), len(usable), len(readable), pending_jobs, failed_jobs, unusable)
 
@@ -72,6 +89,7 @@ def _llm_reply(
     api_key: str,
     provider_url: str,
     *,
+    model: str = "deepseek-v4-flash",
     on_delta: Callable[[str], None] | None = None,
     run_dir: Path | None = None,
 ) -> tuple[str, str]:
@@ -94,7 +112,6 @@ def _llm_reply(
     selector = PromptSelector()
     profile = selector.profile_for_v2_component("reply_planner")
     system = selector.build_system_prompt_for_v2_component("reply_planner")
-    model = "deepseek-v4-flash"
 
     messages = [
         {"role": "system", "content": system},

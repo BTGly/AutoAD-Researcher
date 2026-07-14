@@ -292,6 +292,7 @@ export default function App() {
         )));
       }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
+      await refreshTasks();
       return true;
     } catch {
       if (currentRunIdRef.current === targetRunId) {
@@ -312,7 +313,7 @@ export default function App() {
         if (!hasActiveTurn) setTaskStatus(current => current === 'Error' ? current : 'Ready');
       }
     }
-  }, [refreshSidebarForRun]);
+  }, [refreshSidebarForRun, refreshTasks]);
 
   const enqueueChatMessage = useCallback((text: string, targetRunId: string) => {
     const queued: QueuedChatMessage = {

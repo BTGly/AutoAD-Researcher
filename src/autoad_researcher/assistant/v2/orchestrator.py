@@ -46,6 +46,7 @@ class OrchestratorResult:
     next_actions: list[str] = field(default_factory=list)
     intent_contract: dict[str, Any] = field(default_factory=dict)
     intent_contract_confirmed: bool = False
+    task_naming_eligible: bool = False
 
 
 class ResearchOrchestratorV2:
@@ -61,6 +62,7 @@ class ResearchOrchestratorV2:
         transcript_tail: list[dict[str, Any]] | None = None,
         api_key: str = "",
         provider_url: str = "",
+        model: str = "deepseek-v4-flash",
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> OrchestratorResult:
         user_input = user_input.strip()
@@ -99,6 +101,7 @@ class ResearchOrchestratorV2:
             pending_jobs=ctx.get("pending_jobs", []) or [],
             api_key=api_key,
             provider_url=provider_url,
+            model=model,
         )
         _append_source_action_decided_event(run_dir, source_plan)
         created_sources, created_jobs = _execute_source_action_plan(run_dir, user_input, source_plan)
@@ -129,6 +132,7 @@ class ResearchOrchestratorV2:
             answerability=ctx.get("answerability", {}) or {},
             api_key=api_key,
             provider_url=provider_url,
+            model=model,
             run_dir=run_dir,
         )
         _append_turn_gate_decided_event(run_dir, turn_decision)
@@ -161,6 +165,7 @@ class ResearchOrchestratorV2:
                     existing_contract_draft=None,
                     api_key=api_key,
                     provider_url=provider_url,
+                    model=model,
                 )
                 contract = merge_contract_draft(None, recovered_update)
                 if _has_contract_content(contract):
@@ -197,6 +202,7 @@ class ResearchOrchestratorV2:
                 user_input,
                 api_key=api_key,
                 provider_url=provider_url,
+                model=model,
                 on_delta=on_reply_delta,
                 run_dir=run_dir,
             )
@@ -221,6 +227,7 @@ class ResearchOrchestratorV2:
                 user_input,
                 api_key=api_key,
                 provider_url=provider_url,
+                model=model,
                 on_delta=on_reply_delta,
                 run_dir=run_dir,
             )
@@ -244,6 +251,7 @@ class ResearchOrchestratorV2:
             existing_contract_draft=existing_draft,
             api_key=api_key,
             provider_url=provider_url,
+            model=model,
         )
         contract = merge_contract_draft(existing_draft, contract_update)
         if turn_decision.save_draft_allowed or contract.ready_for_plan:
@@ -262,6 +270,7 @@ class ResearchOrchestratorV2:
                 user_input,
                 api_key=api_key,
                 provider_url=provider_url,
+                model=model,
                 on_delta=on_reply_delta,
                 run_dir=run_dir,
             )
@@ -276,6 +285,10 @@ class ResearchOrchestratorV2:
             next_actions=_suggest_next_actions(ctx, reply_kind),
             intent_contract=contract.model_dump(mode="json"),
             intent_contract_confirmed=False,
+            task_naming_eligible=(
+                turn_decision.contract_action == "update_contract"
+                and _has_contract_content(contract)
+            ),
         )
 
 

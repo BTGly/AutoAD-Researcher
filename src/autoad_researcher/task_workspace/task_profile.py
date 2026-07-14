@@ -17,6 +17,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from autoad_researcher.core.control_plane import RunMutationLock
+
 
 _TASK_TITLE_MAX_CHARS = 30
 _TASK_SUMMARY_MAX_CHARS = 200
@@ -225,17 +227,63 @@ def rename_task_title(*, run_dir: Path, new_title: str, updated_at: datetime) ->
     title = new_title.strip()
     if not title:
         raise ValueError("task title must not be empty")
-    existing, _warning = safe_load_task_profile(run_dir)
-    if existing is None:
-        existing = fallback_task_profile(run_dir.name)
-    profile = existing.model_copy(update={
-        "task_title": title,
-        "updated_at": updated_at,
-        "source": "manual",
-    })
-    profile = TaskProfile.model_validate(profile.model_dump())
-    _write_task_profile(run_dir, profile)
-    return profile
+    with RunMutationLock(run_dir, mode="exclusive"):
+        existing, _warning = safe_load_task_profile(run_dir)
+        if existing is None:
+            existing = fallback_task_profile(run_dir.name)
+        profile = existing.model_copy(update={
+            "task_title": title,
+            "updated_at": updated_at,
+            "source": "manual",
+        })
+        profile = TaskProfile.model_validate(profile.model_dump())
+        _write_task_profile(run_dir, profile)
+        return profile
+
+
+def task_profile_needs_generated_title(run_dir: Path) -> bool:
+    """Return whether the persisted UI placeholder is eligible for automatic naming."""
+    profile, warning = safe_load_task_profile(run_dir)
+    return bool(
+        warning is None
+        and profile is not None
+        and profile.source == "ui"
+        and profile.task_title == "未命名研究任务"
+    )
+
+
+def apply_generated_task_profile_if_placeholder(
+    *,
+    run_dir: Path,
+    generated_profile: TaskProfile,
+    updated_at: datetime,
+) -> TaskProfile | None:
+    """Persist an LLM-generated profile only while the original UI placeholder remains."""
+    if (
+        generated_profile.run_id != run_dir.name
+        or generated_profile.source != "llm_first_user_instruction"
+        or generated_profile.task_title == "未命名研究任务"
+    ):
+        return None
+
+    with RunMutationLock(run_dir, mode="exclusive"):
+        existing, warning = safe_load_task_profile(run_dir)
+        if (
+            warning is not None
+            or existing is None
+            or existing.source != "ui"
+            or existing.task_title != "未命名研究任务"
+        ):
+            return None
+        profile = existing.model_copy(update={
+            "task_title": generated_profile.task_title,
+            "task_summary": generated_profile.task_summary,
+            "source": "llm_first_user_instruction",
+            "updated_at": updated_at,
+        })
+        profile = TaskProfile.model_validate(profile.model_dump())
+        _write_task_profile(run_dir, profile)
+        return profile
 
 
 def list_all_tasks(*, runs_root: Path, include_archived: bool = False) -> list[TaskListItem]:
