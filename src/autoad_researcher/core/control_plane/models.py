@@ -95,3 +95,107 @@ class AttemptResult(BaseModel):
     started_at: datetime
     finished_at: datetime
     error: str | None = None
+
+
+FactStatus = Literal[
+    "verified",
+    "unverified",
+    "missing",
+    "unavailable_due_to_dependency",
+    "not_applicable",
+    "conflict",
+]
+
+
+class ReadinessEvidenceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_path: str = Field(min_length=1)
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class ReadinessFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    status: FactStatus
+    value: Any | None = None
+    evidence: list[ReadinessEvidenceRef] = Field(default_factory=list)
+    detail: str | None = None
+
+
+class ResolverSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolver_id: str = Field(min_length=1)
+    schema_version: str = Field(min_length=1)
+    layers: list[Literal["implementation", "execution"]] = Field(min_length=1)
+    facts: list[ReadinessFact] = Field(default_factory=list)
+
+
+class MaterializationInputSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    materializer_version: Literal["experiment_readiness:v1"] = "experiment_readiness:v1"
+    fact_policy_version: Literal["readiness_fact_policy:v1"] = "readiness_fact_policy:v1"
+    resolver_schema_versions: dict[str, str] = Field(default_factory=dict)
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    components: dict[str, ResolverSnapshot] = Field(default_factory=dict)
+
+
+class ReadinessLayer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    layer: Literal["planning", "implementation", "execution"]
+    ready: bool
+    facts: list[ReadinessFact] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+
+
+class ExecutionAuthorization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    authorized: bool = False
+    execution_mode: Literal["plan_only", "approve_each_step", "agent_assisted_after_approval"]
+    reason: str
+
+
+class ExperimentReadiness(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    revision: int = Field(ge=1)
+    session_id: str = Field(min_length=1)
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    materialization_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    planning_readiness: ReadinessLayer
+    implementation_readiness: ReadinessLayer
+    execution_readiness: ReadinessLayer
+    execution_authorization: ExecutionAuthorization
+    materialized_at: datetime
+
+
+class ExperimentSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    session_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    prepare_job_id: str = Field(pattern=r"^job_[0-9]{6}$")
+    status: Literal["queued", "preparing", "materialized", "failed"]
+    readiness_path: str = "experiment_agents/readiness.json"
+    created_at: datetime
+    updated_at: datetime
+    error: str | None = None
+
+
+class MaterializationOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["published", "no_op", "stale_input"]
+    job_status: Literal["queued", "completed", "failed"]
+    readiness_path: str | None = None
+    materialization_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    publication_check_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

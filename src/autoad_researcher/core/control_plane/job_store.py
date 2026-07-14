@@ -66,50 +66,72 @@ class PipelineJobStore:
         payload: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> PipelineJob:
-        body = payload or {}
         with RunMutationLock(self.run_dir, mode="exclusive"):
             jobs = self._load_unlocked()
-            request_hash = pipeline_job_request_sha256(
+            job, created = self._enqueue_unlocked(
+                jobs,
                 source_id=source_id,
                 job_type=job_type,
                 evidence_role=evidence_role,
-                payload=body,
-            )
-            if idempotency_key is not None:
-                for existing in jobs:
-                    if existing.job_type != job_type or existing.idempotency_key != idempotency_key:
-                        continue
-                    if existing.request_sha256 == request_hash:
-                        return existing
-                    raise IdempotencyConflict(
-                        f"job key {idempotency_key!r} reused with different request content"
-                    )
-
-            max_id = max((int(item.job_id.removeprefix("job_")) for item in jobs), default=0)
-            job_id = f"job_{max_id + 1:06d}"
-            depends_on = body.get("depends_on")
-            if depends_on is not None:
-                if not isinstance(depends_on, str) or not depends_on:
-                    raise ValueError("payload.depends_on must be a non-empty job id")
-                if depends_on == job_id:
-                    raise ValueError("pipeline job cannot depend on itself")
-                if not any(item.job_id == depends_on for item in jobs):
-                    raise ValueError(f"payload.depends_on references unknown job: {depends_on}")
-
-            job = PipelineJob(
-                job_id=job_id,
-                source_id=source_id,
-                job_type=job_type,
-                status="queued",
-                evidence_role=evidence_role,
-                created_at=_utcnow(),
-                payload=body,
+                payload=payload,
                 idempotency_key=idempotency_key,
-                request_sha256=request_hash,
             )
-            jobs.append(job)
+            if not created:
+                return job
             self._write_unlocked(jobs)
             return job
+
+    def _enqueue_unlocked(
+        self,
+        jobs: list[PipelineJob],
+        *,
+        source_id: str,
+        job_type: str,
+        evidence_role: str,
+        payload: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> tuple[PipelineJob, bool]:
+        body = payload or {}
+        request_hash = pipeline_job_request_sha256(
+            source_id=source_id,
+            job_type=job_type,
+            evidence_role=evidence_role,
+            payload=body,
+        )
+        if idempotency_key is not None:
+            for existing in jobs:
+                if existing.job_type != job_type or existing.idempotency_key != idempotency_key:
+                    continue
+                if existing.request_sha256 == request_hash:
+                    return existing, False
+                raise IdempotencyConflict(
+                    f"job key {idempotency_key!r} reused with different request content"
+                )
+
+        max_id = max((int(item.job_id.removeprefix("job_")) for item in jobs), default=0)
+        job_id = f"job_{max_id + 1:06d}"
+        depends_on = body.get("depends_on")
+        if depends_on is not None:
+            if not isinstance(depends_on, str) or not depends_on:
+                raise ValueError("payload.depends_on must be a non-empty job id")
+            if depends_on == job_id:
+                raise ValueError("pipeline job cannot depend on itself")
+            if not any(item.job_id == depends_on for item in jobs):
+                raise ValueError(f"payload.depends_on references unknown job: {depends_on}")
+
+        job = PipelineJob(
+            job_id=job_id,
+            source_id=source_id,
+            job_type=job_type,
+            status="queued",
+            evidence_role=evidence_role,
+            created_at=_utcnow(),
+            payload=body,
+            idempotency_key=idempotency_key,
+            request_sha256=request_hash,
+        )
+        jobs.append(job)
+        return job, True
 
     def reconcile_orphan_claims(self) -> list[AttemptResult]:
         """Close claim artifacts that were never activated in the Job Store."""
@@ -247,6 +269,17 @@ class PipelineJobStore:
             })
             jobs[jobs.index(selected)] = claimed
             self._write_unlocked(jobs)
+            if selected.job_type == EXPERIMENT_PREPARE_JOB_TYPE:
+                from autoad_researcher.core.control_plane.experiment_state import (
+                    transition_session_if_present_unlocked,
+                )
+
+                transition_session_if_present_unlocked(
+                    self.run_dir,
+                    prepare_job_id=selected.job_id,
+                    status="preparing",
+                    now=current,
+                )
             return claimed
 
     def renew_lease(
@@ -339,6 +372,18 @@ class PipelineJobStore:
             index, job = self._find_job(jobs, job_id)
             self._validate_fence(job, claim_token, expected_attempt_count, current)
             claim, attempt_dir = self._load_active_claim_unlocked(job)
+            if job.job_type == EXPERIMENT_PREPARE_JOB_TYPE:
+                from autoad_researcher.core.control_plane.experiment_state import (
+                    transition_session_if_present_unlocked,
+                )
+
+                transition_session_if_present_unlocked(
+                    self.run_dir,
+                    prepare_job_id=job.job_id,
+                    status="failed",
+                    now=current,
+                    error=error,
+                )
             self._ensure_attempt_result_unlocked(
                 attempt_dir,
                 claim,
@@ -378,6 +423,19 @@ class PipelineJobStore:
                 if not wall_expired and not lease_expired:
                     continue
                 claim, attempt_dir = self._load_active_claim_unlocked(job)
+                from autoad_researcher.core.control_plane.experiment_state import (
+                    transition_session_if_present_unlocked,
+                )
+
+                count = job.consecutive_lease_expiry_count + 1
+                retry = count <= MAX_AUTOMATIC_RECOVERIES
+                transition_session_if_present_unlocked(
+                    self.run_dir,
+                    prepare_job_id=job.job_id,
+                    status="queued" if retry else "failed",
+                    now=current,
+                    error=None if retry else "repeated_lease_expiry",
+                )
                 self._ensure_attempt_result_unlocked(
                     attempt_dir,
                     claim,
@@ -385,8 +443,6 @@ class PipelineJobStore:
                     finished_at=current,
                     error="maximum attempt wall time exceeded" if wall_expired else "job lease expired",
                 )
-                count = job.consecutive_lease_expiry_count + 1
-                retry = count <= MAX_AUTOMATIC_RECOVERIES
                 next_eligible = (
                     current + timedelta(seconds=RECOVERY_BACKOFF_SECONDS[count - 1])
                     if retry
@@ -434,6 +490,19 @@ class PipelineJobStore:
             if job.job_type != EXPERIMENT_PREPARE_JOB_TYPE:
                 raise ValueError("stale-input recovery is only valid for experiment_prepare")
             claim, attempt_dir = self._load_active_claim_unlocked(job)
+            from autoad_researcher.core.control_plane.experiment_state import (
+                transition_session_if_present_unlocked,
+            )
+
+            count = job.consecutive_stale_count + 1
+            retry = count <= MAX_AUTOMATIC_RECOVERIES
+            transition_session_if_present_unlocked(
+                self.run_dir,
+                prepare_job_id=job.job_id,
+                status="queued" if retry else "failed",
+                now=current,
+                error=None if retry else "input_unstable",
+            )
             self._ensure_attempt_result_unlocked(
                 attempt_dir,
                 claim,
@@ -444,8 +513,6 @@ class PipelineJobStore:
                 publication_check_input_sha256=publication_check_input_sha256,
                 candidate_sha256=candidate_sha256,
             )
-            count = job.consecutive_stale_count + 1
-            retry = count <= MAX_AUTOMATIC_RECOVERIES
             next_eligible = (
                 current + timedelta(seconds=RECOVERY_BACKOFF_SECONDS[count - 1])
                 if retry
@@ -487,6 +554,17 @@ class PipelineJobStore:
             })
             jobs[index] = queued
             self._write_unlocked(jobs)
+            if job.job_type == EXPERIMENT_PREPARE_JOB_TYPE:
+                from autoad_researcher.core.control_plane.experiment_state import (
+                    transition_session_if_present_unlocked,
+                )
+
+                transition_session_if_present_unlocked(
+                    self.run_dir,
+                    prepare_job_id=job.job_id,
+                    status="queued",
+                    now=_utcnow(),
+                )
             return queued
 
     # Compatibility methods remain for call sites outside the migrated worker.

@@ -32,6 +32,10 @@ from autoad_researcher.core.control_plane import (
     PipelineJobStore,
 )
 from autoad_researcher.core.control_plane.io import atomic_write_json
+from autoad_researcher.core.control_plane.readiness import (
+    materialize_claimed_experiment_prepare,
+    repair_experiment_session_projection,
+)
 
 RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
 
@@ -135,6 +139,8 @@ def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
     for transition in store.requeue_expired():
         _append_job_transition(audit, transition)
 
+    repair_experiment_session_projection(run_dir)
+
     dependency_transitions = store.reconcile_job_dependencies()
     for transition in dependency_transitions:
         _append_job_transition(audit, transition)
@@ -158,8 +164,16 @@ def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
         success = False
         outputs: list[str] = []
         error_msg: str | None = None
+        materialization_outcome = None
         try:
-            if job_type == "web_search":
+            if job_type == "experiment_prepare":
+                materialization_outcome = materialize_claimed_experiment_prepare(run_dir, claimed)
+                outputs = (
+                    [materialization_outcome.readiness_path]
+                    if materialization_outcome.readiness_path is not None
+                    else []
+                )
+            elif job_type == "web_search":
                 success = _run_web_search(run_dir, job)
             elif job_type == "web_fetch":
                 success, outputs = _run_web_fetch(run_dir, job)
@@ -189,6 +203,31 @@ def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
             error_msg = str(exc)[:500]
 
         try:
+            if materialization_outcome is not None:
+                event_type = (
+                    "job.completed"
+                    if materialization_outcome.job_status == "completed"
+                    else "job.stale_input"
+                )
+                audit.append_once(
+                    event_type,
+                    f"{event_type}:{job_id}:attempt:{attempt_count}",
+                    {
+                        "job_id": job_id,
+                        "attempt_count": attempt_count,
+                        "materialization_status": materialization_outcome.status,
+                        "job_status": materialization_outcome.job_status,
+                        "outputs": outputs,
+                    },
+                )
+                if outputs:
+                    audit.append_once(
+                        "artifact.created",
+                        f"artifact.created:{job_id}:attempt:{attempt_count}",
+                        {"job_id": job_id, "paths": outputs},
+                    )
+                processed += 1
+                continue
             if success and error_msg is None:
                 store.complete(
                     job_id,

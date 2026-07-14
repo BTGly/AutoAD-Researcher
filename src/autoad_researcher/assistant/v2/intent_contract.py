@@ -58,6 +58,11 @@ CORE_REQUIRED_FIELDS = [
 ]
 
 
+def missing_contract_planning_fields(contract: "ResearchIntentContract") -> list[str]:
+    """Recompute deterministic planning requirements from canonical fields."""
+    return _missing_core_fields(contract)
+
+
 class MetricMention(BaseModel):
     """A metric phrase normalized to an internal metric id."""
 
