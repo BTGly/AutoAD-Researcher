@@ -20,6 +20,12 @@ from autoad_researcher.assistant.v2.intent_contract import (
 )
 from autoad_researcher.assistant.v2.draft_service import load_research_draft_state
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
+from autoad_researcher.assistant.v2.job_service import (
+    append_pipeline_job,
+    claim_pipeline_job,
+    complete_pipeline_job,
+    fail_pipeline_job,
+)
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
@@ -106,6 +112,57 @@ def test_systems_contract_uses_task_specific_readiness_and_v2_authorization(tmp_
     assert complete.primary_metrics == ["inference_latency"]
     assert complete.missing_required_fields == []
     assert complete.ready_for_plan is True
+
+
+def test_draft_returns_all_pipeline_jobs_and_dynamic_questions(tmp_path: Path):
+    run_dir = tmp_path / "run_draft_jobs"
+    run_dir.mkdir()
+    save_contract_draft(run_dir, ResearchIntentContract(
+        run_id=run_dir.name,
+        authorization_schema_version=2,
+        research_goal="改进自定义基线",
+        baseline="CustomBaseline",
+        missing_required_fields=["success_criteria"],
+        need_spec=RequiredNeedSpec(next_best_question="先确认主要成功标准是什么？"),
+    ))
+    queued = append_pipeline_job(run_dir, source_id="src_queued", job_type="web_fetch")
+    completed = append_pipeline_job(run_dir, source_id="src_completed", job_type="web_fetch")
+    assert claim_pipeline_job(run_dir, completed["job_id"]) is not None
+    assert complete_pipeline_job(run_dir, completed["job_id"], outputs=["done.md"]) is not None
+    failed = append_pipeline_job(run_dir, source_id="src_failed", job_type="web_fetch")
+    assert claim_pipeline_job(run_dir, failed["job_id"]) is not None
+    assert fail_pipeline_job(run_dir, failed["job_id"], error="fetch failed") is not None
+
+    payload = load_research_draft_state(run_dir)
+
+    assert [(job["job_id"], job["status"]) for job in payload["jobs"]] == [
+        (queued["job_id"], "queued"),
+        (completed["job_id"], "completed"),
+        (failed["job_id"], "failed"),
+    ]
+    assert payload["next_questions"][0] == "先确认主要成功标准是什么？"
+    assert any("CustomBaseline" in question for question in payload["next_questions"])
+    assert all("PatchCore" not in question for question in payload["next_questions"])
+
+
+def test_draft_uses_need_spec_question_when_no_baseline_is_known(tmp_path: Path):
+    run_dir = tmp_path / "run_draft_question"
+    run_dir.mkdir()
+    save_contract_draft(run_dir, ResearchIntentContract(
+        run_id=run_dir.name,
+        authorization_schema_version=2,
+        task_profile="systems_optimization",
+        research_goal="优化算子性能",
+        research_object="自定义融合算子",
+        missing_required_fields=["target_platform"],
+        need_spec=RequiredNeedSpec(next_best_question="这个优化面向什么目标平台？"),
+    ))
+
+    payload = load_research_draft_state(run_dir)
+
+    assert payload["next_questions"][0] == "这个优化面向什么目标平台？"
+    fields = {field["field"]: field["value"] for field in payload["fields"]}
+    assert fields["research_object"] == "自定义融合算子"
 
 
 def test_contract_cleans_patchcore_simplenet_conversation_state(tmp_path: Path):

@@ -59,7 +59,7 @@ export interface DraftState {
 export interface ContractConfirmationState {
   confirmation_id: string;
   draft_hash: string;
-  status: 'pending';
+  status: 'pending' | 'needs_clarification';
   requested_at: string | null;
   fields: DraftField[];
 }

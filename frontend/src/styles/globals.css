@@ -449,6 +449,13 @@ html, body, #root {
 .session-current { display: flex; align-items: baseline; gap: 4px; min-width: 0; max-width: min(42vw, 520px); }
 .session-current-label { color: var(--text-muted); font-size: 0.85em; flex-shrink: 0; }
 .session-current-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-current-editing { position: relative; align-items: center; min-width: min(36vw, 360px); }
+.session-current-editing input { min-width: 180px; padding: 5px 8px; }
+.session-rename-error {
+  position: absolute; top: calc(100% + 5px); left: 0; z-index: 60;
+  max-width: 360px; padding: 5px 8px; border: 1px solid #713434; border-radius: 5px;
+  background: #321919; color: var(--red); font-size: 0.75em; white-space: normal;
+}
 .session-icon-button {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   padding: 0; background: transparent; border-color: transparent; color: var(--text-muted);

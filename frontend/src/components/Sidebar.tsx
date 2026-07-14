@@ -209,15 +209,25 @@ function DraftPanel({
   const coreFields = draft.fields.filter(field => CORE_DRAFT_FIELDS.has(field.field));
   const methodFields = draft.fields.filter(field => METHOD_DRAFT_FIELDS.has(field.field));
   const otherFields = draft.fields.filter(field => !CORE_DRAFT_FIELDS.has(field.field) && !METHOD_DRAFT_FIELDS.has(field.field));
+  const confirmationNeedsClarification = draft.confirmation?.status === 'needs_clarification';
+  const jobCounts = {
+    pending: draft.jobs.filter(job => job.status === 'queued' || job.status === 'running').length,
+    failed: draft.jobs.filter(job => job.status === 'failed').length,
+    completed: draft.jobs.filter(job => job.status === 'completed').length,
+  };
   return (
     <div className="sidebar-stack">
       <div className="sidebar-card">
         <div className="sidebar-card-head">
           <div className="sidebar-title">{draft.title || '研究计划草案'}</div>
-          <Badge meta={{ label: draft.ready ? '可生成计划' : '还需补充', tone: draft.ready ? 'good' : 'warn' }} />
+          <Badge meta={confirmationNeedsClarification
+            ? { label: '需要澄清', tone: 'warn' }
+            : { label: draft.ready ? '可生成计划' : '还需补充', tone: draft.ready ? 'good' : 'warn' }} />
         </div>
         <div className="sidebar-body">
-          {draft.ready ? '核心研究信息已经齐，可以进入计划生成。' : '仍有缺口，补齐后再生成计划更稳。'}
+          {confirmationNeedsClarification
+            ? '当前确认已暂挂，需要先澄清；旧草案和确认内容仍然保留。'
+            : draft.ready ? '核心研究信息已经齐，可以进入计划生成。' : '仍有缺口，补齐后再生成计划更稳。'}
         </div>
       </div>
 
@@ -229,24 +239,32 @@ function DraftPanel({
         fields={draft.advisory_enrichment || []}
       />
 
-      {experimentControl?.session && (
+      {(experimentControl?.session || onMaterialize) && (
         <div className="sidebar-card">
           <div className="sidebar-card-head">
             <div className="sidebar-title">实验准备控制面</div>
-            <Badge meta={jobStatusMeta(experimentControl.job?.status || experimentControl.session.status)} />
+            {experimentControl?.session && (
+              <Badge meta={jobStatusMeta(experimentControl.job?.status || experimentControl.session.status)} />
+            )}
           </div>
-          <div className="sidebar-muted">Session：{experimentControl.session.session_id}</div>
-          <div className="sidebar-muted">
-            planning：{experimentControl.readiness?.planning_readiness.ready ? 'ready' : 'blocked'} · implementation：{experimentControl.readiness?.implementation_readiness.ready ? 'ready' : 'blocked'} · execution：{experimentControl.readiness?.execution_readiness.ready ? 'ready' : 'blocked'}
-          </div>
-          {experimentControl.job?.status === 'completed' && onMaterialize && (
-            <button onClick={onMaterialize} disabled={experimentBusy}>
-              {experimentBusy ? '处理中...' : '重新物化 readiness'}
-            </button>
+          {experimentControl?.session && (
+            <>
+              <div className="sidebar-muted">Session：{experimentControl.session.session_id}</div>
+              <div className="sidebar-muted">
+                planning：{experimentControl.readiness?.planning_readiness.ready ? 'ready' : 'blocked'} · implementation：{experimentControl.readiness?.implementation_readiness.ready ? 'ready' : 'blocked'} · execution：{experimentControl.readiness?.execution_readiness.ready ? 'ready' : 'blocked'}
+              </div>
+            </>
           )}
-          {experimentControl.job?.status === 'failed' && onRetryMaterialization && (
+          <div className="sidebar-muted">只重新读取合同和已登记事实，不修改代码、不运行实验。</div>
+          {experimentControl?.job?.status === 'failed' && onRetryMaterialization ? (
             <button onClick={onRetryMaterialization} disabled={experimentBusy}>
-              {experimentBusy ? '处理中...' : '重试实验准备'}
+              {experimentBusy ? '处理中...' : '重试准备检查'}
+            </button>
+          ) : onMaterialize && (
+            <button onClick={onMaterialize} disabled={experimentBusy}>
+              {experimentBusy
+                ? '处理中...'
+                : experimentControl?.session ? '重新检查实验准备状态' : '检查实验准备状态'}
             </button>
           )}
         </div>
@@ -271,7 +289,7 @@ function DraftPanel({
       )}
 
       <div className="sidebar-muted">
-        草案来源：{draft.sources.length} 个资料，{draft.evidence.length} 条证据，{draft.jobs.length} 个相关任务。
+        草案来源：{draft.sources.length} 个资料，{draft.evidence.length} 条证据；关联任务共 {draft.jobs.length} 个（待处理 {jobCounts.pending}、失败 {jobCounts.failed}、已完成 {jobCounts.completed}）。
       </div>
     </div>
   );

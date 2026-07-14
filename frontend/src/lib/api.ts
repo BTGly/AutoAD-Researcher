@@ -1,5 +1,38 @@
 import type { ExperimentControlState, TaskRun } from './types';
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.message.trim()) return error.message;
+  return fallback;
+}
+
+async function responseError(response: Response, fallback: string): Promise<ApiError> {
+  let detail: unknown = null;
+  try {
+    const payload = await response.json() as { detail?: unknown };
+    detail = payload.detail ?? null;
+  } catch {
+    detail = null;
+  }
+  const message = typeof detail === 'string'
+    ? detail
+    : detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string'
+      ? detail.message
+      : fallback;
+  return new ApiError(message, response.status, detail);
+}
+
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
   if (!cfg) return { 'Content-Type': 'application/json' };
@@ -69,7 +102,7 @@ export async function renameRun(runId: string, taskTitle: string): Promise<TaskR
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_title: taskTitle }),
   });
-  if (!res.ok) throw new Error(`Rename run error: ${res.status}`);
+  if (!res.ok) throw await responseError(res, `重命名失败（HTTP ${res.status}）`);
   return res.json();
 }
 

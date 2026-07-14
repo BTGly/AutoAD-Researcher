@@ -11,12 +11,16 @@ from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
 from autoad_researcher.assistant.v2.contract_confirmation_service import load_active_contract_confirmation
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.intent_contract import CORE_REQUIRED_FIELDS, load_contract_draft
+from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.ui.sources import load_source_registry
 
 
 FIELD_LABELS = {
     "task_domain": "任务领域",
     "research_goal": "研究目标",
+    "research_object": "研究对象",
+    "target_platform": "目标平台",
+    "workload": "工作负载",
     "baseline": "基线方法",
     "baseline_repo": "基线仓库",
     "baseline_commit": "基线提交",
@@ -75,6 +79,7 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
     usable = ctx.get("usable_evidence", []) or []
     pending_jobs = ctx.get("pending_jobs", []) or []
     failed_jobs = ctx.get("failed_jobs", []) or []
+    all_jobs = load_pipeline_jobs(run_dir)
     active_confirmation = load_active_contract_confirmation(run_dir)
     confirmation = None
     advisory_enrichment: list[dict[str, Any]] = []
@@ -84,6 +89,9 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         fields = {
             "task_domain": contract.task_domain,
             "research_goal": _display_goal(contract.research_goal, contract.baseline, contract.dataset, primary_metrics),
+            "research_object": contract.research_object,
+            "target_platform": contract.target_platform,
+            "workload": contract.workload,
             "baseline": contract.baseline,
             "baseline_repo": contract.baseline_repo,
             "baseline_commit": contract.baseline_commit,
@@ -106,6 +114,7 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         }
         missing = list(contract.missing_required_fields)
         ready = contract.ready_for_plan
+        next_best_question = contract.need_spec.next_best_question
         if active_confirmation is not None:
             semantic_projection = active_confirmation.pop("semantic_projection")
             confirmation = {
@@ -131,18 +140,24 @@ def load_research_draft_state(run_dir: Path) -> dict[str, Any]:
         }
         missing = _missing_fields(fields)
         ready = not missing
+        next_best_question = None
 
     return {
         "schema_version": 1,
         "ready": bool(ready),
-        "has_draft": _has_any_draft_signal(fields, sources, usable, pending_jobs, failed_jobs),
+        "has_draft": _has_any_draft_signal(fields, sources, usable, all_jobs),
         "title": "研究计划草案",
         "fields": _render_fields(fields),
         "missing": [{"field": item, "label": FIELD_LABELS.get(item, item)} for item in missing],
         "sources": [_source_summary(source) for source in sources if isinstance(source, dict)],
         "evidence": [_evidence_summary(item) for item in usable if isinstance(item, dict)],
-        "jobs": [_job_summary(item) for item in [*pending_jobs, *failed_jobs] if isinstance(item, dict)],
-        "next_questions": _next_questions(missing, fields, usable),
+        "jobs": [_job_summary(item) for item in all_jobs if isinstance(item, dict)],
+        "next_questions": _next_questions(
+            missing,
+            fields,
+            usable,
+            next_best_question=next_best_question,
+        ),
         "confirmation": confirmation,
         "advisory_enrichment": advisory_enrichment,
     }
@@ -262,6 +277,9 @@ def _render_fields(fields: dict[str, Any]) -> list[dict[str, Any]]:
     ordered = [
         ("task_domain", "任务领域"),
         ("research_goal", "研究目标"),
+        ("research_object", "研究对象"),
+        ("target_platform", "目标平台"),
+        ("workload", "工作负载"),
         ("baseline", "基线方法"),
         ("baseline_repo", "基线仓库"),
         ("baseline_commit", "基线提交"),
@@ -403,22 +421,30 @@ def _job_summary(job: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _next_questions(missing: list[str], fields: dict[str, Any], evidence: list[Any]) -> list[str]:
+def _next_questions(
+    missing: list[str],
+    fields: dict[str, Any],
+    evidence: list[Any],
+    *,
+    next_best_question: str | None,
+) -> list[str]:
     questions: list[str] = []
+    if next_best_question:
+        questions.append(next_best_question)
     if "success_criteria" in missing:
-        questions.append("成功标准是什么？例如 AUROC 至少提升多少，或超过哪个 baseline 数值。")
-    if not fields.get("baseline_repo"):
-        questions.append("是否需要我继续 clone/分析 PatchCore 官方仓库来定位可改模块？")
+        questions.append("成功标准是什么？例如目标指标至少提升多少，或超过哪个基线数值。")
+    research_subject = fields.get("baseline") or fields.get("research_object")
+    if research_subject and not fields.get("baseline_repo"):
+        questions.append(f"是否需要我继续获取并分析“{research_subject}”的代码或资料来定位可改范围？")
     if evidence and not fields.get("user_improvement_hints"):
         questions.append("是否采用论文中的特征适配器、合成异常特征、判别器校准等方向作为候选改进？")
-    return questions[:3]
+    return list(dict.fromkeys(questions))[:3]
 
 
 def _has_any_draft_signal(
     fields: dict[str, Any],
     sources: list[Any],
     evidence: list[Any],
-    pending_jobs: list[Any],
-    failed_jobs: list[Any],
+    jobs: list[Any],
 ) -> bool:
-    return any(value not in (None, "", [], {}) for value in fields.values()) or bool(sources or evidence or pending_jobs or failed_jobs)
+    return any(value not in (None, "", [], {}) for value in fields.values()) or bool(sources or evidence or jobs)

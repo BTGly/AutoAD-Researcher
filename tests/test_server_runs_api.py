@@ -18,6 +18,9 @@ async def test_create_list_rename_and_transcript(tmp_path: Path, monkeypatch):
     assert created.archived_at is None
 
     run_dir = tmp_path / created.run_id
+    artifact_marker = run_dir / "context" / "directory-must-not-change.txt"
+    artifact_marker.write_text("keep", encoding="utf-8")
+    original_directory = run_dir.resolve()
     transcript_path = run_dir / TRANSCRIPT_RELATIVE_PATH
     transcript_path.parent.mkdir(parents=True, exist_ok=True)
     transcript_path.write_text(
@@ -32,6 +35,12 @@ async def test_create_list_rename_and_transcript(tmp_path: Path, monkeypatch):
     renamed = await runs_route.rename_run(created.run_id, runs_route.RenameRunRequest(task_title="Renamed Task"))
     assert renamed.task_title == "Renamed Task"
     assert renamed.run_id == created.run_id
+    assert (tmp_path / renamed.run_id).resolve() == original_directory
+    assert artifact_marker.read_text(encoding="utf-8") == "keep"
+
+    refreshed = await runs_route.get_run(created.run_id)
+    assert refreshed.task_title == "Renamed Task"
+    assert refreshed.run_id == created.run_id
 
     transcript = await runs_route.get_run_transcript(created.run_id)
     assert [(item.role, item.content) for item in transcript] == [("user", "hello"), ("assistant", "world")]

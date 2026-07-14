@@ -194,15 +194,12 @@ export default function App() {
     addToast('任务已创建', 'success');
   }, [addToast, refreshTasks, switchRun]);
 
-  const handleRenameTask = useCallback(async (title: string) => {
-    if (!runId) return;
-    const updated = await renameRun(runId, title).catch(() => null);
-    if (!updated) {
-      addToast('重命名失败', 'error');
-      return;
-    }
+  const handleRenameTask = useCallback(async (title: string): Promise<TaskRun> => {
+    if (!runId) throw new Error('当前任务尚未加载');
+    const updated = await renameRun(runId, title);
     setTasks(prev => prev.map(task => task.run_id === updated.run_id ? updated : task));
     addToast('任务已重命名', 'success');
+    return updated;
   }, [addToast, runId]);
 
   const handleDeleteTask = useCallback(async (targetRunId: string) => {
@@ -443,7 +440,7 @@ export default function App() {
         retry ? 'explicit user retry' : 'explicit user rematerialization',
         retry,
       );
-      addToast(retry ? '实验准备任务已重新排队' : 'Readiness 已请求重新物化', 'success');
+      addToast(retry ? '准备检查已重新排队' : '实验准备状态检查已请求', 'success');
     } catch {
       addToast('物化请求未调度；任务可能已经在排队或运行', 'info');
     } finally {

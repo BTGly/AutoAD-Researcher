@@ -170,6 +170,17 @@ echo "[verify] checking CLI entrypoints..."
 "$UV_BIN" run python -m autoad_researcher --help >/dev/null
 echo "[verify] CLI entrypoints ok."
 
+echo "[verify] running frontend tests..."
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[verify] npm is required for frontend tests."
+  exit 1
+fi
+if [ ! -d frontend/node_modules ]; then
+  (cd frontend && npm ci)
+fi
+(cd frontend && npm run test)
+echo "[verify] frontend tests ok."
+
 echo "[verify] checking benchmark preflight imports..."
 "$UV_BIN" run python - <<'''PY'''
 from autoad_researcher.benchmarks.repository import collect_repository_state

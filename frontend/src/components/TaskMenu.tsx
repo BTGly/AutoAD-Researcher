@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { History, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { getApiErrorMessage } from '../lib/api';
 import type { TaskRun } from '../lib/types';
 
 interface Props {
@@ -7,7 +8,7 @@ interface Props {
   tasks: TaskRun[];
   onSelect: (runId: string) => void;
   onCreate: () => void;
-  onRename: (title: string) => void;
+  onRename: (title: string) => Promise<TaskRun>;
   onDelete: (runId: string) => void;
 }
 
@@ -23,12 +24,20 @@ export function TaskMenu({
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(false);
   const [renameTitle, setRenameTitle] = useState('');
+  const [displayTitle, setDisplayTitle] = useState(activeTask?.task_title || 'Untitled session');
+  const [renameError, setRenameError] = useState('');
+  const [saving, setSaving] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const submittingRef = useRef(false);
+  const skipBlurRef = useRef(false);
 
   useEffect(() => {
     setRenameTitle(activeTask?.task_title || '');
+    setDisplayTitle(activeTask?.task_title || 'Untitled session');
     setEditing(false);
+    setRenameError('');
+    submittingRef.current = false;
   }, [activeTask?.run_id, activeTask?.task_title]);
 
   useEffect(() => {
@@ -39,7 +48,6 @@ export function TaskMenu({
     const handleClick = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) {
         setOpen(false);
-        setEditing(false);
       }
     };
     window.addEventListener('mousedown', handleClick);
@@ -61,22 +69,93 @@ export function TaskMenu({
     ));
   }, [activeTask?.run_id, query, tasks]);
 
-  const activeTitle = activeTask?.task_title || 'Untitled session';
+  const activeTitle = displayTitle;
 
-  const submitRename = () => {
-    const nextTitle = renameTitle.trim();
-    if (nextTitle && nextTitle !== activeTask?.task_title) {
-      onRename(nextTitle);
-    }
+  const beginRename = () => {
+    if (!activeTask) return;
+    skipBlurRef.current = false;
+    setRenameTitle(displayTitle);
+    setRenameError('');
+    setEditing(true);
+  };
+
+  const cancelRename = () => {
+    skipBlurRef.current = true;
+    setRenameTitle(displayTitle);
+    setRenameError('');
     setEditing(false);
+  };
+
+  const submitRename = async () => {
+    if (skipBlurRef.current) {
+      skipBlurRef.current = false;
+      return;
+    }
+    if (!activeTask || submittingRef.current) return;
+    const nextTitle = renameTitle.trim();
+    if (!nextTitle || nextTitle === displayTitle) {
+      cancelRename();
+      return;
+    }
+    submittingRef.current = true;
+    setSaving(true);
+    setRenameError('');
+    try {
+      const updated = await onRename(nextTitle);
+      setRenameTitle(updated.task_title);
+      setDisplayTitle(updated.task_title);
+      setEditing(false);
+    } catch (error) {
+      setRenameError(getApiErrorMessage(error, '重命名失败'));
+      setEditing(true);
+    } finally {
+      submittingRef.current = false;
+      setSaving(false);
+    }
   };
 
   return (
     <div className="session-controls" ref={ref}>
-      <div className="session-current" title={activeTitle}>
-        <span className="session-current-label">当前任务：</span>
-        <span className="session-current-title">{activeTitle}</span>
-      </div>
+      {editing ? (
+        <div className="session-current session-current-editing">
+          <span className="session-current-label">当前任务：</span>
+          <input
+            ref={inputRef}
+            aria-label="当前任务名称"
+            value={renameTitle}
+            disabled={saving}
+            maxLength={30}
+            onChange={event => setRenameTitle(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void submitRename();
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                cancelRename();
+              }
+            }}
+            onBlur={() => { void submitRename(); }}
+          />
+          {renameError && <div className="session-rename-error" role="alert">{renameError}</div>}
+        </div>
+      ) : (
+        <div className="session-current" title={activeTitle}>
+          <span className="session-current-label">当前任务：</span>
+          <span className="session-current-title">{activeTitle}</span>
+        </div>
+      )}
+
+      <button
+        className="session-icon-button"
+        onClick={beginRename}
+        title="编辑当前任务名称"
+        aria-label="编辑当前任务名称"
+        disabled={!activeTask || saving}
+      >
+        <Pencil size={14} strokeWidth={1.8} />
+      </button>
 
       <button
         className="session-icon-button"
@@ -122,28 +201,8 @@ export function TaskMenu({
                   }}
                 >
                   <div className="session-row-main">
-                    {isActive && editing ? (
-                      <input
-                        ref={inputRef}
-                        value={renameTitle}
-                        onChange={event => setRenameTitle(event.target.value)}
-                        onKeyDown={event => {
-                          if (event.key === 'Enter') submitRename();
-                          if (event.key === 'Escape') {
-                            setRenameTitle(activeTask?.task_title || '');
-                            setEditing(false);
-                          }
-                        }}
-                        onBlur={submitRename}
-                        maxLength={30}
-                        onClick={event => event.stopPropagation()}
-                      />
-                    ) : (
-                      <>
-                        <div className="session-row-title">{task.task_title}</div>
-                        <div className="session-row-meta">{formatDate(task.updated_at || task.created_at)}</div>
-                      </>
-                    )}
+                    <div className="session-row-title">{task.task_title}</div>
+                    <div className="session-row-meta">{formatDate(task.updated_at || task.created_at)}</div>
                   </div>
 
                   <div className="session-row-actions">
@@ -154,7 +213,8 @@ export function TaskMenu({
                         aria-label="Rename session"
                         onClick={event => {
                           event.stopPropagation();
-                          setEditing(true);
+                          setOpen(false);
+                          beginRename();
                         }}
                       >
                         <Pencil size={14} strokeWidth={1.8} />
