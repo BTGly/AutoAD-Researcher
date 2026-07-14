@@ -25,6 +25,10 @@ class IdempotencyConflict(ControlPlaneError):
     """An idempotency key was reused with a different request."""
 
 
+class JobClaimFenceError(ControlPlaneError):
+    """A worker operation no longer owns the claimed job attempt."""
+
+
 class EventIdempotencyConflict(ControlPlaneError):
     """An event idempotency key was reused with different content."""
 

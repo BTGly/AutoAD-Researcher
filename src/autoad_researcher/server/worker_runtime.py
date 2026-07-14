@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 
+from autoad_researcher.core.control_plane import CorruptAuthoritativeStore
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.worker.main import _process_pending_jobs
 
@@ -19,13 +21,20 @@ async def embedded_worker_loop() -> None:
     interval = float(os.environ.get(WORKER_INTERVAL_ENV, "2.0"))
     runs_root = Path(RUNS_ROOT)
     while True:
-        try:
-            if runs_root.exists():
-                for run_dir in sorted(runs_root.iterdir()):
-                    if run_dir.is_dir():
+        if runs_root.exists():
+            for run_dir in sorted(runs_root.iterdir()):
+                if run_dir.is_dir():
+                    try:
                         await asyncio.to_thread(_process_pending_jobs, run_dir)
-        except Exception:
-            pass
+                    except CorruptAuthoritativeStore as exc:
+                        print(
+                            f"[embedded-worker] authoritative store corrupt for {run_dir.name}: {exc}",
+                            file=sys.stderr,
+                        )
+                        continue
+                    except Exception as exc:
+                        print(f"[embedded-worker] failed for {run_dir.name}: {exc}", file=sys.stderr)
+                        continue
         await asyncio.sleep(interval)
 
 

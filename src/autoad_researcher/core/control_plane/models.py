@@ -45,3 +45,53 @@ class PipelineJob(BaseModel):
     next_eligible_at: datetime | None = None
     pending_control_request_id: str | None = None
     active_control_request_id: str | None = None
+
+
+class JobTransition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    from_status: Literal["queued", "running", "completed", "failed"]
+    to_status: Literal["queued", "running", "completed", "failed"]
+    reason: str
+    attempt_count: int = Field(ge=0)
+
+
+class ClaimRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    job_id: str
+    attempt_count: int = Field(ge=1)
+    claim_token: str
+    worker_id: str
+    claimed_at: datetime
+    lease_expires_at: datetime | None = None
+    control_request_id: str | None = None
+
+
+class AttemptResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    job_id: str
+    attempt_count: int = Field(ge=1)
+    claim_token: str
+    worker_id: str
+    status: Literal[
+        "claim_aborted",
+        "completed",
+        "published",
+        "no_op",
+        "failed",
+        "lease_lost",
+        "stale_input",
+    ]
+    control_request_id: str | None = None
+    input_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    publication_check_input_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    candidate_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    canonical_readiness_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    started_at: datetime
+    finished_at: datetime
+    error: str | None = None

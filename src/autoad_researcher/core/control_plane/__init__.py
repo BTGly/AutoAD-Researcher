@@ -8,19 +8,28 @@ from autoad_researcher.core.control_plane.errors import (
     CorruptAuthoritativeStore,
     EventIdempotencyConflict,
     IdempotencyConflict,
+    JobClaimFenceError,
     ReadinessStaleError,
 )
 from autoad_researcher.core.control_plane.event_store import ControlPlaneEventStore
 from autoad_researcher.core.control_plane.hashing import domain_sha256
 from autoad_researcher.core.control_plane.job_store import PipelineJobStore
 from autoad_researcher.core.control_plane.lock import RunMutationLock
-from autoad_researcher.core.control_plane.models import ControlPlaneEvent, PipelineJob
+from autoad_researcher.core.control_plane.models import (
+    AttemptResult,
+    ClaimRecord,
+    ControlPlaneEvent,
+    JobTransition,
+    PipelineJob,
+)
 from autoad_researcher.core.control_plane.paths import resolve_control_plane_path
 from autoad_researcher.core.control_plane.unit_of_work import ControlPlaneUnitOfWork
 from autoad_researcher.core.control_plane.validate import validate_control_plane_store
 
 __all__ = [
     "ControlPlaneError",
+    "AttemptResult",
+    "ClaimRecord",
     "ControlPlaneEvent",
     "ControlPlaneEventStore",
     "ControlPlaneLockError",
@@ -30,6 +39,8 @@ __all__ = [
     "CorruptAuthoritativeStore",
     "EventIdempotencyConflict",
     "IdempotencyConflict",
+    "JobClaimFenceError",
+    "JobTransition",
     "PipelineJob",
     "PipelineJobStore",
     "ReadinessStaleError",

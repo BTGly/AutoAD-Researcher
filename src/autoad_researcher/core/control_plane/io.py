@@ -42,6 +42,31 @@ def atomic_write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     atomic_write_bytes(path, data)
 
 
+def write_bytes_exclusive_durable(path: Path, data: bytes) -> bool:
+    """Create an immutable file, or verify an identical recovered write.
+
+    Returns True when a new file was created and False for an identical existing
+    file. Different existing bytes are an integrity error.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        fsync_directory(path.parent)
+        return True
+    except FileExistsError:
+        if path.read_bytes() == data:
+            return False
+        raise ValueError(f"immutable artifact content conflict: {path}") from None
+
+
+def write_json_exclusive_durable(path: Path, payload: Any) -> bool:
+    data = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return write_bytes_exclusive_durable(path, data)
+
+
 def append_jsonl_line_durable(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = (json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")

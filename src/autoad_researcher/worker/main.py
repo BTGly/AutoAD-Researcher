@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AutoAD V2 Worker — polls pipeline_jobs.jsonl and executes them.
+"""AutoAD V2 Worker — claims strict control-plane jobs and executes them.
 
 Usage:
     uv run python -m autoad_researcher.worker.main
@@ -20,11 +20,67 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
+from uuid import uuid4
+
+from autoad_researcher.core.control_plane import (
+    ControlPlaneEventStore,
+    CorruptAuditProjection,
+    CorruptAuthoritativeStore,
+    EventIdempotencyConflict,
+    JobClaimFenceError,
+    JobTransition,
+    PipelineJobStore,
+)
+from autoad_researcher.core.control_plane.io import atomic_write_json
 
 RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
 
-JOBS_DIR = "jobs"
-JOBS_FILE = "pipeline_jobs.jsonl"
+WORKER_ID = f"worker_{os.getpid()}_{uuid4().hex}"
+
+
+class _AuditWriter:
+    """Keep non-authoritative audit corruption from blocking one run's jobs."""
+
+    def __init__(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+        self.store = ControlPlaneEventStore(run_dir)
+        self.degraded = False
+        try:
+            self.store.read_since()
+        except (CorruptAuditProjection, EventIdempotencyConflict) as exc:
+            self._degrade(exc)
+
+    def append_once(self, event_type: str, key: str, payload: dict[str, Any]) -> None:
+        if self.degraded:
+            return
+        try:
+            self.store.append_once(event_type, key, payload)
+        except (CorruptAuditProjection, EventIdempotencyConflict) as exc:
+            self._degrade(exc)
+
+    def append(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self.degraded:
+            return
+        try:
+            self.store.append(event_type, payload)
+        except CorruptAuditProjection as exc:
+            self._degrade(exc)
+
+    def _degrade(self, exc: Exception) -> None:
+        self.degraded = True
+        print(f"[worker] audit degraded for {self.run_dir.name}: {exc}", file=sys.stderr)
+        try:
+            atomic_write_json(
+                self.run_dir / "events" / "audit_health.json",
+                {
+                    "schema_version": 1,
+                    "status": "degraded",
+                    "reason": str(exc),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except OSError as health_error:
+            print(f"[worker] could not persist audit health: {health_error}", file=sys.stderr)
 
 
 def main():
@@ -48,7 +104,10 @@ def main():
                 continue
             if args.run_id and run_dir.name != args.run_id:
                 continue
-            processed += _process_pending_jobs(run_dir)
+            try:
+                processed += _process_pending_jobs(run_dir, worker_id=WORKER_ID)
+            except CorruptAuthoritativeStore as exc:
+                print(f"[worker] authoritative store corrupt for {run_dir.name}: {exc}", file=sys.stderr)
 
         if processed:
             print(f"[worker] processed {processed} jobs")
@@ -61,52 +120,44 @@ def main():
     print("[worker] done")
 
 
-def _process_pending_jobs(run_dir: Path) -> int:
-    path = run_dir / JOBS_DIR / JOBS_FILE
-    if not path.is_file():
-        return 0
-
-    jobs = json.loads("[" + ",".join(path.read_text(encoding="utf-8").strip().replace("}\n{", "},{").splitlines()) + "]") if False else []
-
+def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
+    store = PipelineJobStore(run_dir)
+    audit = _AuditWriter(run_dir)
     processed = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            job = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if job.get("status") not in ("queued",):
-            continue
 
-        job_id = job.get("job_id", "unknown")
-        job_type = job.get("job_type", "")
+    for result in store.reconcile_orphan_claims():
+        audit.append_once(
+            "job.claim_aborted",
+            f"job.claim_aborted:{result.job_id}:attempt:{result.attempt_count}",
+            result.model_dump(mode="json", exclude_none=True),
+        )
+
+    for transition in store.requeue_expired():
+        _append_job_transition(audit, transition)
+
+    dependency_transitions = store.reconcile_job_dependencies()
+    for transition in dependency_transitions:
+        _append_job_transition(audit, transition)
+        processed += 1
+
+    while claimed := store.claim_next(worker_id=worker_id):
+        job = claimed.model_dump(mode="json", exclude_none=False)
+        job_id = claimed.job_id
+        job_type = claimed.job_type
+        claim_token = claimed.claim_token
+        if claim_token is None:
+            raise CorruptAuthoritativeStore(f"claimed job {job_id} has no claim token")
+        attempt_count = claimed.attempt_count
         print(f"[worker] running {job_type} ({job_id}) in {run_dir.name}")
+        audit.append_once(
+            "job.started",
+            f"job.started:{job_id}:attempt:{attempt_count}",
+            {"job_id": job_id, "job_type": job_type, "attempt_count": attempt_count},
+        )
 
-        from autoad_researcher.assistant.v2.job_service import claim_pipeline_job, complete_pipeline_job, fail_pipeline_job
-        from autoad_researcher.assistant.v2.event_service import append_event
-
-        dependency = _dependency_status(run_dir, job)
-        if dependency == "pending":
-            continue
-        if dependency == "failed":
-            claimed = claim_pipeline_job(run_dir, job_id)
-            if claimed:
-                error = f"dependency failed: {job.get('payload', {}).get('depends_on')}"
-                fail_pipeline_job(run_dir, job_id, error=error)
-                append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error})
-                append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error}"})
-                processed += 1
-            continue
-
-        claimed = claim_pipeline_job(run_dir, job_id)
-        if not claimed:
-            continue
-
-        append_event(run_dir, "job.started", {"job_id": job_id, "job_type": job_type})
         success = False
         outputs: list[str] = []
-
+        error_msg: str | None = None
         try:
             if job_type == "web_search":
                 success = _run_web_search(run_dir, job)
@@ -133,30 +184,69 @@ def _process_pending_jobs(run_dir: Path) -> int:
             elif job_type in {"repo_analyze", "repo_summarize"}:
                 success, outputs = _run_repo_analyze(run_dir, job)
             else:
-                fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
-                append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
-                continue
-
-            if success:
-                complete_pipeline_job(run_dir, job_id, outputs=outputs)
-                append_event(run_dir, "job.completed", {"job_id": job_id, "outputs": outputs})
-                if outputs:
-                    append_event(run_dir, "artifact.created", {"job_id": job_id, "paths": outputs})
-                    append_event(run_dir, "evidence.updated", {"job_id": job_id})
-                append_event(run_dir, "toast.success", {"message": f"{job_type} 完成"})
-            else:
-                error_msg = _best_job_error(run_dir, job)
-                fail_pipeline_job(run_dir, job_id, error=error_msg)
-                append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error_msg})
-                append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error_msg}"})
+                error_msg = f"unknown job_type: {job_type}"
         except Exception as exc:
             error_msg = str(exc)[:500]
-            fail_pipeline_job(run_dir, job_id, error=error_msg)
-            append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})
-            append_event(run_dir, "toast.error", {"message": f"{job_type} 失败"})
+
+        try:
+            if success and error_msg is None:
+                store.complete(
+                    job_id,
+                    claim_token=claim_token,
+                    expected_attempt_count=attempt_count,
+                    outputs=outputs,
+                )
+                audit.append_once(
+                    "job.completed",
+                    f"job.completed:{job_id}:attempt:{attempt_count}",
+                    {"job_id": job_id, "attempt_count": attempt_count, "outputs": outputs},
+                )
+                if outputs:
+                    audit.append_once(
+                        "artifact.created",
+                        f"artifact.created:{job_id}:attempt:{attempt_count}",
+                        {"job_id": job_id, "paths": outputs},
+                    )
+                    audit.append_once(
+                        "evidence.updated",
+                        f"evidence.updated:{job_id}:attempt:{attempt_count}",
+                        {"job_id": job_id},
+                    )
+                audit.append("toast.success", {"message": f"{job_type} 完成"})
+            else:
+                error_msg = error_msg or _best_job_error(run_dir, job)
+                store.fail(
+                    job_id,
+                    claim_token=claim_token,
+                    expected_attempt_count=attempt_count,
+                    error=error_msg,
+                )
+                audit.append_once(
+                    "job.failed",
+                    f"job.failed:{job_id}:attempt:{attempt_count}",
+                    {
+                        "job_id": job_id,
+                        "job_type": job_type,
+                        "source_id": claimed.source_id,
+                        "attempt_count": attempt_count,
+                        "error": error_msg,
+                    },
+                )
+                audit.append("toast.error", {"message": f"{job_type} 失败：{error_msg}"})
+        except JobClaimFenceError as exc:
+            print(f"[worker] lost claim for {job_id}: {exc}", file=sys.stderr)
         processed += 1
 
     return processed
+
+
+def _append_job_transition(audit: _AuditWriter, transition: JobTransition) -> None:
+    event_type = "job.lease_expired" if transition.reason == "lease_expired" else "job.failed"
+    audit.append_once(
+        event_type,
+        f"{event_type}:{transition.job_id}:attempt:{transition.attempt_count}:reason:{transition.reason}",
+        transition.model_dump(mode="json"),
+    )
 
 
 def _run_web_search(run_dir: Path, job: dict[str, Any]) -> bool:
@@ -1150,25 +1240,6 @@ def _run_repo_analyze(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[st
         raw={"python_files_sampled": len(files)},
     )
     return True, [rel]
-
-
-def _dependency_status(run_dir: Path, job: dict[str, Any]) -> str | None:
-    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-    depends_on = payload.get("depends_on")
-    if not depends_on:
-        return None
-    from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
-
-    for candidate in load_pipeline_jobs(run_dir):
-        if candidate.get("job_id") != depends_on:
-            continue
-        status = candidate.get("status")
-        if status == "completed":
-            return "completed"
-        if status == "failed":
-            return "failed"
-        return "pending"
-    return "failed"
 
 
 def _cleanup_incomplete_repository_target(run_dir: Path, source_id: str) -> None:
