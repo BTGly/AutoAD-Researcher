@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,9 @@ from autoad_researcher.core.control_plane.readiness import (
     load_experiment_session,
     materialize_claimed_experiment_prepare,
     repair_experiment_session_projection,
+)
+from autoad_researcher.core.control_plane.reconciliation import (
+    reconcile_incomplete_experiment_attempts,
 )
 from autoad_researcher.worker.main import _process_pending_jobs
 
@@ -223,3 +227,45 @@ def test_session_projection_repairs_from_running_job(tmp_path: Path):
     repaired = repair_experiment_session_projection(run_dir)
 
     assert repaired is not None and repaired.status == "preparing"
+
+
+def test_terminal_attempt_recovery_ignores_expired_live_lease_and_keeps_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_dir = _run_dir(tmp_path)
+    save_confirmed_contract(run_dir, _contract(run_dir))
+    session = ensure_experiment_session(run_dir)
+    store = PipelineJobStore(run_dir)
+    claimed_at = datetime(2026, 7, 13, tzinfo=timezone.utc)
+    claimed = store.claim_next(worker_id="worker_crash", now=claimed_at)
+    assert claimed is not None and claimed.claim_token is not None
+    original_write = PipelineJobStore._write_unlocked
+
+    def crash_after_attempt_result(self, jobs):
+        if any(job.job_id == claimed.job_id and job.status == "completed" for job in jobs):
+            raise RuntimeError("simulated Job Store crash after terminal attempt")
+        original_write(self, jobs)
+
+    monkeypatch.setattr(PipelineJobStore, "_write_unlocked", crash_after_attempt_result)
+    with pytest.raises(RuntimeError, match="simulated Job Store crash"):
+        materialize_claimed_experiment_prepare(
+            run_dir,
+            claimed,
+            now=claimed_at,
+        )
+    monkeypatch.setattr(PipelineJobStore, "_write_unlocked", original_write)
+
+    torn = store.get(claimed.job_id)
+    readiness = load_experiment_readiness(run_dir)
+    assert torn is not None and torn.status == "running"
+    assert readiness is not None and readiness.revision == 1
+
+    assert reconcile_incomplete_experiment_attempts(run_dir) == 1
+
+    completed = store.get(claimed.job_id)
+    repaired_session = load_experiment_session(run_dir)
+    repaired_readiness = load_experiment_readiness(run_dir)
+    assert completed is not None and completed.status == "completed"
+    assert repaired_session is not None and repaired_session.status == "materialized"
+    assert repaired_readiness is not None and repaired_readiness.revision == 1

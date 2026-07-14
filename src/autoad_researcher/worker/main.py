@@ -36,8 +36,15 @@ from autoad_researcher.core.control_plane.readiness import (
     materialize_claimed_experiment_prepare,
     repair_experiment_session_projection,
 )
-from autoad_researcher.core.control_plane.reconciliation import reconcile_control_plane_events
-from autoad_researcher.core.control_plane.validate import validate_authoritative_control_plane_store
+from autoad_researcher.core.control_plane.reconciliation import (
+    reconcile_control_plane_events,
+    reconcile_incomplete_experiment_attempts,
+    reconcile_materialization_requests,
+)
+from autoad_researcher.core.control_plane.validate import (
+    validate_authoritative_control_plane_invariants,
+    validate_authoritative_store_syntax,
+)
 
 RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
 
@@ -114,6 +121,8 @@ def main():
                 processed += _process_pending_jobs(run_dir, worker_id=WORKER_ID)
             except CorruptAuthoritativeStore as exc:
                 print(f"[worker] authoritative store corrupt for {run_dir.name}: {exc}", file=sys.stderr)
+            except Exception as exc:
+                print(f"[worker] failed for {run_dir.name}: {exc}", file=sys.stderr)
 
         if processed:
             print(f"[worker] processed {processed} jobs")
@@ -127,10 +136,13 @@ def main():
 
 
 def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
-    validate_authoritative_control_plane_store(run_dir)
+    validate_authoritative_store_syntax(run_dir)
     store = PipelineJobStore(run_dir)
     audit = _AuditWriter(run_dir)
     processed = 0
+
+    reconcile_incomplete_experiment_attempts(run_dir)
+    reconcile_materialization_requests(run_dir)
 
     for result in store.reconcile_orphan_claims():
         audit.append_once(
@@ -138,6 +150,9 @@ def _process_pending_jobs(run_dir: Path, *, worker_id: str = WORKER_ID) -> int:
             f"job.claim_aborted:{result.job_id}:attempt:{result.attempt_count}",
             result.model_dump(mode="json", exclude_none=True),
         )
+
+    repair_experiment_session_projection(run_dir)
+    validate_authoritative_control_plane_invariants(run_dir)
 
     for transition in store.requeue_expired():
         _append_job_transition(audit, transition)

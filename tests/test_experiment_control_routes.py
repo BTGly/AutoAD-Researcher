@@ -28,6 +28,13 @@ from autoad_researcher.core.control_plane.materialization_requests import (
 )
 from autoad_researcher.core.control_plane.readiness import load_experiment_session
 from autoad_researcher.core.control_plane.reconciliation import reconcile_control_plane_events
+from autoad_researcher.core.control_plane.reconciliation import (
+    reconcile_materialization_requests,
+)
+from autoad_researcher.core.control_plane.validate import (
+    validate_authoritative_control_plane_invariants,
+    validate_authoritative_store_syntax,
+)
 from autoad_researcher.server.routes import experiment_control
 from autoad_researcher.worker.main import _process_pending_jobs
 
@@ -247,3 +254,108 @@ def test_terminal_events_can_be_rebuilt_after_audit_projection_repair(tmp_path: 
     assert "control_plane.job.reconciled" in event_types
     assert "control_plane.readiness.reconciled" in event_types
     assert reconcile_control_plane_events(run_dir) == 0
+
+
+def test_request_recovery_requeues_only_the_exact_scheduled_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_dir = _run_dir(tmp_path)
+    session = _approve(run_dir)
+    assert _process_pending_jobs(run_dir, worker_id="worker_initial") == 1
+    original_write = PipelineJobStore._write_unlocked
+
+    def crash_before_requeue(self, jobs):
+        if any(job.pending_control_request_id == "remat_a" for job in jobs):
+            raise RuntimeError("simulated crash before Job requeue")
+        original_write(self, jobs)
+
+    monkeypatch.setattr(PipelineJobStore, "_write_unlocked", crash_before_requeue)
+    with pytest.raises(RuntimeError, match="before Job requeue"):
+        MaterializationRequestStore(run_dir).request(
+            request_id="remat_a",
+            force=True,
+            reason="refresh exact request",
+        )
+    monkeypatch.setattr(PipelineJobStore, "_write_unlocked", original_write)
+
+    assert validate_authoritative_store_syntax(run_dir)["valid"] is True
+    with pytest.raises(CorruptAuthoritativeStore, match="status does not match|not bound"):
+        validate_authoritative_control_plane_invariants(run_dir)
+
+    second = MaterializationRequestStore(run_dir).request(
+        request_id="remat_b",
+        force=False,
+        reason="must not replace request A",
+    )
+    assert second.status == "not_scheduled"
+    assert second.error == "materialization_request_already_scheduled"
+
+    reconcile_materialization_requests(run_dir)
+    job = PipelineJobStore(run_dir).get(session.prepare_job_id)
+    request_a = MaterializationRequestStore(run_dir).get("remat_a")
+    assert job is not None and job.status == "queued"
+    assert job.pending_control_request_id == "remat_a"
+    assert request_a is not None and request_a.status == "scheduled"
+    assert validate_authoritative_control_plane_invariants(run_dir)["valid"] is True
+
+
+def test_request_recovery_completes_ledger_from_matching_control_request_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_dir = _run_dir(tmp_path)
+    session = _approve(run_dir)
+    assert _process_pending_jobs(run_dir, worker_id="worker_initial") == 1
+    store = MaterializationRequestStore(run_dir)
+    store.request(request_id="remat_terminal", force=False, reason="verify terminal repair")
+    claimed = PipelineJobStore(run_dir).claim_next(worker_id="worker_terminal")
+    assert claimed is not None
+    original_mark = MaterializationRequestStore.mark_terminal_unlocked
+
+    def crash_before_request_terminal(self, request_id, *, status, now, error=None):
+        raise RuntimeError("simulated request terminal crash")
+
+    monkeypatch.setattr(
+        MaterializationRequestStore,
+        "mark_terminal_unlocked",
+        crash_before_request_terminal,
+    )
+    with pytest.raises(RuntimeError, match="request terminal crash"):
+        from autoad_researcher.core.control_plane.readiness import (
+            materialize_claimed_experiment_prepare,
+        )
+
+        materialize_claimed_experiment_prepare(run_dir, claimed)
+    monkeypatch.setattr(MaterializationRequestStore, "mark_terminal_unlocked", original_mark)
+
+    job = PipelineJobStore(run_dir).get(session.prepare_job_id)
+    torn = store.get("remat_terminal")
+    assert job is not None and job.status == "completed"
+    assert torn is not None and torn.status == "scheduled"
+
+    reconcile_materialization_requests(run_dir)
+    repaired = store.get("remat_terminal")
+    assert repaired is not None and repaired.status == "completed"
+    assert validate_authoritative_control_plane_invariants(run_dir)["valid"] is True
+
+
+def test_request_recovery_rejects_multiple_scheduled_requests_for_one_job(tmp_path: Path):
+    run_dir = _run_dir(tmp_path)
+    session = _approve(run_dir)
+    assert _process_pending_jobs(run_dir, worker_id="worker_initial") == 1
+    store = MaterializationRequestStore(run_dir)
+    first = store.request(request_id="remat_first", force=True, reason="first")
+    records = store.list()
+    records.append(first.model_copy(update={"request_id": "remat_second", "reason": "second"}))
+    from autoad_researcher.core.control_plane.io import atomic_write_jsonl
+
+    atomic_write_jsonl(
+        store.path,
+        [record.model_dump(mode="json", exclude_none=True) for record in records],
+    )
+
+    with pytest.raises(CorruptAuthoritativeStore, match="multiple scheduled"):
+        reconcile_materialization_requests(run_dir)
+    job = PipelineJobStore(run_dir).get(session.prepare_job_id)
+    assert job is not None and job.pending_control_request_id == "remat_first"

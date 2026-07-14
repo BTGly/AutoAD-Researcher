@@ -13,6 +13,7 @@ from autoad_researcher.core.control_plane import (
 )
 from autoad_researcher.core.control_plane.io import atomic_write_jsonl
 from autoad_researcher.worker.main import _process_pending_jobs
+from autoad_researcher.worker import main as worker_main
 
 
 def _run_dir(tmp_path: Path, name: str = "run_worker") -> Path:
@@ -223,6 +224,29 @@ def test_worker_continues_authoritative_jobs_when_audit_is_corrupt(tmp_path: Pat
     health = json.loads((run_dir / "events" / "audit_health.json").read_text(encoding="utf-8"))
     assert health["status"] == "degraded"
     assert events_path.read_text(encoding="utf-8") == "{truncated\n"
+
+
+def test_standalone_worker_isolates_unexpected_errors_by_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    first = _run_dir(tmp_path, "run_first")
+    second = _run_dir(tmp_path, "run_second")
+    calls: list[str] = []
+
+    def process(run_dir: Path, *, worker_id: str):
+        calls.append(run_dir.name)
+        if run_dir == first:
+            raise OSError("single-run filesystem failure")
+        return 0
+
+    monkeypatch.setattr(worker_main, "RUNS_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_main, "_process_pending_jobs", process)
+    monkeypatch.setattr("sys.argv", ["worker", "--once"])
+
+    worker_main.main()
+
+    assert calls == ["run_first", "run_second"]
 
 
 def test_worker_fails_closed_on_corrupt_authoritative_jobs(tmp_path: Path):

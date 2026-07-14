@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from autoad_researcher.assistant.v2.contract_confirmation_service import (
@@ -18,6 +19,65 @@ from autoad_researcher.core.control_plane.readiness import (
 )
 from autoad_researcher.core.control_plane.job_store import PipelineJobStore
 from autoad_researcher.core.control_plane.io import atomic_write_json
+from autoad_researcher.core.control_plane.unit_of_work import ControlPlaneUnitOfWork
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def reconcile_incomplete_experiment_attempts(run_dir: Path) -> int:
+    """Complete torn published/no-op attempts without requiring a live lease."""
+    repaired = 0
+    with ControlPlaneUnitOfWork(run_dir) as uow:
+        jobs = uow.jobs._load_unlocked()
+        request_store = MaterializationRequestStore(run_dir)
+        for job in jobs:
+            if job.status != "running" or job.job_type != "experiment_prepare":
+                continue
+            claim, attempt_dir = uow.jobs._load_active_claim_unlocked(job)
+            if not (attempt_dir / "attempt_result.json").is_file():
+                continue
+            result = uow.jobs._load_attempt_result_unlocked(attempt_dir)
+            uow.jobs._validate_attempt_result_identity_unlocked(result, claim, attempt_dir)
+            if result.status not in {"published", "no_op"}:
+                continue
+            request_id = job.active_control_request_id
+            completed = uow.jobs.recover_complete_from_terminal_attempt_unlocked(
+                job_id=job.job_id,
+                expected_attempt_count=job.attempt_count,
+                expected_claim_token=claim.claim_token,
+            )
+            from autoad_researcher.core.control_plane.experiment_state import (
+                transition_session_if_present_unlocked,
+            )
+
+            transition_session_if_present_unlocked(
+                run_dir,
+                prepare_job_id=completed.job_id,
+                status="materialized",
+                now=result.finished_at,
+            )
+            if request_id is not None:
+                request_store.mark_terminal_unlocked(
+                    request_id,
+                    status="completed",
+                    now=result.finished_at,
+                )
+            repaired += 1
+    return repaired
+
+
+def reconcile_materialization_requests(run_dir: Path) -> int:
+    """Repair request-ledger/Job tears before any new claim is issued."""
+    with ControlPlaneUnitOfWork(run_dir) as uow:
+        store = MaterializationRequestStore(run_dir)
+        before = store._load_unlocked()
+        before_state = [record.model_dump(mode="json") for record in before]
+        store.reconcile_unlocked(uow, now=_utcnow())
+        after = store._load_unlocked()
+        after_state = [record.model_dump(mode="json") for record in after]
+        return int(before_state != after_state)
 
 
 def reconcile_control_plane_events(run_dir: Path) -> int:

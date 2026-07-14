@@ -12,13 +12,14 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from autoad_researcher.core.control_plane.errors import (
+    ControlPlaneLockError,
     CorruptAuthoritativeStore,
     IdempotencyConflict,
     JobClaimFenceError,
 )
 from autoad_researcher.core.control_plane.hashing import pipeline_job_request_sha256
 from autoad_researcher.core.control_plane.io import atomic_write_jsonl, write_json_exclusive_durable
-from autoad_researcher.core.control_plane.lock import RunMutationLock
+from autoad_researcher.core.control_plane.lock import RunMutationLock, run_lock_active
 from autoad_researcher.core.control_plane.models import (
     AttemptResult,
     ClaimRecord,
@@ -356,6 +357,79 @@ class PipelineJobStore:
             jobs[index] = completed
             self._write_unlocked(jobs)
             return completed
+
+    def recover_complete_from_terminal_attempt_unlocked(
+        self,
+        *,
+        job_id: str,
+        expected_attempt_count: int,
+        expected_claim_token: str,
+    ) -> PipelineJob:
+        """Complete a torn publication from its immutable terminal artifacts.
+
+        This recovery fence deliberately does not require a live lease.  It is
+        valid only while the run lock is held and only for a published/no-op
+        experiment attempt whose canonical readiness hash still matches.
+        """
+        if not run_lock_active(self.run_dir):
+            raise ControlPlaneLockError("terminal-attempt recovery requires the run lock")
+        jobs = self._load_unlocked()
+        index, job = self._find_job(jobs, job_id)
+        if (
+            job.status != "running"
+            or job.job_type != EXPERIMENT_PREPARE_JOB_TYPE
+            or job.attempt_count != expected_attempt_count
+            or job.claim_token != expected_claim_token
+        ):
+            raise CorruptAuthoritativeStore(
+                f"terminal-attempt recovery identity mismatch for job {job_id}"
+            )
+        claim, attempt_dir = self._load_active_claim_unlocked(job)
+        result = self._load_attempt_result_unlocked(attempt_dir)
+        self._validate_attempt_result_identity_unlocked(result, claim, attempt_dir)
+        if result.status not in {"published", "no_op"}:
+            raise CorruptAuthoritativeStore(
+                f"job {job_id} has non-publication terminal result {result.status}"
+            )
+        if result.canonical_readiness_sha256 is None:
+            raise CorruptAuthoritativeStore(
+                f"job {job_id} terminal result has no canonical readiness hash"
+            )
+
+        from autoad_researcher.core.control_plane.experiment_state import (
+            READINESS_RELATIVE_PATH,
+        )
+        from autoad_researcher.core.control_plane.hashing import domain_sha256
+        from autoad_researcher.core.control_plane.readiness import load_readiness_unlocked
+
+        readiness = load_readiness_unlocked(self.run_dir)
+        if readiness is None:
+            raise CorruptAuthoritativeStore(
+                f"job {job_id} terminal result has no canonical readiness"
+            )
+        readiness_hash = domain_sha256("autoad:experiment_readiness_artifact:v1", readiness)
+        if readiness_hash != result.canonical_readiness_sha256:
+            raise CorruptAuthoritativeStore(
+                f"job {job_id} canonical readiness hash does not match terminal result"
+            )
+
+        completed = job.model_copy(update={
+            "status": "completed",
+            "completed_at": result.finished_at,
+            "outputs": [READINESS_RELATIVE_PATH],
+            "error": None,
+            "claimed_by": None,
+            "claim_token": None,
+            "attempt_started_at": None,
+            "lease_expires_at": None,
+            "next_eligible_at": None,
+            "active_control_request_id": None,
+            "consecutive_stale_count": 0,
+            "consecutive_lease_expiry_count": 0,
+        })
+        jobs[index] = completed
+        self._write_unlocked(jobs)
+        return completed
 
     def fail(
         self,
@@ -812,6 +886,23 @@ class PipelineJobStore:
         except (OSError, ValidationError, ValueError) as exc:
             raise CorruptAuthoritativeStore(f"invalid attempt result: {path}") from exc
 
+    @staticmethod
+    def _validate_attempt_result_identity_unlocked(
+        result: AttemptResult,
+        claim: ClaimRecord,
+        attempt_dir: Path,
+    ) -> None:
+        if (
+            result.job_id != claim.job_id
+            or result.attempt_count != claim.attempt_count
+            or result.claim_token != claim.claim_token
+            or result.worker_id != claim.worker_id
+            or result.control_request_id != claim.control_request_id
+        ):
+            raise CorruptAuthoritativeStore(
+                f"attempt result identity mismatch: {attempt_dir / 'attempt_result.json'}"
+            )
+
     def _ensure_attempt_result_unlocked(
         self,
         attempt_dir: Path,
@@ -828,6 +919,7 @@ class PipelineJobStore:
         path = attempt_dir / "attempt_result.json"
         if path.is_file():
             existing = self._load_attempt_result_unlocked(attempt_dir)
+            self._validate_attempt_result_identity_unlocked(existing, claim, attempt_dir)
             if existing.status != status:
                 raise CorruptAuthoritativeStore(
                     f"attempt result status conflict at {path}: {existing.status} != {status}"

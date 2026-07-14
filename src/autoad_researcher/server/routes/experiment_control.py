@@ -8,16 +8,14 @@ from pydantic import BaseModel, Field
 from autoad_researcher.core.control_plane import (
     CorruptAuthoritativeStore,
     IdempotencyConflict,
-    PipelineJobStore,
 )
 from autoad_researcher.core.control_plane.materialization_requests import (
     MaterializationRequestStore,
 )
 from autoad_researcher.core.control_plane.readiness import (
     ensure_experiment_session,
-    load_experiment_readiness,
-    load_experiment_session,
 )
+from autoad_researcher.core.control_plane.snapshot import load_experiment_control_snapshot
 from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
 
@@ -34,13 +32,14 @@ class MaterializationCommand(BaseModel):
 @router.get("/{run_id}/experiment-session")
 async def get_experiment_session(run_id: str):
     run_dir = _run_dir(run_id)
-    session = load_experiment_session(run_dir)
+    snapshot = load_experiment_control_snapshot(run_dir)
+    session = snapshot["session"]
     if session is None:
         return {"session": None, "readiness": None, "job": None, "requests": []}
-    job = PipelineJobStore(run_dir).get(session.prepare_job_id)
+    job = snapshot["job"]
     if job is None:
         raise HTTPException(status_code=500, detail="ExperimentSession prepare job is missing")
-    readiness = load_experiment_readiness(run_dir)
+    readiness = snapshot["readiness"]
     return {
         "session": session.model_dump(mode="json", exclude_none=True),
         "readiness": (
@@ -51,7 +50,7 @@ async def get_experiment_session(run_id: str):
         "job": job.model_dump(mode="json", exclude_none=False),
         "requests": [
             record.model_dump(mode="json", exclude_none=True)
-            for record in MaterializationRequestStore(run_dir).list()
+            for record in snapshot["requests"]
         ],
     }
 
