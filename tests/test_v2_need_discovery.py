@@ -297,3 +297,39 @@ def _base_llm_spec(needs):
         "ready_for_patch": False,
         "ready_for_run": False,
     }
+
+
+def test_explicit_numeric_target_overrides_generic_llm_success_criteria(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps(_base_llm_spec([
+            {
+                "name": "success_criteria",
+                "category": "evaluation",
+                "required_for": "plan",
+                "necessity": "required_now",
+                "current_value": "improve selected metrics under the same evaluation protocol",
+                "source": "llm_inferred",
+                "confidence": 0.8,
+                "blocking": False,
+                "question_to_user": None,
+            },
+        ]), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    spec = discover_required_needs_with_llm(
+        user_input="我要提升5%",
+        transcript_tail=[
+            {
+                "role": "user",
+                "content": "主要指标是 image-level AUROC，保持测试集、指标定义和数据划分不变。",
+            },
+        ],
+        current_stage_goal="generate_plan",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    success = _need(spec, "success_criteria")
+    assert "5%" in success.current_value
+    assert "未指定绝对百分点或相对比例" in success.current_value
+    assert success.source == "user"

@@ -55,10 +55,6 @@ def plan_reply(
     if _is_explicit_parse_failure_question(user_input) and (failed_jobs or unusable):
         return _parse_failure_fallback(blocking, pending_jobs, failed_jobs, unusable)
 
-    turn_gate_recovery_reply = _turn_gate_recovery_reply(turn_gate)
-    if turn_gate_recovery_reply:
-        return "answer", turn_gate_recovery_reply
-
     if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
         if api_key:
             return _llm_reply(llm_context, user_input, api_key, provider_url, on_delta=on_delta, run_dir=run_dir)
@@ -93,7 +89,7 @@ def _llm_reply(
     evidence_text = "\n---\n".join(readable[:3]) if readable else "无可用 evidence"
     confirmed_text = "\n".join(f"{k}: {v}" for k, v in confirmed.items()) if confirmed else "无"
     contract_text = _json_text(contract) if contract else "{}"
-    turn_gate_text = _json_text(turn_gate) if turn_gate else "{}"
+    turn_gate_text = _json_text(_reply_planner_turn_gate_context(turn_gate)) if turn_gate else "{}"
 
     selector = PromptSelector()
     profile = selector.profile_for_v2_component("reply_planner")
@@ -237,18 +233,8 @@ def _reply_failure_fallback(
     unusable_sources: list[dict[str, Any]],
 ) -> tuple[str, str]:
     if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
-        instruction = _clean_visible_text(turn_gate.get("next_reply_instruction"))
-        if instruction:
-            return "answer", instruction
+        return "answer", _non_contract_fallback(turn_gate)
     return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable_sources)
-
-
-def _turn_gate_recovery_reply(turn_gate: dict[str, Any]) -> str:
-    if turn_gate.get("turn_type") != "frustration":
-        return ""
-    if turn_gate.get("contract_action") != "answer_without_contract_update":
-        return ""
-    return _clean_visible_text(turn_gate.get("next_reply_instruction"))
 
 
 def _requests_unbacked_confirmation(payload: dict[str, Any], contract: Any) -> bool:
@@ -274,48 +260,48 @@ def _unified_fallback(
     failed_jobs: list[dict[str, Any]] | None = None,
     unusable_sources: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
-    """Evidence-state fallback — no keyword templates."""
-    parts = [f"当前状态: {blocking or 'idle'}"]
+    """User-facing fallback derived from typed state, without internal control terms."""
+    parts: list[str] = []
     pending_jobs = pending_jobs or []
     failed_jobs = failed_jobs or []
     unusable_sources = unusable_sources or []
 
     if unparsed_count:
-        parts.append(f"未解析 source: {unparsed_count}")
+        parts.append(f"还有 {unparsed_count} 份资料尚未解析。")
     if pending_jobs:
         job_lines = ", ".join(
             f"{j.get('job_type')}({j.get('status')}, {j.get('job_id')})"
             for j in pending_jobs[:3]
         )
-        parts.append(f"后台任务: {job_lines}")
-        parts.append("这些任务还没有产出 supported evidence；完成前我不能声称已经读完 PDF。")
+        parts.append(f"仍在处理的资料任务：{job_lines}。")
+        parts.append("这些任务完成前，我不会声称已经读完相应资料。")
     if failed_jobs:
         job_lines = ", ".join(
             f"{j.get('job_type')}({j.get('job_id')}): {j.get('error') or 'failed'}"
             for j in failed_jobs[:3]
         )
-        parts.append(f"失败任务: {job_lines}")
+        parts.append(f"资料处理失败：{job_lines}。")
     if unusable_sources:
         labels = ", ".join(
             str(item.get("user_label") or item.get("source_id"))
             for item in unusable_sources[:3]
         )
-        parts.append(f"解析不可用 source: {labels}")
+        parts.append(f"以下资料暂时无法读取：{labels}。")
         known_reasons = _known_unusable_reasons(unusable_sources)
         if known_reasons:
             parts.append("已知原因: " + "；".join(known_reasons[:3]))
         else:
-            parts.append("当前只知道这些 PDF 没有产出可读 paper.md。")
-        parts.append("因此我不能从中提取论文方法或声称看过内容。")
+            parts.append("当前只能确认它们没有产出可读正文。")
+        parts.append("因此我不能据此提取论文方法或声称看过内容。")
     if usable_count:
-        parts.append(f"可用 evidence: {usable_count}")
+        parts.append(f"已有 {usable_count} 条可用证据。")
     if readable_count:
-        parts.append(f"可读摘要: {readable_count}")
+        parts.append(f"已有 {readable_count} 份可读摘要。")
 
-    parts.append("HF-2 当前只需要确认研究意图，不需要你先设计具体方法或指定要改哪个模块。")
-    parts.append("你有没有已有改进想法？没有也可以，后续 experiment agents 会自动探索。")
+    parts.append("当前只需要确认研究目标和评估边界，不需要你先设计具体方法或指定要改哪个模块。")
+    parts.append("已有改进想法可以直接告诉我；没有也不影响后续规划。")
     parts.append("请先确认主要目标：指标效果、推理速度、显存占用、训练成本、复现跑通，还是稳定性/泛化？")
-    parts.append("默认禁止修改测试集、指标定义、数据划分、测试标签和任何标签泄漏；当前执行模式默认 plan_only。")
+    parts.append("在你明确确认前，我不会把对话当成修改代码或运行实验的授权。")
 
     return "answer", "\n".join(parts)
 
@@ -454,10 +440,26 @@ def _is_explicit_repo_failure_question(user_input: str) -> bool:
 
 
 def _non_contract_fallback(turn_gate: dict[str, Any] | None = None) -> str:
-    instruction = _clean_visible_text((turn_gate or {}).get("next_reply_instruction"))
-    if instruction:
-        return instruction
-    return "这句话不会写入研究合同。需要继续推进研究任务时，可以直接告诉我实验目标、数据集、指标、资料链接或仓库。"
+    turn_type = str((turn_gate or {}).get("turn_type") or "")
+    if turn_type == "frustration":
+        return (
+            "刚才的回复与实际保存状态没有对齐，抱歉。我会以已保存状态为准；"
+            "需要确认时会显示确认窗口，不会只靠聊天文字代替。"
+        )
+    if turn_type == "identity_question":
+        return "我是 AutoAD Researcher，负责协助整理研究目标、资料证据和实验规划边界。"
+    if turn_type in {"ordinary_chat", "joke"}:
+        return "可以聊聊；当前研究任务会保持不变，你想继续时我们再接着推进。"
+    return "我还不能可靠判断这句话是否要修改当前研究任务。你可以补充目标，或说明是继续、暂停还是取消当前任务。"
+
+
+def _reply_planner_turn_gate_context(turn_gate: dict[str, Any]) -> dict[str, Any]:
+    allowed_fields = ("turn_type", "contract_action", "user_intent_summary")
+    return {
+        field: turn_gate[field]
+        for field in allowed_fields
+        if field in turn_gate
+    }
 
 
 def _json_text(value: Any) -> str:

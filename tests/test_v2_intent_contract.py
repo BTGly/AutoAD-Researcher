@@ -533,8 +533,10 @@ def test_format_contract_does_not_pressure_user_for_method_or_module():
     text = format_contract_for_user(contract)
 
     assert "未提供；这不阻塞" in text
-    assert "后续 experiment agents 会自动探索" in text
-    assert "后续 repo/experiment agents 会定位" in text
+    assert "后续规划阶段会自动探索" in text
+    assert "后续资料分析与实验规划阶段会定位" in text
+    assert "plan_only" not in text
+    assert "experiment agents" not in text
     assert "你想怎么改" not in text
     assert "你要改哪个模块" not in text
 
@@ -648,6 +650,11 @@ def test_reply_planner_rejects_unbacked_confirmation_without_streaming_it(monkey
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         on_delta = kwargs.get("on_delta")
         assert on_delta is None
+        assert all(
+            "上一轮确认话术与草案状态不一致；我会先恢复草案。" not in message["content"]
+            for message in messages
+            if message["role"] == "system"
+        )
         return {"reply": json.dumps(_reply_payload(
             "研究方向已经整理好了，请确认。"
         ) | {
@@ -674,18 +681,21 @@ def test_reply_planner_rejects_unbacked_confirmation_without_streaming_it(monkey
     )
 
     assert kind == "answer"
-    assert reply == "上一轮确认话术与草案状态不一致；我会先恢复草案。"
+    assert "上一轮确认话术与草案状态不一致；我会先恢复草案。" not in reply
+    assert "HF-2" not in reply
+    assert "plan_only" not in reply
+    assert "内部" not in reply
     assert streamed == []
     assert "请确认" not in reply
 
 
-def test_reply_planner_prefers_turn_gate_recovery_instruction_without_second_llm(monkeypatch):
+def test_reply_planner_failure_does_not_expose_turn_gate_instruction(monkeypatch):
     calls = 0
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         nonlocal calls
         calls += 1
-        raise AssertionError("ReplyPlanner LLM should not run after TurnGate resolved a frustration reply")
+        return {"reply": "", "error": "provider unavailable"}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     kind, reply = plan_reply(
@@ -703,9 +713,10 @@ def test_reply_planner_prefers_turn_gate_recovery_instruction_without_second_llm
         provider_url="https://example.test",
     )
 
-    assert calls == 0
+    assert calls == 1
     assert kind == "answer"
-    assert reply == "上一轮确认话术与草案状态不一致；请先解释并恢复草案。"
+    assert "实际保存状态没有对齐" in reply
+    assert "上一轮确认话术与草案状态不一致；请先解释并恢复草案。" not in reply
     assert "失败任务" not in reply
 
 
@@ -906,7 +917,7 @@ def test_reply_planner_non_json_internal_payload_uses_safe_fallback(monkeypatch)
         provider_url="https://example.test",
     )
 
-    assert "当前状态: intent" in reply
+    assert "当前只需要确认研究目标和评估边界" in reply
     assert "contract_updates" not in reply
     assert "missing_required_fields" not in reply
     assert "PatchCore" not in reply
@@ -934,7 +945,7 @@ def test_reply_planner_broken_json_internal_payload_uses_safe_fallback(monkeypat
         provider_url="https://example.test",
     )
 
-    assert "当前状态: intent" in reply
+    assert "当前只需要确认研究目标和评估边界" in reply
     assert "contract_updates" not in reply
     assert "PatchCore" not in reply
 
@@ -1390,7 +1401,7 @@ def test_hf2_playful_message_not_contract_update(tmp_path: Path):
     result = ResearchOrchestratorV2.handle(run_dir, user_input="你是无敌美少女")
 
     assert result.intent_contract == {}
-    assert "研究合同" in result.reply
+    assert "当前研究任务" in result.reply
     assert "dataset" not in result.reply
 
 
@@ -1830,3 +1841,77 @@ def _need_spec_payload(*, baseline: str, dataset: str, metrics: list[str]) -> di
         "ready_for_patch": False,
         "ready_for_run": False,
     }
+
+
+def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system_text = messages[0]["content"]
+        if "SourceActionPlanner" in system_text:
+            return {"reply": json.dumps({
+                "actions": [],
+                "user_visible_summary": "",
+                "confidence": 0.95,
+                "reason": "no source action",
+            }, ensure_ascii=False), "error": ""}
+        if "TurnGateDecision JSON" in system_text:
+            return {"reply": json.dumps({
+                "turn_type": "contract_update",
+                "contract_action": "update_contract",
+                "contract_update_allowed": True,
+                "need_discovery_allowed": False,
+                "save_draft_allowed": True,
+                "user_intent_summary": "用户补充了数值成功标准。",
+                "evidence_from_current_turn": ["我要提升5%"],
+                "evidence_from_context": ["PatchCore", "MVTec AD", "image-level AUROC"],
+                "confidence": 0.93,
+                "reason": "research contract update",
+                "next_reply_instruction": "更新成功标准。",
+            }, ensure_ascii=False), "error": ""}
+        if "Need Discovery" in system_text:
+            return {"reply": json.dumps(_need_spec_payload(
+                baseline="PatchCore",
+                dataset="MVTec AD",
+                metrics=["image_level_auroc"],
+            ), ensure_ascii=False), "error": ""}
+        raise AssertionError(f"unexpected LLM call: {system_text[:80]}")
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_reported_conversation"
+    run_dir.mkdir()
+    transcript_tail = [
+        {"role": "user", "content": "我想改进异常检测模型"},
+        {"role": "assistant", "content": "请补充具体研究设定。"},
+        {"role": "user", "content": "啾咪呢"},
+        {"role": "assistant", "content": "可以聊聊，研究任务仍会保留。"},
+        {
+            "role": "user",
+            "content": (
+                "我想以 PatchCore 为 baseline，在 MVTec AD 数据集上提升 image-level AUROC。"
+                "保持测试集、指标定义和数据划分不变，代码修改需要逐步确认。"
+            ),
+        },
+        {"role": "assistant", "content": "是否有具体提升目标？"},
+    ]
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="我要提升5%",
+        transcript_tail=transcript_tail,
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    persisted = load_contract_draft(run_dir)
+    draft_state = load_research_draft_state(run_dir)
+    assert result.reply_kind == "intent_contract_confirmation"
+    assert persisted is not None
+    assert persisted.ready_for_plan is True
+    assert "5%" in (persisted.success_criteria or "")
+    assert "未指定绝对百分点或相对比例" in (persisted.success_criteria or "")
+    assert draft_state["confirmation"]["status"] == "pending"
+    assert "确认弹窗" in result.reply
+    assert "HF-2" not in result.reply
+    assert "plan_only" not in result.reply

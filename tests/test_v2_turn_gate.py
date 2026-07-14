@@ -196,3 +196,45 @@ def test_turn_gate_repairs_missing_required_field_once(monkeypatch):
     assert decision.contract_update_allowed is True
     assert len(captured_system_prompts) == 2
     assert "Repair one TurnGateDecision response" in captured_system_prompts[1]
+
+
+def test_update_contract_action_normalizes_inconsistent_model_flags(monkeypatch):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps({
+            "turn_type": "contract_update",
+            "contract_action": "update_contract",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": False,
+            "save_draft_allowed": True,
+            "user_intent_summary": "用户补充了数值成功标准。",
+            "evidence_from_current_turn": ["我要提升5%"],
+            "evidence_from_context": ["PatchCore", "MVTec AD", "image-level AUROC"],
+            "confidence": 0.93,
+            "reason": "研究合同更新。",
+            "next_reply_instruction": "更新成功标准。",
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    decision = decide_turn_gate_with_llm(
+        user_input="我要提升5%",
+        transcript_tail=[
+            {
+                "role": "user",
+                "content": (
+                    "我想以 PatchCore 为 baseline，在 MVTec AD 数据集上提升 image-level AUROC。"
+                    "保持测试集、指标定义和数据划分不变，代码修改需要逐步确认。"
+                ),
+            },
+        ],
+        existing_contract_draft=None,
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert decision.turn_type == "contract_update"
+    assert decision.contract_action == "update_contract"
+    assert decision.contract_update_allowed is True

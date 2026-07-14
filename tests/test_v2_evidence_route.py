@@ -758,7 +758,7 @@ def test_reply_fallback_mentions_pending_jobs():
 
     assert "paper_parse_mineru" in reply
     assert "queued" in reply
-    assert "不能声称已经读完 PDF" in reply
+    assert "不会声称已经读完相应资料" in reply
 
 
 def test_reply_fallback_mentions_unusable_parse():
@@ -775,8 +775,8 @@ def test_reply_fallback_mentions_unusable_parse():
         "你看不到解析结果吗",
     )
 
-    assert "解析不可用 source" in reply
-    assert "不能从中提取论文方法" in reply
+    assert "暂时无法读取：paper.pdf" in reply
+    assert "不能据此提取论文方法" in reply
 
 
 def test_embedded_worker_enabled_can_be_disabled(monkeypatch):

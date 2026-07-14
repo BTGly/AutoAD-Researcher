@@ -414,34 +414,34 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
     """Render a compact confirmation text without method-design pressure."""
 
     lines = [
-        "我整理到的研究意图合同如下：",
-        f"- task domain：{contract.task_domain or '待确认'}",
+        "我整理到的研究设定如下：",
+        f"- 研究领域：{contract.task_domain or '待确认'}",
         f"- 研究目标：{contract.research_goal or '待确认'}",
-        f"- baseline：{contract.baseline or '待确认'}",
-        f"- baseline repo：{contract.baseline_repo or '未提供，可后续由 repo analyzer 补'}",
-        f"- baseline commit：{contract.baseline_commit or '未提供'}",
-        f"- baseline entrypoint：{contract.baseline_entrypoint or '未提供'}",
-        f"- baseline config：{contract.baseline_config or '未提供'}",
-        f"- dataset：{contract.dataset or '待确认'}",
-        f"- primary metrics：{', '.join(contract.primary_metrics) if contract.primary_metrics else '待确认'}",
-        f"- secondary metrics：{', '.join(contract.secondary_metrics) if contract.secondary_metrics else '未指定'}",
-        f"- metric priority：{contract.metric_priority or '未指定'}",
-        f"- success criteria：{contract.success_criteria or '待确认'}",
-        f"- execution mode：{contract.execution_mode}",
-        f"- evaluation protocol：{contract.evaluation_protocol or '可后续由 repo/实验 agents 补全'}",
-        f"- compute environment：{contract.compute_environment or '可后续由环境检测补全'}",
-        f"- risk preference：{contract.risk_preference or '未指定'}",
-        "- allowed boundary：" + ", ".join(contract.allowed_change_scope),
-        "- forbidden boundary：" + ", ".join(contract.forbidden_change_scope),
+        f"- 基线方法：{contract.baseline or '待确认'}",
+        f"- 基线仓库：{contract.baseline_repo or '未提供，可后续通过仓库分析补全'}",
+        f"- 基线提交：{contract.baseline_commit or '未提供'}",
+        f"- 基线入口：{contract.baseline_entrypoint or '未提供'}",
+        f"- 基线配置：{contract.baseline_config or '未提供'}",
+        f"- 数据集：{contract.dataset or '待确认'}",
+        f"- 主要指标：{', '.join(contract.primary_metrics) if contract.primary_metrics else '待确认'}",
+        f"- 次要指标：{', '.join(contract.secondary_metrics) if contract.secondary_metrics else '未指定'}",
+        f"- 指标优先级：{contract.metric_priority or '未指定'}",
+        f"- 成功标准：{contract.success_criteria or '待确认'}",
+        f"- 执行方式：{_format_execution_mode_for_user(contract.execution_mode)}",
+        f"- 评估协议：{contract.evaluation_protocol or '可后续通过仓库与实验规划补全'}",
+        f"- 计算环境：{contract.compute_environment or '可后续通过环境检测补全'}",
+        f"- 风险偏好：{contract.risk_preference or '未指定'}",
+        "- 允许调整范围：" + ", ".join(contract.allowed_change_scope),
+        "- 禁止调整范围：" + ", ".join(contract.forbidden_change_scope),
     ]
     if contract.user_improvement_hints:
         lines.append("- 你的改进想法 hint：" + "；".join(contract.user_improvement_hints))
     else:
-        lines.append("- 改进想法 hint：未提供；这不阻塞，后续 experiment agents 会自动探索。")
+        lines.append("- 改进想法：未提供；这不阻塞，后续规划阶段会自动探索。")
     if contract.user_target_module_hints:
         lines.append("- 目标模块 hint：" + "；".join(contract.user_target_module_hints))
     else:
-        lines.append("- 目标模块 hint：未提供；这不阻塞，后续 repo/experiment agents 会定位。")
+        lines.append("- 目标模块：未提供；这不阻塞，后续资料分析与实验规划阶段会定位。")
     if contract.preferred_method_hints:
         lines.append("- 偏好方法 hint：" + "；".join(contract.preferred_method_hints))
     else:
@@ -452,9 +452,17 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
     else:
         lines.append(
             "如果以上正确，请在确认弹窗中点击“确认合同”。确认后会保存合同并创建实验准备任务；"
-            "不会修改代码、创建 worktree、运行 baseline 或占用 GPU。"
+            "不会修改代码、创建代码工作目录、运行基线实验或占用 GPU。"
         )
     return "\n".join(lines)
+
+
+def _format_execution_mode_for_user(execution_mode: str) -> str:
+    return {
+        "plan_only": "仅规划，不自动修改代码或运行实验",
+        "approve_each_step": "每一步代码修改或实验执行都需要确认",
+        "agent_assisted_after_approval": "确认研究设定后可提出后续操作，实际执行仍需审批",
+    }.get(execution_mode, "尚未确认")
 
 
 def _append_need_discovery_decided_event(run_dir: Path, spec: RequiredNeedSpec) -> None:

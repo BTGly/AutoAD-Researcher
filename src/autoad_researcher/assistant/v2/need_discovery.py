@@ -317,12 +317,15 @@ def _recover_directional_plan_success_criteria(spec: RequiredNeedSpec, user_text
     if not user_supported_value:
         return
     for need in spec.needs:
-        if need.name == "success_criteria" and _is_empty_need_value(need.current_value):
+        if need.name != "success_criteria":
+            continue
+        numeric_target = _numeric_improvement_criteria_from_text(user_text)
+        if numeric_target or _is_empty_need_value(need.current_value):
             need.current_value = user_supported_value
             need.source = "user"
             need.confidence = max(need.confidence, 0.9)
             need.question_to_user = None
-            return
+        return
 
 
 def _build_need_discovery_messages(
@@ -605,6 +608,9 @@ def _dataset_from_text(text: str) -> str | None:
 
 
 def _success_criteria_from_text(text: str) -> str | None:
+    numeric_target = _numeric_improvement_criteria_from_text(text)
+    if numeric_target:
+        return numeric_target
     if "比" in text and "patchcore" in text.lower() and ("提升" in text or "高于" in text or "超过" in text):
         return "improve selected AUROC metrics over the PatchCore baseline under the same evaluation protocol"
     if "比原始" in text and "提升" in text:
@@ -614,6 +620,20 @@ def _success_criteria_from_text(text: str) -> str | None:
     if "复现跑通" in text or ("复现" in text and "跑通" in text):
         return "baseline or target method runs reproducibly"
     return None
+
+
+def _numeric_improvement_criteria_from_text(text: str) -> str | None:
+    match = re.search(
+        r"(?:提升|提高|增加)[^\d%％]{0,16}([+-]?\d+(?:\.\d+)?)\s*([%％])",
+        text,
+    )
+    if match is None:
+        return None
+    target = f"{match.group(1)}%"
+    return (
+        f"在相同评估协议下将选定指标提升 {target}"
+        "（按用户原始表述，未指定绝对百分点或相对比例）"
+    )
 
 
 def _execution_mode_from_text(text: str) -> str:

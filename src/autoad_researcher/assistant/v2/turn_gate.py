@@ -324,6 +324,13 @@ def _build_turn_gate_messages(
 
 
 def _validate_turn_gate_decision(decision: TurnGateDecision) -> TurnGateDecision:
+    if decision.contract_action == "update_contract":
+        return decision.model_copy(update={
+            "turn_type": "contract_update",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": True,
+            "save_draft_allowed": True,
+        })
     if decision.contract_action == "answer_without_contract_update":
         return decision.model_copy(update={
             "contract_update_allowed": False,
