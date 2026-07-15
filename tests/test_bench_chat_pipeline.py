@@ -20,12 +20,13 @@ def test_chat_benchmark_corpus_has_twenty_unique_valid_cases():
         Path(__file__).parents[1] / "configs" / "benchmarks" / "chat_pipeline_cases_v1.json"
     )
 
-    assert corpus.schema_version == 1
+    assert corpus.schema_version == 2
     assert len(corpus.cases) == 20
     assert len({case.case_id for case in corpus.cases}) == 20
     assert any(case.attachments for case in corpus.cases)
     assert any(not case.expected_router for case in corpus.cases)
     assert any(case.transcript_tail for case in corpus.cases)
+    assert all(case.expected_turn_type for case in corpus.cases)
 
 
 def test_chat_benchmark_summary_observes_calls_without_global_call_cap():
@@ -48,6 +49,16 @@ def test_chat_benchmark_summary_observes_calls_without_global_call_cap():
             {"call_site": "reply_planner", "queue_wait_ms": 0.1, "fallback_reason": ""},
             {"call_site": "future_user_selected_tool", "queue_wait_ms": 0.0, "fallback_reason": ""},
         ],
+        events=[{
+            "type": "planner.conversation_route.decided",
+            "payload": {
+                "turn_type": "ordinary_chat",
+                "contract_action": "answer_without_contract_update",
+                "confirmation_action_proposal": "none",
+                "task_profile_proposal": "general_research",
+                "action_types": [],
+            },
+        }],
     )
     report = MODULE.summarize_run([result])
 
@@ -55,8 +66,52 @@ def test_chat_benchmark_summary_observes_calls_without_global_call_cap():
     assert result["router_call_count"] == 1
     assert result["legacy_semantic_planner_calls"] == 0
     assert report["observed_model_call_count"] == 3
-    assert report["route_first_success_count"] == 1
+    assert result["router_first_schema_topology_success"] is True
+    assert result["semantic_oracle_success"] is True
+    assert report["route_first_schema_topology_success_count"] == 1
+    assert report["semantic_oracle_success_count"] == 1
     assert "model_call_limit" not in report
+
+
+def test_schema_valid_route_can_fail_the_semantic_oracle():
+    corpus = MODULE.load_corpus(
+        Path(__file__).parents[1] / "configs" / "benchmarks" / "chat_pipeline_cases_v1.json"
+    )
+    case = next(case for case in corpus.cases if case.case_id == "ordinary_chat")
+
+    result = MODULE.summarize_case(
+        case=case,
+        status_code=200,
+        elapsed_ms=100,
+        first_progress_ms=1,
+        traces=[{
+            "call_site": "conversation_router",
+            "schema_validation": "ok",
+            "queue_wait_ms": 0,
+        }],
+        events=[
+            {
+                "type": "planner.conversation_route.decided",
+                "payload": {
+                    "turn_type": "contract_update",
+                    "contract_action": "update_contract",
+                    "confirmation_action_proposal": "none",
+                    "task_profile_proposal": "empirical_model_research",
+                    "action_types": [],
+                },
+            },
+            {"type": "contract.draft.updated", "payload": {}},
+        ],
+    )
+
+    assert result["router_first_schema_topology_success"] is True
+    assert result["semantic_oracle_success"] is False
+    assert {item["field"] for item in result["semantic_mismatches"]} == {
+        "turn_type",
+        "contract_action",
+        "task_profile",
+        "contract_mutation",
+    }
 
 
 def test_live_benchmark_path_observes_progress_and_restores_global_routes(monkeypatch):
@@ -123,11 +178,23 @@ def test_live_benchmark_path_observes_progress_and_restores_global_routes(monkey
             case_id="chat",
             user_input="随便聊聊",
             expected_router=True,
+            expected_turn_type="ordinary_chat",
+            expected_contract_action="answer_without_contract_update",
+            expected_confirmation_action="none",
+            expected_task_profile="general_research",
+            expected_source_action_types=[],
+            expected_contract_mutation=False,
         ),
         MODULE.BenchmarkTurn(
             case_id="url",
             user_input="https://example.test/paper",
             expected_router=False,
+            expected_turn_type="source_intake",
+            expected_contract_action="answer_without_contract_update",
+            expected_confirmation_action="none",
+            expected_task_profile="general_research",
+            expected_source_action_types=["register_webpage"],
+            expected_contract_mutation=False,
         ),
     ])
 
@@ -141,7 +208,8 @@ def test_live_benchmark_path_observes_progress_and_restores_global_routes(monkey
 
     assert report["case_count"] == 2
     assert report["http_success_count"] == 2
-    assert report["route_first_success_count"] == 2
+    assert report["route_first_schema_topology_success_count"] == 2
+    assert report["semantic_oracle_success_count"] == 2
     assert report["legacy_semantic_planner_call_count"] == 0
     assert all(result["first_progress_ms"] <= 300 for result in report["results"])
     assert MODULE.chat_route.RUNS_ROOT == original_runs_root

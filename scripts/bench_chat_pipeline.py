@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run an observational live benchmark of the V2 chat pipeline.
 
-The benchmark records model-call topology and timing. It deliberately does not
-enforce a global per-turn call limit: users may choose to spend their provider
-budget on ordinary conversation or future multi-step reasoning.
+The benchmark records model-call topology, timing, and semantic-oracle results.
+It deliberately does not enforce a global per-turn call limit or a live-model
+CI threshold: users may choose to spend their provider budget on ordinary
+conversation or future multi-step reasoning.
 """
 
 from __future__ import annotations
@@ -15,12 +16,14 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.v2.event_service import load_events_since
 from autoad_researcher.assistant.v2.llm_trace_service import TRACE_DIR, TRACE_INDEX
+from autoad_researcher.assistant.v2.source_action_planner import SourceActionType
 from autoad_researcher.server.main import app
 from autoad_researcher.server.routes import chat as chat_route
 
@@ -36,12 +39,38 @@ class BenchmarkTurn(BaseModel):
     transcript_tail: list[dict[str, Any]] = Field(default_factory=list)
     attachments: list[str] = Field(default_factory=list)
     expected_router: bool
+    expected_turn_type: Literal[
+        "contract_update",
+        "contract_confirmation",
+        "contract_question",
+        "source_intake",
+        "ordinary_chat",
+        "joke",
+        "frustration",
+        "identity_question",
+        "ambiguous",
+    ]
+    expected_contract_action: Literal[
+        "update_contract",
+        "confirm_contract",
+        "answer_without_contract_update",
+        "ask_clarifying_question",
+    ]
+    expected_confirmation_action: Literal["none", "suspend", "resume", "supersede"]
+    expected_task_profile: Literal[
+        "empirical_model_research",
+        "systems_optimization",
+        "code_diagnosis",
+        "general_research",
+    ]
+    expected_source_action_types: list[SourceActionType]
+    expected_contract_mutation: bool
 
 
 class BenchmarkCorpus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = 1
+    schema_version: Literal[2] = 2
     cases: list[BenchmarkTurn] = Field(min_length=1)
 
 
@@ -72,6 +101,7 @@ def summarize_case(
     elapsed_ms: float,
     first_progress_ms: float | None,
     traces: list[dict[str, Any]],
+    events: list[dict[str, Any]],
 ) -> dict[str, Any]:
     router_traces = [trace for trace in traces if trace.get("call_site") == "conversation_router"]
     legacy_traces = [
@@ -81,6 +111,37 @@ def summarize_case(
     ]
     first_router = router_traces[0] if router_traces else None
     schema_status = first_router.get("schema_validation") if first_router else None
+    route_events = [
+        event for event in events if event.get("type") == "planner.conversation_route.decided"
+    ]
+    route_payload = route_events[0].get("payload", {}) if len(route_events) == 1 else {}
+    semantic_actual = {
+        "expected_turn_type": route_payload.get("turn_type"),
+        "expected_contract_action": route_payload.get("contract_action"),
+        "expected_confirmation_action": route_payload.get("confirmation_action_proposal"),
+        "expected_task_profile": route_payload.get("task_profile_proposal"),
+        "expected_source_action_types": sorted(set(route_payload.get("action_types") or [])),
+        "expected_contract_mutation": any(
+            event.get("type") == "contract.draft.updated" for event in events
+        ),
+    }
+    semantic_expected = {
+        "expected_turn_type": case.expected_turn_type,
+        "expected_contract_action": case.expected_contract_action,
+        "expected_confirmation_action": case.expected_confirmation_action,
+        "expected_task_profile": case.expected_task_profile,
+        "expected_source_action_types": sorted(set(case.expected_source_action_types)),
+        "expected_contract_mutation": case.expected_contract_mutation,
+    }
+    semantic_mismatches = [
+        {
+            "field": field.removeprefix("expected_"),
+            "expected": expected,
+            "actual": semantic_actual[field],
+        }
+        for field, expected in semantic_expected.items()
+        if semantic_actual[field] != expected
+    ]
     return {
         "case_id": case.case_id,
         "status_code": status_code,
@@ -97,29 +158,42 @@ def summarize_case(
         "router_expected": case.expected_router,
         "router_call_count": len(router_traces),
         "router_first_schema_status": schema_status,
-        "router_first_schema_success": (
+        "router_first_schema_topology_success": (
             len(router_traces) == 1 and schema_status in {"ok", "recovered"}
             if case.expected_router else len(router_traces) == 0
         ),
+        "route_event_count": len(route_events),
+        "semantic_oracle_success": len(route_events) == 1 and not semantic_mismatches,
+        "semantic_mismatches": semantic_mismatches,
         "legacy_semantic_planner_calls": len(legacy_traces),
     }
 
 
 def summarize_run(results: list[dict[str, Any]]) -> dict[str, Any]:
     router_cases = [result for result in results if result["router_expected"]]
-    router_successes = sum(1 for result in router_cases if result["router_first_schema_success"])
-    route_successes = sum(1 for result in results if result["router_first_schema_success"])
+    router_successes = sum(
+        1 for result in router_cases if result["router_first_schema_topology_success"]
+    )
+    route_successes = sum(
+        1 for result in results if result["router_first_schema_topology_success"]
+    )
+    semantic_successes = sum(1 for result in results if result["semantic_oracle_success"])
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "case_count": len(results),
         "http_success_count": sum(1 for result in results if result["status_code"] == 200),
         "router_case_count": len(router_cases),
-        "router_first_schema_success_count": router_successes,
-        "router_first_schema_success_rate": (
+        "router_first_schema_topology_success_count": router_successes,
+        "router_first_schema_topology_success_rate": (
             router_successes / len(router_cases) if router_cases else None
         ),
-        "route_first_success_count": route_successes,
-        "route_first_success_rate": route_successes / len(results) if results else None,
+        "route_first_schema_topology_success_count": route_successes,
+        "route_first_schema_topology_success_rate": (
+            route_successes / len(results) if results else None
+        ),
+        "semantic_oracle_case_count": len(results),
+        "semantic_oracle_success_count": semantic_successes,
+        "semantic_oracle_success_rate": semantic_successes / len(results) if results else None,
         "legacy_semantic_planner_call_count": sum(
             result["legacy_semantic_planner_calls"] for result in results
         ),
@@ -187,6 +261,7 @@ async def run_live_benchmark(
                                 if first_progress is not None else None
                             ),
                             traces=load_trace_records(run_dir),
+                            events=load_events_since(run_dir),
                         )
 
                 results = await asyncio.gather(*[
@@ -216,6 +291,7 @@ def main() -> int:
             "schema_version": corpus.schema_version,
             "case_count": len(corpus.cases),
             "router_case_count": sum(1 for case in corpus.cases if case.expected_router),
+            "semantic_oracle_case_count": len(corpus.cases),
         }, ensure_ascii=False, sort_keys=True))
         return 0
 
