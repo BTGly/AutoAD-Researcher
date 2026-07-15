@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_intent_summary import load_research_intent_summary
@@ -194,7 +196,19 @@ def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monk
     assert len(calls) == 1
 
 
-def test_orchestrator_queues_explicit_repository_target_and_calls_dialogue_once(monkeypatch, tmp_path: Path):
+@pytest.mark.parametrize("target_expression", [
+    "level=2、problem_id=40",
+    "level 2 的第 40 题",
+    "L2 / P40",
+    "二级问题 40",
+    "level: 2, problem: 40",
+    "KernelBench 第二层第 40 个算子",
+])
+def test_orchestrator_queues_typed_repository_target_from_natural_expression(
+    monkeypatch,
+    tmp_path: Path,
+    target_expression: str,
+):
     run_dir = tmp_path / "run_target"
     run_dir.mkdir()
     calls = 0
@@ -208,10 +222,14 @@ def test_orchestrator_queues_explicit_repository_target_and_calls_dialogue_once(
                     "reply_to_user": "我会先读取指定任务文件，再基于该文件内容分析。",
                     "summary": {
                         "goal": "分析 KernelBench 指定任务",
-                        "confirmed_facts": ["用户指定 level=2、problem_id=40"],
+                        "confirmed_facts": [f"用户指定 {target_expression}"],
                         "inferred_facts": [],
                         "unresolved_conflicts": [],
                         "blocking_question": None,
+                    },
+                    "target_spec": {
+                        "benchmark_family": "kernelbench",
+                        "selectors": {"level": 2, "problem_id": 40},
                     },
                 },
                 ensure_ascii=False,
@@ -225,7 +243,7 @@ def test_orchestrator_queues_explicit_repository_target_and_calls_dialogue_once(
         run_dir,
         user_input=(
             "https://github.com/ScalingIntelligence/KernelBench "
-            "请分析 level=2、problem_id=40，只做 plan_only"
+            f"请分析 {target_expression}，只做 plan_only"
         ),
         api_key="sk-test",
         provider_url="https://example.test",
@@ -242,6 +260,37 @@ def test_orchestrator_queues_explicit_repository_target_and_calls_dialogue_once(
     assert target_job["payload"]["depends_on"] == result.created_jobs[0]["job_id"]
     assert not (run_dir / "code").exists()
     assert not (run_dir / "experiments" / "sessions").exists()
+
+
+def test_exact_selector_text_without_typed_target_does_not_queue_analysis(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_no_typed_target"
+    run_dir.mkdir()
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {
+            "reply": json.dumps({
+                "reply_to_user": "还不能确定目标。",
+                "summary": {
+                    "goal": "分析 KernelBench",
+                    "confirmed_facts": ["用户写了 level=2、problem_id=40"],
+                    "inferred_facts": [],
+                    "unresolved_conflicts": [],
+                    "blocking_question": None,
+                },
+                "target_spec": None,
+            }, ensure_ascii=False),
+            "error": "",
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="https://github.com/ScalingIntelligence/KernelBench level=2 problem_id=40",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
 
 
 def test_explicit_mirror_search_does_not_auto_create_web_search_without_provider(tmp_path: Path):

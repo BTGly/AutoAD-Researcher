@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
 from typing import Any
 
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
@@ -13,6 +12,7 @@ from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     ResearchDialogueAgent,
     SourceInstruction,
+    TargetSpec,
 )
 from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
@@ -72,15 +72,6 @@ class ResearchOrchestratorV2:
                 user_input,
                 source_plan,
             )
-        target_job = _queue_explicit_repository_target(
-            run_dir,
-            user_input,
-            created_sources=created_sources,
-            created_jobs=created_jobs,
-        )
-        if target_job is not None:
-            created_jobs.append(target_job)
-
         context = build_llm_context(run_dir, transcript_tail=transcript_tail)
         context["registered_sources"] = _registered_source_context(run_dir)
         context["current_turn_material_actions"] = {
@@ -99,6 +90,14 @@ class ResearchOrchestratorV2:
         )
         if dialogue.should_persist:
             save_research_intent_summary(run_dir, dialogue.summary)
+        target_job = _queue_repository_target_spec(
+            run_dir,
+            dialogue.target_spec,
+            created_sources=created_sources,
+            created_jobs=created_jobs,
+        )
+        if target_job is not None:
+            created_jobs.append(target_job)
         source_action = _validate_source_action(run_dir, dialogue.source_action)
         experiment_task = None
         if (
@@ -239,30 +238,32 @@ def _source_registry_sources(run_dir: Path) -> list[dict[str, Any]]:
     return [item for item in sources if isinstance(item, dict)]
 
 
-def _queue_explicit_repository_target(
+def _queue_repository_target_spec(
     run_dir: Path,
-    user_input: str,
+    target_spec: TargetSpec | None,
     *,
     created_sources: list[dict[str, Any]],
     created_jobs: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    target = _parse_explicit_repository_target(user_input)
-    if target is None:
+    if target_spec is None:
         return None
+    target = target_spec.selectors.model_dump(mode="json")
     repository_sources = [
         source
         for source in created_sources
         if source.get("kind") in {"github_repo", "local_repo"}
     ]
+    if len(repository_sources) > 1:
+        return None
     if not repository_sources:
         repository_sources = [
             source
             for source in _source_registry_sources(run_dir)
             if source.get("kind") in {"github_repo", "local_repo"}
         ]
-    if not repository_sources:
+    if len(repository_sources) != 1:
         return None
-    source = max(repository_sources, key=lambda item: str(item.get("created_at") or ""))
+    source = repository_sources[0]
     source_id = str(source.get("source_id") or "")
     if not source_id:
         return None
@@ -291,14 +292,3 @@ def _queue_explicit_repository_target(
         evidence_role="repo_acquired",
         payload=payload,
     )
-
-
-def _parse_explicit_repository_target(user_input: str) -> dict[str, int] | None:
-    level_match = re.search(r"(?<![A-Za-z0-9_])level\s*=\s*([0-9]+)", user_input)
-    problem_match = re.search(r"(?<![A-Za-z0-9_])problem_id\s*=\s*([0-9]+)", user_input)
-    if level_match is None or problem_match is None:
-        return None
-    return {
-        "level": int(level_match.group(1)),
-        "problem_id": int(problem_match.group(1)),
-    }

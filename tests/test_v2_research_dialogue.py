@@ -11,6 +11,7 @@ from autoad_researcher.assistant.v2.research_dialogue_agent import (
     ResearchDialogueAgent,
     ResearchDialogueResponse,
     SourceInstruction,
+    TargetSpec,
     _parse_json_object,
 )
 from autoad_researcher.assistant.v2.research_intent_summary import (
@@ -109,6 +110,8 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert "先不要删除" in system
     assert 'task_action={"action":"prepare_experiment_task"}' in system
     assert "只准备一个 plan_only" in system
+    assert "不要用正则格式要求用户重述" in system
+    assert '"benchmark_family":"kernelbench"' in system
     assert response.should_persist is True
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
 
@@ -134,6 +137,25 @@ def test_source_removal_instruction_is_typed_and_forbids_extra_fields():
         SourceInstruction.model_validate({
             "action": "remove_latest",
             "source_id": "src_wrong",
+        })
+
+
+def test_target_spec_reuses_strict_repository_adapter_schema():
+    target = TargetSpec.model_validate({
+        "benchmark_family": "kernelbench",
+        "selectors": {"level": 2, "problem_id": 40},
+    })
+
+    assert target.selectors.model_dump() == {"level": 2, "problem_id": 40}
+    with pytest.raises(ValidationError):
+        TargetSpec.model_validate({
+            "benchmark_family": "kernelbench",
+            "selectors": {"level": 2, "problem_id": 40, "variant": 1},
+        })
+    with pytest.raises(ValidationError):
+        TargetSpec.model_validate({
+            "benchmark_family": "kernelbench",
+            "selectors": {"level": -1, "problem_id": 40},
         })
 
 

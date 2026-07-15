@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
 from autoad_researcher.assistant.v2.task_bridge import TaskInstruction
+from autoad_researcher.repository_intelligence.workload_target import RepositoryWorkloadTarget
 
 
 class SourceInstruction(BaseModel):
@@ -24,6 +25,15 @@ class SourceInstruction(BaseModel):
     reason: str = ""
 
 
+class TargetSpec(BaseModel):
+    """Semantic benchmark selector validated by a deterministic adapter."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    benchmark_family: Literal["kernelbench"]
+    selectors: RepositoryWorkloadTarget
+
+
 class ResearchDialogueResponse(BaseModel):
     """Schema-bound result of one research dialogue turn."""
 
@@ -33,6 +43,7 @@ class ResearchDialogueResponse(BaseModel):
     summary: ResearchIntentSummary
     source_action: SourceInstruction | None = None
     task_action: TaskInstruction | None = None
+    target_spec: TargetSpec | None = None
     _should_persist: bool = PrivateAttr(default=False)
 
     @property
@@ -158,8 +169,13 @@ Pipeline 任务动作：
 - task_action 只准备一个 plan_only 的待确认 Pipeline 输入；不得声称已经运行 Pipeline、修改代码或执行实验
 - 普通研究讨论、询问可行性、请求完善方案时 task_action 必须为 null；source_action 与 task_action 不得同时非 null
 
+仓库目标选择：
+- 当用户以任意自然表达明确指定 KernelBench 的层级和题号时，输出 target_spec={{"benchmark_family":"kernelbench","selectors":{{"level":整数,"problem_id":整数}}}}
+- 你只负责把用户表达转换为 typed selectors，不得猜测缺失值，也不得声称已经找到或读取目标文件；系统会在仓库 Adapter 中验证
+- 用户没有同时明确层级和题号时 target_spec 必须为 null；不要用正则格式要求用户重述
+
 只输出 JSON object，不要输出 Markdown code fence。输出结构：
-{{"reply_to_user":"...","summary":{{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{{"statement":"...","basis":"..."}}],"unresolved_conflicts":[{{"statement":"...","basis":"..."}}],"blocking_question":null}},"source_action":null,"task_action":null}}"""
+{{"reply_to_user":"...","summary":{{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{{"statement":"...","basis":"..."}}],"unresolved_conflicts":[{{"statement":"...","basis":"..."}}],"blocking_question":null}},"source_action":null,"task_action":null,"target_spec":null}}"""
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_input},
