@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/runs", tags=["draft"])
 
 class ContractConfirmationDecision(BaseModel):
     confirmation_id: str = Field(min_length=1)
+    draft_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     decision: Literal["approved", "rejected"]
 
 
@@ -62,6 +63,7 @@ def _decide_contract_confirmation_active(run_id: str, request: ContractConfirmat
         result = decide_contract_confirmation_saga(
             run_dir,
             confirmation_id=request.confirmation_id,
+            draft_sha256=request.draft_sha256,
             decision=request.decision,
         )
     except ConfirmationConflict as exc:

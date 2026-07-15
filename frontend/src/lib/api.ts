@@ -182,12 +182,17 @@ export async function getDraft(runId: string): Promise<any> {
 export async function decideContractConfirmation(
   runId: string,
   confirmationId: string,
+  draftSha256: string,
   decision: 'approved' | 'rejected',
 ): Promise<{ confirmation_id: string; status: 'approved' | 'rejected'; message: string }> {
   const res = await fetch(`/api/runs/${runId}/draft/confirmation`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ confirmation_id: confirmationId, decision }),
+    body: JSON.stringify({
+      confirmation_id: confirmationId,
+      draft_sha256: draftSha256,
+      decision,
+    }),
   });
   if (!res.ok) throw new Error(`Contract confirmation error: ${res.status}`);
   return res.json();

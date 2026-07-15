@@ -224,6 +224,7 @@ def decide_contract_confirmation(
     run_dir: Path,
     *,
     confirmation_id: str,
+    draft_sha256: str,
     decision: Literal["approved", "rejected"],
 ) -> dict[str, Any]:
     current = _utcnow()
@@ -231,8 +232,14 @@ def decide_contract_confirmation(
         projection = _recover_projection_unlocked(run_dir, uow, now=current)
         if projection is None:
             raise ConfirmationConflict("confirmation_state_conflict", "no pending contract confirmation")
-        if projection.confirmation_id != confirmation_id:
+        if (
+            projection.confirmation_id != confirmation_id
+            or projection.draft_sha256 != draft_sha256
+        ):
             raise ConfirmationConflict("confirmation_stale", "contract confirmation is stale")
+        draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
+        if confirmation_draft_sha256(draft) != projection.draft_sha256:
+            raise ConfirmationConflict("confirmation_stale", "contract confirmation draft hash is stale")
         if projection.status != "pending":
             if projection.status not in {"confirmed", "rejected"}:
                 raise ConfirmationConflict(
@@ -249,10 +256,6 @@ def decide_contract_confirmation(
 
         contract_hash: str | None = None
         if decision == "approved":
-            draft = _load_contract_file_strict(run_dir / CONTRACT_DRAFT_FILE)
-            draft_hash = confirmation_draft_sha256(draft)
-            if draft_hash != projection.draft_sha256:
-                raise ConfirmationConflict("confirmation_stale", "contract confirmation draft hash is stale")
             missing = missing_contract_planning_fields(draft)
             if missing:
                 raise ConfirmationConflict(
@@ -309,26 +312,13 @@ def resolve_contract_confirmation(
     run_dir: Path,
     *,
     confirmation_id: str,
+    draft_sha256: str,
     decision: Literal["approved", "rejected"],
 ) -> dict[str, Any]:
     return decide_contract_confirmation(
         run_dir,
         confirmation_id=confirmation_id,
-        decision=decision,
-    )
-
-
-def resolve_pending_contract_confirmation(
-    run_dir: Path,
-    *,
-    decision: Literal["approved", "rejected"],
-) -> dict[str, Any] | None:
-    pending = load_pending_contract_confirmation(run_dir)
-    if pending is None:
-        return None
-    return decide_contract_confirmation(
-        run_dir,
-        confirmation_id=str(pending["confirmation_id"]),
+        draft_sha256=draft_sha256,
         decision=decision,
     )
 

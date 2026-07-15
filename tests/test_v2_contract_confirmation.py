@@ -121,6 +121,7 @@ def test_contract_confirmation_state_is_persisted_deduplicated_and_replayable(tm
     resolved = resolve_contract_confirmation(
         run_dir,
         confirmation_id=changed["confirmation_id"],
+        draft_sha256=changed["draft_hash"],
         decision="rejected",
     )
 
@@ -262,6 +263,7 @@ def test_confirmed_contract_rejects_lifecycle_changes(tmp_path: Path):
     resolve_contract_confirmation(
         run_dir,
         confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
         decision="approved",
     )
 
@@ -287,10 +289,25 @@ async def test_confirmation_route_approves_current_ready_draft(tmp_path: Path, m
     save_contract_draft(run_dir, contract)
     pending = request_contract_confirmation(run_dir, contract)
 
+    with pytest.raises(draft_route.HTTPException) as exc_info:
+        await draft_route.decide_contract_confirmation(
+            run_dir.name,
+            draft_route.ContractConfirmationDecision(
+                confirmation_id=pending["confirmation_id"],
+                draft_sha256="0" * 64,
+                decision="approved",
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "confirmation_stale"
+    assert not (run_dir / CONTRACT_FILE).exists()
+
     result = await draft_route.decide_contract_confirmation(
         run_dir.name,
         draft_route.ContractConfirmationDecision(
             confirmation_id=pending["confirmation_id"],
+            draft_sha256=pending["draft_hash"],
             decision="approved",
         ),
     )
@@ -312,6 +329,7 @@ async def test_confirmation_route_approves_current_ready_draft(tmp_path: Path, m
         run_dir.name,
         draft_route.ContractConfirmationDecision(
             confirmation_id=pending["confirmation_id"],
+            draft_sha256=pending["draft_hash"],
             decision="approved",
         ),
     )
@@ -325,13 +343,14 @@ async def test_confirmation_route_rejects_stale_confirmation(tmp_path: Path, mon
     run_dir.mkdir()
     contract = _ready_contract(run_dir.name)
     save_contract_draft(run_dir, contract)
-    request_contract_confirmation(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
 
     with pytest.raises(draft_route.HTTPException) as exc_info:
         await draft_route.decide_contract_confirmation(
             run_dir.name,
             draft_route.ContractConfirmationDecision(
                 confirmation_id="contract_confirmation_stale",
+                draft_sha256=pending["draft_hash"],
                 decision="approved",
             ),
         )
@@ -369,6 +388,7 @@ async def test_confirmation_route_returns_structured_state_conflict_for_suspende
             run_dir.name,
             draft_route.ContractConfirmationDecision(
                 confirmation_id=pending["confirmation_id"],
+                draft_sha256=pending["draft_hash"],
                 decision="approved",
             ),
         )

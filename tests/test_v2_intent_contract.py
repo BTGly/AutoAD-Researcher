@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from autoad_researcher.assistant.v2.contract_confirmation_service import (
+    load_pending_contract_confirmation,
+    request_contract_confirmation,
+)
 from autoad_researcher.assistant.v2.intent_contract import (
     CONTRACT_DRAFT_FILE,
     CONTRACT_FILE,
@@ -25,12 +29,15 @@ from autoad_researcher.assistant.v2.job_service import (
     claim_pipeline_job,
     complete_pipeline_job,
     fail_pipeline_job,
+    load_pipeline_jobs,
 )
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
 from autoad_researcher.server.routes.chat import _assistant_delta_message, _assistant_done_message
 from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
+from autoad_researcher.core.control_plane.readiness import load_experiment_session
+from autoad_researcher.server.routes import draft as draft_route
 
 
 def test_research_intent_contract_defaults_do_not_require_method_or_target_module():
@@ -403,7 +410,8 @@ def test_build_contract_keeps_repo_analysis_readiness_separate(tmp_path: Path):
     assert contract.baseline_repo == "https://github.com/example/repo"
 
 
-def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Path, monkeypatch):
+@pytest.mark.asyncio
+async def test_orchestrator_text_confirmation_requires_modal_approval(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
         user_text = messages[-1]["content"]
@@ -429,6 +437,7 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
         return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    monkeypatch.setattr(draft_route, "RUNS_ROOT", str(tmp_path))
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
     transcript_tail = [
@@ -449,16 +458,35 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
     assert not (run_dir / CONTRACT_FILE).exists()
     assert "请在确认弹窗中点击“确认合同”" in result.reply
 
-    confirmed = ResearchOrchestratorV2.handle(
+    chat_confirmation = ResearchOrchestratorV2.handle(
         run_dir,
         user_input="确认",
         api_key="sk-test",
         provider_url="https://example.test",
     )
 
-    assert confirmed.reply_kind == "intent_contract_confirmed"
-    assert confirmed.intent_contract_confirmed is True
+    pending = load_pending_contract_confirmation(run_dir)
+    assert chat_confirmation.reply_kind == "intent_contract_confirmation"
+    assert chat_confirmation.intent_contract_confirmed is False
+    assert pending is not None
+    assert load_research_draft_state(run_dir)["confirmation"]["status"] == "pending"
+    assert not (run_dir / CONTRACT_FILE).exists()
+    assert load_experiment_session(run_dir) is None
+    assert not any(job["job_type"] == "experiment_prepare" for job in load_pipeline_jobs(run_dir))
+
+    approved = await draft_route.decide_contract_confirmation(
+        run_dir.name,
+        draft_route.ContractConfirmationDecision(
+            confirmation_id=pending["confirmation_id"],
+            draft_sha256=pending["draft_hash"],
+            decision="approved",
+        ),
+    )
+
+    assert approved["status"] == "approved"
     assert (run_dir / CONTRACT_FILE).is_file()
+    assert load_experiment_session(run_dir) is not None
+    assert any(job["job_type"] == "experiment_prepare" for job in load_pipeline_jobs(run_dir))
     loaded = load_confirmed_contract(run_dir)
     assert loaded is not None
     assert loaded.ready_for_plan is True
@@ -541,13 +569,63 @@ def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tm
         provider_url="https://example.test",
     )
 
-    assert result.reply_kind == "intent_contract_confirmed"
-    assert result.intent_contract_confirmed is True
+    assert result.reply_kind == "intent_contract_confirmation"
+    assert result.intent_contract_confirmed is False
     assert result.intent_contract["baseline"] == "PatchCore"
     assert result.intent_contract["dataset"] == "MVTec AD"
     assert result.intent_contract["primary_metrics"] == ["image_level_auroc"]
     assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
-    assert (run_dir / CONTRACT_FILE).is_file()
+    assert not (run_dir / CONTRACT_FILE).exists()
+    assert load_pending_contract_confirmation(run_dir) is not None
+    assert load_experiment_session(run_dir) is None
+
+
+@pytest.mark.parametrize("message", ["确认", "可以", "按这个来", "开始吧"])
+def test_chat_confirmation_phrases_only_keep_modal_pending(
+    message: str,
+    tmp_path: Path,
+    monkeypatch,
+):
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        assert "ConversationRouter" in messages[0]["content"]
+        user_text = messages[-1]["content"]
+        return {"reply": json.dumps(_turn_gate_payload(
+            turn_type="contract_confirmation",
+            contract_action="confirm_contract",
+            allowed=False,
+            evidence_from_current_turn=[user_text],
+            mutation_evidence_from_current_turn=user_text,
+        ), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / f"run_modal_only_{len(message)}_{ord(message[0])}"
+    run_dir.mkdir()
+    contract = ResearchIntentContract(
+        run_id=run_dir.name,
+        research_goal="提升 PatchCore 指标",
+        baseline="PatchCore",
+        dataset="MVTec AD",
+        primary_metrics=["image_level_auroc"],
+        success_criteria="improve image_level_auroc",
+        ready_for_plan=True,
+    )
+    save_contract_draft(run_dir, contract)
+    pending = request_contract_confirmation(run_dir, contract)
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=message,
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    active = load_pending_contract_confirmation(run_dir)
+    assert result.reply_kind == "intent_contract_confirmation"
+    assert result.intent_contract_confirmed is False
+    assert active is not None and active["confirmation_id"] == pending["confirmation_id"]
+    assert not (run_dir / CONTRACT_FILE).exists()
+    assert load_experiment_session(run_dir) is None
+    assert not any(job["job_type"] == "experiment_prepare" for job in load_pipeline_jobs(run_dir))
 
 
 def test_task_1231_turn_gate_json_failure_fails_closed_without_repair(tmp_path: Path, monkeypatch):
@@ -2370,6 +2448,7 @@ def test_orchestrator_redirects_confirmed_topic_change_to_new_task(tmp_path: Pat
     resolve_contract_confirmation(
         run_dir,
         confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
         decision="approved",
     )
 

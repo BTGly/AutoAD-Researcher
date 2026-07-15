@@ -64,6 +64,7 @@ def _approve(run_dir: Path):
     decide_contract_confirmation(
         run_dir,
         confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
         decision="approved",
     )
     session = load_experiment_session(run_dir)
@@ -191,6 +192,7 @@ def test_contract_survives_corrupt_audit_and_marks_repair_required(tmp_path: Pat
     result = decide_contract_confirmation(
         run_dir,
         confirmation_id=pending["confirmation_id"],
+        draft_sha256=pending["draft_hash"],
         decision="approved",
     )
 

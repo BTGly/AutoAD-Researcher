@@ -445,11 +445,17 @@ export default function App() {
 
   const handleContractConfirmation = useCallback(async (decision: 'approved' | 'rejected') => {
     const confirmationId = draft?.confirmation?.confirmation_id;
-    if (!runId || !confirmationId) return;
+    const draftSha256 = draft?.confirmation?.draft_hash;
+    if (!runId || !confirmationId || !draftSha256) return;
     setConfirmationBusy(true);
     setConfirmationError('');
     try {
-      const result = await decideContractConfirmation(runId, confirmationId, decision);
+      const result = await decideContractConfirmation(
+        runId,
+        confirmationId,
+        draftSha256,
+        decision,
+      );
       await refreshSidebarForRun(runId);
       addToast(result.message, decision === 'approved' ? 'success' : 'info');
     } catch {
@@ -458,7 +464,13 @@ export default function App() {
     } finally {
       setConfirmationBusy(false);
     }
-  }, [addToast, draft?.confirmation?.confirmation_id, refreshSidebarForRun, runId]);
+  }, [
+    addToast,
+    draft?.confirmation?.confirmation_id,
+    draft?.confirmation?.draft_hash,
+    refreshSidebarForRun,
+    runId,
+  ]);
 
   const handleExperimentMaterialization = useCallback(async (retry: boolean) => {
     if (!runId) return;

@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiError, deleteRun, renameRun, sendChat, uploadSource } from './api';
+import {
+  ApiError,
+  decideContractConfirmation,
+  deleteRun,
+  renameRun,
+  sendChat,
+  uploadSource,
+} from './api';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -30,6 +37,33 @@ describe('Run lifecycle requests', () => {
     )));
 
     await expect(deleteRun('run_active')).resolves.toMatchObject({ status: 'deleting' });
+  });
+
+  it('binds a contract decision to the displayed draft hash', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({
+        confirmation_id: 'contract_confirmation_1',
+        status: 'approved',
+        message: '研究任务合同已确认。',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const draftHash = 'a'.repeat(64);
+
+    await decideContractConfirmation(
+      'run_active',
+      'contract_confirmation_1',
+      draftHash,
+      'approved',
+    );
+
+    const call = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    expect(JSON.parse(String(call[1].body))).toEqual({
+      confirmation_id: 'contract_confirmation_1',
+      draft_sha256: draftHash,
+      decision: 'approved',
+    });
   });
 });
 

@@ -30,7 +30,6 @@ from autoad_researcher.assistant.v2.contract_confirmation_service import (
     load_pending_contract_confirmation,
     recover_contract_confirmation,
     request_contract_confirmation,
-    resolve_pending_contract_confirmation,
 )
 from autoad_researcher.assistant.v2.event_service import append_event, append_typed_event
 from autoad_researcher.assistant.v2.source_service import register_source_intake
@@ -352,23 +351,45 @@ class ResearchOrchestratorV2:
                 if not draft_persisted:
                     save_contract_draft(run_dir, contract)
                 projection = recover_contract_confirmation(run_dir)
-                if projection is None or projection.status != "confirmed":
-                    if load_pending_contract_confirmation(run_dir) is None:
-                        request_contract_confirmation(run_dir, contract)
-                    resolve_pending_contract_confirmation(run_dir, decision="approved")
+                if projection is not None and projection.status == "confirmed":
+                    confirmed = load_confirmed_contract(run_dir)
+                    return OrchestratorResult(
+                        reply="研究任务合同已经确认，实验准备状态保持不变。",
+                        reply_kind="intent_contract_confirmed",
+                        created_sources=created_sources,
+                        created_jobs=created_jobs,
+                        evidence_used=ctx.get("usable_evidence", []),
+                        answerability=ctx.get("answerability", {}),
+                        next_actions=_suggest_next_actions(ctx, "intent_contract_confirmed"),
+                        intent_contract=(
+                            confirmed.model_dump(mode="json")
+                            if confirmed is not None
+                            else contract.model_dump(mode="json")
+                        ),
+                        intent_contract_confirmed=True,
+                    )
+                active = load_active_contract_confirmation(run_dir)
+                if active is not None and active["status"] == "needs_clarification":
+                    apply_confirmation_action_proposal(
+                        run_dir,
+                        action="resume",
+                        confirmation_id=str(active["confirmation_id"]),
+                        draft_sha256=str(active["draft_hash"]),
+                        user_text=user_input,
+                        evidence_quote=turn_decision.mutation_evidence_from_current_turn,
+                    )
+                if load_pending_contract_confirmation(run_dir) is None:
+                    request_contract_confirmation(run_dir, contract)
                 return OrchestratorResult(
-                    reply=(
-                        "已确认 ResearchIntentContract，并写入 `research_intent_contract.json`。"
-                        "已创建实验准备任务；不会修改代码、创建 worktree、运行 baseline 或占用 GPU。"
-                    ),
-                    reply_kind="intent_contract_confirmed",
+                    reply=format_contract_for_user(contract),
+                    reply_kind="intent_contract_confirmation",
                     created_sources=created_sources,
                     created_jobs=created_jobs,
                     evidence_used=ctx.get("usable_evidence", []),
                     answerability=ctx.get("answerability", {}),
-                    next_actions=_suggest_next_actions(ctx, "intent_contract_confirmed"),
+                    next_actions=_suggest_next_actions(ctx, "intent_contract_confirmation"),
                     intent_contract=contract.model_dump(mode="json"),
-                    intent_contract_confirmed=True,
+                    intent_contract_confirmed=False,
                 )
             reply_kind, reply = plan_reply(
                 ctx,
