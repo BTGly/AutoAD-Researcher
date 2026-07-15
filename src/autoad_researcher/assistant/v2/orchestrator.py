@@ -58,6 +58,7 @@ class ResearchOrchestratorV2:
         api_key: str = "",
         provider_url: str = "",
         model: str = "",
+        temperature: float = 0.3,
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> OrchestratorResult:
         user_input = user_input.strip()
@@ -91,6 +92,7 @@ class ResearchOrchestratorV2:
             api_key=api_key,
             provider_url=provider_url,
             model=model,
+            temperature=temperature,
             on_reply_delta=on_reply_delta,
         )
         if dialogue.should_persist:

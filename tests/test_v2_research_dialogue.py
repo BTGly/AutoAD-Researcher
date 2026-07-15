@@ -87,6 +87,7 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
         captured["model"] = kwargs.get("model")
         captured["priority"] = kwargs.get("priority")
         captured["response_format_json"] = kwargs.get("response_format_json")
+        captured["temperature"] = kwargs.get("temperature")
         return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -103,12 +104,14 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
         api_key="sk-test",
         provider_url="https://example.test",
         model="configured-dialogue-model",
+        temperature=0.0,
     )
 
     assert captured["calls"] == 1
     assert captured["model"] == "configured-dialogue-model"
     assert captured["priority"] == "interactive"
     assert captured["response_format_json"] is True
+    assert captured["temperature"] == 0.0
     system = captured["messages"][0]["content"]
     assert "Propose first" in system
     assert "Don't interrogate" in system

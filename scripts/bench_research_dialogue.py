@@ -4,14 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.evidence_service import load_usable_evidence
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
@@ -33,6 +38,68 @@ MATERIAL_JOB_TYPES = {
     "repo_summarize",
     "repo_analyze",
 }
+
+
+class SemanticBudgetExceeded(RuntimeError):
+    """Raised before an LLM call that would exceed a configured run limit."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class SemanticRunBudget:
+    """Deterministic call-count and wall-time budget for one suite run."""
+
+    def __init__(self, *, judge_call_limit: int, wall_time_limit_seconds: float) -> None:
+        self.judge_call_limit = judge_call_limit
+        self.wall_time_limit_seconds = wall_time_limit_seconds
+        self.dialogue_calls = 0
+        self.judge_calls = 0
+        self.started_at = time.monotonic()
+
+    def reserve_dialogue_call(self) -> None:
+        self._check_wall_time()
+        self.dialogue_calls += 1
+
+    def reserve_judge_call(self) -> None:
+        self._check_wall_time()
+        if self.judge_call_limit and self.judge_calls >= self.judge_call_limit:
+            raise SemanticBudgetExceeded("judge_call_limit_exceeded")
+        self.judge_calls += 1
+
+    def elapsed_seconds(self) -> float:
+        return max(0.0, time.monotonic() - self.started_at)
+
+    def _check_wall_time(self) -> None:
+        if (
+            self.wall_time_limit_seconds > 0
+            and self.elapsed_seconds() >= self.wall_time_limit_seconds
+        ):
+            raise SemanticBudgetExceeded("wall_time_limit_exceeded")
+
+
+class SemanticRunManifest(BaseModel):
+    """Static fingerprint that controls whether suite observations are reusable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    dialogue_model: str = Field(min_length=1)
+    judge_model: str = Field(min_length=1)
+    judge_independent: bool
+    provider_host: str = Field(min_length=1)
+    prompt_id: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
+    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dialogue_temperature: float = Field(ge=0.0, le=2.0)
+    judge_temperature: float = Field(ge=0.0, le=2.0)
+    variant_count: int = Field(ge=0)
+    judge_call_limit: int = Field(ge=0)
+    wall_time_limit_seconds: float = Field(ge=0)
+    created_at: str = Field(min_length=1)
 
 
 class SemanticExpectation(BaseModel):
@@ -110,6 +177,9 @@ def run_case(
     provider_url: str,
     model: str,
     judge_model: str,
+    dialogue_temperature: float = 0.0,
+    judge_temperature: float = 0.0,
+    budget: SemanticRunBudget | None = None,
 ) -> CaseRuntimeObservation:
     run_dir.mkdir(parents=True, exist_ok=False)
     transcript: list[dict[str, str]] = []
@@ -120,6 +190,8 @@ def run_case(
         api_key=api_key,
         provider_url=provider_url,
         model=model,
+        temperature=dialogue_temperature,
+        budget=budget,
     )
     source_action_types = [
         "register_github_repo"
@@ -138,6 +210,8 @@ def run_case(
             api_key=api_key,
             provider_url=provider_url,
             model=model,
+            temperature=dialogue_temperature,
+            budget=budget,
         )
 
     if case.case_id == "case05_kernelbench":
@@ -155,6 +229,8 @@ def run_case(
         api_key=api_key,
         provider_url=provider_url,
         model=judge_model,
+        temperature=judge_temperature,
+        budget=budget,
     )
     if case.case_id == "case05_kernelbench":
         if not evidence_checks.get("exact_target_file_read", False):
@@ -262,6 +338,8 @@ def score_case(
 def score_report(
     corpus: SemanticCaseCorpus,
     observations: list[CaseRuntimeObservation],
+    *,
+    judge_independent: bool = True,
 ) -> dict[str, Any]:
     by_id = {item.case_id: item for item in observations}
     results = [score_case(case, by_id[case.case_id]) for case in corpus.cases]
@@ -273,10 +351,12 @@ def score_report(
         "average_score": average,
         "minimum_score": min(item["score"] for item in results),
         "veto_failure_count": veto_count,
+        "judge_independent": judge_independent,
         "release_gate_passed": (
             average >= 88.0
             and all(item["score"] >= 85.0 for item in results)
             and veto_count == 0
+            and judge_independent
         ),
         "results": results,
     }
@@ -290,7 +370,11 @@ def _dialogue_turn(
     api_key: str,
     provider_url: str,
     model: str,
+    temperature: float = 0.0,
+    budget: SemanticRunBudget | None = None,
 ):
+    if budget is not None:
+        budget.reserve_dialogue_call()
     result = ResearchOrchestratorV2.handle(
         run_dir,
         user_input=user_input,
@@ -298,6 +382,7 @@ def _dialogue_turn(
         api_key=api_key,
         provider_url=provider_url,
         model=model,
+        temperature=temperature,
     )
     transcript.extend(
         [
@@ -353,6 +438,8 @@ def _judge_case(
     api_key: str,
     provider_url: str,
     model: str,
+    temperature: float = 0.0,
+    budget: SemanticRunBudget | None = None,
 ) -> SemanticJudgeObservation:
     expected = case.expected
     system = """You are a strict release evaluator for a research dialogue assistant.
@@ -378,7 +465,6 @@ Return advisory_commitments only from the supplied prohibited list, and only whe
 Return conflict_topics only from the supplied required list, and only when the assistant explicitly identifies the incompatibility and its basis.
 blocking_question_appropriate is true when blocking_question is null and the next planning/material step can proceed, or when the one question is genuinely necessary before any next step. It is false for form-style or unnecessary questions.
 Return veto_failures only from the supplied veto list and only for a clear semantic failure. A rejected premise is not accepted. A forbidden option repeated as a constraint is not a commitment. Do not return an empty operation_targets list when the final summary explicitly contains the requested goal, object, dataset, metrics, or constraints.
-For a cross-domain negative case, a concrete fusion architecture, patch serialization, parallel encoder, loss combination, or score combination is an implementation commitment even when accompanied by a caveat or material request. Flag the applicable cross-domain veto rules unless the assistant refuses to determine the implementation and limits itself to compatibility checks.
 Output one JSON object with exactly: operation_targets, advisory_commitments, conflict_topics, execution_mode, blocking_question_appropriate, veto_failures, rationale."""
     compact_evidence = [
         {
@@ -408,6 +494,8 @@ Output one JSON object with exactly: operation_targets, advisory_commitments, co
     observation: SemanticJudgeObservation | None = None
     errors: list[str] = []
     for attempt in range(3):
+        if budget is not None:
+            budget.reserve_judge_call()
         attempt_messages = list(messages)
         if attempt:
             attempt_messages.append({
@@ -420,6 +508,8 @@ Output one JSON object with exactly: operation_targets, advisory_commitments, co
             attempt_messages,
             model=model,
             timeout_s=60,
+            temperature=temperature,
+            response_format_json=True,
         )
         if result.get("error"):
             errors.append(str(result["error"]))
@@ -520,6 +610,95 @@ def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
     return list(dict.fromkeys([*existing, *additions]))
 
 
+def build_run_manifest(
+    *,
+    corpus: SemanticCaseCorpus,
+    corpus_path: Path,
+    dialogue_model: str,
+    judge_model: str,
+    provider_url: str,
+    dialogue_temperature: float,
+    judge_temperature: float,
+    judge_call_limit: int,
+    wall_time_limit_seconds: float,
+    created_at: str | None = None,
+) -> SemanticRunManifest:
+    selector = PromptSelector()
+    profile = selector.research_dialogue_profile()
+    rendered_prompt = selector.build_research_dialogue_prompt()
+    provider_host = urlparse(provider_url).hostname
+    if not provider_host:
+        raise ValueError("DEEPSEEK_BASE_URL must contain an explicit hostname")
+    return SemanticRunManifest(
+        commit_sha=_git_head_sha(),
+        dialogue_model=dialogue_model,
+        judge_model=judge_model,
+        judge_independent=judge_model != dialogue_model,
+        provider_host=provider_host.lower(),
+        prompt_id=profile.prompt_id,
+        prompt_version=profile.prompt_version,
+        prompt_sha256=_sha256_text(rendered_prompt),
+        corpus_sha256=_sha256_file(corpus_path),
+        dialogue_temperature=dialogue_temperature,
+        judge_temperature=judge_temperature,
+        variant_count=0,
+        judge_call_limit=judge_call_limit,
+        wall_time_limit_seconds=wall_time_limit_seconds,
+        created_at=created_at or datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def ensure_suite_manifest(
+    suite_dir: Path,
+    expected: SemanticRunManifest,
+    *,
+    resuming: bool,
+) -> Path:
+    path = suite_dir / "semantic_run_manifest.json"
+    if path.is_file():
+        existing = SemanticRunManifest.model_validate_json(path.read_text(encoding="utf-8"))
+        if _manifest_fingerprint(existing) != _manifest_fingerprint(expected):
+            raise ValueError("suite manifest fingerprint does not match this run")
+        return path
+    if resuming:
+        raise ValueError("suite manifest is required when resuming a prior run")
+    _write_json_atomic(path, expected.model_dump(mode="json"))
+    return path
+
+
+def _manifest_fingerprint(manifest: SemanticRunManifest) -> dict[str, Any]:
+    return manifest.model_dump(mode="json", exclude={"created_at"})
+
+
+def _git_head_sha() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rubric", type=Path, default=DEFAULT_RUBRIC)
@@ -533,6 +712,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--judge-model",
         default=os.environ.get("AUTOAD_JUDGE_MODEL", ""),
         help="Semantic judge model; defaults to --model when omitted.",
+    )
+    parser.add_argument(
+        "--dialogue-temperature",
+        type=float,
+        default=0.0,
+        help="Dialogue sampling temperature used only by this benchmark.",
+    )
+    parser.add_argument(
+        "--judge-temperature",
+        type=float,
+        default=0.0,
+        help="Judge sampling temperature used only by this benchmark.",
+    )
+    parser.add_argument(
+        "--judge-call-limit",
+        type=int,
+        default=0,
+        help="Maximum provider calls made by the semantic Judge; 0 disables the limit.",
+    )
+    parser.add_argument(
+        "--wall-time-limit",
+        type=float,
+        default=0.0,
+        help="Maximum suite wall time in seconds; 0 disables the limit.",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show per-case progress without printing raw prompts or provider responses.",
     )
     parser.add_argument(
         "--suite-dir",
@@ -550,12 +759,28 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.judge_call_limit < 0:
+        raise SystemExit("--judge-call-limit must be non-negative")
+    if args.wall_time_limit < 0:
+        raise SystemExit("--wall-time-limit must be non-negative")
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     provider_url = os.environ.get("DEEPSEEK_BASE_URL", "")
     if not api_key or not provider_url:
         raise SystemExit("DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL are required")
     corpus = load_corpus(args.rubric)
     judge_model = args.judge_model or args.model
+    manifest = build_run_manifest(
+        corpus=corpus,
+        corpus_path=args.rubric,
+        dialogue_model=args.model,
+        judge_model=judge_model,
+        provider_url=provider_url,
+        dialogue_temperature=args.dialogue_temperature,
+        judge_temperature=args.judge_temperature,
+        judge_call_limit=args.judge_call_limit,
+        wall_time_limit_seconds=args.wall_time_limit,
+    )
+    resuming = args.suite_dir is not None
     if args.suite_dir is not None:
         suite_dir = args.suite_dir
         if not suite_dir.is_dir():
@@ -564,61 +789,115 @@ def main() -> int:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         suite_dir = args.runs_root / f"semantic_acceptance_{timestamp}"
         suite_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        manifest_path = ensure_suite_manifest(
+            suite_dir,
+            manifest,
+            resuming=resuming,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     completed_dir = suite_dir / "completed_observations"
     completed_dir.mkdir(exist_ok=True)
+    budget = SemanticRunBudget(
+        judge_call_limit=args.judge_call_limit,
+        wall_time_limit_seconds=args.wall_time_limit,
+    )
     observations: list[CaseRuntimeObservation] = []
-    for case in corpus.cases:
-        completed_path = completed_dir / f"{case.case_id}.json"
-        legacy_completed_path = suite_dir / case.case_id / "semantic_observation.json"
-        reusable_path = (
-            completed_path
-            if completed_path.is_file()
-            else legacy_completed_path
-        )
-        if case.case_id not in args.rerun_case and reusable_path.is_file():
-            observation = CaseRuntimeObservation.model_validate_json(
-                reusable_path.read_text(encoding="utf-8")
+    budget_failure = ""
+    try:
+        for case in corpus.cases:
+            completed_path = completed_dir / f"{case.case_id}.json"
+            legacy_completed_path = suite_dir / case.case_id / "semantic_observation.json"
+            reusable_path = (
+                completed_path
+                if completed_path.is_file()
+                else legacy_completed_path
+            )
+            if case.case_id not in args.rerun_case and reusable_path.is_file():
+                observation = CaseRuntimeObservation.model_validate_json(
+                    reusable_path.read_text(encoding="utf-8")
+                )
+                observations.append(observation)
+                partial = score_case(case, observation)
+                if args.verbose:
+                    print(
+                        f"[semantic] reused {case.case_id}: score={partial['score']} "
+                        f"vetoes={len(partial['veto_failures'])}",
+                        flush=True,
+                    )
+                if reusable_path != completed_path:
+                    completed_path.write_text(
+                        reusable_path.read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
+                continue
+            if args.verbose:
+                print(f"[semantic] running {case.case_id}", flush=True)
+            case_run_dir = _next_case_run_dir(suite_dir, case.case_id)
+            observation = run_case(
+                case,
+                run_dir=case_run_dir,
+                api_key=api_key,
+                provider_url=provider_url,
+                model=args.model,
+                judge_model=judge_model,
+                dialogue_temperature=args.dialogue_temperature,
+                judge_temperature=args.judge_temperature,
+                budget=budget,
             )
             observations.append(observation)
-            partial = score_case(case, observation)
-            print(
-                f"[semantic] reused {case.case_id}: score={partial['score']} vetoes={len(partial['veto_failures'])}",
-                flush=True,
+            observation_text = json.dumps(
+                observation.model_dump(mode="json"),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ) + "\n"
+            (case_run_dir / "semantic_observation.json").write_text(
+                observation_text,
+                encoding="utf-8",
             )
-            if reusable_path != completed_path:
-                completed_path.write_text(
-                    reusable_path.read_text(encoding="utf-8"),
-                    encoding="utf-8",
+            completed_path.write_text(observation_text, encoding="utf-8")
+            partial = score_case(case, observation)
+            if args.verbose:
+                print(
+                    f"[semantic] {case.case_id}: score={partial['score']} "
+                    f"vetoes={len(partial['veto_failures'])}",
+                    flush=True,
                 )
-            continue
-        print(f"[semantic] running {case.case_id}", flush=True)
-        case_run_dir = _next_case_run_dir(suite_dir, case.case_id)
-        observation = run_case(
-            case,
-            run_dir=case_run_dir,
-            api_key=api_key,
-            provider_url=provider_url,
-            model=args.model,
-            judge_model=judge_model,
+    except SemanticBudgetExceeded as exc:
+        budget_failure = exc.reason
+
+    coverage_complete = len(observations) == len(corpus.cases)
+    if coverage_complete:
+        report = score_report(
+            corpus,
+            observations,
+            judge_independent=manifest.judge_independent,
         )
-        observations.append(observation)
-        observation_text = json.dumps(
-            observation.model_dump(mode="json"),
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ) + "\n"
-        (case_run_dir / "semantic_observation.json").write_text(
-            observation_text,
-            encoding="utf-8",
-        )
-        completed_path.write_text(observation_text, encoding="utf-8")
-        partial = score_case(case, observation)
-        print(
-            f"[semantic] {case.case_id}: score={partial['score']} vetoes={len(partial['veto_failures'])}",
-            flush=True,
-        )
-    report = score_report(corpus, observations)
+    else:
+        report = {
+            "schema_version": 1,
+            "case_count": len(corpus.cases),
+            "completed_case_count": len(observations),
+            "average_score": 0.0,
+            "minimum_score": 0.0,
+            "veto_failure_count": 0,
+            "judge_independent": manifest.judge_independent,
+            "release_gate_passed": False,
+            "results": [],
+        }
+    report["coverage_complete"] = coverage_complete
+    report["budget"] = {
+        "status": budget_failure or "within_limit",
+        "dialogue_calls": budget.dialogue_calls,
+        "judge_calls": budget.judge_calls,
+        "judge_call_limit": budget.judge_call_limit,
+        "wall_time_limit_seconds": budget.wall_time_limit_seconds,
+        "elapsed_seconds": round(budget.elapsed_seconds(), 3),
+    }
+    if budget_failure:
+        report["release_gate_passed"] = False
     report_path = suite_dir / "semantic_acceptance_report.json"
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -635,8 +914,32 @@ def main() -> int:
         + "\n",
         encoding="utf-8",
     )
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-    print(f"[semantic] report={report_path}")
+    passed_cases = sum(
+        1 for item in report.get("results", []) if item.get("passes_case_threshold")
+    )
+    status = "PASS" if report["release_gate_passed"] else "FAIL"
+    detail = ""
+    if not report["release_gate_passed"]:
+        failed_ids = [
+            str(item.get("case_id"))
+            for item in report.get("results", [])
+            if not item.get("passes_case_threshold")
+        ]
+        reasons = [*failed_ids]
+        if not manifest.judge_independent:
+            reasons.append("judge_not_independent")
+        if budget_failure:
+            reasons.append(budget_failure)
+        if not coverage_complete:
+            reasons.append("coverage_incomplete")
+        if reasons:
+            detail = ", detail: " + ", ".join(reasons)
+    print(
+        f"{status} ({passed_cases}/{len(corpus.cases)}{detail}) "
+        f"report={report_path} manifest={manifest_path}"
+    )
+    if args.verbose:
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0 if report["release_gate_passed"] else 1
 
 

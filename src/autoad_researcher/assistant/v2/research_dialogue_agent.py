@@ -73,6 +73,7 @@ class ResearchDialogueAgent:
         api_key: str = "",
         provider_url: str = "",
         model: str = "",
+        temperature: float = 0.3,
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> ResearchDialogueResponse:
         if not api_key:
@@ -102,6 +103,7 @@ class ResearchDialogueAgent:
             timeout_s=30,
             priority="interactive",
             response_format_json=True,
+            temperature=temperature,
         )
         payload = _parse_json_object(str(result.get("reply") or ""))
         if result.get("error") or payload is None:
