@@ -14,6 +14,7 @@ from autoad_researcher.assistant.prompt_selector import (
     MODE_TO_PROMPT_ID,
     MODE_TO_STAGE,
     PromptSelector,
+    RESEARCH_DIALOGUE_PROMPT_ID,
     RESEARCH_TASK_DRAFT_PROMPT_ID,
     select_prompt_id,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "AssistantMode",
     "select_prompt_id",
     "RESEARCH_TASK_DRAFT_PROMPT_ID",
+    "RESEARCH_DIALOGUE_PROMPT_ID",
     "PromptSelector",
     "MODE_TO_STAGE",
     "MODE_TO_PROMPT_ID",

@@ -123,6 +123,18 @@ def test_research_task_draft_profile_separates_candidate_and_confirmed_parameter
     assert "Goal vs Approach" in profile.system_prompt
 
 
+def test_research_dialogue_profile_registers_production_contract():
+    profile = get_default_prompt_registry().require("assistant.research_dialogue.v1")
+
+    assert profile.assistant_stage == "understanding_intent"
+    assert profile.io.input_schema == "ResearchDialogueContext"
+    assert profile.io.output_schema == "ResearchDialogueResponse"
+    assert profile.io.produced_artifacts == ["summary.json"]
+    assert "preliminary hypothesis" in profile.system_prompt
+    assert "request_source_removal" not in profile.system_prompt
+    assert "source_action" in profile.system_prompt
+
+
 def test_progress_digest_profile_is_user_visible_but_hides_raw_internals():
     profile = get_default_prompt_registry().require("assistant.progress_digest.v1")
 

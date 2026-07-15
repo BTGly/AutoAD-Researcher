@@ -9,6 +9,7 @@ from autoad_researcher.assistant.prompt_selector import (
     MODE_TO_PROMPT_ID,
     MODE_TO_STAGE,
     PromptSelector,
+    RESEARCH_DIALOGUE_PROMPT_ID,
     RESEARCH_CHAT_MODE_TO_PROMPT_ID,
     RESEARCH_TASK_DRAFT_PROMPT_ID,
 )
@@ -79,6 +80,16 @@ def test_research_task_draft_prompt_is_schema_bound():
     assert profile.prompt_id == RESEARCH_TASK_DRAFT_PROMPT_ID
     assert profile.io.output_schema == "ResearchTaskDraftV1"
     assert "Do not interrogate. Propose first." in selector.build_research_task_draft_prompt()
+
+
+def test_selector_returns_registered_research_dialogue_prompt():
+    selector = PromptSelector()
+
+    assert selector.research_dialogue_profile().prompt_id == RESEARCH_DIALOGUE_PROMPT_ID
+    rendered = selector.build_research_dialogue_prompt()
+    assert "AutoAD Assistant global invariants" in rendered
+    assert "AutoAD Research Assistant" in rendered
+    assert "ResearchDialogueContext" not in rendered
 
 
 def test_selector_rejects_unsupported_mode_at_runtime():
