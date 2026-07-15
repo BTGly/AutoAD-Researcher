@@ -125,21 +125,6 @@ class ResearchOrchestratorV2:
         )
         ctx["turn_gate_decision"] = turn_decision.model_dump(mode="json")
 
-        if created_sources or created_jobs:
-            if not turn_decision.contract_update_allowed or not turn_decision.need_discovery_allowed:
-                reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
-                return OrchestratorResult(
-                    reply=reply,
-                    reply_kind=reply_kind,
-                    created_sources=created_sources,
-                    created_jobs=created_jobs,
-                    evidence_used=ctx.get("usable_evidence", []),
-                    answerability=ctx.get("answerability", {}),
-                    next_actions=_suggest_next_actions(ctx, reply_kind),
-                    intent_contract=existing_draft.model_dump(mode="json") if existing_draft is not None else {},
-                    intent_contract_confirmed=False,
-                )
-
         if turn_decision.contract_action == "confirm_contract":
             contract = existing_draft
             if contract is not None:
@@ -216,10 +201,7 @@ class ResearchOrchestratorV2:
             save_contract_draft(run_dir, contract)
         ctx["research_intent_contract"] = contract.model_dump(mode="json")
 
-        # Source intake turn: brief status, don't reprint contract
-        if created_sources or created_jobs:
-            reply_kind, reply = _source_intake_reply(created_sources, created_jobs)
-        elif contract.ready_for_plan:
+        if contract.ready_for_plan:
             reply_kind, reply = "intent_contract_confirmation", format_contract_for_user(contract)
         else:
             reply_kind, reply = plan_reply(

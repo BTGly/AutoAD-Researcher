@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+from autoad_researcher.repository_intelligence.discovery import parse_github_repository_url
 from autoad_researcher.source_normalizer import extract_first_source_candidate, extract_first_url, is_repository_url, normalize_repository_reference
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -316,7 +317,10 @@ def _explicit_source_plan(
     if candidate is None:
         return None
     url = candidate.normalized_ref
-    explicit_repo = candidate.source_kind == "github_repo"
+    github_locator = parse_github_repository_url(url, strict=False)
+    explicit_repo = candidate.source_kind == "github_repo" or github_locator is not None
+    if github_locator is not None:
+        url = github_locator.canonical_url
     action_type: SourceActionType = "register_github_repo" if explicit_repo else "register_webpage"
     if explicit_repo:
         repo_candidate = normalize_repository_reference(url)

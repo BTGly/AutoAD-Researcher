@@ -370,8 +370,17 @@ def parse_github_repository_url(url: str, *, strict: bool = True) -> GitHubRepos
         return None
     owner = parts[0]
     repository = parts[1][:-4] if parts[1].endswith(".git") else parts[1]
-    if strict and len(parts) > 2:
-        raise DiscoveryError("GitHub repository URL must point to the repository root")
+    exact_repository_root = (
+        len(parts) == 2
+        and not parsed.query
+        and not parsed.fragment
+        and re.fullmatch(r"[A-Za-z0-9_.-]+", owner) is not None
+        and re.fullmatch(r"[A-Za-z0-9_.-]+", repository) is not None
+    )
+    if not exact_repository_root:
+        if strict:
+            raise DiscoveryError("GitHub repository URL must match https://github.com/owner/repository")
+        return None
     if not owner or not repository:
         raise DiscoveryError("GitHub repository owner and repository are required")
     return GitHubRepositoryLocator(

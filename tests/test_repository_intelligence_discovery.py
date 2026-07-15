@@ -93,6 +93,21 @@ def test_parse_github_repository_url_rejects_credentials():
         parse_github_repository_url("https://token@github.com/example/PatchCore")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/example/PatchCore/issues",
+        "https://github.com/example/PatchCore?tab=readme",
+        "https://github.com/example/PatchCore#readme",
+        "https://github.com/example/PatchCore，分析这个仓库",
+    ],
+)
+def test_parse_github_repository_url_requires_exact_owner_repository_root(url: str):
+    with pytest.raises(DiscoveryError, match="must match"):
+        parse_github_repository_url(url)
+    assert parse_github_repository_url(url, strict=False) is None
+
+
 def test_explicit_github_url_skips_websearch_and_resolves_default_branch_commit():
     result = service().discover(request(repository_url="https://github.com/example/PatchCore"))
 
