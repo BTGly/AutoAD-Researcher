@@ -24,6 +24,7 @@ from autoad_researcher.assistant.v2.source_actions import (
     plan_explicit_source_actions,
 )
 from autoad_researcher.assistant.v2.source_service import register_source_intake
+from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.ui.sources import load_source_registry
 
 
@@ -37,6 +38,7 @@ class OrchestratorResult:
     answerability: dict[str, Any] = field(default_factory=dict)
     intent_summary: dict[str, Any] = field(default_factory=dict)
     source_action: dict[str, str] | None = None
+    experiment_task: dict[str, Any] | None = None
 
 
 class ResearchOrchestratorV2:
@@ -98,6 +100,20 @@ class ResearchOrchestratorV2:
         if dialogue.should_persist:
             save_research_intent_summary(run_dir, dialogue.summary)
         source_action = _validate_source_action(run_dir, dialogue.source_action)
+        experiment_task = None
+        if (
+            dialogue.task_action is not None
+            and dialogue.source_action is None
+            and dialogue.should_persist
+        ):
+            try:
+                experiment_task = TaskBridge.build_experiment_task(
+                    run_dir,
+                    user_input=user_input,
+                    transcript_tail=transcript_tail,
+                ).model_dump(mode="json")
+            except (FileExistsError, ValueError):
+                experiment_task = None
 
         return OrchestratorResult(
             reply=dialogue.visible_reply(),
@@ -111,6 +127,7 @@ class ResearchOrchestratorV2:
                 if source_action is not None
                 else None
             ),
+            experiment_task=experiment_task,
         )
 
 

@@ -55,6 +55,31 @@ export interface SourceInstruction {
   reason: string;
 }
 
+export interface PipelineInputTask {
+  run_id: string;
+  request: string;
+  source_ids: string[];
+  target_domain: string | null;
+  user_idea: string | null;
+  baseline: string | null;
+  dataset: string | null;
+  compute_budget: string | null;
+  constraints: string[];
+}
+
+export interface ExperimentTaskDraft {
+  schema_version: 1;
+  task_id: string;
+  run_id: string;
+  status: 'pending_confirmation' | 'confirmed';
+  execution_mode: 'plan_only';
+  input_task: PipelineInputTask;
+  evidence_refs: string[];
+  summary_sha256: string;
+  created_at: string;
+  confirmed_at: string | null;
+}
+
 export interface JobItem {
   jobId: string;
   jobType: string;

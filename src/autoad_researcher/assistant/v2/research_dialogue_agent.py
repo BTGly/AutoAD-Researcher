@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
+from autoad_researcher.assistant.v2.task_bridge import TaskInstruction
 
 
 class SourceInstruction(BaseModel):
@@ -31,6 +32,7 @@ class ResearchDialogueResponse(BaseModel):
     reply_to_user: str = Field(min_length=1)
     summary: ResearchIntentSummary
     source_action: SourceInstruction | None = None
+    task_action: TaskInstruction | None = None
     _should_persist: bool = PrivateAttr(default=False)
 
     @property
@@ -151,8 +153,13 @@ class ResearchDialogueAgent:
 - source_id 必须逐字复制“当前可用材料”中的 registered_sources.source_id，不得猜测、改写或使用“最新一个”代替
 - 如果无法唯一确定 source_id，source_action 必须为 null；是否追问仍按 blocking_question 的真正阻塞规则判断
 
+Pipeline 任务动作：
+- 只有用户明确要求准备或开始后续实验规划，且 summary.goal 已明确、blocking_question 为 null 时，才输出 task_action={{"action":"prepare_experiment_task"}}
+- task_action 只准备一个 plan_only 的待确认 Pipeline 输入；不得声称已经运行 Pipeline、修改代码或执行实验
+- 普通研究讨论、询问可行性、请求完善方案时 task_action 必须为 null；source_action 与 task_action 不得同时非 null
+
 只输出 JSON object，不要输出 Markdown code fence。输出结构：
-{{"reply_to_user":"...","summary":{{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{{"statement":"...","basis":"..."}}],"unresolved_conflicts":[{{"statement":"...","basis":"..."}}],"blocking_question":null}},"source_action":null}}"""
+{{"reply_to_user":"...","summary":{{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{{"statement":"...","basis":"..."}}],"unresolved_conflicts":[{{"statement":"...","basis":"..."}}],"blocking_question":null}},"source_action":null,"task_action":null}}"""
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_input},

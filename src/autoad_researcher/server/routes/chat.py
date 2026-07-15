@@ -133,6 +133,7 @@ async def chat_send(req: ChatRequest, request: Request):
         reply=result.reply,
         reply_kind=result.reply_kind,
         source_action=result.source_action,
+        experiment_task=result.experiment_task,
     )
 
 

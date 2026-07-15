@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from autoad_researcher.assistant.v2.research_dialogue_agent import SourceInstruction
+from autoad_researcher.assistant.v2.task_bridge import ExperimentTaskDraft
 
 
 class ChatRequest(BaseModel):
@@ -22,6 +23,7 @@ class ChatResponse(BaseModel):
     reply: str
     reply_kind: str = "answer"
     source_action: SourceInstruction | None = None
+    experiment_task: ExperimentTaskDraft | None = None
 
 
 class RunInfo(BaseModel):

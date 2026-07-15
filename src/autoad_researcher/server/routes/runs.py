@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.core.run_id import run_dir_path
+from autoad_researcher.assistant.v2.task_bridge import ExperimentTaskDraft, TaskBridge
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
 from autoad_researcher.task_workspace.task_profile import (
@@ -144,6 +145,20 @@ async def get_run_transcript(run_id: str):
                 created_at=_optional_str(payload.get("created_at") or payload.get("timestamp")),
             ))
     return entries
+
+
+@router.post(
+    "/{run_id}/experiment-task/{task_id}/confirm",
+    response_model=ExperimentTaskDraft,
+)
+async def confirm_experiment_task(run_id: str, task_id: str):
+    run_dir = _existing_run_dir(run_id)
+    try:
+        return TaskBridge.confirm_experiment_task(run_dir, task_id=task_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (FileExistsError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _existing_run_dir(run_id: str) -> Path:

@@ -107,6 +107,8 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert "用户要求 plan_only" in system
     assert "source_id 必须逐字复制" in system
     assert "先不要删除" in system
+    assert 'task_action={"action":"prepare_experiment_task"}' in system
+    assert "只准备一个 plan_only" in system
     assert response.should_persist is True
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
 

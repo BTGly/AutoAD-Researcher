@@ -18,6 +18,7 @@ import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
+  confirmExperimentTask,
   createRun,
   deleteSource,
   deleteRun,
@@ -297,6 +298,17 @@ export default function App() {
         if (confirmed) {
           const deleted = await deleteSource(targetRunId, action.source_id).catch(() => null);
           addToast(deleted ? '资料已删除' : '删除资料失败', deleted ? 'success' : 'error');
+        }
+      }
+      if (currentRunIdRef.current === targetRunId && res.experiment_task) {
+        const task = res.experiment_task;
+        const goal = task.input_task.user_idea || task.input_task.request;
+        const confirmed = window.confirm(
+          `准备 Pipeline 实验输入？\n\n目标：${goal}\n材料：${task.input_task.source_ids.length} 项\n模式：plan_only\n\n确认后只生成 input_task.yaml，不会修改代码或运行实验。`,
+        );
+        if (confirmed) {
+          const prepared = await confirmExperimentTask(targetRunId, task.task_id).catch(() => null);
+          addToast(prepared ? '实验输入已准备' : '实验输入生成失败', prepared ? 'success' : 'error');
         }
       }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);

@@ -1,4 +1,4 @@
-import type { SourceInstruction, TaskRun } from './types';
+import type { ExperimentTaskDraft, SourceInstruction, TaskRun } from './types';
 
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
@@ -32,7 +32,12 @@ export async function sendChat(
   runId: string,
   requestId: string,
   transcriptTail: Array<{ role: string; content: string }> = [],
-): Promise<{ reply: string; reply_kind: string; source_action: SourceInstruction | null }> {
+): Promise<{
+  reply: string;
+  reply_kind: string;
+  source_action: SourceInstruction | null;
+  experiment_task: ExperimentTaskDraft | null;
+}> {
   const res = await fetch('/api/chat/send', {
     method: 'POST',
     headers: getHeaders(),
@@ -44,6 +49,18 @@ export async function sendChat(
     }),
   });
   if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
+  return res.json();
+}
+
+export async function confirmExperimentTask(
+  runId: string,
+  taskId: string,
+): Promise<ExperimentTaskDraft> {
+  const res = await fetch(`/api/runs/${runId}/experiment-task/${taskId}/confirm`, {
+    method: 'POST',
+    headers: getHeaders(),
+  });
+  if (!res.ok) throw new Error(`Experiment task confirmation error: ${res.status}`);
   return res.json();
 }
 
