@@ -117,14 +117,20 @@ class ResearchDialogueAgent:
 
 区分事实：
 - confirmed_facts：只允许写用户消息中明确陈述的事实，逐项保留原意；材料内容和你的常识不得写入这里
+- 用户明确给出的执行边界、禁止修改项、保留组件和负向约束也属于 confirmed_facts，不得因为它们是否定句而遗漏
 - inferred_facts：你从可用材料推断的事实，必须在 basis 中写明 source_id、artifact_path 或明确的推理来源
 - unresolved_conflicts：有证据支持的风险或不兼容，必须在 basis 中写明材料、用户约束或推理链；不要为了显得谨慎而虚构冲突
 
 对话规则：
 - summary 必须是整合本轮后的完整摘要，不是增量 patch；保留仍然有效的上一轮事实，并按用户最新纠正替换旧事实
 - blocking_question 只能有一个；不阻塞下一步时必须为 null
-- blocking_question 非 null 时，reply_to_user 中也要自然地提出同一个问题；否则以简洁自然段回复，不要用字段清单或内部状态术语
-- 对“直接集成”“即插即用”等未经材料支持的跨领域前提，要拒绝确定实现并指出兼容性需要验证
+- blocking_question 非 null 时，reply_to_user 中也要自然地提出同一个问题；为 null 时不得在回复末尾追问或索要材料，只能把材料需求作为不阻塞的说明
+- reply_to_user 保持两到四个短自然段，只完成目标对齐、关键冲突和下一步，不展开完整实施教程；不使用编号、项目符号、字段清单或内部状态术语，除非用户明确要求列表
+- 当用户约束已足以形成高层研究或评估计划时，缺少候选方法源码只影响源码级映射，不阻塞高层方案；先给出有证据边界的方案，把材料需求作为普通说明，blocking_question 保持 null
+- 缺少具体材料时不要断言某一版本的输入尺寸、张量形状或实现细节；只能说明可由通用架构推导的风险以及仍需材料验证的部分
+- 对“任务名称相似所以可直接集成”“即插即用”等未经材料支持的跨领域前提，必须明确拒绝确定实现，只给兼容性验证路线；在材料证明输入结构、训练目标和评分语义兼容前，禁止给出并行分支、特征融合、序列化、损失组合或打分组合等桥接细节，即使附带 caveat 也不行
+- 对性能或算子优化，参考实现正确性和同条件 benchmark 是验收前提；指定目标文件尚未形成 evidence 时不得猜测算子内容
+- 当模型参数、优化器状态、激活或运行时需求明显超过用户硬件时，即使 offload、checkpointing 等手段可能缓解，也必须把训练/运行可行性写入 unresolved_conflicts；在真实配置和资源未验证前不得宣称已经可行
 - 当前只做研究对齐与计划；不得声称已经修改代码、创建实验 Session、运行训练或执行实验
 
 只输出 JSON object，不要输出 Markdown code fence。输出结构：
@@ -195,6 +201,16 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(stripped):
+            if character != "{":
+                continue
+            try:
+                payload, _end = decoder.raw_decode(stripped[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
         return None
     return payload if isinstance(payload, dict) else None
 

@@ -7,7 +7,10 @@ import pytest
 from pydantic import ValidationError
 
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
-from autoad_researcher.assistant.v2.research_dialogue_agent import ResearchDialogueAgent
+from autoad_researcher.assistant.v2.research_dialogue_agent import (
+    ResearchDialogueAgent,
+    _parse_json_object,
+)
 from autoad_researcher.assistant.v2.research_intent_summary import (
     BasedStatement,
     ResearchIntentSummary,
@@ -61,6 +64,13 @@ def test_summary_round_trip_uses_exact_schema(tmp_path: Path):
 def test_summary_rejects_unidentified_statement_fields():
     with pytest.raises(ValidationError):
         BasedStatement.model_validate({"statement": "风险", "source": "repo"})
+
+
+def test_dialogue_json_parser_accepts_transport_text_around_one_object():
+    assert _parse_json_object('prefix\n{"reply_to_user":"ok","summary":{}}\nsuffix') == {
+        "reply_to_user": "ok",
+        "summary": {},
+    }
 
 
 def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatch):
