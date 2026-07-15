@@ -75,6 +75,35 @@ def test_extract_source_candidates_keeps_first_explicit_material_reference():
         "资料一 https://arxiv.org/abs/2303.15140v2 代码 https://github.com/owner/repo"
     )
 
-    assert [candidate.source_kind for candidate in candidates] == ["webpage", "webpage"]
+    assert [candidate.source_kind for candidate in candidates] == ["webpage", "github_repo"]
     assert candidates[0].normalized_ref == "https://arxiv.org/abs/2303.15140v2"
     assert candidates[1].normalized_ref == "https://github.com/owner/repo"
+
+
+def test_bare_github_repository_root_is_deterministically_a_repository():
+    candidate = normalize_source_reference("https://github.com/owner/repo")
+
+    assert candidate is not None
+    assert candidate.source_kind == "github_repo"
+    assert candidate.owner == "owner"
+    assert candidate.repo == "repo"
+    assert candidate.normalized_ref == "https://github.com/owner/repo"
+    assert is_repository_url(candidate.normalized_ref) is True
+
+
+def test_github_subpage_remains_webpage_without_repository_intent():
+    candidate = normalize_source_reference("https://github.com/owner/repo/issues/12")
+
+    assert candidate is not None
+    assert candidate.source_kind == "webpage"
+    assert is_repository_url(candidate.normalized_ref) is False
+
+
+def test_url_extraction_stops_before_chinese_sentence_text():
+    candidate = extract_source_candidates(
+        "登记 https://github.com/owner/repo；研究目标是复现 Library-A。"
+    )[0]
+
+    assert candidate.raw_ref == "https://github.com/owner/repo"
+    assert candidate.normalized_ref == "https://github.com/owner/repo"
+    assert candidate.source_kind == "github_repo"

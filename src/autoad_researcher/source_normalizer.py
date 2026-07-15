@@ -13,11 +13,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.repository_intelligence.discovery import (
+    DiscoveryError,
+    parse_github_repository_url,
+)
+
 
 SourceRefKind = Literal["github_repo", "webpage"]
 ValidationStatus = Literal["syntactically_valid", "invalid"]
 
-_RAW_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_RAW_URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"'，。；！？]+", re.IGNORECASE)
 _REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+")
 
 
@@ -64,9 +69,21 @@ def normalize_source_reference(raw_ref: str) -> SourceCandidate | None:
     raw = str(raw_ref or "").strip()
     if not raw:
         return None
-    parsed = urlsplit(_strip_wrapping_delimiters(raw))
+    bounded = _strip_source_delimiters(raw)
+    parsed = urlsplit(bounded)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
+
+    github_repo = _parse_github_root(bounded)
+    if github_repo is not None:
+        return SourceCandidate(
+            raw_ref=raw,
+            normalized_ref=github_repo.canonical_url,
+            source_kind="github_repo",
+            provider="github.com",
+            owner=github_repo.owner,
+            repo=github_repo.repository,
+        )
 
     explicit_repo = _has_explicit_git_suffix(parsed)
     if explicit_repo:
@@ -84,14 +101,17 @@ def normalize_source_reference(raw_ref: str) -> SourceCandidate | None:
 
 
 def is_repository_url(url: str) -> bool:
-    """Return True only for explicit git-remote-shaped URLs.
+    """Return True for a GitHub repository root or explicit git remote.
 
-    Host allowlists do not scale.  A generic HTTP(S) URL becomes a repository
-    only when it is explicitly git-shaped (`.git`) or when the LLM/user intent
-    routes it through a repository action.
+    GitHub owner/repository is a provider identifier grammar, not an intent
+    guess. Other HTTP(S) hosts still require a `.git` suffix or an explicit
+    semantic repository action.
     """
 
-    parsed = urlsplit(_strip_wrapping_delimiters(str(url or "")))
+    bounded = _strip_source_delimiters(str(url or ""))
+    if _parse_github_root(bounded) is not None:
+        return True
+    parsed = urlsplit(bounded)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
     return _has_explicit_git_suffix(parsed)
@@ -103,7 +123,7 @@ def normalize_repository_reference(raw_ref: str) -> SourceCandidate | None:
     raw = str(raw_ref or "").strip()
     if not raw:
         return None
-    parsed = urlsplit(_strip_wrapping_delimiters(raw))
+    parsed = urlsplit(_strip_source_delimiters(raw))
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     repo = _normalize_repository_path(parsed)
@@ -165,3 +185,14 @@ def _repo_segment_prefix(value: str) -> str:
 
 def _strip_wrapping_delimiters(value: str) -> str:
     return value.strip().strip("<>()[]{}\"'")
+
+
+def _strip_source_delimiters(value: str) -> str:
+    return _strip_wrapping_delimiters(value).rstrip(".,;!?")
+
+
+def _parse_github_root(value: str):
+    try:
+        return parse_github_repository_url(value, strict=True)
+    except DiscoveryError:
+        return None

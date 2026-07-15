@@ -210,6 +210,22 @@ def test_orchestrator_treats_mirror_url_as_repository_source_without_llm(tmp_pat
     assert registry["sources"][0]["user_label"] == "https://gitee.com/example/patchcore-inspection"
 
 
+def test_orchestrator_treats_bare_github_root_as_repository_without_llm(tmp_path: Path):
+    run_dir = tmp_path / "run_bare_github_url"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="https://github.com/example/library-a",
+    )
+
+    assert result.reply_kind == "source_intake"
+    assert result.created_sources[0]["kind"] == "github_repo"
+    assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
+    registry = load_source_registry(run_dir)
+    assert registry["sources"][0]["user_label"] == "https://github.com/example/library-a"
+
+
 def test_orchestrator_treats_gitlab_git_url_as_repository_source_without_llm(tmp_path: Path):
     run_dir = tmp_path / "run_gitlab_url"
     run_dir.mkdir()
