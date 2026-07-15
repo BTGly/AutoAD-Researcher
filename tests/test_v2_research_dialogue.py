@@ -20,6 +20,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     load_research_intent_summary,
     save_research_intent_summary,
 )
+from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 
 
 def _response_payload() -> dict:
@@ -110,8 +111,9 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert "先不要删除" in system
     assert 'task_action={"action":"prepare_experiment_task"}' in system
     assert "只准备一个 plan_only" in system
-    assert "不要用正则格式要求用户重述" in system
-    assert '"benchmark_family":"kernelbench"' in system
+    assert "没有匹配 Adapter" in system
+    assert '"adapter_id": "kernelbench"' in system
+    assert '"problem_id"' in system
     assert "初步假设（preliminary hypothesis）" in system
     assert "初步假设不得写成 inferred_facts" in system
     assert "当用户明确要求对比、步骤、清单、表格或实施细节时" in system
@@ -145,23 +147,28 @@ def test_source_removal_instruction_is_typed_and_forbids_extra_fields():
         })
 
 
-def test_target_spec_reuses_strict_repository_adapter_schema():
+def test_target_spec_is_generic_and_registry_validates_selectors():
     target = TargetSpec.model_validate({
-        "benchmark_family": "kernelbench",
+        "adapter_id": "kernelbench",
         "selectors": {"level": 2, "problem_id": 40},
     })
 
-    assert target.selectors.model_dump() == {"level": 2, "problem_id": 40}
-    with pytest.raises(ValidationError):
-        TargetSpec.model_validate({
-            "benchmark_family": "kernelbench",
-            "selectors": {"level": 2, "problem_id": 40, "variant": 1},
-        })
-    with pytest.raises(ValidationError):
-        TargetSpec.model_validate({
-            "benchmark_family": "kernelbench",
-            "selectors": {"level": -1, "problem_id": 40},
-        })
+    assert target.selectors == {"level": 2, "problem_id": 40}
+    resolved = get_target_adapter_registry().resolve(target.adapter_id, target.selectors)
+    assert resolved is not None
+    assert resolved.selectors == {"level": 2, "problem_id": 40}
+    assert get_target_adapter_registry().resolve(
+        "kernelbench",
+        {"level": 2, "problem_id": 40, "variant": 1},
+    ) is None
+    assert get_target_adapter_registry().resolve(
+        "kernelbench",
+        {"level": -1, "problem_id": 40},
+    ) is None
+    assert get_target_adapter_registry().resolve(
+        "unknown_benchmark",
+        {"workload": 1},
+    ) is None
 
 
 def test_orchestrator_invalid_llm_output_preserves_existing_summary(monkeypatch, tmp_path: Path):

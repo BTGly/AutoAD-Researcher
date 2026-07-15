@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
 from autoad_researcher.assistant.v2.task_bridge import TaskInstruction
-from autoad_researcher.repository_intelligence.workload_target import RepositoryWorkloadTarget
+from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 
 
 class SourceInstruction(BaseModel):
@@ -30,8 +30,8 @@ class TargetSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    benchmark_family: Literal["kernelbench"]
-    selectors: RepositoryWorkloadTarget
+    adapter_id: str = Field(min_length=1)
+    selectors: dict[str, Any]
 
 
 class ResearchDialogueResponse(BaseModel):
@@ -126,11 +126,13 @@ class ResearchDialogueAgent:
             (last_summary or ResearchIntentSummary()).model_dump(mode="json")
         )
         recent_dialogue = _json_text(_clean_transcript(transcript_tail))
+        target_adapters = _json_text(get_target_adapter_registry().prompt_catalog())
         system = f"""你是 AutoAD Research Assistant。你帮助研究者对齐材料和研究目标。
 
 当前可用材料：{evidence_summary}
 上一轮研究摘要：{previous}
 最近对话：{recent_dialogue}
+可用仓库目标 Adapter：{target_adapters}
 
 工作方式（遵守 AutoAD Assistant Invariants）：
 1. 先基于材料给出你对研究目标的理解（Propose first）
@@ -171,9 +173,9 @@ Pipeline 任务动作：
 - 普通研究讨论、询问可行性、请求完善方案时 task_action 必须为 null；source_action 与 task_action 不得同时非 null
 
 仓库目标选择：
-- 当用户以任意自然表达明确指定 KernelBench 的层级和题号时，输出 target_spec={{"benchmark_family":"kernelbench","selectors":{{"level":整数,"problem_id":整数}}}}
-- 你只负责把用户表达转换为 typed selectors，不得猜测缺失值，也不得声称已经找到或读取目标文件；系统会在仓库 Adapter 中验证
-- 用户没有同时明确层级和题号时 target_spec 必须为 null；不要用正则格式要求用户重述
+- 当用户以自然语言明确指定仓库内 workload 时，从“可用仓库目标 Adapter”选择匹配项并输出 target_spec={{"adapter_id":"...","selectors":{{...}}}}
+- selectors 必须严格遵守所选 Adapter 的 selectors_schema；你只负责转换用户明确表达，不得猜测缺失值，也不得声称已经找到或读取目标文件
+- 没有匹配 Adapter、选择条件不完整或表达含糊时 target_spec 必须为 null；系统会在 Adapter 中再次验证标识符
 
 只输出 JSON object，不要输出 Markdown code fence。输出结构：
 {{"reply_to_user":"...","summary":{{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{{"statement":"...","basis":"..."}}],"unresolved_conflicts":[{{"statement":"...","basis":"..."}}],"blocking_question":null}},"source_action":null,"task_action":null,"target_spec":null}}"""

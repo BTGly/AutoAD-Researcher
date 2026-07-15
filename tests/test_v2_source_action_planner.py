@@ -228,7 +228,7 @@ def test_orchestrator_queues_typed_repository_target_from_natural_expression(
                         "blocking_question": None,
                     },
                     "target_spec": {
-                        "benchmark_family": "kernelbench",
+                        "adapter_id": "kernelbench",
                         "selectors": {"level": 2, "problem_id": 40},
                     },
                 },
@@ -256,6 +256,7 @@ def test_orchestrator_queues_typed_repository_target_from_natural_expression(
         "repo_analyze",
     ]
     target_job = result.created_jobs[-1]
+    assert target_job["payload"]["target_adapter_id"] == "kernelbench"
     assert target_job["payload"]["repository_target"] == {"level": 2, "problem_id": 40}
     assert target_job["payload"]["depends_on"] == result.created_jobs[0]["job_id"]
     assert not (run_dir / "code").exists()

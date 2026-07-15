@@ -25,6 +25,7 @@ from autoad_researcher.assistant.v2.source_actions import (
 )
 from autoad_researcher.assistant.v2.source_service import register_source_intake
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge
+from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 from autoad_researcher.ui.sources import load_source_registry
 
 
@@ -247,7 +248,12 @@ def _queue_repository_target_spec(
 ) -> dict[str, Any] | None:
     if target_spec is None:
         return None
-    target = target_spec.selectors.model_dump(mode="json")
+    target = get_target_adapter_registry().resolve(
+        target_spec.adapter_id,
+        target_spec.selectors,
+    )
+    if target is None:
+        return None
     repository_sources = [
         source
         for source in created_sources
@@ -267,12 +273,16 @@ def _queue_repository_target_spec(
     source_id = str(source.get("source_id") or "")
     if not source_id:
         return None
-    payload = {"repository_target": target}
+    payload = {
+        "target_adapter_id": target.adapter_id,
+        target.payload_key: target.selectors,
+    }
     for job in load_pipeline_jobs(run_dir):
         if (
             job.get("source_id") == source_id
-            and job.get("job_type") in {"repo_analyze", "repo_summarize"}
-            and (job.get("payload") or {}).get("repository_target") == target
+            and job.get("job_type") == target.job_type
+            and (job.get("payload") or {}).get("target_adapter_id") == target.adapter_id
+            and (job.get("payload") or {}).get(target.payload_key) == target.selectors
         ):
             return None
     clone = next(
@@ -288,7 +298,7 @@ def _queue_repository_target_spec(
     return append_pipeline_job(
         run_dir,
         source_id=source_id,
-        job_type="repo_analyze",
-        evidence_role="repo_acquired",
+        job_type=target.job_type,
+        evidence_role=target.evidence_role,
         payload=payload,
     )
