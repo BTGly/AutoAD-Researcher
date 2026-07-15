@@ -15,6 +15,7 @@ LOW_FREQUENCY_TYPED_EVENTS = {
     "planner.conversation_route.decided",
     "planner.need_discovery.decided",
     "contract.draft.updated",
+    "contract.mutation.applied",
     "contract.confirmation.requested",
     "contract.confirmation.suspended",
     "contract.confirmation.resumed",
