@@ -16,25 +16,6 @@ def _reject_secret_like_payload(payload: dict) -> None:
         raise ValueError("approval artifacts must not contain API-key-like secrets")
 
 
-class IntentConfirmation(BaseModel):
-    """Human confirmation for a UI-generated research intent draft."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str = Field(min_length=1)
-    checkpoint: Literal["intent_confirmation"] = "intent_confirmation"
-    decision: Literal["approved", "rejected", "needs_revision"]
-    reviewer: str = "local_user"
-    source_artifact: str = Field(default="ui_chat/intent_draft.json", min_length=1)
-    comment: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-    @model_validator(mode="after")
-    def _validate_no_secrets(self) -> "IntentConfirmation":
-        _reject_secret_like_payload(self.model_dump(mode="json"))
-        return self
-
-
 class Stage3Approval(BaseModel):
     """A recorded user decision that unblocks a pipeline stage.
 

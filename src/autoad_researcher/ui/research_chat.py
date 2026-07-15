@@ -37,7 +37,6 @@ from autoad_researcher.ui.chat_client import call_research_chat
 from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
 from autoad_researcher.ui.chat_transcript import load_transcript, save_transcript
 from autoad_researcher.ui.intent_draft import (
-    load_intent_confirmation,
     load_intent_draft,
     intent_draft_prompt_payload,
     parse_intent_draft_response,
@@ -1052,7 +1051,7 @@ def build_research_assistant_overview(
             "raw_artifacts": [
                 "ui_chat/intent_draft.json",
                 "ui_chat/clarification_input.json",
-                "approvals/intent_confirmation.json",
+                "summary.json",
                 "approvals/patch_approval.json",
                 "approvals/run_approval.json",
                 "approval_gate_report.json",
@@ -1066,9 +1065,6 @@ def build_research_assistant_overview(
 def determine_task_status_label(run_dir: Path) -> str:
     if (run_dir / "final_report" / "final_report_facts.json").is_file():
         return "可查看最终报告"
-    confirmation = load_intent_confirmation(run_dir)
-    if not confirmation or confirmation.decision != "approved":
-        return "正在确认研究目标"
     if not (run_dir / "input_task.yaml").is_file():
         return "等待生成实验输入"
     patch_approval = load_stage3_approval(run_dir, decision_type="patch_approval")
@@ -1119,9 +1115,9 @@ def _section_bullets(title: str, values: list[str]) -> list[str]:
 
 def build_pipeline_input_action(run_dir: Path) -> dict[str, Any]:
     status = get_intake_bridge_status(run_dir)
-    if not status["intent_confirmation_exists"] or status["intent_confirmation_decision"] != "approved":
+    if not status["clarification_exists"]:
         return {
-            "message": "请先确认研究目标。确认后，系统会准备后续实验输入。",
+            "message": "研究目标对齐后，系统会准备后续实验输入。",
             "button_enabled": False,
         }
     if status["input_task_exists"]:
@@ -1130,7 +1126,7 @@ def build_pipeline_input_action(run_dir: Path) -> dict[str, Any]:
             "button_enabled": False,
         }
     return {
-        "message": "研究目标已确认。下一步可以生成实验输入。",
+        "message": "研究目标已对齐。下一步可以生成实验输入。",
         "button_enabled": True,
     }
 
@@ -1138,18 +1134,16 @@ def build_pipeline_input_action(run_dir: Path) -> dict[str, Any]:
 def build_user_flow_steps(run_dir: Path) -> list[dict[str, Any]]:
     status = determine_task_status_label(run_dir)
     labels = [
-        "确认研究目标",
         "生成实验输入",
         "审批代码修改方案",
         "审批真实执行",
         "查看最终报告",
     ]
     current_index = {
-        "正在确认研究目标": 1,
-        "等待生成实验输入": 2,
-        "等待审批代码修改": 3,
-        "等待审批真实执行": 4,
-        "可查看最终报告": 5,
+        "等待生成实验输入": 1,
+        "等待审批代码修改": 2,
+        "等待审批真实执行": 3,
+        "可查看最终报告": 4,
     }[status]
     return [
         {
@@ -1164,7 +1158,6 @@ def build_user_flow_steps(run_dir: Path) -> list[dict[str, Any]]:
 def build_hitl_gate_status_rows(run_dir: Path) -> list[dict[str, str]]:
     rows = []
     for stage, gate in [
-        ("patch_planner", "intent_confirmation"),
         ("patch_applicator", "patch_approval"),
         ("runner_execute", "run_approval"),
     ]:
@@ -1213,7 +1206,6 @@ def build_developer_info_payload(
 
 def _required_gate_artifact(gate: str) -> str:
     return {
-        "intent_confirmation": "approvals/intent_confirmation.json",
         "patch_approval": "approvals/patch_approval.json",
         "run_approval": "approvals/run_approval.json",
     }[gate]

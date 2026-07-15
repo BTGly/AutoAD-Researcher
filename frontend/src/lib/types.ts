@@ -27,23 +27,17 @@ export interface SourceItem {
   status: string;
 }
 
-export interface DraftField {
-  field: string;
-  label: string;
-  value: string;
-  status: 'known' | 'missing' | string;
+export interface BasedStatement {
+  statement: string;
+  basis: string;
 }
 
-export interface DraftState {
-  ready: boolean;
-  has_draft: boolean;
-  title: string;
-  fields: DraftField[];
-  missing: Array<{ field: string; label: string }>;
-  sources: Array<{ source_id: string; label: string; kind: string; status: string }>;
-  evidence: Array<{ source_id: string; type: string; artifact_path: string; summary: string }>;
-  jobs: Array<{ job_id: string; source_id: string; job_type: string; status: string; error?: string }>;
-  next_questions: string[];
+export interface IntentSummary {
+  goal: string;
+  confirmed_facts: string[];
+  inferred_facts: BasedStatement[];
+  unresolved_conflicts: BasedStatement[];
+  blocking_question: string | null;
 }
 
 export interface JobItem {
@@ -123,6 +117,6 @@ export interface ExperimentConfig {
   autoSearch: boolean;
 }
 
-export type TabId = 'sources' | 'jobs' | 'evidence' | 'draft';
+export type TabId = 'sources' | 'jobs' | 'evidence' | 'summary';
 
 export type PageId = 'chat' | 'settings' | 'report';

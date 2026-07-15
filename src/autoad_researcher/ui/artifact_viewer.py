@@ -41,7 +41,7 @@ STAGE_DESCRIPTIONS: dict[str, str] = {
 }
 
 RECOMMENDED_FILES: dict[str, list[str]] = {
-    "patch_planner": ["patch_plan.json", "patch_planner_handoff.json", "approval_gate_report.json"],
+    "patch_planner": ["patch_plan.json", "patch_planner_handoff.json"],
     "patch_applicator": ["patch_runner_handoff.json", "patch_execution_result.json", "approval_gate_report.json"],
     "runner_execute": [
         "execution_manifest.json",
@@ -55,9 +55,6 @@ RECOMMENDED_FILES: dict[str, list[str]] = {
 }
 
 BLOCKED_REASON_HINTS: dict[str, str] = {
-    "blocked_missing_approval:intent_confirmation": "缺少研究意图确认。请先在研究助手中确认 intent draft。",
-    "blocked_rejected_approval:intent_confirmation": "研究意图已被驳回，不能继续 patch planning。",
-    "blocked_revision_required:intent_confirmation": "研究意图需要修改，不能继续 patch planning。",
     "blocked_missing_approval:patch_approval": "缺少 patch plan 审批。请先审阅 proposed diff。",
     "blocked_missing_approval:run_approval": "缺少真实执行审批。请先确认 GPU benchmark 风险。",
     "blocked_real_execution_not_allowed:run_approval": (

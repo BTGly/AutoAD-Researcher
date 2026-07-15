@@ -131,9 +131,9 @@ export async function getEvidenceState(runId: string): Promise<any> {
   return res.json();
 }
 
-export async function getDraft(runId: string): Promise<any> {
-  const res = await fetch(`/api/runs/${runId}/draft`);
-  if (!res.ok) return { ready: false, has_draft: false, title: '研究计划草案', fields: [], missing: [], sources: [], evidence: [], jobs: [], next_questions: [] };
+export async function getIntentSummary(runId: string): Promise<any> {
+  const res = await fetch(`/api/runs/${runId}/intent-summary`);
+  if (!res.ok) return { goal: '', confirmed_facts: [], inferred_facts: [], unresolved_conflicts: [], blocking_question: null };
   return res.json();
 }
 

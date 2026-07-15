@@ -7,20 +7,16 @@ import pytest
 from pydantic import ValidationError
 
 from autoad_researcher.ui.intent_draft import (
-    INTENT_CONFIRMATION_JSON,
     INTENT_DRAFT_JSON,
-    APPROVALS_DIR,
     CLARIFICATION_INPUT_JSON,
     INTENT_DRAFT_DIR,
     ResearchIntentDraft,
     extract_json_object,
     intent_draft_prompt_payload,
     intent_draft_to_clarification_input,
-    load_intent_confirmation,
     load_intent_draft,
     parse_intent_draft_response,
     save_clarification_input,
-    save_intent_confirmation,
     save_intent_draft,
 )
 
@@ -147,39 +143,3 @@ def test_save_clarification_input_writes_file(tmp_path: Path):
     assert path == run_dir / INTENT_DRAFT_DIR / CLARIFICATION_INPUT_JSON
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["input_task"]["request"] == draft.research_goal
-
-
-def test_confirmation_requires_existing_intent_draft(tmp_path: Path):
-    with pytest.raises(ValueError, match="intent_draft.json is required"):
-        save_intent_confirmation(tmp_path / "run_ui_001", decision="approved")
-
-
-def test_confirmation_writes_three_decision_states(tmp_path: Path):
-    run_dir = tmp_path / "run_ui_001"
-    save_intent_draft(run_dir, _draft())
-
-    for decision in ("approved", "rejected", "needs_revision"):
-        path = save_intent_confirmation(run_dir, decision=decision, comment="checked")
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["decision"] == decision
-        assert data["checkpoint"] == "intent_confirmation"
-        assert data["source_artifact"] == "ui_chat/intent_draft.json"
-
-    loaded = load_intent_confirmation(run_dir)
-    assert loaded is not None
-    assert loaded.decision == "needs_revision"
-    assert path == run_dir / APPROVALS_DIR / INTENT_CONFIRMATION_JSON
-
-
-def test_confirmation_rejects_api_key_like_comment(tmp_path: Path):
-    run_dir = tmp_path / "run_ui_001"
-    save_intent_draft(run_dir, _draft())
-
-    with pytest.raises(ValidationError, match="API-key-like"):
-        save_intent_confirmation(run_dir, decision="approved", comment="sk-secret12345")
-
-
-def test_invalid_run_id_does_not_write_confirmation(tmp_path: Path):
-    run_dir = tmp_path / ".."
-    with pytest.raises(ValueError, match="dot-only"):
-        save_intent_confirmation(run_dir, decision="approved")

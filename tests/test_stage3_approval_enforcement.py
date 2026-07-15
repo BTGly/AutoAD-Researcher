@@ -16,32 +16,6 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
-def _intent_ok(run_dir: Path, run_id: str) -> None:
-    _write_json(run_dir / "ui_chat" / "intent_draft.json", {
-        "run_id": run_id,
-        "source": "ui_chat",
-        "research_goal": "Reduce memory.",
-        "problem_type": "resource_efficiency",
-        "primary_metrics": ["peak_gpu_memory_mb"],
-        "guardrail_metrics": ["instance_auroc"],
-        "allowed_change_scope": [],
-        "forbidden_change_scope": [],
-        "benchmark_scope": {},
-        "success_criteria": "memory decreases",
-        "risks": [],
-        "open_questions": [],
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    _write_json(run_dir / "approvals" / "intent_confirmation.json", {
-        "run_id": run_id,
-        "checkpoint": "intent_confirmation",
-        "decision": "approved",
-        "reviewer": "local_user",
-        "source_artifact": "ui_chat/intent_draft.json",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-
-
 def _stage3_approval(run_dir: Path, filename: str, decision_type: str, confirmed: bool, run_id: str) -> None:
     _write_json(run_dir / "approvals" / filename, {
         "run_id": run_id,
@@ -53,25 +27,12 @@ def _stage3_approval(run_dir: Path, filename: str, decision_type: str, confirmed
     })
 
 
-def test_patch_planner_resume_cannot_bypass_missing_intent_confirmation(tmp_path: Path):
+def test_patch_planner_resume_does_not_require_research_summary_confirmation(tmp_path: Path):
     run_dir = tmp_path / "run_gate"
     stage_dir = run_dir / "patch_planner"
     _write_json(stage_dir / "patch_planner_approval_request.json", {"already": "exists"})
 
     record = run_patch_planning_stage("run_gate", run_dir, stage_dir)
-
-    assert record.status == "blocked"
-    assert record.blocked_reason == "blocked_missing_approval:intent_confirmation"
-
-
-def test_patch_planner_resume_passes_with_intent_confirmation(tmp_path: Path):
-    run_id = "run_gate"
-    run_dir = tmp_path / run_id
-    stage_dir = run_dir / "patch_planner"
-    _intent_ok(run_dir, run_id)
-    _write_json(stage_dir / "patch_planner_approval_request.json", {"already": "exists"})
-
-    record = run_patch_planning_stage(run_id, run_dir, stage_dir)
 
     assert record.status == "passed"
 
@@ -133,7 +94,7 @@ def test_orchestrator_blocks_downstream_after_gated_stage(tmp_path: Path, monkey
             return Stage3AcceptanceStageRecord(
                 stage="patch_planner",
                 status="blocked",
-                blocked_reason="blocked_missing_approval:intent_confirmation",
+                blocked_reason="blocked_upstream: patch planning inputs unavailable",
             )
         return Stage3AcceptanceStageRecord(
             stage=stage,

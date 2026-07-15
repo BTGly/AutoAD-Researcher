@@ -25,15 +25,6 @@ def verify_hitl_artifacts(run_dir: Path) -> list[Check]:
     checks.append(_exists(run_dir / "ui_chat" / "intent_draft.json", "intent_draft.json", "create an intent draft in Research Assistant"))
     checks.append(_exists(run_dir / "ui_chat" / "clarification_input.json", "clarification_input.json", "generate clarification input from intent draft"))
 
-    confirmation = _read_json(run_dir / "approvals" / "intent_confirmation.json")
-    if confirmation and confirmation.get("decision") == "approved":
-        checks.append(Check("PASS", "intent_confirmation approved"))
-    else:
-        checks.append(Check("BLOCKED", "intent_confirmation approved", "open Research Assistant -> confirm intent draft"))
-
-    patch_planner_gate = _read_json(run_dir / "patch_planner" / "approval_gate_report.json")
-    checks.append(_gate_check(patch_planner_gate, "patch planner approval gate report"))
-
     patch_approval = _read_json(run_dir / "approvals" / "patch_approval.json")
     if patch_approval and patch_approval.get("confirmed_by_user") is True:
         checks.append(Check("PASS", "patch_approval confirmed"))

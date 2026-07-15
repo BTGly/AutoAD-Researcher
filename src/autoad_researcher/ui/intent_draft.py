@@ -14,7 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.core.run_id import validate_run_id
-from autoad_researcher.schemas.approvals import IntentConfirmation as UIIntentConfirmation, Stage3Approval
+from autoad_researcher.schemas.approvals import Stage3Approval
 from autoad_researcher.schemas.intake import InputTask
 from autoad_researcher.ui.chat_transcript import redact_secrets
 
@@ -23,7 +23,6 @@ INTENT_DRAFT_JSON = "intent_draft.json"
 INTENT_DRAFT_MD = "intent_draft.md"
 CLARIFICATION_INPUT_JSON = "clarification_input.json"
 APPROVALS_DIR = "approvals"
-INTENT_CONFIRMATION_JSON = "intent_confirmation.json"
 
 ProblemType = Literal[
     "accuracy_improvement",
@@ -32,7 +31,6 @@ ProblemType = Literal[
     "ablation",
     "other",
 ]
-IntentDecision = Literal["approved", "rejected", "needs_revision"]
 PatchScopeStatus = Literal["defer_to_patch_planner_after_repo_inspection"]
 
 
@@ -249,41 +247,6 @@ def save_clarification_input(run_dir: Path, draft: ResearchIntentDraft) -> Path:
         encoding="utf-8",
     )
     return path
-
-
-def save_intent_confirmation(
-    run_dir: Path,
-    *,
-    decision: IntentDecision,
-    comment: str | None = None,
-    reviewer: str = "local_user",
-) -> Path:
-    """Save a human confirmation checkpoint for the current intent draft."""
-    validate_run_id(run_dir.parent, run_dir.name)
-    draft_path = run_dir / INTENT_DRAFT_DIR / INTENT_DRAFT_JSON
-    if not draft_path.is_file():
-        raise ValueError("intent_draft.json is required before confirmation")
-    confirmation = UIIntentConfirmation(
-        run_id=run_dir.name,
-        decision=decision,
-        reviewer=reviewer,
-        comment=comment,
-    )
-    target_dir = run_dir / APPROVALS_DIR
-    target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / INTENT_CONFIRMATION_JSON
-    path.write_text(
-        json.dumps(confirmation.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return path
-
-
-def load_intent_confirmation(run_dir: Path) -> UIIntentConfirmation | None:
-    path = run_dir / APPROVALS_DIR / INTENT_CONFIRMATION_JSON
-    if not path.is_file():
-        return None
-    return UIIntentConfirmation.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def save_stage3_approval(

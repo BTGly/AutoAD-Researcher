@@ -11,10 +11,15 @@ from autoad_researcher.assistant.v2.evidence_service import append_artifact_evid
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, fail_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
+from autoad_researcher.assistant.v2.research_intent_summary import (
+    BasedStatement,
+    ResearchIntentSummary,
+    save_research_intent_summary,
+)
 from autoad_researcher.paper_intelligence.reading_artifacts import build_paper_reading_artifacts
 from autoad_researcher.server.worker_runtime import embedded_worker_enabled
-from autoad_researcher.server.routes import draft as draft_route
 from autoad_researcher.server.routes import evidence as evidence_route
+from autoad_researcher.server.routes import intent_summary as intent_summary_route
 from autoad_researcher.server.routes import sources as sources_route
 from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
 from autoad_researcher.tools.pdf_text_adapter import convert_pdf_to_markdown
@@ -264,57 +269,42 @@ async def test_delete_archive_bundle_removes_child_sources_and_evidence(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_draft_route_returns_chinese_missing_state(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(draft_route, "RUNS_ROOT", str(tmp_path))
-    run_dir = tmp_path / "run_demo"
-    (run_dir / "chat").mkdir(parents=True)
-    (run_dir / "chat" / "transcript.jsonl").write_text(
-        json.dumps({"role": "user", "content": "pathcore为基线，然后指标AUROC，数据集mvtec"}, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+async def test_intent_summary_route_returns_empty_summary_for_missing_run(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(intent_summary_route, "RUNS_ROOT", str(tmp_path))
 
-    payload = await draft_route.get_draft("run_demo")
+    payload = await intent_summary_route.get_intent_summary("run_demo")
 
-    assert payload["title"] == "研究计划草案"
-    assert payload["has_draft"] is True
-    fields = {item["field"]: item for item in payload["fields"]}
-    assert fields["baseline"]["value"] == "PatchCore"
-    assert fields["dataset"]["value"] == "MVTec AD"
-    assert "AUROC" in fields["primary_metrics"]["value"]
-    assert any(item["label"] == "成功标准" for item in payload["missing"])
+    assert payload == {
+        "goal": "",
+        "confirmed_facts": [],
+        "inferred_facts": [],
+        "unresolved_conflicts": [],
+        "blocking_question": None,
+    }
 
 
 @pytest.mark.asyncio
-async def test_draft_route_deduplicates_method_hints(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(draft_route, "RUNS_ROOT", str(tmp_path))
+async def test_intent_summary_route_returns_persisted_fact_groups(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(intent_summary_route, "RUNS_ROOT", str(tmp_path))
     run_dir = tmp_path / "run_demo"
-    evidence_dir = run_dir / "evidence"
-    evidence_dir.mkdir(parents=True)
-    (evidence_dir / "evidence_index.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "source_id": "src_pdf",
-                "support_level": "supported",
-                "evidence_type": "paper_markdown_fallback",
-                "artifact_path": "paper.md",
-                "summary": "SimpleNet feature adaptor",
-            }),
-            json.dumps({
-                "source_id": "src_pdf",
-                "support_level": "supported",
-                "evidence_type": "paper_reading_summary",
-                "artifact_path": "summary.md",
-                "summary": "SimpleNet discriminator",
-            }),
-        ])
-        + "\n",
-        encoding="utf-8",
+    save_research_intent_summary(
+        run_dir,
+        ResearchIntentSummary(
+            goal="复现 PatchCore",
+            confirmed_facts=["用户要求 plan_only"],
+            inferred_facts=[BasedStatement(statement="仓库支持 MVTec AD", basis="src_repo:README.md")],
+            unresolved_conflicts=[BasedStatement(statement="硬件不兼容", basis="repo compatibility evidence")],
+            blocking_question="是否接受兼容实现？",
+        ),
     )
 
-    payload = await draft_route.get_draft("run_demo")
+    payload = await intent_summary_route.get_intent_summary("run_demo")
 
-    fields = {item["field"]: item for item in payload["fields"]}
-    assert fields["preferred_method_hints"]["value"] == "SimpleNet 论文方法"
+    assert payload["goal"] == "复现 PatchCore"
+    assert payload["confirmed_facts"] == ["用户要求 plan_only"]
+    assert payload["inferred_facts"][0]["basis"] == "src_repo:README.md"
+    assert payload["unresolved_conflicts"][0]["statement"] == "硬件不兼容"
+    assert payload["blocking_question"] == "是否接受兼容实现？"
 
 
 @pytest.mark.asyncio

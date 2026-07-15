@@ -45,12 +45,12 @@ async def stop_embedded_worker():
         _worker_task = None
 
 
-from autoad_researcher.server.routes import artifacts, chat, draft, evidence, experiment_config, jobs, report_route, runs, sources, ws
+from autoad_researcher.server.routes import artifacts, chat, evidence, experiment_config, intent_summary, jobs, report_route, runs, sources, ws
 
 app.include_router(chat.router)
 app.include_router(runs.router)
 app.include_router(sources.router)
-app.include_router(draft.router)
+app.include_router(intent_summary.router)
 app.include_router(jobs.router)
 app.include_router(artifacts.router)
 app.include_router(evidence.router)

@@ -12,11 +12,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.schemas.approvals import IntentConfirmation, Stage3Approval
+from autoad_researcher.schemas.approvals import Stage3Approval
 from autoad_researcher.schemas.stage3_acceptance import Stage3AcceptanceStageRecord
 
-GateStage = Literal["patch_planner", "patch_applicator", "runner_execute"]
-GateName = Literal["intent_confirmation", "patch_approval", "run_approval"]
+GateStage = Literal["patch_applicator", "runner_execute"]
+GateName = Literal["patch_approval", "run_approval"]
 GateStatus = Literal["passed", "blocked"]
 
 _SECRET_LIKE_RE = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
@@ -47,53 +47,6 @@ class ApprovalGateResult(BaseModel):
     passed: bool
     report: ApprovalGateReport
     blocked_record: Stage3AcceptanceStageRecord | None = None
-
-
-def require_intent_confirmation(run_id: str, run_dir: Path, stage_dir: Path) -> ApprovalGateResult:
-    """Require approved research intent confirmation before patch planning."""
-    confirmation_rel = "approvals/intent_confirmation.json"
-    draft_rel = "ui_chat/intent_draft.json"
-    confirmation_path = run_dir / confirmation_rel
-    draft_path = run_dir / draft_rel
-
-    if not confirmation_path.is_file():
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_missing_approval:intent_confirmation")
-    if _contains_secret_like(confirmation_path):
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_invalid_approval:intent_confirmation")
-    if not draft_path.is_file():
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", draft_rel,
-                        "blocked_missing_artifact:ui_chat/intent_draft.json")
-    if _contains_secret_like(draft_path):
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", draft_rel,
-                        "blocked_invalid_approval:intent_confirmation")
-
-    try:
-        confirmation = IntentConfirmation.model_validate_json(confirmation_path.read_text(encoding="utf-8"))
-        draft = json.loads(draft_path.read_text(encoding="utf-8"))
-    except Exception:
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_invalid_approval:intent_confirmation")
-
-    if confirmation.run_id != run_id or draft.get("run_id") != run_id:
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_invalid_approval:intent_confirmation", decision=confirmation.decision)
-    if confirmation.source_artifact != draft_rel:
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_invalid_approval:intent_confirmation", decision=confirmation.decision)
-    if confirmation.decision == "rejected":
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_rejected_approval:intent_confirmation", decision=confirmation.decision)
-    if confirmation.decision == "needs_revision":
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_revision_required:intent_confirmation", decision=confirmation.decision)
-    if confirmation.decision != "approved":
-        return _blocked(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                        "blocked_invalid_approval:intent_confirmation", decision=confirmation.decision)
-
-    return _passed(run_id, stage_dir, "patch_planner", "intent_confirmation", confirmation_rel,
-                   observed_path=confirmation_path, decision=confirmation.decision)
 
 
 def require_patch_approval(run_id: str, run_dir: Path, stage_dir: Path) -> ApprovalGateResult:

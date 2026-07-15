@@ -4,10 +4,10 @@ interface Props {
   sources: SourceItem[];
   jobs: JobItem[];
   evidenceCount: number;
-  draftReady: boolean;
+  summaryAvailable: boolean;
 }
 
-export function StatusBar({ sources, jobs, evidenceCount, draftReady }: Props) {
+export function StatusBar({ sources, jobs, evidenceCount, summaryAvailable }: Props) {
   const parsedSources = sources.filter(s => s.status === 'parsed').length;
   const pendingJobs = jobs.filter(j => j.status === 'running').length;
   const parts: string[] = [];
@@ -15,7 +15,7 @@ export function StatusBar({ sources, jobs, evidenceCount, draftReady }: Props) {
   if (sources.length) parts.push(`资料：${sources.length}（${parsedSources} 个已解析）`);
   if (jobs.length) parts.push(`任务：${jobs.length}（${pendingJobs} 个运行中）`);
   if (evidenceCount) parts.push(`证据：${evidenceCount} 条可用`);
-  if (draftReady) parts.push('草案：可生成计划');
+  if (summaryAvailable) parts.push('研究摘要：已生成');
 
   return (
     <div className="kbd-hint" style={{ textAlign: 'left', paddingLeft: 8 }}>

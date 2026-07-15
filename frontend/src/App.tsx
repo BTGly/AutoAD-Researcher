@@ -23,7 +23,7 @@ import {
   getArtifact,
   getEvidence,
   getEvidenceState,
-  getDraft,
+  getIntentSummary,
   getJobs,
   getRuns,
   getSources,
@@ -33,12 +33,25 @@ import {
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, DraftState } from './lib/types';
+import type { Message, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
   label: string;
   content?: string;
+}
+
+function hasIntentSummary(summary: IntentSummary | null): boolean {
+  return Boolean(
+    summary
+    && (
+      summary.goal
+      || summary.confirmed_facts.length
+      || summary.inferred_facts.length
+      || summary.unresolved_conflicts.length
+      || summary.blocking_question
+    )
+  );
 }
 
 const MAX_VISIBLE_TOASTS = 3;
@@ -54,7 +67,7 @@ export default function App() {
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [unusableParsedSources, setUnusableParsedSources] = useState<UnusableParsedSource[]>([]);
-  const [draft, setDraft] = useState<DraftState | null>(null);
+  const [intentSummary, setIntentSummary] = useState<IntentSummary | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
   const [page, setPage] = useState<PageId>('chat');
@@ -83,7 +96,7 @@ export default function App() {
     const s = await getSources(nextRunId).catch(() => []);
     const j = await getJobs(nextRunId).catch(() => []);
     const evidenceState = await getEvidenceState(nextRunId).catch(() => ({ usable_evidence: [], unusable_parsed_sources: [] }));
-    const draftState = await getDraft(nextRunId).catch(() => null);
+    const summaryState = await getIntentSummary(nextRunId).catch(() => null);
     const e = Array.isArray(evidenceState.usable_evidence)
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
@@ -91,7 +104,7 @@ export default function App() {
     setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '', error: job.error || '' })));
     setEvidence(e.map(normalizeEvidence));
     setUnusableParsedSources((evidenceState.unusable_parsed_sources || []).map(normalizeUnusableParsedSource));
-    setDraft(draftState);
+    setIntentSummary(summaryState);
   }, []);
 
   const refreshSidebar = useCallback(async () => {
@@ -110,7 +123,7 @@ export default function App() {
     setJobs([]);
     setEvidence([]);
     setUnusableParsedSources([]);
-    setDraft(null);
+    setIntentSummary(null);
     setArtifacts([]);
     setToasts([]);
     const transcript = await getTranscript(nextRunId).catch(() => []);
@@ -191,7 +204,7 @@ export default function App() {
           setJobs([]);
           setEvidence([]);
           setUnusableParsedSources([]);
-          setDraft(null);
+          setIntentSummary(null);
           setArtifacts([]);
         }
       }
@@ -421,7 +434,7 @@ export default function App() {
                   <PlusMenu onFile={handleFile} />
                 </div>
                 <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
-                <StatusBar sources={sources} jobs={jobs} evidenceCount={evidence.length} draftReady={Boolean(draft?.has_draft)} />
+                <StatusBar sources={sources} jobs={jobs} evidenceCount={evidence.length} summaryAvailable={hasIntentSummary(intentSummary)} />
               </div>
             </div>
 
@@ -432,8 +445,8 @@ export default function App() {
               evidence={evidence}
               unusableParsedSources={unusableParsedSources}
               evidenceCount={evidence.length}
-              draftReady={Boolean(draft?.has_draft)}
-              draft={draft}
+              summaryAvailable={hasIntentSummary(intentSummary)}
+              intentSummary={intentSummary}
               onDeleteSource={handleDeleteSource}
             >
               {artifacts.length > 0 && (

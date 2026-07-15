@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { SourceItem, JobItem, EvidenceItem, UnusableParsedSource, TabId, DraftField, DraftState } from '../lib/types';
+import type { SourceItem, JobItem, EvidenceItem, UnusableParsedSource, TabId, BasedStatement, IntentSummary } from '../lib/types';
 
 interface Props {
   sources: SourceItem[];
@@ -7,8 +7,8 @@ interface Props {
   evidence: EvidenceItem[];
   unusableParsedSources: UnusableParsedSource[];
   evidenceCount: number;
-  draftReady: boolean;
-  draft?: DraftState | null;
+  summaryAvailable: boolean;
+  intentSummary?: IntentSummary | null;
   onDeleteSource?: (sourceId: string) => void;
   children?: React.ReactNode;
 }
@@ -18,17 +18,14 @@ interface DisplayMeta {
   tone: 'good' | 'warn' | 'bad' | 'info' | 'muted';
 }
 
-const CORE_DRAFT_FIELDS = new Set(['research_goal', 'baseline', 'dataset', 'primary_metrics', 'success_criteria']);
-const METHOD_DRAFT_FIELDS = new Set(['preferred_method_hints', 'user_improvement_hints', 'target_module', 'improvement_idea']);
-
-export function Sidebar({ sources, jobs, evidence, unusableParsedSources, evidenceCount, draftReady, draft, onDeleteSource, children }: Props) {
+export function Sidebar({ sources, jobs, evidence, unusableParsedSources, evidenceCount, summaryAvailable, intentSummary, onDeleteSource, children }: Props) {
   const [tab, setTab] = useState<TabId>('sources');
 
   const tabs: { id: TabId; label: string; count: number }[] = [
     { id: 'sources', label: '资料', count: sources.length },
     { id: 'jobs', label: '任务', count: jobs.length },
     { id: 'evidence', label: '证据', count: evidenceCount + unusableParsedSources.length },
-    { id: 'draft', label: '草案', count: draftReady ? 1 : 0 },
+    { id: 'summary', label: '摘要', count: summaryAvailable ? 1 : 0 },
   ];
 
   return (
@@ -49,7 +46,7 @@ export function Sidebar({ sources, jobs, evidence, unusableParsedSources, eviden
         {tab === 'sources' && <SourcesList sources={sources} onDeleteSource={onDeleteSource} />}
         {tab === 'jobs' && <JobsList jobs={jobs} />}
         {tab === 'evidence' && <EvidenceList evidence={evidence} unusableParsedSources={unusableParsedSources} />}
-        {tab === 'draft' && <DraftPanel draft={draft || null} />}
+        {tab === 'summary' && <IntentSummaryPanel summary={intentSummary || null} />}
       </div>
       {children}
     </div>
@@ -178,45 +175,64 @@ function EvidenceList({ evidence, unusableParsedSources }: { evidence: EvidenceI
   );
 }
 
-function DraftPanel({ draft }: { draft: DraftState | null }) {
-  if (!draft || !draft.has_draft) {
-    return <EmptyState title="暂无研究计划草案" detail="当对话里出现基线、数据集、指标或资料线索后，草案会自动整理。" />;
+function IntentSummaryPanel({ summary }: { summary: IntentSummary | null }) {
+  if (!summary || !hasIntentSummary(summary)) {
+    return <EmptyState title="暂无研究摘要" detail="研究目标和材料对齐后，摘要会出现在这里。" />;
   }
-  const coreFields = draft.fields.filter(field => CORE_DRAFT_FIELDS.has(field.field));
-  const methodFields = draft.fields.filter(field => METHOD_DRAFT_FIELDS.has(field.field));
-  const otherFields = draft.fields.filter(field => !CORE_DRAFT_FIELDS.has(field.field) && !METHOD_DRAFT_FIELDS.has(field.field));
   return (
     <div className="sidebar-stack">
-      <div className="sidebar-card">
-        <div className="sidebar-card-head">
-          <div className="sidebar-title">{draft.title || '研究计划草案'}</div>
-          <Badge meta={{ label: '自动整理', tone: 'info' }} />
+      {summary.goal && <SummaryTextSection title="研究目标" text={summary.goal} />}
+      <SummaryListSection title="用户已确认" values={summary.confirmed_facts} />
+      <BasedStatementSection title="材料与推断" values={summary.inferred_facts} />
+      <BasedStatementSection title="待解决冲突" values={summary.unresolved_conflicts} tone="warning" />
+      {summary.blocking_question && (
+        <div className="sidebar-note warning">
+          <div className="sidebar-section-title">阻塞问题</div>
+          <div>{summary.blocking_question}</div>
         </div>
-        <div className="sidebar-body">
-          根据当前对话和材料持续更新。
-        </div>
-      </div>
-
-      <DraftSection title="核心信息" fields={coreFields} />
-      <DraftSection title="方法线索" fields={methodFields} />
-      <DraftSection title="执行与来源" fields={otherFields} />
-
-      <div className="sidebar-muted">
-        草案来源：{draft.sources.length} 个资料，{draft.evidence.length} 条证据，{draft.jobs.length} 个相关任务。
-      </div>
+      )}
     </div>
   );
 }
 
-function DraftSection({ title, fields }: { title: string; fields: DraftField[] }) {
-  if (!fields.length) return null;
+function hasIntentSummary(summary: IntentSummary): boolean {
+  return Boolean(
+    summary.goal
+    || summary.confirmed_facts.length
+    || summary.inferred_facts.length
+    || summary.unresolved_conflicts.length
+    || summary.blocking_question
+  );
+}
+
+function SummaryTextSection({ title, text }: { title: string; text: string }) {
   return (
     <div className="sidebar-section">
       <div className="sidebar-section-title">{title}</div>
-      {fields.map(field => (
-        <div key={field.field} className="draft-field-row">
-          <div className="draft-field-label">{field.label}</div>
-          <div className="draft-field-value">{field.value}</div>
+      <div className="sidebar-body">{text}</div>
+    </div>
+  );
+}
+
+function SummaryListSection({ title, values }: { title: string; values: string[] }) {
+  if (!values.length) return null;
+  return (
+    <div className="sidebar-section">
+      <div className="sidebar-section-title">{title}</div>
+      {values.map((value, index) => <div key={`${value}-${index}`} className="sidebar-body summary-item">{value}</div>)}
+    </div>
+  );
+}
+
+function BasedStatementSection({ title, values, tone = '' }: { title: string; values: BasedStatement[]; tone?: string }) {
+  if (!values.length) return null;
+  return (
+    <div className={`sidebar-section ${tone}`}>
+      <div className="sidebar-section-title">{title}</div>
+      {values.map((value, index) => (
+        <div key={`${value.statement}-${index}`} className="summary-item">
+          <div className="sidebar-body">{value.statement}</div>
+          <div className="sidebar-muted">依据：{value.basis}</div>
         </div>
       ))}
     </div>

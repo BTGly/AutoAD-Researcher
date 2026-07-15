@@ -24,7 +24,8 @@ from autoad_researcher.paper_intelligence.markdown import (
     has_readable_paper_block_text,
     looks_garbled_text,
 )
-from autoad_researcher.ui.intent_draft import load_intent_confirmation, load_intent_draft
+from autoad_researcher.assistant.v2.research_intent_summary import load_research_intent_summary
+from autoad_researcher.ui.intent_draft import load_intent_draft
 from autoad_researcher.ui.sources import load_source_registry
 
 
@@ -165,7 +166,12 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
     readable_artifacts = list_readable_paper_artifacts(run_dir)
     unreadable_artifacts = list_unreadable_paper_artifacts(run_dir)
     has_readable_content = has_readable_paper_artifact_content(run_dir)
-    confirmation = load_intent_confirmation(run_dir)
+    intent_summary = load_research_intent_summary(run_dir)
+    intent_aligned = bool(
+        intent_summary
+        and intent_summary.goal
+        and intent_summary.blocking_question is None
+    )
 
     snapshot = ResearchContextSnapshot(
         run_id=run_dir.name,
@@ -186,8 +192,8 @@ def build_research_context_snapshot(run_dir: Path) -> ResearchContextSnapshot:
         paper_context=load_readable_paper_context(run_dir),
         missing_blocking_gaps=_select_blocking_gaps(what.missing_fields),
         intent_draft_exists=load_intent_draft(run_dir) is not None,
-        task_confirmed=bool(confirmation and confirmation.decision == "approved"),
-        ready_for_pipeline=bool(confirmation and confirmation.decision == "approved"),
+        task_confirmed=intent_aligned,
+        ready_for_pipeline=intent_aligned,
         execution_approved=False,
         patch_approved=False,
         run_approved=False,

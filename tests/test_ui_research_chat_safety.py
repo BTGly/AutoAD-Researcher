@@ -9,7 +9,6 @@ from autoad_researcher.assistant.intent_action import ActionDecision
 from autoad_researcher.ui.intent_draft import (
     ResearchIntentDraft,
     save_clarification_input,
-    save_intent_confirmation,
     save_intent_draft,
 )
 from autoad_researcher.ui.research_chat import (
@@ -167,23 +166,21 @@ def test_pipeline_input_action_hides_artifact_status_table(tmp_path: Path):
 
     assert action["button_enabled"] is False
     message = action["message"]
-    assert "请先确认研究目标" in message
+    assert "研究目标对齐后" in message
     assert "clarification_input.json" not in message
-    assert "intent_confirmation.json" not in message
     assert "input_task.yaml" not in message
 
 
-def test_pipeline_input_action_enables_after_confirmed_intent(tmp_path: Path):
+def test_pipeline_input_action_enables_after_clarification(tmp_path: Path):
     run_dir = tmp_path / "run_20260704_0250_ee23"
     draft = _draft(run_id=run_dir.name)
     save_intent_draft(run_dir, draft)
     save_clarification_input(run_dir, draft)
-    save_intent_confirmation(run_dir, decision="approved")
 
     action = build_pipeline_input_action(run_dir)
 
     assert action["button_enabled"] is True
-    assert action["message"] == "研究目标已确认。下一步可以生成实验输入。"
+    assert action["message"] == "研究目标已对齐。下一步可以生成实验输入。"
 
 
 def test_user_flow_hides_raw_gate_stage_names(tmp_path: Path):
@@ -194,7 +191,7 @@ def test_user_flow_hides_raw_gate_stage_names(tmp_path: Path):
 
     assert "patch_planner" not in text
     assert "runner_execute" not in text
-    assert steps[0]["label"] == "确认研究目标"
+    assert steps[0]["label"] == "生成实验输入"
     assert steps[0]["state"] == "current"
 
 

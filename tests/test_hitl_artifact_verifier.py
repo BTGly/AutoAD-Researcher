@@ -19,8 +19,6 @@ def _complete_run(run_dir: Path) -> None:
     _write(run_dir / "input_task.yaml", "run_id: run_hitl\nrequest: test\n")
     _write_json(run_dir / "ui_chat" / "intent_draft.json", {"run_id": "run_hitl"})
     _write_json(run_dir / "ui_chat" / "clarification_input.json", {"input_task": {"run_id": "run_hitl"}})
-    _write_json(run_dir / "approvals" / "intent_confirmation.json", {"decision": "approved"})
-    _write_json(run_dir / "patch_planner" / "approval_gate_report.json", {"status": "passed"})
     _write_json(run_dir / "approvals" / "patch_approval.json", {"confirmed_by_user": True})
     _write_json(run_dir / "patch_applicator" / "approval_gate_report.json", {"status": "passed"})
     _write_json(run_dir / "approvals" / "run_approval.json", {"confirmed_by_user": True})
@@ -43,16 +41,6 @@ def test_only_intent_draft_is_blocked(tmp_path: Path):
     checks = verify_hitl_artifacts(run_dir)
 
     assert any(check.name == "intent_draft.json" and check.status == "PASS" for check in checks)
-    assert any(check.name == "input_task.yaml" and check.status == "BLOCKED" for check in checks)
-
-
-def test_intent_approved_without_input_task_is_blocked(tmp_path: Path):
-    run_dir = tmp_path / "run_hitl"
-    _write_json(run_dir / "approvals" / "intent_confirmation.json", {"decision": "approved"})
-
-    checks = verify_hitl_artifacts(run_dir)
-
-    assert any(check.name == "intent_confirmation approved" and check.status == "PASS" for check in checks)
     assert any(check.name == "input_task.yaml" and check.status == "BLOCKED" for check in checks)
 
 
