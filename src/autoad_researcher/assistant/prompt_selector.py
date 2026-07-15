@@ -49,7 +49,7 @@ _V2_COMPONENT_TO_PROMPT: dict[str, str] = {
     "turn_gate": "assistant.v2.turn_gate.v1",
     "need_discovery": "assistant.v2.need_discovery.v1",
     "research_intent_interpreter": "assistant.v2.research_intent_interpreter.v1",
-    "reply_planner": "assistant.v2.reply_plan.v1",
+    "reply_planner": "assistant.v2.reply_plan.v2",
 }
 
 V2_COMPONENT_TO_PROMPT_ID: dict[str, str] = _V2_COMPONENT_TO_PROMPT

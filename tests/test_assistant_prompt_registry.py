@@ -142,12 +142,12 @@ def test_v2_core_prompt_profiles_are_registered_with_io_contracts():
         "assistant.v2.source_action_plan.v1": ("SourceActionPlan", "assistant_state", "registering_sources"),
         "assistant.v2.turn_gate.v1": ("TurnGateDecision", "assistant_state", "understanding_intent"),
         "assistant.v2.need_discovery.v1": ("RequiredNeedSpec", "schema_bound_draft", None),
-        "assistant.v2.reply_plan.v1": ("V2ReplyPlanJSON", "assistant_state", "guiding_materials"),
+        "assistant.v2.reply_plan.v2": ("V2ReplyContent", "assistant_state", "guiding_materials"),
     }
 
     for prompt_id, (output_schema, layer, stage) in expected.items():
         profile = registry.require(prompt_id)
-        assert profile.prompt_version == "v1"
+        assert profile.prompt_version == ("v2" if prompt_id == "assistant.v2.reply_plan.v2" else "v1")
         assert profile.layer == layer
         assert profile.assistant_stage == stage
         assert profile.io.output_schema == output_schema
@@ -164,11 +164,11 @@ def test_v2_core_prompt_profiles_are_registered_with_io_contracts():
     assert "SourceActionPlanner" in registry.require("assistant.v2.source_action_plan.v1").system_prompt
     assert "TurnGateDecision JSON" in registry.require("assistant.v2.turn_gate.v1").system_prompt
     assert "RequiredNeedSpec JSON" in registry.require("assistant.v2.need_discovery.v1").system_prompt
-    assert "reply_to_user" in registry.require("assistant.v2.reply_plan.v1").system_prompt
+    assert "reply_to_user" in registry.require("assistant.v2.reply_plan.v2").system_prompt
     assert "具体提升多少是可选目标" in registry.require("assistant.v2.need_discovery.v1").system_prompt
-    assert "优先理解当前用户消息与最近一轮 assistant 回复的关系" in registry.require("assistant.v2.reply_plan.v1").system_prompt
-    assert "你不能独立发起合同确认" in registry.require("assistant.v2.reply_plan.v1").system_prompt
-    assert registry.require("assistant.v2.reply_plan.v1").visibility == "user_visible"
+    assert "deterministic state services" in registry.require("assistant.v2.reply_plan.v2").system_prompt
+    assert "you do not decide readiness, confirmation" in registry.require("assistant.v2.reply_plan.v2").system_prompt.lower()
+    assert registry.require("assistant.v2.reply_plan.v2").visibility == "user_visible"
 
 
 def test_prompt_io_contract_rejects_unsafe_artifact_paths():
@@ -212,7 +212,7 @@ def test_v2_prompt_profiles_match_reviewed_content_hashes():
         "assistant.v2.source_action_plan.v1": "12672a757d47ef7c181d3e9b87c1b6b75a86ed3be85f57f2b783f7824b4db763",
         "assistant.v2.turn_gate.v1": "5366c2597162200201f5842ec606b71a1f54276f1d437f57ad6f0341a2611a85",
         "assistant.v2.need_discovery.v1": "583a477ce4b6ae5449ed76f2ab1f4a46d34870d7500e83efe855142369073158",
-        "assistant.v2.reply_plan.v1": "ec993d78d020dd0aab7e8ae2dba813f278c4b211ea38dfadaf60a1faf6619570",
+        "assistant.v2.reply_plan.v2": "8af86b345a3549966584e63316bd1483ca829564945d0ecaea52ae333e7143d7",
     }
 
     actual = {

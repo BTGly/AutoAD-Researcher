@@ -38,7 +38,7 @@ from autoad_researcher.assistant.v2.research_semantics import (
     ResearchModeAssessment,
 )
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
-from autoad_researcher.assistant.v2.reply_planner import plan_reply
+from autoad_researcher.assistant.v2.reply_planner import V2ReplyContent, plan_reply
 from autoad_researcher.server.routes.chat import _assistant_delta_message, _assistant_done_message
 from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
 from autoad_researcher.core.control_plane.readiness import load_experiment_session
@@ -796,6 +796,13 @@ def test_reply_planner_fallback_asks_goal_not_method():
     assert "你要改哪个模块" not in reply
 
 
+def test_reply_planner_schema_contains_content_fields_only():
+    schema = V2ReplyContent.model_json_schema()
+
+    assert set(schema["properties"]) == {"reply_to_user", "next_question"}
+    assert set(schema["required"]) == {"reply_to_user", "next_question"}
+
+
 def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -840,7 +847,7 @@ def test_reply_planner_llm_prompt_requires_structured_json(monkeypatch):
     assert "contract_updates" not in reply
     assert "missing_required_fields" not in reply
     assert "reply_to_user" in system_text
-    assert "行为准则" in system_text
+    assert "deterministic state services" in system_text
 
 
 def test_reply_planner_uses_recent_dialogue_for_short_challenge_instead_of_failed_job(monkeypatch):
@@ -987,13 +994,10 @@ def test_reply_planner_buffers_until_validated_then_emits_visible_reply(monkeypa
         on_delta = kwargs.get("on_delta")
         assert on_delta is None
         return {
-            "reply": json.dumps({
-                "reply_to_user": "已记录。",
-                "contract_updates": {"baseline": "PatchCore"},
-                "missing_required_fields": [],
-                "next_question": "",
-                "ready_for_confirmation": False,
-            }, ensure_ascii=False),
+                "reply": json.dumps({
+                    "reply_to_user": "已记录。",
+                    "next_question": "",
+                }, ensure_ascii=False),
             "error": "",
         }
 
@@ -1023,14 +1027,10 @@ def test_reply_planner_buffers_until_validated_then_emits_visible_reply(monkeypa
 def test_reply_planner_handles_reply_to_user_not_first_key_without_leaking(monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         return {
-            "reply": json.dumps({
-                "contract_updates": {"baseline": "PatchCore"},
-                "missing_required_fields": ["success_criteria"],
-                "reply_to_user": "我只展示这句。",
-                "next_question": "请确认成功标准。",
-                "ready_for_confirmation": False,
-                "ready_for_plan": False,
-            }, ensure_ascii=False),
+                "reply": json.dumps({
+                    "reply_to_user": "我只展示这句。",
+                    "next_question": "请确认成功标准。",
+                }, ensure_ascii=False),
             "error": "",
         }
 
@@ -1055,7 +1055,7 @@ def test_reply_planner_handles_reply_to_user_not_first_key_without_leaking(monke
     assert "PatchCore" not in reply
 
 
-def test_reply_stream_chunk_split_and_key_order_do_not_leak_internal_fields(monkeypatch):
+def test_reply_stream_rejects_non_neutral_legacy_control_fields(monkeypatch):
     streamed: list[str] = []
     payload = json.dumps({
         "contract_updates": {"baseline": "PatchCore"},
@@ -1088,14 +1088,14 @@ def test_reply_stream_chunk_split_and_key_order_do_not_leak_internal_fields(monk
     )
 
     visible_stream = "".join(streamed)
-    assert reply == "已记录用户可见内容。"
-    assert visible_stream == "已记录用户可见内容。"
+    assert "已记录用户可见内容" not in reply
+    assert visible_stream == ""
     assert "contract_updates" not in visible_stream
     assert "missing_required_fields" not in visible_stream
     assert "PatchCore" not in visible_stream
 
 
-def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
+def test_reply_control_request_uses_safe_fallback_without_raw_json(monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         return {
             "reply": json.dumps({
@@ -1123,7 +1123,7 @@ def test_hf2_reply_does_not_expose_raw_json(monkeypatch):
         provider_url="https://example.test",
     )
 
-    assert reply == "我已记录 baseline 和数据集。\n\n请确认主要指标。"
+    assert "我已记录 baseline 和数据集" not in reply
     assert "{" not in reply
     assert "contract_updates" not in reply
     assert "missing_required_fields" not in reply

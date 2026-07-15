@@ -9,30 +9,47 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from autoad_researcher.assistant.llm_runtime import runtime_trace_fields
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.llm_trace_service import append_llm_trace
 
 
-class V2ReplyPlan(BaseModel):
-    """Strict internal envelope; only visible fields may reach the user."""
+class V2ReplyContent(BaseModel):
+    """Content-only envelope with no state-transition authority."""
 
-    model_config = ConfigDict(extra="forbid")
+    # Old trace fixtures may contain control keys. Ignoring them preserves
+    # replay compatibility while ensuring they cannot drive any state branch.
+    model_config = ConfigDict(extra="ignore")
 
     reply_to_user: str
-    contract_updates: dict[str, Any]
-    missing_required_fields: list[str]
     next_question: str
-    ready_for_confirmation: bool
-    new_user_confirmed_fields: list[str] = Field(default_factory=list)
-    optional_hints_detected: dict[str, Any] = Field(default_factory=dict)
-    ready_for_experiment_agents: bool = False
-    ready_for_plan: bool = False
-    primary_metrics: list[str] = Field(default_factory=list)
-    secondary_metrics: list[str] = Field(default_factory=list)
-    metric_priority: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_control_requests(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        neutral_values = {
+            "contract_updates": ({}, None),
+            "missing_required_fields": ([], None),
+            "new_user_confirmed_fields": ([], None),
+            "optional_hints_detected": ({}, None),
+            "ready_for_confirmation": (False, None),
+            "ready_for_experiment_agents": (False, None),
+            "ready_for_plan": (False, None),
+            "primary_metrics": ([], None),
+            "secondary_metrics": ([], None),
+            "metric_priority": (None,),
+        }
+        for key, allowed in neutral_values.items():
+            if key in value and value[key] not in allowed:
+                raise ValueError("Reply Planner cannot request control-plane state changes")
+        return value
+
+
+V2ReplyPlan = V2ReplyContent
 
 
 def plan_reply(
@@ -145,8 +162,7 @@ def _llm_reply(
         messages,
         model=model,
         timeout_s=30,
-        # The response is an internal control envelope. Buffer it until the
-        # complete payload passes schema and authorization validation.
+        # Buffer content until the complete payload passes schema validation.
         on_delta=None,
         priority="interactive",
         response_format_json=True,
@@ -157,31 +173,6 @@ def _llm_reply(
         reply_text = str(result["reply"])
         payload, validation_errors = _parse_llm_contract_reply(reply_text)
         if payload is not None:
-            if _requests_unbacked_confirmation(payload, contract):
-                append_llm_trace(
-                    run_dir,
-                    call_site="reply_planner",
-                    prompt_id=profile.prompt_id,
-                    prompt_version=profile.prompt_version,
-                    prompt_text=system,
-                    model=model,
-                    provider_url=provider_url,
-                    messages=messages,
-                    raw_output=reply_text,
-                    parse_status="ok",
-                    schema_validation="error",
-                    schema_validation_errors=validation_errors,
-                    fallback_reason="unbacked_confirmation_request",
-                    latency_ms=latency_ms,
-                    **runtime_trace_fields(result),
-                )
-                return _reply_failure_fallback(
-                    turn_gate,
-                    blocking,
-                    pending_jobs,
-                    failed_jobs,
-                    unusable,
-                )
             append_llm_trace(
                 run_dir,
                 call_site="reply_planner",
@@ -261,14 +252,6 @@ def _reply_failure_fallback(
     if turn_gate.get("contract_action") in {"answer_without_contract_update", "ask_clarifying_question"}:
         return "answer", _non_contract_fallback(turn_gate)
     return _unified_fallback(blocking, 0, 0, 0, pending_jobs, failed_jobs, unusable_sources)
-
-
-def _requests_unbacked_confirmation(payload: V2ReplyPlan, contract: Any) -> bool:
-    return payload.ready_for_confirmation is True and not _has_ready_contract(contract)
-
-
-def _has_ready_contract(contract: Any) -> bool:
-    return isinstance(contract, dict) and contract.get("ready_for_plan") is True
 
 
 def _unified_fallback(
@@ -457,7 +440,7 @@ def _json_text(value: Any) -> str:
         return "{}"
 
 
-def _parse_llm_contract_reply(text: str) -> tuple[V2ReplyPlan | None, list[dict[str, str]]]:
+def _parse_llm_contract_reply(text: str) -> tuple[V2ReplyContent | None, list[dict[str, str]]]:
     stripped = text.strip()
     if not stripped:
         return None, []
@@ -469,7 +452,7 @@ def _parse_llm_contract_reply(text: str) -> tuple[V2ReplyPlan | None, list[dict[
     except json.JSONDecodeError:
         return None, []
     try:
-        return V2ReplyPlan.model_validate(payload), []
+        return V2ReplyContent.model_validate(payload), []
     except ValidationError as exc:
         errors = [
             {
@@ -481,7 +464,7 @@ def _parse_llm_contract_reply(text: str) -> tuple[V2ReplyPlan | None, list[dict[
         return None, errors
 
 
-def _visible_reply_from_llm_payload(payload: V2ReplyPlan) -> str:
+def _visible_reply_from_llm_payload(payload: V2ReplyContent) -> str:
     parts: list[str] = []
     reply = _clean_visible_text(payload.reply_to_user)
     question = _clean_visible_text(payload.next_question)
@@ -490,7 +473,7 @@ def _visible_reply_from_llm_payload(payload: V2ReplyPlan) -> str:
     if question and question != reply:
         parts.append(question)
     if not parts:
-        parts.append("我已更新研究意图草稿。请继续补充目标、指标或成功标准。")
+        parts.append("我暂时无法生成可靠回复，请重试。")
     return "\n\n".join(parts)
 
 

@@ -138,7 +138,7 @@ def test_selector_routes_v2_components_through_registry():
         "source_action_planner": "assistant.v2.source_action_plan.v1",
         "turn_gate": "assistant.v2.turn_gate.v1",
         "need_discovery": "assistant.v2.need_discovery.v1",
-        "reply_planner": "assistant.v2.reply_plan.v1",
+        "reply_planner": "assistant.v2.reply_plan.v2",
         "research_intent_interpreter": "assistant.v2.research_intent_interpreter.v1",
     }
     for component, prompt_id in V2_COMPONENT_TO_PROMPT_ID.items():
