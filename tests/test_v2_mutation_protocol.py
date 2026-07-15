@@ -158,11 +158,11 @@ def test_set_cannot_overwrite_nonempty_field(tmp_path: Path):
     assert load_contract_draft(run_dir) == original
 
 
-def test_task_profile_and_material_fields_are_not_intent_mutation_targets(tmp_path: Path):
+def test_task_profile_material_and_system_policy_are_not_intent_mutation_targets(tmp_path: Path):
     run_dir = tmp_path / "run_boundary"
     user_input = "Model-X"
     run_dir.mkdir()
-    for target in ("task_profile", "baseline_commit", "baseline_entrypoint", "forbidden_change_scope"):
+    for target in ("task_profile", "baseline_commit", "baseline_entrypoint", "system_safety_policy"):
         receipt = apply_contract_mutation(
             run_dir,
             user_input=user_input,
@@ -175,6 +175,35 @@ def test_task_profile_and_material_fields_are_not_intent_mutation_targets(tmp_pa
         assert receipt.status == "rejected"
         assert receipt.reason == "unsupported_target"
     assert load_contract_draft(run_dir) is None
+
+
+def test_user_forbidden_scope_is_distinct_from_system_safety_policy(tmp_path: Path):
+    run_dir = tmp_path / "run_user_boundary"
+    run_dir.mkdir()
+    user_input = "不要修改评估脚本，也不要使用低秩微调。"
+
+    receipt = apply_contract_mutation(
+        run_dir,
+        user_input=user_input,
+        proposal=ContractMutationProposal(
+            base_draft_sha256=None,
+            full_turn_mutation_evidence=user_input,
+            operations=[_operation(
+                user_input,
+                "set",
+                "forbidden_change_scope",
+                ["evaluation_script", "low_rank_finetuning"],
+                user_input,
+            )],
+        ),
+    )
+
+    assert receipt.status == "applied"
+    durable = load_contract_draft(run_dir)
+    assert durable is not None
+    assert durable.forbidden_change_scope == ["evaluation_script", "low_rank_finetuning"]
+    assert durable.system_safety_policy != durable.forbidden_change_scope
+    assert "change_metric_definition" in durable.system_safety_policy
 
 
 def test_missing_run_is_not_recreated(tmp_path: Path):
@@ -196,3 +225,107 @@ def test_missing_run_is_not_recreated(tmp_path: Path):
     else:
         raise AssertionError("missing run must not be recreated")
     assert not run_dir.exists()
+
+
+def test_synonymous_plan_only_requests_have_equivalent_mutation_structure(tmp_path: Path):
+    turns = [
+        "先别动代码，只评估这个方案的可行性。",
+        "当前只做设计，判断这个方案是否可行。",
+        "保持只读，先分析这个方案能不能成立。",
+        "我想先评估可行性，不要执行任何修改。",
+        "先给研究设计，不运行代码或实验。",
+    ]
+    changed_structures: list[list[str]] = []
+
+    for index, user_input in enumerate(turns):
+        run_dir = tmp_path / f"run_synonym_{index}"
+        run_dir.mkdir()
+        receipt = apply_contract_mutation(
+            run_dir,
+            user_input=user_input,
+            proposal=ContractMutationProposal(
+                base_draft_sha256=None,
+                full_turn_mutation_evidence=user_input,
+                operations=[_operation(
+                    user_input,
+                    "set",
+                    "research_goal",
+                    "评估方案可行性",
+                    user_input,
+                )],
+            ),
+        )
+        assert receipt.status == "applied"
+        changed_structures.append(receipt.changed_fields)
+
+    assert changed_structures == [["research_goal"]] * len(turns)
+
+
+def test_entity_renaming_preserves_operation_targets_without_value_leakage(tmp_path: Path):
+    variants = [
+        ("Model-X", "Metric-Z"),
+        ("Method-Q", "Measure-R"),
+        ("System-A", "Criterion-B"),
+    ]
+    structures: list[list[str]] = []
+
+    for index, (research_object, metric) in enumerate(variants):
+        user_input = f"复现 {research_object}，只报告 {metric}。"
+        run_dir = tmp_path / f"run_entity_{index}"
+        run_dir.mkdir()
+        receipt = apply_contract_mutation(
+            run_dir,
+            user_input=user_input,
+            proposal=ContractMutationProposal(
+                base_draft_sha256=None,
+                full_turn_mutation_evidence=user_input,
+                operations=[
+                    _operation(user_input, "set", "research_object", research_object, research_object),
+                    _operation(user_input, "set", "primary_metrics", [metric], metric),
+                ],
+            ),
+        )
+        assert receipt.status == "applied"
+        structures.append(receipt.changed_fields)
+        durable = load_contract_draft(run_dir)
+        assert durable is not None
+        assert durable.research_object == research_object
+        assert durable.primary_metrics == [metric]
+
+    assert structures == [["research_object", "primary_metrics"]] * len(variants)
+
+
+def test_negated_metric_replaces_only_the_explicit_metric_field(tmp_path: Path):
+    run_dir = tmp_path / "run_negated_metric"
+    original = ResearchIntentContract(
+        run_id=run_dir.name,
+        research_goal="优化运行资源",
+        primary_metrics=["inference_latency"],
+        success_criteria="记录基线",
+    )
+    save_contract_draft(run_dir, original)
+    user_input = "我不关注速度，目标是降低峰值显存。"
+
+    receipt = apply_contract_mutation(
+        run_dir,
+        user_input=user_input,
+        proposal=ContractMutationProposal(
+            base_draft_sha256=confirmation_draft_sha256(original),
+            full_turn_mutation_evidence=user_input,
+            operations=[_operation(
+                user_input,
+                "replace",
+                "primary_metrics",
+                ["peak_vram"],
+                user_input,
+            )],
+        ),
+    )
+
+    assert receipt.status == "applied"
+    assert receipt.changed_fields == ["primary_metrics"]
+    durable = load_contract_draft(run_dir)
+    assert durable is not None
+    assert durable.primary_metrics == ["peak_vram"]
+    assert durable.research_goal == original.research_goal
+    assert durable.success_criteria == original.success_criteria

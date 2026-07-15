@@ -9,6 +9,8 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+frontend/test-results/
+frontend/playwright-report/
 
 # Environment
 .env

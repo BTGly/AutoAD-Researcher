@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "case01_patchcore_reproduction",
+      "source_url": "https://github.com/amazon-science/patchcore-inspection",
+      "turns": [
+        "我先不做算法改进，只想在 MVTec AD 的 bottle 类别上复现 PatchCore。\n主要看 image-level AUROC 和 pixel-level AUROC。\n不允许修改评估脚本，先生成计划，不要改代码，也不要运行实验。",
+        "以目标仓库默认配置完成复现；不预先写死 AUROC 阈值，报告实际 image-level AUROC 和 pixel-level AUROC，并与论文中对应设置的结果进行可追溯对比。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "dataset", "primary_metrics", "success_criteria", "execution_mode", "forbidden_change_scope"],
+        "prohibited_advisory_commitments": ["提升 PatchCore", "修改评估脚本"],
+        "required_conflict_topics": [],
+        "expected_pending_confirmation": true,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["research_goal_changed_from_reproduction", "plan_only_boundary_violated"]
+      },
+      "paraphrases": [
+        "只复现现有实现，不做方法改进，先给计划。",
+        "当前目标是按原配置重跑并对照论文结果。",
+        "先验证复现链路，代码和实验都不要执行。",
+        "保持评估脚本不变，只报告复现指标。",
+        "不要设想提升方案，先完成可追溯复现设计。"
+      ],
+      "entity_variant": "只复现 Model-X 在 Dataset-Y 子集上的 Metric-A 和 Metric-B，不改 evaluator.py，先写计划。",
+      "counterfactuals": ["不再看 Metric-A，只保留 Metric-B。", "允许修改训练入口，但评估脚本仍不可修改。"]
+    },
+    {
+      "case_id": "case02_simplenet_adapter",
+      "source_url": "https://github.com/amazon-science/patchcore-inspection",
+      "turns": [
+        "我想把 SimpleNet 加到 PatchCore 里，提高 bottle 类别的异常检测效果。\n先别改代码，先告诉我应该怎么加。",
+        "我不是要替换 PatchCore。我想保留 memory bank 和 nearest-neighbor scoring，\n只测试 Feature Adapter 是否能减少预训练特征的领域偏差。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "user_target_module_hints", "execution_mode", "forbidden_change_scope"],
+        "prohibited_advisory_commitments": ["替换 PatchCore", "替换 nearest-neighbor scoring", "量化"],
+        "required_conflict_topics": [],
+        "expected_pending_confirmation": false,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["correction_not_persisted", "preserved_components_replaced"]
+      },
+      "paraphrases": [
+        "保留原方法，只评估一个特征适配层。",
+        "不要换掉检索评分，测试 adapter 即可。",
+        "memory bank 和近邻打分必须继续使用。",
+        "这不是整体迁移，只研究特征域偏差。",
+        "先比较是否需要 Feature Adapter，不执行修改。"
+      ],
+      "entity_variant": "保留 Method-X 的 Store-Y 和 Scorer-Z，只测试 Adapter-Q。",
+      "counterfactuals": ["不要使用 Adapter-Q，改为只分析 Scorer-Z 的误差。", "可以替换 Store-Y，但 Scorer-Z 必须保留。"]
+    },
+    {
+      "case_id": "case03_medsam_nnunet",
+      "source_url": "https://github.com/MIC-DKFZ/nnUNet",
+      "turns": [
+        "我想把 MedSAM 用到 nnU-Net 的甲状腺病理图像分割任务中。\n输入是预处理后的 512×512 patch，目标是提高 Dice。\n先写方案，不要改代码。",
+        "实际推理时没有人工框提示。\n我也不想完全替换 nnU-Net，只想评估 MedSAM 编码器或预训练特征是否有用。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "dataset", "primary_metrics", "preferred_method_hints", "execution_mode", "forbidden_change_scope"],
+        "prohibited_advisory_commitments": ["AUROC", "完全替换 nnU-Net", "人工框提示可用"],
+        "required_conflict_topics": ["prompt availability"],
+        "expected_pending_confirmation": false,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["wrong_metric_family", "missing_prompt_conflict"]
+      },
+      "paraphrases": [
+        "分割指标只看 Dice，先评估预训练编码器。",
+        "推理阶段没有框提示，不能假设人工交互。",
+        "nnU-Net 主体保留，比较 MedSAM 表征价值。",
+        "输入是固定尺寸病理 patch，当前仅做方案。",
+        "不要把医学分割写成异常检测任务。"
+      ],
+      "entity_variant": "评估 Encoder-X 对 Segmenter-Y 的 Dataset-Z 分割是否有用，指标 Metric-D，推理无人工提示。",
+      "counterfactuals": ["推理时现在可以提供自动生成的框，但仍没有人工框。", "不再评估 Encoder-X，只评估它的预训练特征。"]
+    },
+    {
+      "case_id": "case04_time_series_anomaly",
+      "source_url": "https://github.com/thuml/Anomaly-Transformer",
+      "turns": [
+        "我想用这个仓库复现 Anomaly Transformer，再用于服务器多变量指标异常检测。\n我现在只想写实验计划，不运行。",
+        "数据是自定义的 20 维服务器指标，有区间级异常标签。\n训练集不含异常，测试集有标签，最终更关注区间 F1 和检测延迟。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "dataset", "evaluation_protocol", "primary_metrics", "success_criteria", "execution_mode"],
+        "prohibited_advisory_commitments": ["image-level AUROC", "pixel-level AUROC"],
+        "required_conflict_topics": [],
+        "expected_pending_confirmation": true,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["time_series_constraints_lost", "wrong_metric_family"]
+      },
+      "paraphrases": [
+        "二十维服务器时序，训练只有正常段，先写计划。",
+        "标签是异常区间，不是图像像素标签。",
+        "主指标采用区间 F1 和告警延迟。",
+        "先复现时序模型，再适配自定义监控指标。",
+        "不要运行，只设计 normal-only 训练与有标签测试。"
+      ],
+      "entity_variant": "在 12 维 Dataset-Y 上复现 Model-X，训练仅正常样本，关注 Metric-Z 和检测时延。",
+      "counterfactuals": ["不再关注检测延迟，只保留区间 F1。", "训练集现在包含少量有标签异常，替换原来的 normal-only 设定。"]
+    },
+    {
+      "case_id": "case05_kernelbench",
+      "source_url": "https://github.com/ScalingIntelligence/KernelBench",
+      "turns": [
+        "使用 KernelBench 的 level=2、problem_id=40 做一个算子优化测试。\n目标 GPU 是 RTX 4090，精度使用 FP32。\n我希望生成 Triton 实现，并且至少比 PyTorch reference 快 1.2 倍。\n先生成计划，不执行。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "target_platform", "workload", "primary_metrics", "success_criteria", "preferred_method_hints", "execution_mode"],
+        "prohibited_advisory_commitments": ["重新询问 RTX 4090", "猜测算子名称"],
+        "required_conflict_topics": [],
+        "expected_pending_confirmation": true,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["workload_identifier_lost", "benchmark_integrity_missing", "plan_only_boundary_violated"]
+      },
+      "paraphrases": [
+        "在给定 level 和 problem ID 上设计 Triton 优化，不执行。",
+        "硬件固定为 RTX 4090，计算精度固定 FP32。",
+        "以 PyTorch reference 为基线，目标至少 1.2 倍。",
+        "正确性、编译成功和 benchmark 完整性都必须检查。",
+        "先读取指定题目文件再形成算子计划。"
+      ],
+      "entity_variant": "使用 Suite-X 的 level=3、problem_id=17，在 Hardware-Q 上用 Precision-P 达到 1.3 倍。",
+      "counterfactuals": ["不再要求 1.2 倍，只要求正确性通过并报告真实速度。", "目标硬件改成 Hardware-Q，其他约束不变。"]
+    },
+    {
+      "case_id": "case06_flashattention_feasibility",
+      "source_url": "https://github.com/Dao-AILab/flash-attention",
+      "turns": [
+        "我的机器是 RTX 4090，CUDA 12.2。\n我想直接复现仓库里的 FlashAttention-3，并和 PyTorch attention 对比。\n先写计划，不执行。",
+        "不换服务器，就按 RTX 4090 做，目标是验证正确性和测出真实延迟。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "target_platform", "workload", "primary_metrics", "success_criteria", "execution_mode"],
+        "prohibited_advisory_commitments": ["已支持 FlashAttention-3", "更换服务器"],
+        "required_conflict_topics": ["repository compatibility"],
+        "expected_pending_confirmation": false,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["unsupported_reproduction_accepted", "repository_conflict_ignored"]
+      },
+      "paraphrases": [
+        "硬件和 CUDA 版本不能更换，先评估能否复现。",
+        "不要默认目标实现支持当前消费级 GPU。",
+        "如果原实现不兼容，应明确指出而不是静默改目标。",
+        "只验证正确性并测真实延迟，不承诺性能数字。",
+        "当前只做可行性和对比方案，不执行。"
+      ],
+      "entity_variant": "固定 Hardware-Q 和 Runtime-R，评估 Implementation-X 能否复现并与 Baseline-Y 对比。",
+      "counterfactuals": ["允许改用仓库明确支持的硬件，但必须先列出差异。", "不再要求复现版本 3，只评估当前硬件可运行的实现。"]
+    },
+    {
+      "case_id": "case07_vllm_latency",
+      "source_url": "https://github.com/vllm-project/vllm",
+      "turns": [
+        "我有一张 24GB 的 RTX 4090D，准备部署一个 7B decoder-only 模型。\n主要目标是单用户对话延迟，不是高并发吞吐量。\n输入长度约 512 tokens，输出约 128 tokens，并发为 1。\n先给我优化计划，不修改仓库。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "target_platform", "workload", "primary_metrics", "compute_environment", "execution_mode", "forbidden_change_scope"],
+        "prohibited_advisory_commitments": ["4-bit", "FP16", "2–3 倍", "50–100ms", "throughput"],
+        "required_conflict_topics": [],
+        "expected_pending_confirmation": false,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["silent_quantization", "unsupported_performance_promise", "latency_goal_replaced_by_throughput"]
+      },
+      "paraphrases": [
+        "单并发对话延迟优先，不优化批量吞吐。",
+        "模型规模约 7B，但精确模型仍需确认。",
+        "上下文和生成长度固定为 512 与 128 token。",
+        "不要擅自量化或承诺延迟数字。",
+        "仓库保持只读，当前先给部署优化计划。"
+      ],
+      "entity_variant": "在 Hardware-Q 上部署 Model-X，输入 256、输出 64、并发 1，只关注 Metric-Z。",
+      "counterfactuals": ["现在允许评估量化，但质量损失上限仍需先确认。", "不再以单用户延迟为主，改为并发 8 的吞吐量。"]
+    },
+    {
+      "case_id": "case08_deepspeed_feasibility",
+      "source_url": "https://github.com/deepspeedai/DeepSpeed",
+      "turns": [
+        "我只有一张 24GB RTX 4090D，想对 7B 模型做全参数微调。\n不能改成 LoRA 或 QLoRA，但允许 CPU offload。\n第一目标是能够运行，第二目标才是速度。\n先分析可行性和写计划，不执行。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "target_platform", "workload", "success_criteria", "compute_environment", "execution_mode", "forbidden_change_scope"],
+        "prohibited_advisory_commitments": ["LoRA", "QLoRA", "inference_latency", "量化"],
+        "required_conflict_topics": ["training feasibility"],
+        "expected_pending_confirmation": false,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["full_finetuning_replaced", "training_routed_as_inference", "feasibility_conflict_ignored"]
+      },
+      "paraphrases": [
+        "单卡 24GB 上先判断全参数训练能否启动。",
+        "低秩微调明确禁止，但 CPU offload 可以考虑。",
+        "可运行性高于训练速度。",
+        "这是训练可行性，不是推理延迟优化。",
+        "先分析和写计划，不创建训练任务。"
+      ],
+      "entity_variant": "在 Hardware-Q 上对 Model-X 做全参数训练，禁止 Method-A，允许 Offload-B，先判断能否运行。",
+      "counterfactuals": ["现在允许 LoRA 作为单独对照，但全参数微调仍是主目标。", "不允许 CPU offload，重新评估是否仍可运行。"]
+    },
+    {
+      "case_id": "case09_cross_domain_negative",
+      "source_url": "https://github.com/amazon-science/patchcore-inspection",
+      "turns": [
+        "这两个都是 anomaly detection。\n你直接把 Anomaly Transformer 加到 PatchCore 里处理 MVTec AD 图像，\n不用问我，先把实现方案确定下来。"
+      ],
+      "expected": {
+        "required_operation_targets": ["research_goal", "research_object", "execution_mode"],
+        "prohibited_advisory_commitments": ["即插即用", "patch 序列化", "association discrepancy 集成方案"],
+        "required_conflict_topics": ["cross-domain compatibility"],
+        "expected_pending_confirmation": false,
+        "expected_execution_mode": "plan_only",
+        "expected_source_action_types": ["register_github_repo"],
+        "veto_rules": ["invalid_cross_domain_premise_accepted", "implementation_scheme_committed_without_evidence"]
+      },
+      "paraphrases": [
+        "不要因为任务都叫异常检测就假设方法可直接组合。",
+        "先验证时序模型与图像方法的输入和目标是否兼容。",
+        "证据不足时应拒绝确定实现方案。",
+        "不要把建议性桥接方案写进合同。",
+        "当前只做跨领域可行性判断，不执行集成。"
+      ],
+      "entity_variant": "Method-X 和 Method-Y 都用于 Task-Z，但先验证数据结构与训练目标是否兼容，不要直接集成。",
+      "counterfactuals": ["如果有论文证据支持跨域迁移，再把它列为候选而不是确定方案。", "不做集成，改为比较两个方法各自在原领域的假设。"]
+    }
+  ]
+}

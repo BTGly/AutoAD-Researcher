@@ -57,6 +57,10 @@ class BenchmarkTurn(BaseModel):
         "ask_clarifying_question",
     ]
     expected_confirmation_action: Literal["none", "suspend", "resume", "supersede"]
+    expected_confirmation_request_action: Literal[
+        "none", "request_pending", "suspend", "resume", "supersede"
+    ] = "none"
+    expected_contract_mutation_request: bool | None = None
     expected_task_profile: Literal[
         "empirical_model_research",
         "systems_optimization",
@@ -124,6 +128,14 @@ def summarize_case(
         "expected_contract_mutation": any(
             event.get("type") == "contract.draft.updated" for event in events
         ),
+        "expected_contract_mutation_request": route_payload.get(
+            "contract_mutation_requested",
+            route_payload.get("contract_action") == "update_contract",
+        ),
+        "expected_confirmation_request_action": route_payload.get(
+            "confirmation_request_action",
+            "request_pending" if route_payload.get("contract_action") == "confirm_contract" else "none",
+        ),
     }
     semantic_expected = {
         "expected_turn_type": case.expected_turn_type,
@@ -132,6 +144,12 @@ def summarize_case(
         "expected_task_profile": case.expected_task_profile,
         "expected_source_action_types": sorted(set(case.expected_source_action_types)),
         "expected_contract_mutation": case.expected_contract_mutation,
+        "expected_contract_mutation_request": (
+            case.expected_contract_mutation_request
+            if case.expected_contract_mutation_request is not None
+            else case.expected_contract_action == "update_contract"
+        ),
+        "expected_confirmation_request_action": case.expected_confirmation_request_action,
     }
     semantic_mismatches = [
         {

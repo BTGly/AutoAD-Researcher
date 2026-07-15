@@ -58,6 +58,7 @@ INTENT_MUTATION_TARGETS = frozenset({
     "preferred_method_hints",
     "risk_preference",
     "allowed_change_scope",
+    "forbidden_change_scope",
 })
 
 _REMOVE_VALUES: dict[str, Any] = {
@@ -79,6 +80,7 @@ _REMOVE_VALUES: dict[str, Any] = {
     "preferred_method_hints": [],
     "risk_preference": None,
     "allowed_change_scope": [],
+    "forbidden_change_scope": [],
 }
 
 

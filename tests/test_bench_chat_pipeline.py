@@ -27,6 +27,10 @@ def test_chat_benchmark_corpus_has_twenty_unique_valid_cases():
     assert any(not case.expected_router for case in corpus.cases)
     assert any(case.transcript_tail for case in corpus.cases)
     assert all(case.expected_turn_type for case in corpus.cases)
+    confirmation = next(case for case in corpus.cases if case.case_id == "text_confirmation")
+    assert confirmation.expected_confirmation_request_action == "request_pending"
+    assert confirmation.expected_contract_mutation is False
+    assert confirmation.expected_contract_mutation_request is None
 
 
 def test_chat_benchmark_summary_observes_calls_without_global_call_cap():
@@ -111,6 +115,7 @@ def test_schema_valid_route_can_fail_the_semantic_oracle():
         "contract_action",
         "task_profile",
         "contract_mutation",
+        "contract_mutation_request",
     }
 
 
