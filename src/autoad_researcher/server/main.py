@@ -2,7 +2,7 @@
 
 import asyncio
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -75,8 +75,8 @@ if FRONTEND_DIR.exists():
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         if full_path.startswith("api/"):
-            return {"detail": "Not Found"}
+            raise HTTPException(status_code=404, detail="Not Found")
         index = FRONTEND_DIR / "index.html"
         if index.exists():
             return FileResponse(index)
-        return {"detail": "Not Found"}
+        raise HTTPException(status_code=404, detail="Not Found")
