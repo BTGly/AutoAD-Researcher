@@ -128,8 +128,8 @@ def test_validated_route_updates_placeholder_without_a_naming_model_call(tmp_pat
         on_task_updated=callback_payloads.append,
     )
 
-    assert payload["task_title"] == "PatchCore MVTec AUROC优化"
-    assert payload["task_source"] == "router_suggested"
+    assert payload["task_title"] == "PatchCore MVTec image AUROC优化"
+    assert payload["task_source"] == "deterministic_projection"
     assert callback_payloads == [payload]
     persisted = load_task_profile(run_dir)
     assert persisted is not None

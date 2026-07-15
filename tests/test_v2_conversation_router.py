@@ -102,7 +102,10 @@ def test_router_schema_instruction_requires_verbatim_complete_mutation_evidence(
     assert "identical internal spaces, case, and punctuation" in messages[1]["content"]
     assert "task_profile_evidence and evidence_from_current_turn never authorize mutation" in messages[1]["content"]
     assert "correction-to-a-new-research-direction" in messages[1]["content"]
-    assert "AI Infra 与算子优化研究" in messages[1]["content"]
+    assert "诊断 Rust 服务在高并发下的内存泄漏" in messages[1]["content"]
+    prompt_text = "\n".join(message["content"] for message in messages[:2])
+    assert "不对啊，我真的想做 AI infra、AI 算子优化、底层的" not in prompt_text
+    assert "AI Infra 与算子优化研究" not in prompt_text
 
 
 def test_deterministic_source_plan_cannot_be_replaced_by_router_payload():

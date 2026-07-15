@@ -431,7 +431,8 @@ def _contract_route_example() -> dict[str, Any]:
 
 
 def _research_correction_route_example() -> dict[str, Any]:
-    user_message = "不对啊，我真的想做 AI infra、AI 算子优化、底层的，你有什么建议吗？"
+    user_message = "不是要继续调分类模型，我要先诊断 Rust 服务在高并发下的内存泄漏，只做定位，不改代码。"
+    direction_evidence = "诊断 Rust 服务在高并发下的内存泄漏"
     return {
         "turn_gate": {
             "turn_type": "contract_update",
@@ -439,17 +440,17 @@ def _research_correction_route_example() -> dict[str, Any]:
             "contract_update_allowed": True,
             "need_discovery_allowed": True,
             "save_draft_allowed": True,
-            "task_profile_proposal": "systems_optimization",
-            "task_profile_evidence": "我真的想做 AI infra、AI 算子优化、底层的",
+            "task_profile_proposal": "code_diagnosis",
+            "task_profile_evidence": direction_evidence,
             "requires_need_discovery_enrichment": True,
             "evidence_from_current_turn": [user_message],
             "mutation_evidence_from_current_turn": user_message,
         },
         "source_action_plan": {},
-        "task_profile_proposal": "systems_optimization",
-        "task_profile_evidence": "我真的想做 AI infra、AI 算子优化、底层的",
-        "suggested_task_title": "AI Infra 与算子优化研究",
-        "suggested_task_summary": "研究 AI infra 与底层算子优化方向。",
+        "task_profile_proposal": "code_diagnosis",
+        "task_profile_evidence": direction_evidence,
+        "suggested_task_title": None,
+        "suggested_task_summary": None,
         "requires_need_discovery_enrichment": True,
     }
 

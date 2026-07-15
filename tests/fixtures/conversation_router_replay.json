@@ -148,5 +148,32 @@
     },
     "expected_action": "answer_without_contract_update",
     "expected_recovery": ["missing_exact_mutation_evidence"]
+  },
+  {
+    "name": "corrected_systems_direction_uses_general_route_contract",
+    "user_input": "不是异常检测，我要做推理引擎、CUDA kernel 和算子融合",
+    "context_user_text": "之前讨论的是 PatchCore 异常检测",
+    "payload": {
+      "turn_gate": {
+        "turn_type": "contract_update",
+        "contract_action": "update_contract",
+        "contract_update_allowed": true,
+        "need_discovery_allowed": true,
+        "save_draft_allowed": true,
+        "task_profile_proposal": "systems_optimization",
+        "task_profile_evidence": "推理引擎、CUDA kernel 和算子融合",
+        "requires_need_discovery_enrichment": true,
+        "evidence_from_current_turn": ["推理引擎、CUDA kernel 和算子融合"],
+        "mutation_evidence_from_current_turn": "不是异常检测，我要做推理引擎、CUDA kernel 和算子融合"
+      },
+      "source_action_plan": {},
+      "task_profile_proposal": "systems_optimization",
+      "task_profile_evidence": "推理引擎、CUDA kernel 和算子融合",
+      "suggested_task_title": null,
+      "suggested_task_summary": null,
+      "requires_need_discovery_enrichment": true
+    },
+    "expected_action": "update_contract",
+    "expected_recovery": []
   }
 ]

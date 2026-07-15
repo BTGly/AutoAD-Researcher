@@ -414,28 +414,7 @@ def _offline_no_contract_decision(
     transcript_tail: list[dict[str, Any]] | None = None,
     existing_contract_draft: dict[str, Any] | None = None,
 ) -> TurnGateDecision:
-    """Offline fallback with text-confirmation support.
-
-    Even without LLM, allow text confirmation when:
-    1. User says a confirmation keyword, AND
-    2. The last assistant message requested confirmation, AND
-    3. A draft contract exists.
-    """
-
-    if _is_contextual_confirmation(user_input, transcript_tail) and existing_contract_draft:
-        return TurnGateDecision(
-            turn_type="contract_confirmation",
-            contract_action="confirm_contract",
-            contract_update_allowed=False,
-            need_discovery_allowed=False,
-            save_draft_allowed=True,
-            user_intent_summary="user confirmed contract via text",
-            mutation_evidence_from_current_turn=user_input.strip(),
-            confidence=0.9,
-            reason="Offline text confirmation detected: assistant requested confirmation in previous turn.",
-            next_reply_instruction="已确认合同。",
-        )
-
+    """Fail closed when no semantic model decision is available."""
     return TurnGateDecision(
         turn_type="ambiguous",
         contract_action="answer_without_contract_update",
@@ -447,29 +426,6 @@ def _offline_no_contract_decision(
         reason="No LLM turn gate result is available.",
         next_reply_instruction="",
     )
-
-
-_confirm_phrases = ("确认", "可以", "没问题", "同意", "就这样", "按这个来")
-_confirm_request_phrases = ("请回复确认", "是否确认", "确认后", "是否按此合同", "请确认", "回复确认")
-
-
-def _is_contextual_confirmation(
-    user_input: str,
-    transcript_tail: list[dict[str, Any]] | None,
-) -> bool:
-    """Check if user input is a confirmation in the context of a prior assistant request."""
-    if not transcript_tail:
-        return False
-    user_text = user_input.strip()
-    if not any(phrase in user_text for phrase in _confirm_phrases):
-        return False
-    for entry in reversed(transcript_tail):
-        if entry.get("role") == "assistant":
-            content = str(entry.get("content", ""))
-            if any(phrase in content for phrase in _confirm_request_phrases):
-                return True
-            break
-    return False
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:

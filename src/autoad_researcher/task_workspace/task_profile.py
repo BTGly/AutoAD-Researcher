@@ -294,7 +294,7 @@ def task_profile_needs_automatic_title(run_dir: Path) -> bool:
         and profile is not None
         and (
             (profile.source == "ui" and profile.task_title == "未命名研究任务")
-            or profile.source == "deterministic_projection"
+            or profile.source in {"deterministic_projection", "router_suggested"}
         )
     )
 
@@ -309,39 +309,37 @@ def build_automatic_task_profile(
     task_profile_evidence: str | None,
     contract: dict[str, Any],
 ) -> TaskProfile | None:
-    """Validate a Router title or derive one only from validated contract fields."""
-
-    route_title = (suggested_title or "").strip()
-    route_summary = (suggested_summary or user_intent_summary or "").strip()
-    if route_title and route_title not in {"研究任务", "异常检测研究", "未命名研究任务"}:
-        candidate = _validated_automatic_profile(
-            run_id=run_id,
-            title=route_title,
-            summary=route_summary or f"围绕“{route_title}”开展研究。",
-            source="router_suggested",
-        )
-        if candidate is not None:
-            return candidate
+    """Prefer a title derived from validated contract fields, then a Router suggestion."""
 
     title = _deterministic_task_title(
         task_profile=task_profile,
         task_profile_evidence=task_profile_evidence,
         contract=contract,
     )
-    if not title:
-        return None
-    summary = _first_non_empty(
-        contract.get("research_goal"),
-        contract.get("success_criteria"),
-        user_intent_summary,
-        f"围绕“{title}”开展研究。",
-    )
-    return _validated_automatic_profile(
-        run_id=run_id,
-        title=title,
-        summary=summary,
-        source="deterministic_projection",
-    )
+    if title:
+        summary = _first_non_empty(
+            contract.get("research_goal"),
+            contract.get("success_criteria"),
+            user_intent_summary,
+            f"围绕“{title}”开展研究。",
+        )
+        return _validated_automatic_profile(
+            run_id=run_id,
+            title=title,
+            summary=summary,
+            source="deterministic_projection",
+        )
+
+    route_title = (suggested_title or "").strip()
+    route_summary = (suggested_summary or user_intent_summary or "").strip()
+    if route_title and route_title not in {"研究任务", "异常检测研究", "未命名研究任务"}:
+        return _validated_automatic_profile(
+            run_id=run_id,
+            title=route_title,
+            summary=route_summary or f"围绕“{route_title}”开展研究。",
+            source="router_suggested",
+        )
+    return None
 
 
 def apply_automatic_task_profile(
@@ -381,9 +379,14 @@ def apply_automatic_task_profile(
 def _automatic_update_allowed(existing: TaskProfile, generated: TaskProfile) -> bool:
     if existing.source == "ui" and existing.task_title == "未命名研究任务":
         return True
+    if existing.source == generated.source == "deterministic_projection":
+        return (
+            existing.task_title != generated.task_title
+            or existing.task_summary != generated.task_summary
+        )
     return (
-        existing.source == "deterministic_projection"
-        and generated.source == "router_suggested"
+        existing.source == "router_suggested"
+        and generated.source == "deterministic_projection"
     )
 
 
@@ -414,7 +417,6 @@ def _deterministic_task_title(
     baseline = _title_component(contract.get("baseline"))
     dataset = _dataset_title(_title_component(contract.get("dataset")))
     research_object = _title_component(contract.get("research_object"))
-    profile_evidence = _title_component(task_profile_evidence)
     metrics = contract.get("primary_metrics")
     metric = ""
     if isinstance(metrics, list) and metrics:
@@ -424,13 +426,10 @@ def _deterministic_task_title(
         core = " ".join(part for part in (baseline, dataset, metric) if part)
         return _fit_title(f"{core}优化")
     if task_profile == "systems_optimization":
-        target = research_object or profile_evidence
-        return _fit_title(f"{target}性能优化") if target else ""
+        return _fit_title(f"{research_object}性能优化") if research_object else ""
     if task_profile == "code_diagnosis":
-        target = research_object or profile_evidence
-        return _fit_title(f"{target}问题诊断") if target else ""
-    target = research_object or profile_evidence
-    return _fit_title(f"{target}研究") if target else ""
+        return _fit_title(f"{research_object}问题诊断") if research_object else ""
+    return _fit_title(f"{research_object}研究") if research_object else ""
 
 
 def _metric_title(metric: str) -> str:

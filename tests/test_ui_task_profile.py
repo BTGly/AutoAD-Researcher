@@ -475,7 +475,7 @@ class TestUIHelpers:
 
 
 class TestAutomaticTaskProfile:
-    def test_valid_router_suggestion_has_highest_automatic_priority(self):
+    def test_contract_projection_takes_priority_over_router_suggestion(self):
         profile = build_automatic_task_profile(
             run_id="run_20260703_1200_a3b2",
             suggested_title="PatchCore MVTec AUROC优化",
@@ -487,8 +487,41 @@ class TestAutomaticTaskProfile:
         )
 
         assert profile is not None
+        assert profile.source == "deterministic_projection"
+        assert profile.task_title == "PatchCore MVTec优化"
+
+    def test_router_suggestion_is_used_when_contract_cannot_project_title(self):
+        profile = build_automatic_task_profile(
+            run_id="run_20260703_1200_a3b2",
+            suggested_title="分布漂移鲁棒性研究",
+            suggested_summary="研究未结构化的新方向。",
+            user_intent_summary="通用研究",
+            task_profile="general_research",
+            task_profile_evidence=None,
+            contract={},
+        )
+
+        assert profile is not None
         assert profile.source == "router_suggested"
-        assert profile.task_title == "PatchCore MVTec AUROC优化"
+        assert profile.task_title == "分布漂移鲁棒性研究"
+
+    def test_systems_title_projects_from_structured_research_object(self):
+        profile = build_automatic_task_profile(
+            run_id="run_20260703_1200_a3b2",
+            suggested_title="模型给出的自由文本标题",
+            suggested_summary="模型给出的摘要。",
+            user_intent_summary="系统优化研究",
+            task_profile="systems_optimization",
+            task_profile_evidence="推理引擎、CUDA kernel 和算子融合",
+            contract={
+                "research_object": "CUDA kernel 算子融合",
+                "target_platform": "NVIDIA H100",
+            },
+        )
+
+        assert profile is not None
+        assert profile.source == "deterministic_projection"
+        assert profile.task_title == "CUDA kernel 算子融合性能优化"
 
     def test_invalid_router_title_falls_back_to_contract_projection(self):
         profile = build_automatic_task_profile(
@@ -591,7 +624,7 @@ def test_router_profile_replaces_ui_placeholder_and_persists_source(tmp_path: Pa
     assert updated.source == "router_suggested"
     assert updated.created_at == created_at
     assert updated.updated_at == updated_at
-    assert task_profile_needs_automatic_title(run_dir) is False
+    assert task_profile_needs_automatic_title(run_dir) is True
 
 
 def test_automatic_profile_cannot_overwrite_manual_title(tmp_path: Path):
@@ -623,7 +656,7 @@ def test_automatic_profile_cannot_overwrite_manual_title(tmp_path: Path):
     assert load_task_profile(run_dir) == manual
 
 
-def test_router_profile_can_upgrade_deterministic_but_not_reverse(tmp_path: Path):
+def test_deterministic_profile_can_upgrade_router_but_not_reverse(tmp_path: Path):
     run_dir = _tmp_run_dir(tmp_path, "run_priority")
     created_at = datetime(2026, 7, 13, 10, 0, tzinfo=timezone.utc)
     create_task_profile(
@@ -632,32 +665,32 @@ def test_router_profile_can_upgrade_deterministic_but_not_reverse(tmp_path: Path
         task_title=None,
         created_at=created_at,
     )
-    deterministic = TaskProfile(
-        run_id=run_dir.name,
-        task_title="PatchCore性能优化",
-        task_summary="确定性投影。",
-        source="deterministic_projection",
-    )
-    assert apply_automatic_task_profile(
-        run_dir=run_dir,
-        generated_profile=deterministic,
-        updated_at=created_at,
-    ) is not None
     router = TaskProfile(
         run_id=run_dir.name,
-        task_title="PatchCore MVTec AUROC优化",
+        task_title="PatchCore 指标研究",
         task_summary="Router 建议。",
         source="router_suggested",
     )
-    upgraded = apply_automatic_task_profile(
+    assert apply_automatic_task_profile(
         run_dir=run_dir,
         generated_profile=router,
+        updated_at=created_at,
+    ) is not None
+    deterministic = TaskProfile(
+        run_id=run_dir.name,
+        task_title="PatchCore MVTec AUROC优化",
+        task_summary="确定性投影。",
+        source="deterministic_projection",
+    )
+    upgraded = apply_automatic_task_profile(
+        run_dir=run_dir,
+        generated_profile=deterministic,
         updated_at=datetime(2026, 7, 13, 10, 1, tzinfo=timezone.utc),
     )
     assert upgraded is not None
-    assert upgraded.source == "router_suggested"
+    assert upgraded.source == "deterministic_projection"
     assert apply_automatic_task_profile(
         run_dir=run_dir,
-        generated_profile=deterministic,
+        generated_profile=router,
         updated_at=datetime(2026, 7, 13, 10, 2, tzinfo=timezone.utc),
     ) is None

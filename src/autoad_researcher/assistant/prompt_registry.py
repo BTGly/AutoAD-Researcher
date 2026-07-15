@@ -305,7 +305,7 @@ _V2_TURN_GATE_PROMPT = (
     "提出 update_contract、confirm_contract、suspend、resume 或 supersede 时，mutation_evidence_from_current_turn "
     "必须完整复制本轮用户消息；task_profile_evidence 和 evidence_from_current_turn 不能授权任何变更。\n"
     "不确定时优先 answer_without_contract_update 或 ask_clarifying_question，不能贸然 save draft。\n"
-    "LLM 不能直接确认最终合同；最终确认必须由 orchestrator 根据 existing draft 和明确确认意图执行。\n"
+    "LLM 不能直接确认最终合同；confirm_contract 只请求显示 pending 确认弹窗，最终批准必须来自携带当前草案哈希的弹窗 API。\n"
     "task_profile_proposal 只是语义提议，必须提供逐字 task_profile_evidence；证据不足时使用 general_research。"
     "只有任务类型或关键缺口确实存在语义歧义时，requires_need_discovery_enrichment 才能为 true。\n"
     "Schema: {turn_type, contract_action, contract_update_allowed, need_discovery_allowed, save_draft_allowed, confirmation_action_proposal, "
