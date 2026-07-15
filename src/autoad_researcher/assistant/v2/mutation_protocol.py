@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from autoad_researcher.assistant.v2.contract_hashing import confirmation_draft_sha256
 from autoad_researcher.assistant.v2.intent_contract import (
     CONTRACT_DRAFT_FILE,
+    DEFAULT_FORBIDDEN_CHANGE_SCOPE,
     ResearchIntentContract,
     load_contract_draft,
     refresh_contract_state,
@@ -167,7 +168,15 @@ def apply_contract_mutation(
                 before_hash=before_hash,
                 contract=existing,
             )
-        draft = existing.model_copy(deep=True) if existing is not None else ResearchIntentContract(run_id=run_dir.name)
+        draft = existing.model_copy(deep=True) if existing is not None else ResearchIntentContract(
+            schema_version=2,
+            authorization_schema_version=3,
+            run_id=run_dir.name,
+            task_domain=None,
+            allowed_change_scope=[],
+            forbidden_change_scope=[],
+            system_safety_policy=list(DEFAULT_FORBIDDEN_CHANGE_SCOPE),
+        )
         values = draft.model_dump(mode="python")
         changed_fields: list[str] = []
         for operation in proposal.operations:

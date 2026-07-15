@@ -24,6 +24,11 @@ from autoad_researcher.assistant.v2.intent_contract import (
     ResearchIntentContract,
     save_contract_draft,
 )
+from autoad_researcher.assistant.v2.research_semantics import (
+    EvidenceConflict,
+    OpenQuestion,
+    ResearchModeAssessment,
+)
 from autoad_researcher.server.routes import draft as draft_route
 
 
@@ -97,6 +102,58 @@ def test_v2_authorization_hash_binds_task_profile_fields():
     assert confirmation_draft_sha256(changed) != confirmation_draft_sha256(contract)
     assert confirmed_contract_sha256(changed) != confirmed_contract_sha256(contract)
     assert confirmation_draft_sha256(constrained) != confirmation_draft_sha256(contract)
+
+
+def test_v3_authorization_hash_binds_generic_semantics_and_system_policy():
+    contract = ResearchIntentContract(
+        schema_version=2,
+        authorization_schema_version=3,
+        run_id="run_v3_hash",
+        task_domain=None,
+        research_goal="复现 Library-A",
+        research_object="Library-A",
+        success_criteria="输出与参考实现一致",
+        allowed_change_scope=[],
+        forbidden_change_scope=[],
+        research_modes=ResearchModeAssessment(
+            primary_mode="reproduction",
+            secondary_modes=["feasibility_assessment"],
+            confidence=0.9,
+            rationale="先复现，再评估。",
+        ),
+    )
+
+    mode_changed = contract.model_copy(update={
+        "research_modes": contract.research_modes.model_copy(update={
+            "primary_mode": "feasibility_assessment",
+        }),
+    })
+    question_added = contract.model_copy(update={
+        "open_questions": [OpenQuestion(
+            category="evaluation",
+            question="如何判断一致？",
+            required_now=True,
+        )],
+    })
+    conflict_added = contract.model_copy(update={
+        "evidence_conflicts": [EvidenceConflict(
+            claim="目标平台是否受支持",
+            status="blocking",
+            evidence_refs=["ev_repo_1"],
+            explanation="仓库文档与目标环境冲突。",
+        )],
+    })
+    policy_changed = contract.model_copy(update={
+        "system_safety_policy": [*contract.system_safety_policy, "require_human_approval"],
+    })
+
+    projection = build_confirmation_semantic_projection(contract).model_dump(mode="json")
+    assert projection["authorization_schema_version"] == 3
+    assert projection["research_modes"]["primary_mode"] == "reproduction"
+    assert confirmation_draft_sha256(mode_changed) != confirmation_draft_sha256(contract)
+    assert confirmation_draft_sha256(question_added) != confirmation_draft_sha256(contract)
+    assert confirmation_draft_sha256(conflict_added) != confirmation_draft_sha256(contract)
+    assert confirmation_draft_sha256(policy_changed) != confirmation_draft_sha256(contract)
 
 
 def test_contract_confirmation_state_is_persisted_deduplicated_and_replayable(tmp_path: Path):

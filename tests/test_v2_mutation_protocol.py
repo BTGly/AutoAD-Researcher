@@ -52,6 +52,12 @@ def test_applies_multiple_operations_as_one_hash_bound_write(tmp_path: Path):
     assert durable is not None
     assert durable.research_goal == "复现 Model-X"
     assert durable.primary_metrics == ["Metric-Z"]
+    assert durable.schema_version == 2
+    assert durable.authorization_schema_version == 3
+    assert durable.task_domain is None
+    assert durable.allowed_change_scope == []
+    assert durable.forbidden_change_scope == []
+    assert "change_metric_definition" in durable.system_safety_policy
 
 
 def test_rejects_stale_hash_without_partial_changes(tmp_path: Path):

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from autoad_researcher.assistant.v2.intent_contract import EvaluationConstraints, ResearchIntentContract
+from autoad_researcher.assistant.v2.research_semantics import EvidenceConflict, OpenQuestion, ResearchModeAssessment
 from autoad_researcher.core.control_plane.hashing import domain_sha256
 
 
@@ -68,8 +69,31 @@ class ConfirmedContractHashPayloadV2(ConfirmationSemanticProjectionV2):
     hash_schema: Literal["research_intent_contract:v2"] = "research_intent_contract:v2"
 
 
+class ConfirmationSemanticProjectionV3(ConfirmationSemanticProjectionV2):
+    """Generic authorization fields added by the semantic mutation protocol."""
+
+    authorization_schema_version: Literal[3] = 3
+    research_modes: ResearchModeAssessment | None
+    open_questions: list[OpenQuestion]
+    evidence_conflicts: list[EvidenceConflict]
+    system_safety_policy: list[str]
+
+
+class ConfirmationDraftHashPayloadV3(ConfirmationSemanticProjectionV3):
+    hash_schema: Literal["research_intent_confirmation_draft:v3"] = "research_intent_confirmation_draft:v3"
+
+
+class ConfirmedContractHashPayloadV3(ConfirmationSemanticProjectionV3):
+    hash_schema: Literal["research_intent_contract:v3"] = "research_intent_contract:v3"
+
+
 def confirmation_draft_sha256(contract: ResearchIntentContract) -> str:
     projection = build_confirmation_semantic_projection(contract)
+    if contract.authorization_schema_version == 3:
+        return domain_sha256(
+            "autoad:research_intent_confirmation_draft:v3",
+            ConfirmationDraftHashPayloadV3(**projection.model_dump(mode="python")),
+        )
     if contract.authorization_schema_version == 2:
         return domain_sha256(
             "autoad:research_intent_confirmation_draft:v2",
@@ -83,6 +107,11 @@ def confirmation_draft_sha256(contract: ResearchIntentContract) -> str:
 
 def confirmed_contract_sha256(contract: ResearchIntentContract) -> str:
     projection = build_confirmation_semantic_projection(contract)
+    if contract.authorization_schema_version == 3:
+        return domain_sha256(
+            "autoad:research_intent_contract:v3",
+            ConfirmedContractHashPayloadV3(**projection.model_dump(mode="python")),
+        )
     if contract.authorization_schema_version == 2:
         return domain_sha256(
             "autoad:research_intent_contract:v2",
@@ -96,7 +125,7 @@ def confirmed_contract_sha256(contract: ResearchIntentContract) -> str:
 
 def build_confirmation_semantic_projection(
     contract: ResearchIntentContract,
-) -> ConfirmationSemanticProjection | ConfirmationSemanticProjectionV2:
+) -> ConfirmationSemanticProjection | ConfirmationSemanticProjectionV2 | ConfirmationSemanticProjectionV3:
     v1_values = {
         "run_id": _required_string(contract.run_id),
         "task_domain": _optional_string(contract.task_domain),
@@ -123,8 +152,7 @@ def build_confirmation_semantic_projection(
     }
     if contract.authorization_schema_version == 1:
         return ConfirmationSemanticProjection(**v1_values)
-    return ConfirmationSemanticProjectionV2(**v1_values, **{
-        "authorization_schema_version": 2,
+    v2_values = {
         "task_profile": _required_string(contract.task_profile),
         "task_profile_source": _required_string(contract.task_profile_source),
         "task_profile_evidence": _optional_string(contract.task_profile_evidence),
@@ -132,7 +160,22 @@ def build_confirmation_semantic_projection(
         "target_platform": _optional_string(contract.target_platform),
         "workload": _optional_string(contract.workload),
         "evaluation_constraints": contract.evaluation_constraints.model_copy(deep=True),
-    })
+    }
+    if contract.authorization_schema_version == 2:
+        return ConfirmationSemanticProjectionV2(
+            **v1_values,
+            authorization_schema_version=2,
+            **v2_values,
+        )
+    return ConfirmationSemanticProjectionV3(
+        **v1_values,
+        authorization_schema_version=3,
+        **v2_values,
+        research_modes=contract.research_modes,
+        open_questions=contract.open_questions,
+        evidence_conflicts=contract.evidence_conflicts,
+        system_safety_policy=sorted(set(_ordered_unique(contract.system_safety_policy))),
+    )
 
 
 def _required_string(value: str) -> str:

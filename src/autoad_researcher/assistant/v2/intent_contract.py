@@ -24,6 +24,11 @@ from autoad_researcher.assistant.v2.need_discovery import (
     discover_required_needs_with_llm,
     validate_need_spec,
 )
+from autoad_researcher.assistant.v2.research_semantics import (
+    EvidenceConflict,
+    OpenQuestion,
+    ResearchModeAssessment,
+)
 
 
 CONTRACT_DRAFT_FILE = "research_intent_contract_draft.json"
@@ -120,7 +125,7 @@ class ResearchIntentContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = 1
-    authorization_schema_version: Literal[1, 2] = 1
+    authorization_schema_version: Literal[1, 2, 3] = 1
     run_id: str
 
     task_domain: str | None = "anomaly_detection"
@@ -157,6 +162,11 @@ class ResearchIntentContract(BaseModel):
 
     allowed_change_scope: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_CHANGE_SCOPE))
     forbidden_change_scope: list[str] = Field(default_factory=lambda: list(DEFAULT_FORBIDDEN_CHANGE_SCOPE))
+    system_safety_policy: list[str] = Field(default_factory=lambda: list(DEFAULT_FORBIDDEN_CHANGE_SCOPE))
+
+    research_modes: ResearchModeAssessment | None = None
+    open_questions: list[OpenQuestion] = Field(default_factory=list)
+    evidence_conflicts: list[EvidenceConflict] = Field(default_factory=list)
 
     evidence_sources: list[dict[str, Any]] = Field(default_factory=list)
     missing_required_fields: list[str] = Field(default_factory=list)
@@ -1241,6 +1251,27 @@ def _infer_risk_preference(text: str) -> str | None:
 
 
 def _confirmed_fields(contract: ResearchIntentContract) -> list[str]:
+    if contract.authorization_schema_version == 3:
+        fields = []
+        for field in (
+            "research_goal",
+            "research_object",
+            "target_platform",
+            "workload",
+            "baseline",
+            "dataset",
+            "evaluation_protocol",
+            "primary_metrics",
+            "secondary_metrics",
+            "success_criteria",
+            "compute_environment",
+            "execution_mode",
+            "allowed_change_scope",
+            "forbidden_change_scope",
+        ):
+            if getattr(contract, field) not in (None, "", [], {}):
+                fields.append(field)
+        return fields
     if contract.need_spec.needs:
         fields = [
             need.name
@@ -1270,6 +1301,8 @@ def _confirmed_fields(contract: ResearchIntentContract) -> list[str]:
 
 
 def _missing_core_fields(contract: ResearchIntentContract) -> list[str]:
+    if contract.authorization_schema_version == 3:
+        return _missing_generic_requirements(contract)
     if contract.need_spec.needs:
         return list(contract.need_spec.blocking_needs)
 
@@ -1299,6 +1332,25 @@ def _missing_core_fields(contract: ResearchIntentContract) -> list[str]:
         value = _required_field_value(contract, field)
         if value in (None, "", [], {}):
             missing.append(field)
+    return missing
+
+
+def _missing_generic_requirements(contract: ResearchIntentContract) -> list[str]:
+    missing: list[str] = []
+    category_values = {
+        "objective": contract.research_goal,
+        "research_object": contract.research_object or contract.baseline or contract.workload,
+        "evaluation": contract.success_criteria or contract.primary_metrics or contract.evaluation_protocol,
+        "execution_boundary": contract.execution_mode,
+    }
+    for category, value in category_values.items():
+        if value in (None, "", [], {}):
+            missing.append(category)
+    for question in contract.open_questions:
+        if question.required_now and question.category not in missing:
+            missing.append(question.category)
+    if any(conflict.status == "blocking" for conflict in contract.evidence_conflicts):
+        missing.append("evidence_conflicts")
     return missing
 
 
@@ -1382,10 +1434,15 @@ def _refresh_contract_state(contract: ResearchIntentContract) -> None:
             metric_priority=contract.metric_priority,
             extraction_source="fallback",
         )
-    contract.need_spec = _sync_need_spec_from_contract(contract)
+    if contract.authorization_schema_version != 3:
+        contract.need_spec = _sync_need_spec_from_contract(contract)
     contract.user_confirmed_fields = _confirmed_fields(contract)
     contract.missing_required_fields = _missing_core_fields(contract)
-    contract.ready_for_plan = contract.need_spec.ready_for_plan if contract.need_spec.needs else not contract.missing_required_fields
+    contract.ready_for_plan = (
+        not contract.missing_required_fields
+        if contract.authorization_schema_version == 3
+        else contract.need_spec.ready_for_plan if contract.need_spec.needs else not contract.missing_required_fields
+    )
     contract.ready_for_repo_analysis = contract.need_spec.ready_for_repo_analysis or bool(contract.baseline_repo)
     contract.ready_for_experiment_agents = bool(
         contract.ready_for_plan

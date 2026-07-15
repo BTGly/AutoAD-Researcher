@@ -32,6 +32,11 @@ from autoad_researcher.assistant.v2.job_service import (
     load_pipeline_jobs,
 )
 from autoad_researcher.assistant.v2.need_discovery import RequiredNeedSpec
+from autoad_researcher.assistant.v2.research_semantics import (
+    EvidenceConflict,
+    OpenQuestion,
+    ResearchModeAssessment,
+)
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.reply_planner import plan_reply
 from autoad_researcher.server.routes.chat import _assistant_delta_message, _assistant_done_message
@@ -50,6 +55,62 @@ def test_research_intent_contract_defaults_do_not_require_method_or_target_modul
     assert "modify_test_labels" in contract.forbidden_change_scope
     assert "change_metric_definition" in contract.forbidden_change_scope
     assert set(DEFAULT_FORBIDDEN_CHANGE_SCOPE).issubset(set(contract.forbidden_change_scope))
+
+
+def test_v3_readiness_uses_generic_coverage_questions_and_conflicts():
+    contract = ResearchIntentContract(
+        schema_version=2,
+        authorization_schema_version=3,
+        run_id="run_generic",
+        task_domain=None,
+        research_goal="评估 Library-A 在 Hardware-Q 上的可行性",
+        research_object="Library-A",
+        success_criteria="明确给出 supported、unsupported_as_stated 或 uncertain",
+        research_modes=ResearchModeAssessment(
+            primary_mode="feasibility_assessment",
+            secondary_modes=[],
+            confidence=0.92,
+        ),
+        allowed_change_scope=[],
+        forbidden_change_scope=[],
+    )
+
+    from autoad_researcher.assistant.v2.intent_contract import refresh_contract_state
+
+    refresh_contract_state(contract)
+    assert contract.ready_for_plan is True
+    assert contract.missing_required_fields == []
+    assert contract.baseline is None
+    assert contract.dataset is None
+
+    contract.open_questions = [OpenQuestion(
+        category="execution_boundary",
+        question="当前是否只做可行性评估？",
+        required_now=True,
+    )]
+    refresh_contract_state(contract)
+    assert contract.ready_for_plan is False
+    assert contract.missing_required_fields == ["execution_boundary"]
+
+    contract.open_questions = []
+    contract.evidence_conflicts = [EvidenceConflict(
+        claim="Hardware-Q 支持情况",
+        status="blocking",
+        evidence_refs=["ev_repo_1"],
+        explanation="资料结论互相冲突。",
+    )]
+    refresh_contract_state(contract)
+    assert contract.ready_for_plan is False
+    assert contract.missing_required_fields == ["evidence_conflicts"]
+
+    contract.evidence_conflicts[0].status = "non_blocking"
+    contract.research_modes = ResearchModeAssessment(
+        primary_mode="diagnosis",
+        secondary_modes=["open_research"],
+        confidence=0.6,
+    )
+    refresh_contract_state(contract)
+    assert contract.ready_for_plan is True
 
 
 def test_build_contract_ready_for_plan_without_improvement_or_target_module(tmp_path: Path):
