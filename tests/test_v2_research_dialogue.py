@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from autoad_researcher.assistant.llm_runtime import current_conversation_deadline
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     ResearchDialogueAgent,
@@ -84,6 +85,8 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
         captured["calls"] = int(captured["calls"]) + 1
         captured["messages"] = messages
         captured["model"] = kwargs.get("model")
+        captured["priority"] = kwargs.get("priority")
+        captured["response_format_json"] = kwargs.get("response_format_json")
         return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -104,6 +107,8 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
 
     assert captured["calls"] == 1
     assert captured["model"] == "configured-dialogue-model"
+    assert captured["priority"] == "interactive"
+    assert captured["response_format_json"] is True
     system = captured["messages"][0]["content"]
     assert "Propose first" in system
     assert "Don't interrogate" in system
@@ -214,3 +219,28 @@ def test_orchestrator_invalid_llm_output_preserves_existing_summary(monkeypatch,
     assert "格式无效" not in result.reply
     assert "生成失败" in result.reply
     assert load_research_intent_summary(tmp_path) == previous
+
+
+def test_orchestrator_wraps_dialogue_call_in_conversation_deadline(monkeypatch, tmp_path: Path):
+    observed: dict[str, float | bool] = {}
+
+    def fake_call(*args, **kwargs):
+        deadline = current_conversation_deadline()
+        observed["present"] = deadline is not None
+        observed["remaining_seconds"] = (
+            deadline.remaining_seconds() if deadline is not None else 0.0
+        )
+        return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    ResearchOrchestratorV2.handle(
+        tmp_path,
+        user_input="继续",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert observed["present"] is True
+    assert observed["remaining_seconds"] > 0

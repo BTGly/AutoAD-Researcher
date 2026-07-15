@@ -100,6 +100,8 @@ class ResearchDialogueAgent:
             messages,
             model=model,
             timeout_s=30,
+            priority="interactive",
+            response_format_json=True,
         )
         payload = _parse_json_object(str(result.get("reply") or ""))
         if result.get("error") or payload is None:

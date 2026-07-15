@@ -1,15 +1,43 @@
-"""Tests for chat_client.py and chat_prompts.py."""
+"""Tests for the shared chat-client facade and legacy chat prompts."""
+
+from __future__ import annotations
 
 import json
-from unittest.mock import patch
 
 import httpx
 import pytest
 
+from autoad_researcher.assistant import llm_runtime
+from autoad_researcher.assistant.llm_runtime import reset_llm_call_broker
 from autoad_researcher.ui.chat_client import call_research_chat
 from autoad_researcher.ui.chat_prompts import MODE_PROMPTS
 
-# ── chat_prompts ────────────────────────────────────────────────────────
+_HTTPX_CLIENT = httpx.Client
+
+
+@pytest.fixture(autouse=True)
+def _isolated_broker():
+    reset_llm_call_broker()
+    yield
+    reset_llm_call_broker()
+
+
+def _install_transport(monkeypatch, handler):
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(**kwargs):
+        kwargs.pop("limits", None)
+        return _HTTPX_CLIENT(transport=transport, **kwargs)
+
+    monkeypatch.setattr(llm_runtime.httpx, "Client", client_factory)
+
+
+def _completion(content: str = "助手回复", *, status: int = 200, headers=None) -> httpx.Response:
+    return httpx.Response(
+        status,
+        json={"choices": [{"message": {"content": content}}]},
+        headers=headers,
+    )
 
 
 def test_prompts_have_three_modes():
@@ -28,98 +56,126 @@ def test_prompts_reasonable_length():
         assert 500 < len(prompt) < 4000, f"{name}: {len(prompt)} chars"
 
 
-# ── chat_client ─────────────────────────────────────────────────────────
+def test_client_returns_reply_and_runtime_metadata_on_200(monkeypatch):
+    _install_transport(monkeypatch, lambda request: _completion(headers={"x-request-id": "req-1"}))
+
+    result = call_research_chat(
+        "sk-test", "https://test.api", [{"role": "user", "content": "hello"}]
+    )
+
+    assert result["reply"] == "助手回复"
+    assert result["error"] == ""
+    assert result["runtime"]["provider_request_id"] == "req-1"
+    assert result["runtime"]["http_status"] == 200
 
 
-def _mock_response(status=200, body=None):
-    """Create a mock httpx.Response."""
-    if body is None:
-        body = {"choices": [{"message": {"content": "助手回复"}}]}
+def test_client_returns_safe_error_on_403(monkeypatch):
+    _install_transport(monkeypatch, lambda request: httpx.Response(
+        403, json={"error": {"message": "secret provider detail"}}
+    ))
 
-    class MockResponse:
-        def __init__(self):
-            self.status_code = status
-            self._body = body
+    result = call_research_chat(
+        "sk-bad", "https://test.api", [{"role": "user", "content": "hello"}]
+    )
 
-        def json(self):
-            return self._body
-
-    return MockResponse()
+    assert result["reply"] == ""
+    assert "403" in result["error"]
+    assert "secret provider detail" not in result["error"]
 
 
-def test_client_returns_reply_on_200():
-    with patch("httpx.post", return_value=_mock_response(200)):
-        result = call_research_chat("sk-test", "https://test.api", [{"role": "user", "content": "hello"}])
-        assert result["reply"] == "助手回复"
-        assert result["error"] == ""
+def test_client_handles_non_json_response(monkeypatch):
+    _install_transport(monkeypatch, lambda request: httpx.Response(200, text="not json"))
+
+    result = call_research_chat(
+        "sk-test", "https://test.api", [{"role": "user", "content": "hello"}]
+    )
+
+    assert "解析" in result["error"]
+    assert result["runtime"]["error_type"] == "response_parse_error"
 
 
-def test_client_returns_error_on_403():
-    with patch("httpx.post", return_value=_mock_response(403, {"error": {"message": "forbidden"}})):
-        result = call_research_chat("sk-bad", "https://test.api", [{"role": "user", "content": "hello"}])
-        assert result["reply"] == ""
-        assert "403" in result["error"]
+def test_client_handles_timeout_without_exposing_exception(monkeypatch):
+    def timeout(_request):
+        raise httpx.ReadTimeout("private upstream timeout")
+
+    _install_transport(monkeypatch, timeout)
+    result = call_research_chat(
+        "sk-test", "https://test.api", [{"role": "user", "content": "hello"}]
+    )
+
+    assert "超时" in result["error"]
+    assert "private upstream" not in result["error"]
+    assert result["runtime"]["retry_count"] == 0
 
 
-def test_client_handles_non_json_response():
-    class BadResponse:
-        status_code = 200
+def test_client_never_returns_api_key(monkeypatch):
+    _install_transport(monkeypatch, lambda request: _completion())
+    result = call_research_chat(
+        "sk-secret-key-123",
+        "https://test.api",
+        [{"role": "user", "content": "hello"}],
+    )
 
-        def json(self):
-            raise ValueError("not json")
-
-    with patch("httpx.post", return_value=BadResponse()):
-        result = call_research_chat("sk-test", "https://test.api", [{"role": "user", "content": "hello"}])
-        assert "解析响应" in result["error"]
-
-
-def test_client_handles_timeout():
-    with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")):
-        result = call_research_chat("sk-test", "https://test.api", [{"role": "user", "content": "hello"}])
-        assert "超时" in result["error"]
+    assert "sk-secret-key-123" not in json.dumps(result, ensure_ascii=False)
 
 
-def test_client_never_returns_api_key():
-    with patch("httpx.post", return_value=_mock_response(200)):
-        result = call_research_chat("sk-secret-key-123", "https://test.api", [{"role": "user", "content": "hello"}])
-        reply_str = result["reply"] + result["error"]
-        assert "sk-secret-key-123" not in reply_str
-
-
-def test_client_streams_openai_compatible_sse():
+def test_client_streams_openai_compatible_sse(monkeypatch):
     captured: dict[str, object] = {}
 
-    class MockStreamResponse:
-        status_code = 200
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["json"] = json.loads(request.content)
+        stream = "\n".join([
+            "data: " + json.dumps({"choices": [{"delta": {"content": "助"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "手回复"}}]}),
+            "data: [DONE]",
+            "",
+        ])
+        return httpx.Response(200, text=stream)
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def iter_lines(self):
-            yield "data: " + json.dumps({"choices": [{"delta": {"content": "助"}}]})
-            yield "data: " + json.dumps({"choices": [{"delta": {"content": "手回复"}}]})
-            yield "data: [DONE]"
-
-    def fake_stream(method, url, **kwargs):
-        captured["method"] = method
-        captured["url"] = url
-        captured["json"] = kwargs["json"]
-        return MockStreamResponse()
-
+    _install_transport(monkeypatch, handler)
     deltas: list[str] = []
-    with patch("httpx.stream", side_effect=fake_stream):
-        result = call_research_chat(
-            "sk-test",
-            "https://test.api",
-            [{"role": "user", "content": "hello"}],
-            on_delta=deltas.append,
-        )
+    result = call_research_chat(
+        "sk-test",
+        "https://test.api",
+        [{"role": "user", "content": "hello"}],
+        on_delta=deltas.append,
+    )
 
     assert captured["method"] == "POST"
     assert captured["url"] == "https://test.api/v1/chat/completions"
     assert captured["json"]["stream"] is True
     assert deltas == ["助", "手回复"]
-    assert result == {"reply": "助手回复", "error": ""}
+    assert result["reply"] == "助手回复"
+    assert result["error"] == ""
+    assert result["runtime"]["first_token_ms"] is not None
+
+
+def test_json_response_format_falls_back_only_on_explicit_unsupported_error(monkeypatch):
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return httpx.Response(400, json={
+                "error": {
+                    "param": "response_format",
+                    "message": "response_format is not supported",
+                }
+            })
+        return _completion('{"reply_to_user":"ok"}')
+
+    _install_transport(monkeypatch, handler)
+    result = call_research_chat(
+        "sk-test",
+        "https://test.api",
+        [{"role": "user", "content": "hello"}],
+        response_format_json=True,
+    )
+
+    assert len(payloads) == 2
+    assert "response_format" in payloads[0]
+    assert "response_format" not in payloads[1]
+    assert result["runtime"]["compatibility_reason"] == "response_format_not_supported"

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from autoad_researcher.assistant.llm_runtime import with_conversation_deadline
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
@@ -46,6 +47,7 @@ class ResearchOrchestratorV2:
     """Run deterministic material intake, then one research dialogue call."""
 
     @classmethod
+    @with_conversation_deadline
     def handle(
         cls,
         run_dir: Path,
