@@ -15,7 +15,7 @@ from autoad_researcher.repository_intelligence.evidence_models import (
     RepositoryIdentityEvidenceRef,
     WebEvidenceRef,
 )
-from autoad_researcher.repository_intelligence.ids import IdentifierPattern
+from autoad_researcher.repository_intelligence.ids import IdentifierPattern, validate_relative_path
 from autoad_researcher.repository_intelligence.models import RepositoryArtifactPaths, RepositorySource
 
 
@@ -48,6 +48,7 @@ def validate_repository_intelligence_run(
     repository_root: Path,
     run_dir: Path,
     artifacts: RepositoryArtifactPaths,
+    supplemental_artifacts: list[str] | None = None,
 ) -> RepositoryValidationReport:
     """Validate evidence refs and synthesized artifacts for one run."""
     issues: list[ValidationIssue] = []
@@ -76,6 +77,19 @@ def validate_repository_intelligence_run(
             issues.append(_issue("ARTIFACT_JSON_INVALID", "error", artifact_path, str(exc)))
             continue
         issues.extend(_validate_artifact_claims(payload, artifact_path, evidence_ids))
+
+    for artifact_path in supplemental_artifacts or []:
+        path = run_dir / validate_relative_path(artifact_path)
+        if not path.is_file():
+            issues.append(_issue("ARTIFACT_MISSING", "error", artifact_path, "supplemental artifact file is missing"))
+            continue
+        checked_artifact_count += 1
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            issues.append(_issue("ARTIFACT_JSON_INVALID", "error", artifact_path, str(exc)))
+            continue
+        issues.extend(_validate_supplemental_evidence_refs(payload, artifact_path, evidence_ids))
 
     status = "failed" if any(issue.severity == "error" for issue in issues) else "passed"
     return RepositoryValidationReport(
@@ -155,6 +169,39 @@ def _validate_artifact_claims(payload: Any, location: str, evidence_ids: set[str
     elif isinstance(payload, list):
         for index, value in enumerate(payload):
             issues.extend(_validate_artifact_claims(value, f"{location}[{index}]", evidence_ids))
+    return issues
+
+
+def _validate_supplemental_evidence_refs(
+    payload: Any,
+    location: str,
+    evidence_ids: set[str],
+) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    if isinstance(payload, dict):
+        evidence_id = payload.get("evidence_id")
+        if isinstance(evidence_id, str) and evidence_id not in evidence_ids:
+            issues.append(_issue(
+                "ARTIFACT_EVIDENCE_MISSING",
+                "error",
+                location,
+                f"supplemental artifact references missing evidence_id: {evidence_id}",
+            ))
+        referenced_ids = payload.get("evidence_ids")
+        if isinstance(referenced_ids, list):
+            for referenced_id in referenced_ids:
+                if isinstance(referenced_id, str) and referenced_id not in evidence_ids:
+                    issues.append(_issue(
+                        "ARTIFACT_EVIDENCE_MISSING",
+                        "error",
+                        location,
+                        f"supplemental artifact references missing evidence_id: {referenced_id}",
+                    ))
+        for key, value in payload.items():
+            issues.extend(_validate_supplemental_evidence_refs(value, f"{location}.{key}", evidence_ids))
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            issues.extend(_validate_supplemental_evidence_refs(value, f"{location}[{index}]", evidence_ids))
     return issues
 
 

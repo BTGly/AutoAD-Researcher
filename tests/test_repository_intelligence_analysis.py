@@ -85,7 +85,7 @@ def test_analysis_cycle_writes_progress_observations_signal_and_evidence(tmp_pat
     )
 
     assert result.progress.file_reads_used >= 2
-    assert result.progress.search_calls_used >= 1
+    assert result.progress.search_calls_used == 0
     assert result.control_signal.new_evidence_count >= 2
     assert result.progress.coverage["repository_summary"] == "confirmed"
     assert result.progress.coverage["dependencies"] == "confirmed"
@@ -94,6 +94,7 @@ def test_analysis_cycle_writes_progress_observations_signal_and_evidence(tmp_pat
     assert (run_dir / "analysis_control_signals.jsonl").is_file()
     evidence = read_evidence_index(run_dir / "evidence_index.jsonl")
     assert any(record.evidence.source_kind == "repository_file" for record in evidence)
+    assert not any(observation.category == "entrypoints" for observation in result.observations)
 
 
 def test_analysis_observations_are_brief_and_evidence_backed(tmp_path: Path):

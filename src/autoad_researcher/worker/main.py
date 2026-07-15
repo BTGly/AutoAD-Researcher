@@ -1370,36 +1370,198 @@ def _run_paper_summarize(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list
 def _run_repo_analyze(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = str(job.get("source_id", ""))
     repo_dir = run_dir / "repos" / source_id
-    attestation_path = run_dir / "repo_acquisition" / source_id / "repository_attestation.json"
+    acquisition_dir = run_dir / "repo_acquisition" / source_id
+    attestation_path = acquisition_dir / "repository_attestation.json"
+    repository_source_path = acquisition_dir / "repository_source.json"
     if not attestation_path.is_file():
         _write_parse_error(run_dir, source_id, "repo_summarize", "repository acquisition attestation not found; clone did not complete")
+        return False, []
+    if not repository_source_path.is_file():
+        _write_parse_error(run_dir, source_id, "repo_summarize", "repository source identity not found; acquisition is incomplete")
         return False, []
     if not repo_dir.exists():
         _write_parse_error(run_dir, source_id, "repo_summarize", "repository directory not found")
         return False, []
 
-    files = list(repo_dir.glob("**/*.py"))[:50]
-    readme = repo_dir / "README.md"
-    summary_lines = [
-        f"# Repository: {source_id}",
-        f"Python files: {len(files)}",
-    ]
-    if readme.exists():
-        summary_lines.append(f"\n## README\n{readme.read_text(encoding='utf-8', errors='replace')[:2000]}")
-    brief_path = repo_dir / "repo_brief.md"
-    brief_path.write_text("\n".join(summary_lines))
-    rel = str(brief_path.relative_to(run_dir))
+    from autoad_researcher.assistant.v2.intent_contract import load_contract_draft
     from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
+    from autoad_researcher.repository_intelligence.analysis import RepositoryAnalysisAgent
+    from autoad_researcher.repository_intelligence.artifacts import synthesize_repository_artifacts
+    from autoad_researcher.repository_intelligence.models import RepositoryIntelligenceRequest, RepositorySource
+    from autoad_researcher.repository_intelligence.targeted_analysis import (
+        run_targeted_repository_analysis,
+        targeted_analysis_observations,
+        targets_from_contract,
+    )
+    from autoad_researcher.repository_intelligence.validate import validate_repository_intelligence_run
+
+    source = RepositorySource.model_validate_json(repository_source_path.read_text(encoding="utf-8"))
+    contract = load_contract_draft(run_dir)
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    raw_job_targets = payload.get("target_identifiers")
+    job_targets = raw_job_targets if isinstance(raw_job_targets, list) else []
+    targets = targets_from_contract(contract, job_targets=job_targets)
+
+    analysis_id = f"ra_{uuid4().hex[:16]}"
+    attempt_dir = run_dir / "repository_intelligence" / source_id / "attempts" / analysis_id
+    created_at = datetime.now(timezone.utc).isoformat()
+    request = RepositoryIntelligenceRequest(
+        schema_version=1,
+        request_id=f"req_{uuid4().hex[:16]}",
+        run_id=run_dir.name,
+        user_goal=(contract.research_goal if contract and contract.research_goal else "Analyze the attested repository source."),
+        local_path=source.local_path_label,
+        discovery_allowed=False,
+        user_confirmation_policy="when_ambiguous",
+        budget_profile="small",
+    )
+    generic = RepositoryAnalysisAgent().run_cycle(
+        request=request,
+        source=source,
+        repository_root=repo_dir,
+        run_dir=attempt_dir,
+        iteration=1,
+        created_at=created_at,
+    )
+    targeted = run_targeted_repository_analysis(
+        source=source,
+        repository_root=repo_dir,
+        output_dir=attempt_dir,
+        targets=targets,
+        evidence_index_path=attempt_dir / "evidence_index.jsonl",
+    )
+    observations = [
+        *generic.observations,
+        *targeted_analysis_observations(targeted, created_at=created_at),
+    ]
+    synthesized = synthesize_repository_artifacts(
+        output_dir=attempt_dir,
+        observations=observations,
+        progress=generic.progress,
+    )
+    validation = validate_repository_intelligence_run(
+        source=source,
+        repository_root=repo_dir,
+        run_dir=attempt_dir,
+        artifacts=synthesized.paths,
+        supplemental_artifacts=["targeted_repository_analysis.json"],
+    )
+    atomic_write_json(attempt_dir / "evidence_validation.json", validation.model_dump(mode="json"))
+    result_payload = {
+        "schema_version": 1,
+        "analysis_id": analysis_id,
+        "source_id": source_id,
+        "repository_commit": source.resolved_commit,
+        "status": "success" if validation.status == "passed" else "failed",
+        "formal_artifacts": sorted(synthesized.paths.path_set()),
+        "artifact_sha256": synthesized.artifact_sha256,
+        "targeted_analysis": "targeted_repository_analysis.json",
+        "repository_map": "repository_map.json",
+        "evidence_index": "evidence_index.jsonl",
+        "validation_report": "evidence_validation.json",
+        "created_at": created_at,
+    }
+    atomic_write_json(attempt_dir / "repository_analysis_result.json", result_payload)
+    outputs = [
+        str(path.relative_to(run_dir))
+        for path in sorted(attempt_dir.iterdir())
+        if path.is_file()
+    ]
+    if validation.status != "passed":
+        _write_parse_error(run_dir, source_id, "repo_summarize", "repository intelligence evidence validation failed")
+        return False, outputs
+
+    report_path = str((attempt_dir / "targeted_repository_analysis.json").relative_to(run_dir))
+    found_count = sum(1 for resolution in targeted.resolutions if resolution.status == "found")
+    unresolved_count = len(targeted.unresolved_facts)
     append_artifact_evidence(
         run_dir,
         source_id=source_id,
-        artifact_path=rel,
+        artifact_path=report_path,
         evidence_type="repo_summary",
-        parser_name="repo_summarizer",
-        summary=_markdown_preview(brief_path),
-        raw={"python_files_sampled": len(files)},
+        parser_name="repository_intelligence_v1",
+        summary=(
+            f"Repository Intelligence validated at commit {source.resolved_commit or 'unknown'}; "
+            f"exact targets found={found_count}, unresolved facts={unresolved_count}."
+        ),
+        raw={
+            "analysis_id": analysis_id,
+            "repository_commit": source.resolved_commit,
+            "validation_status": validation.status,
+            "formal_artifacts": sorted(synthesized.paths.path_set()),
+            "compatibility_status": targeted.compatibility.status,
+        },
     )
-    return True, [rel]
+    for observation in generic.observations:
+        if not observation.path or not observation.evidence_ids:
+            continue
+        append_artifact_evidence(
+            run_dir,
+            source_id=source_id,
+            artifact_path=str((repo_dir / observation.path).relative_to(run_dir)),
+            evidence_type="repository_documentation",
+            parser_name="repository_intelligence_v1",
+            summary=_repository_line_preview(repo_dir, observation.path, 1, None),
+            raw={
+                "analysis_id": analysis_id,
+                "repository_commit": source.resolved_commit,
+                "repository_evidence_ids": observation.evidence_ids,
+                "path": observation.path,
+            },
+        )
+    published_target_evidence: set[str] = set()
+    for resolution in targeted.resolutions:
+        for match in resolution.matches:
+            if match.evidence_id in published_target_evidence:
+                continue
+            published_target_evidence.add(match.evidence_id)
+            append_artifact_evidence(
+                run_dir,
+                source_id=source_id,
+                artifact_path=str((repo_dir / match.path).relative_to(run_dir)),
+                evidence_type="repository_target_evidence",
+                parser_name="repository_intelligence_v1",
+                summary=_repository_line_preview(repo_dir, match.path, match.start_line, match.end_line),
+                raw={
+                    "analysis_id": analysis_id,
+                    "repository_commit": match.repository_commit,
+                    "repository_evidence_id": match.evidence_id,
+                    "path": match.path,
+                    "start_line": match.start_line,
+                    "end_line": match.end_line,
+                    "file_sha256": match.file_sha256,
+                    "snippet_sha256": match.snippet_sha256,
+                    "target_source_field": resolution.target.source_field,
+                    "target_value": resolution.target.value,
+                },
+            )
+    atomic_write_json(
+        run_dir / "repository_intelligence" / source_id / "active_analysis.json",
+        {
+            "schema_version": 1,
+            "analysis_id": analysis_id,
+            "result_path": str((attempt_dir / "repository_analysis_result.json").relative_to(run_dir)),
+            "repository_commit": source.resolved_commit,
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return True, outputs
+
+
+def _repository_line_preview(
+    repository_root: Path,
+    relative_path: str,
+    start_line: int,
+    end_line: int | None,
+    *,
+    max_chars: int = 1200,
+) -> str:
+    path = repository_root / relative_path
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    bounded_end = len(lines) if end_line is None else min(end_line, len(lines))
+    selected = lines[max(0, start_line - 1):bounded_end]
+    text = "\n".join(selected).strip()
+    return text[:max_chars]
 
 
 def _cleanup_incomplete_repository_target(run_dir: Path, source_id: str) -> None:

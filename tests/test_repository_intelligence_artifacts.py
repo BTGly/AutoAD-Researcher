@@ -124,3 +124,42 @@ def test_unknowns_are_expressed_separately(tmp_path: Path):
 
     assert "blocking_entrypoint_selection" in categories
     assert "blocking_evaluation_contract" in categories
+
+
+def test_synthesis_does_not_emit_default_paths_without_path_evidence(tmp_path: Path):
+    result = synthesize_repository_artifacts(output_dir=tmp_path, observations=[], progress=progress())
+
+    path_policy = ModifiablePathsArtifact.model_validate_json(
+        (tmp_path / result.paths.modifiable_paths).read_text(encoding="utf-8")
+    )
+    entrypoints = json.loads((tmp_path / result.paths.entrypoints).read_text(encoding="utf-8"))
+
+    assert path_policy.paths == []
+    assert "path" not in entrypoints["primary_train"]
+
+
+def test_exact_entrypoint_observation_preserves_path_without_guessing_role(tmp_path: Path):
+    target = AnalysisObservation(
+        observation_id="obs_target_001",
+        category="entrypoint_target",
+        summary="Exact target evidence recorded for scripts/run.py",
+        status="confirmed",
+        evidence_ids=["ev_entrypoint"],
+        path="scripts/run.py",
+        target_source_field="baseline_entrypoint",
+        created_at="2026-06-17T00:00:00Z",
+    )
+
+    result = synthesize_repository_artifacts(output_dir=tmp_path, observations=[target], progress=progress())
+
+    entrypoints = json.loads((tmp_path / result.paths.entrypoints).read_text(encoding="utf-8"))
+    path_policy = json.loads((tmp_path / result.paths.modifiable_paths).read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / result.paths.repository_summary).read_text(encoding="utf-8"))
+    uncertainties = json.loads((tmp_path / result.paths.uncertainties).read_text(encoding="utf-8"))
+    assert "path" not in entrypoints["primary_train"]
+    assert entrypoints["primary_train"]["status"] == "unknown"
+    assert entrypoints["unresolved_candidates"][0]["path"] == "scripts/run.py"
+    assert entrypoints["unresolved_candidates"][0]["status"] == "confirmed"
+    assert path_policy["paths"][0]["path"] == "scripts/run.py"
+    assert summary["core_modules"] == []
+    assert "blocking_entrypoint_selection" in {group["category"] for group in uncertainties["groups"]}

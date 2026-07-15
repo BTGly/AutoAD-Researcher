@@ -5,18 +5,17 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from autoad_researcher.repository_intelligence.auto_evidence import filesystem_read_with_evidence, filesystem_search_with_evidence
+from autoad_researcher.repository_intelligence.auto_evidence import filesystem_read_with_evidence
 from autoad_researcher.repository_intelligence.control_models import AnalysisControlSignal
 from autoad_researcher.repository_intelligence.evidence import ActiveRepositoryContext
 from autoad_researcher.repository_intelligence.harness import AnalysisTransitionDecision, decide_analysis_transition
-from autoad_researcher.repository_intelligence.ids import IdentifierPattern
+from autoad_researcher.repository_intelligence.ids import IdentifierPattern, validate_relative_path
 from autoad_researcher.repository_intelligence.models import RepositoryAgentBudget, RepositoryIntelligenceRequest, RepositorySource
 from autoad_researcher.repository_intelligence.status import ClaimStatus
 from autoad_researcher.tools import (
     FilesystemReadRequest,
-    FilesystemSearchRequest,
     PermissionEngine,
     ToolContext,
     default_repository_permission_engine,
@@ -28,7 +27,6 @@ ObservationStatus = Literal["candidate", "confirmed", "conflicting", "discarded"
 
 DEPENDENCY_FILES = ["pyproject.toml", "requirements.txt", "requirements-dev.txt", "environment.yml", "setup.py"]
 README_FILES = ["README.md", "README.rst", "readme.md"]
-ENTRYPOINT_PATTERNS = ["train", "eval", "test", "infer"]
 
 
 class AnalysisProgress(BaseModel):
@@ -63,7 +61,14 @@ class AnalysisObservation(BaseModel):
     summary: str = Field(min_length=1)
     status: ObservationStatus
     evidence_ids: list[str] = Field(default_factory=list)
+    path: str | None = None
+    target_source_field: str | None = Field(default=None, pattern=IdentifierPattern)
     created_at: str = Field(min_length=1)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str | None) -> str | None:
+        return None if value is None else validate_relative_path(value)
 
 
 class RepositoryAnalysisCycleResult(BaseModel):
@@ -151,45 +156,10 @@ class RepositoryAnalysisAgent:
                         summary=f"Read repository file {relative_path}",
                         status="confirmed",
                         evidence_ids=[ref.evidence_id for ref in result.evidence],
+                        path=relative_path,
                         created_at=created_at,
                     )
                 )
-
-        search_path = read_targets[0] if read_targets else None
-        for index, pattern in enumerate(ENTRYPOINT_PATTERNS[: budget.max_analysis_search_calls], 1):
-            if search_path is None:
-                break
-            result = filesystem_search_with_evidence(
-                FilesystemSearchRequest(
-                    tool_call_id=f"tool_analysis_search_{index:03d}",
-                    workspace_root=repository_root,
-                    workspace_label=source.local_path_label,
-                    path=search_path,
-                    pattern=pattern,
-                    max_matches=20,
-                    stage="analysis",
-                    permission_profile="repository_analysis",
-                    active_source_id=source.source_id,
-                    tool_context=tool_context,
-                ),
-                permission_engine=self.permission_engine,
-                evidence_index_path=run_dir / "evidence_index.jsonl",
-                evidence_id_prefix=f"ev_analysis_search_{index:03d}",
-            )
-            if result.tool_result.status == "success":
-                search_calls += 1
-                evidence_ids.extend(ref.evidence_id for ref in result.evidence)
-                if result.evidence:
-                    observations.append(
-                        AnalysisObservation(
-                            observation_id=f"obs_search_{index:03d}",
-                            category="entrypoints",
-                            summary=f"Found repository text matches for pattern {pattern!r}",
-                            status="candidate",
-                            evidence_ids=[ref.evidence_id for ref in result.evidence],
-                            created_at=created_at,
-                        )
-                    )
 
         coverage = _coverage_from_observations(observations)
         budget_exhausted = file_reads >= budget.max_analysis_file_reads or search_calls >= budget.max_analysis_search_calls
@@ -320,7 +290,7 @@ def _next_actions(coverage: dict[str, CoverageStatus]) -> list[str]:
     if coverage["dependencies"] == "checked_unknown":
         actions.append("inspect dependency declaration files if present")
     if coverage["entrypoints"] != "confirmed":
-        actions.append("search for train/eval/test/infer entrypoint candidates")
+        actions.append("inspect exact user-supplied entrypoint candidates when available")
     return actions
 
 

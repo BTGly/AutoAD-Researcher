@@ -215,7 +215,33 @@ def synthesize_repository_artifacts(
             evidence_ids=evidence_ids[:1],
         )
 
+    target_observations = [
+        observation
+        for observation in observations
+        if observation.category in {"entrypoint_target", "config_target", "module_target"}
+        and observation.path
+        and observation.evidence_ids
+    ]
+    repository_summary.core_modules = [
+        _claim(
+            f"claim_target_module_{index:03d}",
+            "confirmed",
+            f"Exact user-supplied repository target was evidenced at {observation.path}.",
+            evidence_ids=observation.evidence_ids,
+            confidence="high",
+        )
+        for index, observation in enumerate(
+            [item for item in target_observations if item.category == "module_target"],
+            1,
+        )
+    ]
+
     entrypoint_evidence = _category_evidence(observations, "entrypoints")
+    entrypoint_targets = [
+        observation
+        for observation in target_observations
+        if observation.category == "entrypoint_target"
+    ]
     entrypoints = EntrypointsArtifact(
         schema_version=1,
         primary_train=EntrypointCandidate(
@@ -229,7 +255,15 @@ def synthesize_repository_artifacts(
         data_preparation=EntrypointCandidate(name="data_preparation", path=None, status="unknown"),
         tests=[],
         alternatives=[],
-        unresolved_candidates=[],
+        unresolved_candidates=[
+            EntrypointCandidate(
+                name=f"unresolved_entrypoint_target_{index:03d}",
+                path=observation.path,
+                status="confirmed" if observation.status == "confirmed" else "inferred",
+                evidence_ids=observation.evidence_ids,
+            )
+            for index, observation in enumerate(entrypoint_targets, 1)
+        ],
     )
 
     dependency_evidence = _category_evidence(observations, "dependencies")
@@ -254,11 +288,12 @@ def synthesize_repository_artifacts(
         policy_status="proposal",
         paths=[
             PathPolicyEntry(
-                path="README.md",
+                path=observation.path,
                 category="unknown",
-                rationale="R8 synthesis does not authorize modifications.",
-                evidence_ids=_category_evidence(observations, "repository_summary"),
+                rationale="Repository evidence does not by itself authorize modifications.",
+                evidence_ids=observation.evidence_ids,
             )
+            for observation in _observations_with_unique_paths(observations)
         ],
     )
     evaluation = EvaluationContractDraftArtifact(
@@ -289,18 +324,22 @@ def synthesize_repository_artifacts(
         recommended_validations=[_claim("claim_env_validate", "unknown", "Environment builder must validate dependencies separately.")],
         conflicts=[],
     )
+    uncertainty_groups = [
+        UncertaintyGroup(
+            category="blocking_evaluation_contract",
+            items=[_claim("claim_evaluation_unknown", "unknown", "Evaluation contract remains draft.")],
+        ),
+    ]
+    uncertainty_groups.insert(
+        0,
+        UncertaintyGroup(
+            category="blocking_entrypoint_selection",
+            items=[_claim("claim_entrypoint_unknown", "unknown", "Primary entrypoint roles are not confirmed.")],
+        ),
+    )
     uncertainties = UncertaintiesArtifact(
         schema_version=1,
-        groups=[
-            UncertaintyGroup(
-                category="blocking_entrypoint_selection",
-                items=[_claim("claim_entrypoint_unknown", "unknown", "Primary entrypoints are not confirmed.")],
-            ),
-            UncertaintyGroup(
-                category="blocking_evaluation_contract",
-                items=[_claim("claim_evaluation_unknown", "unknown", "Evaluation contract remains draft.")],
-            ),
-        ],
+        groups=uncertainty_groups,
     )
 
     paths = RepositoryArtifactPaths(
@@ -366,6 +405,17 @@ def _category_evidence(observations: list[AnalysisObservation], category: str) -
             if evidence_id not in ids:
                 ids.append(evidence_id)
     return ids
+
+
+def _observations_with_unique_paths(observations: list[AnalysisObservation]) -> list[AnalysisObservation]:
+    result: list[AnalysisObservation] = []
+    seen: set[str] = set()
+    for observation in observations:
+        if not observation.path or not observation.evidence_ids or observation.path in seen:
+            continue
+        result.append(observation)
+        seen.add(observation.path)
+    return result
 
 
 def _write_json_atomic(path: Path, value: BaseModel) -> None:

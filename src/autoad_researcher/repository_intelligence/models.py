@@ -142,12 +142,12 @@ class RepositorySource(BaseModel):
     schema_version: Literal[1]
     source_id: str = Field(pattern=IdentifierPattern)
     kind: Literal["github_public", "local_workspace"]
-    canonical_remote_url: str | None
-    requested_ref: str | None
+    canonical_remote_url: str | None = None
+    requested_ref: str | None = None
     acquisition_profile: Literal["shallow_ref", "partial_exact", "generic_shallow", "local"]
     resolved_commit: str | None = Field(default=None, pattern=GitCommitPattern)
     tree_sha: str = Field(pattern=Sha256Pattern)
-    detached_head: bool | None
+    detached_head: bool | None = None
     dirty: bool
     local_path_label: str
     submodule_declarations: list[SubmoduleRecord] = Field(default_factory=list)

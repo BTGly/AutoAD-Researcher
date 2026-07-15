@@ -114,3 +114,23 @@ def test_claim_referencing_missing_evidence_fails_validation(tmp_path: Path):
 
     assert report.status == "failed"
     assert any(issue.code == "CLAIM_EVIDENCE_MISSING" for issue in report.issues)
+
+
+def test_supplemental_artifact_missing_evidence_reference_fails_validation(tmp_path: Path):
+    source, repo_root, run_dir, artifacts = make_valid_run(tmp_path)
+    (run_dir / "targeted_repository_analysis.json").write_text(
+        '{"matches":[{"evidence_id":"ev_missing"}]}',
+        encoding="utf-8",
+    )
+
+    report = validate_repository_intelligence_run(
+        source=source,
+        repository_root=repo_root,
+        run_dir=run_dir,
+        artifacts=artifacts,
+        supplemental_artifacts=["targeted_repository_analysis.json"],
+    )
+
+    assert report.status == "failed"
+    assert report.checked_artifact_count == 8
+    assert any(issue.code == "ARTIFACT_EVIDENCE_MISSING" for issue in report.issues)

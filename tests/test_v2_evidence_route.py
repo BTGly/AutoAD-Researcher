@@ -101,7 +101,7 @@ def test_local_repo_unpack_then_repo_summary_creates_evidence(tmp_path: Path):
     archive_path = source_dir / "repo.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("patchcore/README.md", "# PatchCore\nbaseline repository\n")
-        zf.writestr("patchcore/patchcore/__init__.py", "")
+        zf.writestr("patchcore/patchcore/__init__.py", "TARGET_COMPONENT = 'PatchCore'\n")
     append_source_ref(
         run_dir,
         kind="local_repo",
@@ -126,16 +126,46 @@ def test_local_repo_unpack_then_repo_summary_creates_evidence(tmp_path: Path):
     assert (run_dir / "repos" / "src_repo" / "README.md").is_file()
     assert (run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json").is_file()
 
+    from autoad_researcher.assistant.v2.intent_contract import ResearchIntentContract
+    (run_dir / "research_intent_contract_draft.json").write_text(
+        ResearchIntentContract(
+            run_id=run_dir.name,
+            authorization_schema_version=3,
+            task_domain=None,
+            user_target_module_hints=["patchcore/__init__.py"],
+            allowed_change_scope=[],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
     summary_ok, summary_outputs = _run_repo_analyze(
         run_dir,
         {"job_id": "job_000002", "source_id": "src_repo", "job_type": "repo_summarize"},
     )
 
     assert summary_ok is True
-    assert summary_outputs == ["repos/src_repo/repo_brief.md"]
+    assert any(path.endswith("targeted_repository_analysis.json") for path in summary_outputs)
+    assert any(path.endswith("repository_summary.json") for path in summary_outputs)
+    assert not (run_dir / "repos" / "src_repo" / "repo_brief.md").exists()
+    active = json.loads(
+        (run_dir / "repository_intelligence" / "src_repo" / "active_analysis.json").read_text(encoding="utf-8")
+    )
+    attempt_dir = run_dir / "repository_intelligence" / "src_repo" / "attempts" / active["analysis_id"]
+    targeted = json.loads((attempt_dir / "targeted_repository_analysis.json").read_text(encoding="utf-8"))
+    assert targeted["resolutions"][0]["status"] == "found"
+    assert targeted["resolutions"][0]["matches"][0]["path"] == "patchcore/__init__.py"
+    validation = json.loads((attempt_dir / "evidence_validation.json").read_text(encoding="utf-8"))
+    assert validation["status"] == "passed"
     evidence = load_usable_evidence(run_dir)
     assert evidence[0]["evidence_type"] == "repo_summary"
-    assert "PatchCore" in evidence[0]["summary"]
+    assert evidence[0]["parser_name"] == "repository_intelligence_v1"
+    assert evidence[0]["raw"]["validation_status"] == "passed"
+    documentation = next(item for item in evidence if item["evidence_type"] == "repository_documentation")
+    assert "PatchCore" in documentation["summary"]
+    target_evidence = next(item for item in evidence if item["evidence_type"] == "repository_target_evidence")
+    assert "TARGET_COMPONENT" in target_evidence["summary"]
+    assert target_evidence["raw"]["path"] == "patchcore/__init__.py"
+    assert len(target_evidence["raw"]["snippet_sha256"]) == 64
 
 
 def test_archive_bundle_classifies_mixed_materials_and_queues_child_jobs(tmp_path: Path):
@@ -1068,6 +1098,32 @@ def test_repo_summary_without_clone_attestation_is_not_supported(tmp_path: Path)
     )
 
     assert load_usable_evidence(run_dir) == []
+
+
+def test_repository_analysis_evidence_requires_matching_active_publication(tmp_path: Path):
+    run_dir = tmp_path / "run_repo_publication"
+    attestation = run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json"
+    attestation.parent.mkdir(parents=True)
+    attestation.write_text("{}", encoding="utf-8")
+    append_artifact_evidence(
+        run_dir,
+        source_id="src_repo",
+        artifact_path="repository_intelligence/src_repo/attempts/ra_first/targeted_repository_analysis.json",
+        evidence_type="repo_summary",
+        parser_name="repository_intelligence_v1",
+        summary="validated analysis",
+        raw={"analysis_id": "ra_first"},
+    )
+
+    assert load_usable_evidence(run_dir) == []
+
+    active_path = run_dir / "repository_intelligence" / "src_repo" / "active_analysis.json"
+    active_path.parent.mkdir(parents=True)
+    active_path.write_text(json.dumps({"analysis_id": "ra_other"}), encoding="utf-8")
+    assert load_usable_evidence(run_dir) == []
+
+    active_path.write_text(json.dumps({"analysis_id": "ra_first"}), encoding="utf-8")
+    assert load_usable_evidence(run_dir)[0]["summary"] == "validated analysis"
 
 
 def test_repo_summarize_requires_successful_clone_attestation(tmp_path: Path):

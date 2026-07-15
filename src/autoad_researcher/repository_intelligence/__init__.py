@@ -111,6 +111,18 @@ from autoad_researcher.repository_intelligence.models import (
     RepositorySource,
     SubmoduleRecord,
 )
+from autoad_researcher.repository_intelligence.targeted_analysis import (
+    BoundedRepositoryMap,
+    CompatibilityAssessment,
+    RepositoryAnalysisTarget,
+    RepositoryMapEntry,
+    RepositoryTargetMatch,
+    RepositoryTargetResolution,
+    TargetedRepositoryAnalysis,
+    run_targeted_repository_analysis,
+    targeted_analysis_observations,
+    targets_from_contract,
+)
 from autoad_researcher.repository_intelligence.skills import (
     LoadedSkillRecord,
     LoadedSkillsAudit,

@@ -200,12 +200,30 @@ def _artifact_evidence_is_currently_supported(run_dir: Path, item: dict[str, Any
         quality_report = attempt.get("quality_report")
         if not isinstance(quality_report, str) or not _quality_report_is_usable(run_dir, quality_report):
             return False
-    if item.get("evidence_type") != "repo_summary":
+    repository_evidence_types = {
+        "repo_summary",
+        "repository_documentation",
+        "repository_target_evidence",
+    }
+    if item.get("evidence_type") not in repository_evidence_types:
         return True
     source_id = str(item.get("source_id") or "")
     if not source_id:
         return False
-    return (run_dir / "repo_acquisition" / source_id / "repository_attestation.json").is_file()
+    if not (run_dir / "repo_acquisition" / source_id / "repository_attestation.json").is_file():
+        return False
+    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    analysis_id = str(raw.get("analysis_id") or "")
+    if not analysis_id:
+        return True
+    active_path = run_dir / "repository_intelligence" / source_id / "active_analysis.json"
+    if not active_path.is_file():
+        return False
+    try:
+        active = json.loads(active_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(active, dict) and active.get("analysis_id") == analysis_id
 
 
 def _source_ids_with_supported_text_evidence(run_dir: Path) -> set[str]:
