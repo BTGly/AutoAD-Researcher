@@ -499,6 +499,12 @@ def load_confirmed_contract(run_dir: Path) -> ResearchIntentContract | None:
     return _load_contract(run_dir / CONTRACT_FILE)
 
 
+def refresh_contract_state(contract: ResearchIntentContract) -> None:
+    """Recompute derived readiness after an explicit field-level mutation."""
+
+    _refresh_contract_state(contract)
+
+
 def is_contract_confirmation(user_input: str) -> bool:
     text = re.sub(r"[\s。！!？?，,；;：:]+", "", user_input.strip().lower())
     if any(token in text for token in ("不确认", "别确认", "先不确认", "不是")):
