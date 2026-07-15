@@ -1,4 +1,13 @@
-"""Research Assistant Chat — advisory UI with human-readable HITL flow."""
+"""DEPRECATED — V1 legacy Research Chat entry point.
+
+V2 production uses ``server.routes.chat`` → ``ResearchOrchestratorV2`` →
+``ResearchDialogueAgent``. Keyword-based intent routing is intentional in this
+V1 design and must not be extended or used for new features.
+
+This module and its four keyword-token tables (``_PARSE_ACTION_TOKENS``,
+``_PARSE_TARGET_TOKENS``, ``_PARSE_CONFIRMATION_TOKENS``, and
+``_FORCE_REPARSE_TOKENS``) will be removed after V1 test coverage is migrated.
+"""
 
 from __future__ import annotations
 

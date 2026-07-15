@@ -1,4 +1,10 @@
-"""Deterministic response guard for Research Chat Alpha."""
+"""DEPRECATED — V1 legacy regex-based response validation.
+
+V2 validates the Pydantic ``ResearchDialogueResponse`` instead of applying
+this guard's 36 explicit regex literals. In production this module is imported
+by the also-deprecated ``ui.research_chat`` path; legacy tests still import it
+directly. It will be removed after V1 test coverage is migrated.
+"""
 
 from __future__ import annotations
 
