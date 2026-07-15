@@ -118,7 +118,17 @@ export default function App() {
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
     if (currentRunIdRef.current && currentRunIdRef.current !== nextRunId) return;
-    setSources(s.map((src: any) => ({ sourceId: src.source_id || generateId(), kind: src.kind || 'unknown', label: src.user_label || src.source_id || 'source', status: src.status || 'unknown' })));
+    setSources(s.map((src: any) => ({
+      sourceId: src.source_id || generateId(),
+      kind: src.kind || 'unknown',
+      label: src.user_label || src.source_id || 'source',
+      status: src.status || 'unknown',
+      registrationStatus: src.registration_status,
+      acquisitionStatus: src.acquisition_status,
+      parseStatus: src.parse_status,
+      analysisStatus: src.analysis_status,
+      evidenceStatus: src.evidence_status,
+    })));
     setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '', error: job.error || '' })));
     setEvidence(e.map(normalizeEvidence));
     setUnusableParsedSources((evidenceState.unusable_parsed_sources || []).map(normalizeUnusableParsedSource));
@@ -414,7 +424,16 @@ export default function App() {
       if (source.source_id) {
         setSources(prev => prev.some(s => s.sourceId === source.source_id)
           ? prev
-          : [...prev, { sourceId: source.source_id, kind: source.kind || 'unknown', label: source.stored_path || file.name, status: 'uploaded_not_parsed' }]);
+          : [...prev, {
+            sourceId: source.source_id,
+            kind: source.kind || 'unknown',
+            label: source.stored_path || file.name,
+            status: 'uploaded_not_parsed',
+            registrationStatus: 'succeeded',
+            acquisitionStatus: 'succeeded',
+            parseStatus: 'pending',
+            evidenceStatus: 'pending',
+          }]);
       }
       await refreshSidebarForRun(targetRunId);
       setTaskStatus('Ready');

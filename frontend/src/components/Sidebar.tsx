@@ -75,7 +75,7 @@ function SourcesList({ sources, onDeleteSource }: { sources: SourceItem[]; onDel
       <SectionSummary title="资料来源" detail={`${sources.length} 个已登记资料，解析或采集进度见下方状态。`} />
       {sources.map(source => {
         const kind = sourceKindMeta(source.kind);
-        const status = sourceStatusMeta(source.status);
+        const status = sourceLifecycleMeta(source);
         return (
           <div key={source.sourceId} className="sidebar-card">
             <div className="sidebar-card-head">
@@ -358,6 +358,43 @@ function sourceStatusMeta(status: string): DisplayMeta {
     failed: { label: '失败', tone: 'bad' },
   };
   return map[status] || { label: status || '未知状态', tone: 'muted' };
+}
+
+export function sourceLifecycleMeta(source: SourceItem): DisplayMeta {
+  const dimensions = [
+    ['registration', source.registrationStatus],
+    ['acquisition', source.acquisitionStatus],
+    ['parse', source.parseStatus],
+    ['analysis', source.analysisStatus],
+    ['evidence', source.evidenceStatus],
+  ] as const;
+  const failed = dimensions.find(([, status]) => status === 'failed')?.[0];
+  if (failed) {
+    const labels: Record<string, string> = {
+      registration: '登记失败',
+      acquisition: '采集失败',
+      parse: '解析失败',
+      analysis: '分析失败',
+      evidence: '证据不可用',
+    };
+    return { label: labels[failed], tone: 'bad' };
+  }
+  const running = dimensions.find(([, status]) => status === 'running')?.[0];
+  if (running === 'acquisition') {
+    return { label: source.kind === 'github_repo' || source.kind === 'local_repo' ? '正在下载仓库' : '正在采集', tone: 'warn' };
+  }
+  if (running === 'parse') return { label: '正在解析', tone: 'warn' };
+  if (running === 'analysis') return { label: source.kind === 'github_repo' || source.kind === 'local_repo' ? '正在分析代码' : '正在分析', tone: 'warn' };
+  if (source.analysisStatus === 'succeeded') return { label: '分析完成', tone: 'good' };
+  if (source.parseStatus === 'succeeded' && source.evidenceStatus === 'succeeded') return { label: '解析完成', tone: 'good' };
+  if (source.acquisitionStatus === 'succeeded' && source.analysisStatus === 'pending') {
+    return { label: source.kind === 'github_repo' || source.kind === 'local_repo' ? '仓库已下载，待分析' : '已采集，待分析', tone: 'warn' };
+  }
+  if (source.acquisitionStatus === 'succeeded' && source.parseStatus === 'pending') return { label: '已采集，待解析', tone: 'warn' };
+  if (source.acquisitionStatus === 'pending') {
+    return { label: source.kind === 'github_repo' ? '等待下载仓库' : '等待采集', tone: 'warn' };
+  }
+  return sourceStatusMeta(source.status);
 }
 
 function jobTypeMeta(jobType: string): DisplayMeta {

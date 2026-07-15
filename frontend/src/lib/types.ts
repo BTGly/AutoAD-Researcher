@@ -33,6 +33,11 @@ export interface SourceItem {
   kind: string;
   label: string;
   status: string;
+  registrationStatus?: string;
+  acquisitionStatus?: string;
+  parseStatus?: string;
+  analysisStatus?: string;
+  evidenceStatus?: string;
 }
 
 export interface DraftField {

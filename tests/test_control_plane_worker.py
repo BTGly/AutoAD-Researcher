@@ -17,6 +17,7 @@ from autoad_researcher.core.control_plane.reconciliation import (
 )
 from autoad_researcher.worker.main import _process_pending_jobs
 from autoad_researcher.worker import main as worker_main
+from autoad_researcher.ui.sources import append_source_ref, load_source_registry
 
 
 def _run_dir(tmp_path: Path, name: str = "run_worker") -> Path:
@@ -42,6 +43,47 @@ def _attempt_dir(run_dir: Path, job_id: str, attempt_count: int, claim_token: st
         / job_id
         / f"attempt_{attempt_count}_{claim_token}"
     )
+
+
+def test_worker_job_types_advance_only_their_lifecycle_dimension(tmp_path: Path):
+    run_dir = _run_dir(tmp_path, "run_source_lifecycle")
+    source_id = append_source_ref(
+        run_dir,
+        kind="github_repo",
+        user_label="https://github.com/example/library-a",
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    worker_main._update_source_lifecycle_for_job(
+        run_dir,
+        source_id=source_id,
+        job_type="git_clone",
+        phase="succeeded",
+    )
+    acquired = load_source_registry(run_dir)["sources"][0]
+    assert acquired["acquisition_status"] == "succeeded"
+    assert acquired["analysis_status"] == "pending"
+
+    worker_main._update_source_lifecycle_for_job(
+        run_dir,
+        source_id=source_id,
+        job_type="repo_summarize",
+        phase="running",
+    )
+    running = load_source_registry(run_dir)["sources"][0]
+    assert running["acquisition_status"] == "succeeded"
+    assert running["analysis_status"] == "running"
+
+    worker_main._update_source_lifecycle_for_job(
+        run_dir,
+        source_id=source_id,
+        job_type="repo_summarize",
+        phase="succeeded",
+    )
+    analyzed = load_source_registry(run_dir)["sources"][0]
+    assert analyzed["analysis_status"] == "succeeded"
+    assert analyzed["evidence_status"] == "succeeded"
 
 
 def _crash_after_terminal_result(

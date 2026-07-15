@@ -10,7 +10,12 @@ from autoad_researcher.assistant.v2.job_service import append_pipeline_job
 from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_lifecycle import active_run_lease
-from autoad_researcher.ui.sources import remove_source, save_uploaded_file
+from autoad_researcher.ui.sources import (
+    load_source_registry,
+    remove_source,
+    save_uploaded_file,
+    update_source_lifecycle,
+)
 
 router = APIRouter(prefix="/api/runs", tags=["sources"])
 
@@ -21,13 +26,8 @@ async def get_sources(run_id: str):
         run_dir = run_dir_path(RUNS_ROOT, run_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    path = run_dir / "sources" / "source_references.json"
-    if not path.is_file():
-        return []
-    import json
     try:
-        reg = json.loads(path.read_text(encoding="utf-8"))
-        return reg.get("sources", [])
+        return load_source_registry(run_dir).get("sources", [])
     except Exception:
         return []
 
@@ -96,6 +96,13 @@ async def _upload_source_active(
         )
         append_event(run_dir, "artifact.created", {"source_id": source_id, "paths": artifacts})
         append_event(run_dir, "evidence.updated", {"source_id": source_id})
+        update_source_lifecycle(
+            run_dir,
+            source_id,
+            parse_status="succeeded",
+            analysis_status="not_applicable",
+            evidence_status="succeeded",
+        )
     elif kind == "document":
         job = append_pipeline_job(
             run_dir,

@@ -18,6 +18,7 @@ from autoad_researcher.ui.sources import (
     save_uploaded_file,
     set_active_parse_attempt,
     update_source_status,
+    update_source_lifecycle,
     update_source_parse_attempt,
     register_url_source,
 )
@@ -567,6 +568,51 @@ class TestSourceContext:
         assert "uploaded_not_parsed" in ctx
         assert "SimpleNet.pdf" in ctx
         assert "SourceReferences" in ctx
+
+
+class TestSourceLifecycle:
+    def test_repository_acquisition_and_analysis_are_independent(self, tmp_path):
+        run_dir = tmp_path / "run_lifecycle"
+        run_dir.mkdir()
+        source = register_url_source(run_dir, "https://github.com/example/library-a")
+        source_id = source["source_id"]
+
+        registered = load_source_registry(run_dir)["sources"][0]
+        assert registered["registration_status"] == "succeeded"
+        assert registered["acquisition_status"] == "pending"
+        assert registered["parse_status"] == "not_applicable"
+        assert registered["analysis_status"] == "pending"
+        assert registered["evidence_status"] == "pending"
+
+        update_source_lifecycle(run_dir, source_id, acquisition_status="succeeded")
+        acquired = load_source_registry(run_dir)["sources"][0]
+        assert acquired["status"] == "uploaded_not_parsed"
+        assert acquired["acquisition_status"] == "succeeded"
+        assert acquired["analysis_status"] == "pending"
+
+        update_source_lifecycle(
+            run_dir,
+            source_id,
+            analysis_status="succeeded",
+            evidence_status="succeeded",
+        )
+        analyzed = load_source_registry(run_dir)["sources"][0]
+        assert analyzed["status"] == "parsed"
+        assert analyzed["analysis_status"] == "succeeded"
+        assert analyzed["evidence_status"] == "succeeded"
+
+    def test_uploaded_pdf_starts_acquired_but_unparsed(self, tmp_path):
+        run_dir = tmp_path / "run_pdf_lifecycle"
+        run_dir.mkdir()
+
+        save_uploaded_file(run_dir, _make_upload("paper.pdf"))
+
+        source = load_source_registry(run_dir)["sources"][0]
+        assert source["registration_status"] == "succeeded"
+        assert source["acquisition_status"] == "succeeded"
+        assert source["parse_status"] == "pending"
+        assert source["analysis_status"] == "pending"
+        assert source["evidence_status"] == "pending"
 
 
 class TestResolvePath:

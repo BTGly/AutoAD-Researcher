@@ -45,6 +45,13 @@ async def test_frontend_raw_file_upload_contract_preserves_encoded_filename(
     evidence = load_usable_evidence(run_dir)
     assert evidence[0]["evidence_type"] == "uploaded_text"
     assert "PatchCore on MVTec AD" in evidence[0]["summary"]
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        sources_response = await client.get("/api/runs/run_file_ingress/sources")
+    source_state = sources_response.json()[0]
+    assert source_state["registration_status"] == "succeeded"
+    assert source_state["acquisition_status"] == "succeeded"
+    assert source_state["parse_status"] == "succeeded"
+    assert source_state["evidence_status"] == "succeeded"
 
 
 @pytest.mark.asyncio

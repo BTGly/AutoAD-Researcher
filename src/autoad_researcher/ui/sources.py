@@ -64,6 +64,22 @@ ParseAttemptStatus = Literal[
     "cancelled",
 ]
 
+SourceLifecycleStatus = Literal[
+    "not_applicable",
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+]
+
+LIFECYCLE_FIELDS = (
+    "registration_status",
+    "acquisition_status",
+    "parse_status",
+    "analysis_status",
+    "evidence_status",
+)
+
 SOURCES_DIR = "sources"
 REGISTRY_FILE = "source_references.json"
 DEFAULT_LOCAL_SOURCE_ROOT = Path("/root/autodl-tmp/AI4S")
@@ -98,7 +114,7 @@ def _generate_source_id() -> str:
 def load_source_registry(run_dir: Path) -> dict[str, Any]:
     path = _registry_path(run_dir)
     if not path.is_file():
-        return {"schema_version": 1, "sources": []}
+        return {"schema_version": 2, "sources": []}
     registry = json.loads(path.read_text(encoding="utf-8"))
     return _registry_with_read_compat(run_dir, registry)
 
@@ -146,6 +162,7 @@ def update_source_status(run_dir: Path, source_id: str, status: SourceStatus, *,
     for s in registry["sources"]:
         if s.get("source_id") == source_id:
             s["status"] = status
+            _apply_legacy_status_to_lifecycle(run_dir, s, status)
             if error_message:
                 s["error_message"] = error_message
             elif status != "failed":
@@ -171,10 +188,18 @@ def update_source_intake_result(
             continue
         if status is not None:
             source["status"] = status
+            _apply_legacy_status_to_lifecycle(run_dir, source, status)
         if stored_path is not None:
             source["stored_path"] = stored_path
         if intake_status is not None:
             source["intake_status"] = intake_status
+            source["acquisition_status"] = {
+                "pending": "pending",
+                "running": "running",
+                "ok": "succeeded",
+                "failed": "failed",
+                "skipped": "not_applicable",
+            }[intake_status]
         if clear_intake_error:
             source["intake_error"] = None
         elif intake_error is not None:
@@ -185,6 +210,45 @@ def update_source_intake_result(
             source.pop("error_message", None)
         break
     _save_registry(run_dir, registry)
+
+
+def update_source_lifecycle(
+    run_dir: Path,
+    source_id: str,
+    *,
+    registration_status: SourceLifecycleStatus | None = None,
+    acquisition_status: SourceLifecycleStatus | None = None,
+    parse_status: SourceLifecycleStatus | None = None,
+    analysis_status: SourceLifecycleStatus | None = None,
+    evidence_status: SourceLifecycleStatus | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Update orthogonal Source lifecycle dimensions and refresh legacy status."""
+
+    updates = {
+        "registration_status": registration_status,
+        "acquisition_status": acquisition_status,
+        "parse_status": parse_status,
+        "analysis_status": analysis_status,
+        "evidence_status": evidence_status,
+    }
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("source_id") != source_id:
+            continue
+        for field, value in updates.items():
+            if value is not None:
+                if source.get(field) == "succeeded" and value in {"running", "failed"}:
+                    continue
+                source[field] = value
+        source["status"] = _legacy_status_projection(source)
+        if error_message:
+            source["error_message"] = error_message
+        elif not any(source.get(field) == "failed" for field in LIFECYCLE_FIELDS):
+            source.pop("error_message", None)
+        _save_registry(run_dir, registry)
+        return
+    raise KeyError(f"source not found: {source_id}")
 
 
 def remove_source(run_dir: Path, source_id: str, *, reason: str = "user_removed") -> dict[str, Any] | None:
@@ -253,6 +317,7 @@ def append_source_ref(
         "active_parse_attempt_id": active_parse_attempt_id,
         "parse_attempts": list(parse_attempts or []),
     }
+    ref.update(_default_lifecycle(run_dir, ref))
     if parent_source_id:
         ref["parent_source_id"] = parent_source_id
     if metadata:
@@ -374,8 +439,9 @@ def get_source_context(run_dir: Path) -> str:
 def _registry_with_read_compat(run_dir: Path, registry: dict[str, Any]) -> dict[str, Any]:
     sources = registry.get("sources", [])
     if not isinstance(sources, list):
-        return {"schema_version": registry.get("schema_version", 1), "sources": []}
+        return {"schema_version": registry.get("schema_version", 2), "sources": []}
     normalized = dict(registry)
+    normalized["schema_version"] = max(int(registry.get("schema_version", 1)), 2)
     normalized["sources"] = [_source_with_read_compat(run_dir, source) for source in sources if isinstance(source, dict)]
     return normalized
 
@@ -385,6 +451,9 @@ def _source_with_read_compat(run_dir: Path, source: dict[str, Any]) -> dict[str,
     status = normalized.get("status")
     normalized.setdefault("intake_status", _default_intake_status(status if isinstance(status, str) else None))
     normalized.setdefault("intake_error", None)
+    lifecycle = _default_lifecycle(run_dir, normalized)
+    for field, value in lifecycle.items():
+        normalized.setdefault(field, value)
 
     attempts = normalized.get("parse_attempts")
     if isinstance(attempts, list):
@@ -403,6 +472,7 @@ def _source_with_read_compat(run_dir: Path, source: dict[str, Any]) -> dict[str,
 
 def _registry_for_disk(registry: dict[str, Any]) -> dict[str, Any]:
     payload = dict(registry)
+    payload["schema_version"] = 2
     sources = payload.get("sources", [])
     if not isinstance(sources, list):
         payload["sources"] = []
@@ -537,6 +607,95 @@ def _default_intake_status(status: str | None) -> IntakeStatus:
     if status == "user_provided_not_ingested":
         return "pending"
     return "pending"
+
+
+def _default_lifecycle(run_dir: Path, source: dict[str, Any]) -> dict[str, SourceLifecycleStatus]:
+    kind = str(source.get("kind") or "")
+    legacy_status = str(source.get("status") or "")
+    intake_status = str(source.get("intake_status") or _default_intake_status(legacy_status))
+    source_id = str(source.get("source_id") or "")
+    uploaded = bool(source.get("stored_path")) or kind in {"user_text", "local_repo"}
+    acquisition: SourceLifecycleStatus = {
+        "pending": "pending",
+        "running": "running",
+        "ok": "succeeded",
+        "failed": "failed",
+        "skipped": "not_applicable",
+    }.get(intake_status, "pending")  # type: ignore[assignment]
+    if uploaded:
+        acquisition = "succeeded"
+
+    parse_applicable = kind in {
+        "paper_pdf", "text", "markdown", "document", "webpage", "url",
+        "arxiv_id", "doi", "user_text", "archive_bundle",
+    }
+    analysis_applicable = kind in {"paper_pdf", "github_repo", "local_repo", "archive_bundle"}
+    parse_status: SourceLifecycleStatus = "pending" if parse_applicable else "not_applicable"
+    analysis_status: SourceLifecycleStatus = "pending" if analysis_applicable else "not_applicable"
+    if legacy_status == "parsing":
+        parse_status = "running" if parse_applicable else parse_status
+        analysis_status = "running" if not parse_applicable and analysis_applicable else analysis_status
+    elif legacy_status == "parsed":
+        parse_status = "succeeded" if parse_applicable else parse_status
+    elif legacy_status == "failed":
+        parse_status = "failed" if parse_applicable else parse_status
+
+    evidence_status: SourceLifecycleStatus = "pending"
+    if source_id and _source_has_evidence(run_dir, source_id):
+        evidence_status = "succeeded"
+    if source_id and kind in {"github_repo", "local_repo"}:
+        if (run_dir / "repo_acquisition" / source_id / "repository_attestation.json").is_file():
+            acquisition = "succeeded"
+        if _source_has_evidence(run_dir, source_id, evidence_types={"repo_summary"}):
+            analysis_status = "succeeded"
+    if source.get("active_parse_attempt_id"):
+        parse_status = "succeeded"
+    return {
+        "registration_status": "succeeded",
+        "acquisition_status": acquisition,
+        "parse_status": parse_status,
+        "analysis_status": analysis_status,
+        "evidence_status": evidence_status,
+    }
+
+
+def _apply_legacy_status_to_lifecycle(run_dir: Path, source: dict[str, Any], status: str) -> None:
+    defaults = _default_lifecycle(run_dir, {**source, "status": status})
+    for field, value in defaults.items():
+        source[field] = value
+
+
+def _legacy_status_projection(source: dict[str, Any]) -> SourceStatus:
+    if any(source.get(field) == "failed" for field in LIFECYCLE_FIELDS):
+        return "failed"
+    if any(source.get(field) == "running" for field in LIFECYCLE_FIELDS):
+        return "parsing"
+    if source.get("evidence_status") == "succeeded" or source.get("analysis_status") == "succeeded" or source.get("parse_status") == "succeeded":
+        return "parsed"
+    if source.get("acquisition_status") == "succeeded":
+        return "uploaded_not_parsed"
+    return "user_provided_not_ingested"
+
+
+def _source_has_evidence(
+    run_dir: Path,
+    source_id: str,
+    *,
+    evidence_types: set[str] | None = None,
+) -> bool:
+    path = run_dir / "evidence" / "evidence_index.jsonl"
+    if not path.is_file():
+        return False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict) or item.get("source_id") != source_id:
+            continue
+        if evidence_types is None or item.get("evidence_type") in evidence_types:
+            return True
+    return False
 
 
 # ── file upload ──

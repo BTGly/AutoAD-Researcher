@@ -184,6 +184,12 @@ def _process_pending_jobs_active(run_dir: Path, *, worker_id: str = WORKER_ID) -
             f"job.started:{job_id}:attempt:{attempt_count}",
             {"job_id": job_id, "job_type": job_type, "attempt_count": attempt_count},
         )
+        _update_source_lifecycle_for_job(
+            run_dir,
+            source_id=claimed.source_id,
+            job_type=job_type,
+            phase="running",
+        )
 
         success = False
         outputs: list[str] = []
@@ -276,6 +282,12 @@ def _process_pending_jobs_active(run_dir: Path, *, worker_id: str = WORKER_ID) -
                         {"job_id": job_id},
                     )
                 audit.append("toast.success", {"message": f"{job_type} 完成"})
+                _update_source_lifecycle_for_job(
+                    run_dir,
+                    source_id=claimed.source_id,
+                    job_type=job_type,
+                    phase="succeeded",
+                )
             else:
                 error_msg = error_msg or _best_job_error(run_dir, job)
                 store.fail(
@@ -296,6 +308,13 @@ def _process_pending_jobs_active(run_dir: Path, *, worker_id: str = WORKER_ID) -
                     },
                 )
                 audit.append("toast.error", {"message": f"{job_type} 失败：{error_msg}"})
+                _update_source_lifecycle_for_job(
+                    run_dir,
+                    source_id=claimed.source_id,
+                    job_type=job_type,
+                    phase="failed",
+                    error_message=error_msg,
+                )
         except JobClaimFenceError as exc:
             print(f"[worker] lost claim for {job_id}: {exc}", file=sys.stderr)
         processed += 1
@@ -316,6 +335,66 @@ def _append_job_transition(audit: _AuditWriter, transition: JobTransition) -> No
         f"{event_type}:{transition.job_id}:attempt:{transition.attempt_count}:reason:{transition.reason}",
         transition.model_dump(mode="json"),
     )
+
+
+def _update_source_lifecycle_for_job(
+    run_dir: Path,
+    *,
+    source_id: str,
+    job_type: str,
+    phase: str,
+    error_message: str | None = None,
+) -> None:
+    dimension_by_job = {
+        "web_fetch": "acquisition_status",
+        "git_clone": "acquisition_status",
+        "local_repo_unpack": "acquisition_status",
+        "local_repo_acquire": "acquisition_status",
+        "archive_unpack_classify": "acquisition_status",
+        "web_markitdown": "parse_status",
+        "document_markitdown": "parse_status",
+        "paper_parse": "parse_status",
+        "paper_parse_mineru": "parse_status",
+        "paper_parse_markitdown": "parse_status",
+        "paper_summarize": "analysis_status",
+        "repo_analyze": "analysis_status",
+        "repo_summarize": "analysis_status",
+    }
+    dimension = dimension_by_job.get(job_type)
+    if not dimension or not source_id or source_id == "search":
+        return
+    lifecycle_value = {
+        "running": "running",
+        "succeeded": "succeeded",
+        "failed": "failed",
+    }.get(phase)
+    if lifecycle_value is None:
+        return
+    updates: dict[str, Any] = {dimension: lifecycle_value}
+    evidence_jobs = {
+        "archive_unpack_classify",
+        "web_markitdown",
+        "document_markitdown",
+        "paper_parse",
+        "paper_parse_mineru",
+        "paper_parse_markitdown",
+        "paper_summarize",
+        "repo_analyze",
+        "repo_summarize",
+    }
+    if job_type in evidence_jobs and phase in {"succeeded", "failed"}:
+        updates["evidence_status"] = lifecycle_value
+    try:
+        from autoad_researcher.ui.sources import update_source_lifecycle
+
+        update_source_lifecycle(
+            run_dir,
+            source_id,
+            error_message=error_message,
+            **updates,
+        )
+    except KeyError:
+        return
 
 
 def _run_web_search(run_dir: Path, job: dict[str, Any]) -> bool:
