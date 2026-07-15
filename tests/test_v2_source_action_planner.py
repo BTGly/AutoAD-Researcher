@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
-from autoad_researcher.assistant.v2.intent_contract import load_contract_draft
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
+from autoad_researcher.assistant.v2.research_intent_summary import load_research_intent_summary
 from autoad_researcher.assistant.v2.source_action_planner import (
     SourceActionPlan,
     load_repository_hints,
@@ -83,74 +83,25 @@ def test_source_action_planner_uses_llm_for_natural_language_clone(monkeypatch, 
     assert plan.actions[0].source_url == "https://github.com/amazon-science/patchcore-inspection"
 
 
-def test_orchestrator_creates_repo_jobs_from_llm_source_action(monkeypatch, tmp_path: Path):
+def test_orchestrator_does_not_use_llm_to_invent_repo_url(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_repo"
     run_dir.mkdir()
 
+    calls = 0
+
     def fake_call(api_key, provider_base_url, messages, **kwargs):
-        system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
-            return {
-                "reply": json.dumps(
-                    {
-                        "actions": [
-                            {
-                                "action_type": "git_clone",
-                                "target": "PatchCore official repository",
-                                "repository_hint_id": "internal_benchmark_patchcore",
-                                "source_url": None,
-                                "query": None,
-                                "source_kind": "github_repo",
-                                "confidence": 0.86,
-                                "requires_confirmation": False,
-                                "rationale": "用户明确要求 clone 仓库。",
-                            }
-                        ],
-                        "user_visible_summary": "将登记并 clone PatchCore 仓库。",
-                        "confidence": 0.86,
-                        "reason": "Explicit clone request.",
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
-            }
-        if "TurnGateDecision JSON" in system_text:
-            return {
-                "reply": json.dumps(
-                    {
-                        "turn_type": "source_intake",
-                        "contract_action": "update_contract",
-                        "contract_update_allowed": True,
-                        "need_discovery_allowed": True,
-                        "save_draft_allowed": True,
-                        "user_intent_summary": "structured source/job intake",
-                        "evidence_from_current_turn": ["created_sources_or_jobs"],
-                        "evidence_from_context": [],
-                        "confidence": 1.0,
-                        "reason": "Source/job events are structured system state.",
-                        "next_reply_instruction": None,
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
-            }
-        if "Need Discovery" in system_text:
-            return {
-                "reply": json.dumps(
-                    {
-                        "schema_version": 1,
-                        "task_type": "anomaly_detection_experiment",
-                        "current_stage_goal": "generate_plan",
-                        "needs": [],
-                        "ready_for_stage": False,
-                        "blocking_questions": [],
-                        "discovery_notes": [],
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
-            }
-        return {"reply": json.dumps({"reply_to_user": "我会结合仓库内容继续分析你的研究目标。"}, ensure_ascii=False), "error": ""}
+        nonlocal calls
+        calls += 1
+        return {"reply": json.dumps({
+            "reply_to_user": "请给出仓库 URL，我不会猜测具体仓库。",
+            "summary": {
+                "goal": "分析用户指定的仓库",
+                "confirmed_facts": ["用户要求 clone PatchCore 仓库"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": "请提供要分析的仓库 URL。",
+            },
+        }, ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
 
@@ -162,14 +113,12 @@ def test_orchestrator_creates_repo_jobs_from_llm_source_action(monkeypatch, tmp_
     )
 
     assert result.reply_kind == "answer"
-    assert result.reply == "我会结合仓库内容继续分析你的研究目标。"
-    assert result.created_sources[0]["kind"] == "github_repo"
-    assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
-
-    jobs = load_pipeline_jobs(run_dir)
-    assert [job["job_type"] for job in jobs] == ["git_clone", "repo_summarize"]
-    registry = load_source_registry(run_dir)
-    assert registry["sources"][0]["user_label"] == "https://github.com/amazon-science/patchcore-inspection"
+    assert "请提供要分析的仓库 URL" in result.reply
+    assert result.created_sources == []
+    assert result.created_jobs == []
+    assert load_pipeline_jobs(run_dir) == []
+    assert load_source_registry(run_dir)["sources"] == []
+    assert calls == 1
 
 
 def test_orchestrator_treats_mirror_url_as_repository_source_without_llm(tmp_path: Path):
@@ -225,8 +174,8 @@ def test_plain_repo_analysis_url_is_not_registered_as_baseline_contract(tmp_path
     )
 
     assert "基线仓库" not in result.reply
-    assert result.intent_contract == {}
-    assert load_contract_draft(run_dir) is None
+    assert result.intent_summary["goal"] == ""
+    assert load_research_intent_summary(run_dir) is None
 
     registry = load_source_registry(run_dir)
     assert registry["sources"][0]["user_label"] == "https://github.com/amazon-science/patchcore-inspection"
@@ -234,72 +183,25 @@ def test_plain_repo_analysis_url_is_not_registered_as_baseline_contract(tmp_path
     assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
 
 
-def test_orchestrator_creates_web_search_job_from_llm_source_action(monkeypatch, tmp_path: Path):
+def test_orchestrator_does_not_create_web_search_from_dialogue_llm(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_search"
     run_dir.mkdir()
 
+    calls = 0
+
     def fake_call(api_key, provider_base_url, messages, **kwargs):
-        system_text = messages[0]["content"]
-        if "SourceActionPlanner" in system_text:
-            return {
-                "reply": json.dumps(
-                    {
-                        "actions": [
-                            {
-                                "action_type": "web_search",
-                                "target": "candidate papers",
-                                "source_url": None,
-                                "query": "MVTec AD PatchCore AUROC improvement methods",
-                                "repository_hint_id": None,
-                                "source_kind": None,
-                                "confidence": 0.9,
-                                "requires_confirmation": False,
-                                "rationale": "用户要求查找资料。",
-                            }
-                        ],
-                        "user_visible_summary": "将搜索候选资料。",
-                        "confidence": 0.9,
-                        "reason": "Explicit search request.",
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
-            }
-        if "TurnGateDecision JSON" in system_text:
-            return {
-                "reply": json.dumps(
-                    {
-                        "turn_type": "source_intake",
-                        "contract_action": "update_contract",
-                        "contract_update_allowed": True,
-                        "need_discovery_allowed": True,
-                        "save_draft_allowed": True,
-                        "user_intent_summary": "structured source/job intake",
-                        "evidence_from_current_turn": ["created_sources_or_jobs"],
-                        "evidence_from_context": [],
-                        "confidence": 1.0,
-                        "reason": "Source/job events are structured system state.",
-                        "next_reply_instruction": None,
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
-            }
-        return {
-            "reply": json.dumps(
-                {
-                    "schema_version": 1,
-                    "task_type": "anomaly_detection_experiment",
-                    "current_stage_goal": "generate_plan",
-                    "needs": [],
-                    "ready_for_stage": False,
-                    "blocking_questions": [],
-                    "discovery_notes": [],
-                },
-                ensure_ascii=False,
-            ),
-            "error": "",
-        }
+        nonlocal calls
+        calls += 1
+        return {"reply": json.dumps({
+            "reply_to_user": "可以先明确检索范围，再登记找到的材料。",
+            "summary": {
+                "goal": "寻找提升 PatchCore AUROC 的材料",
+                "confirmed_facts": ["用户希望搜索 PatchCore AUROC 提升方法"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        }, ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
 
@@ -311,8 +213,9 @@ def test_orchestrator_creates_web_search_job_from_llm_source_action(monkeypatch,
     )
 
     assert result.reply_kind == "answer"
-    assert [job["job_type"] for job in result.created_jobs] == ["web_search"]
-    assert result.created_jobs[0]["payload"]["query"] == "MVTec AD PatchCore AUROC improvement methods"
+    assert result.created_jobs == []
+    assert load_pipeline_jobs(run_dir) == []
+    assert calls == 1
 
 
 def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monkeypatch, tmp_path: Path):
@@ -322,30 +225,18 @@ def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monk
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         calls.append(messages)
-        system_text = messages[0]["content"]
-        if "TurnGateDecision JSON" in system_text:
-            return {
-                "reply": json.dumps(
-                    {
-                        "turn_type": "source_intake",
-                        "contract_action": "answer_without_contract_update",
-                        "contract_update_allowed": False,
-                        "need_discovery_allowed": False,
-                        "save_draft_allowed": False,
-                        "user_intent_summary": "登记仓库并继续回应",
-                        "evidence_from_current_turn": ["created_sources_or_jobs"],
-                        "evidence_from_context": [],
-                        "confidence": 1.0,
-                        "reason": "显式仓库 URL 是确定性材料信号。",
-                        "next_reply_instruction": None,
-                    },
-                    ensure_ascii=False,
-                ),
-                "error": "",
-            }
         return {
             "reply": json.dumps(
-                {"reply_to_user": "我会在仓库分析完成后，结合其中的证据继续对齐研究目标。"},
+                {
+                    "reply_to_user": "仓库材料尚在处理；分析完成后我会基于证据继续对齐研究目标。",
+                    "summary": {
+                        "goal": "分析用户提供的代码仓库",
+                        "confirmed_facts": ["用户提供了 https://github.com/example/repository"],
+                        "inferred_facts": [],
+                        "unresolved_conflicts": [],
+                        "blocking_question": None,
+                    },
+                },
                 ensure_ascii=False,
             ),
             "error": "",
@@ -361,12 +252,12 @@ def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monk
     )
 
     assert result.reply_kind == "answer"
-    assert result.reply == "我会在仓库分析完成后，结合其中的证据继续对齐研究目标。"
+    assert "仓库材料尚在处理" in result.reply
     assert result.created_sources[0]["kind"] == "github_repo"
     registry = load_source_registry(run_dir)
     assert registry["sources"][0]["user_label"] == "https://github.com/example/repository"
     assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_explicit_mirror_search_does_not_auto_create_web_search_without_provider(tmp_path: Path):
@@ -435,8 +326,7 @@ def test_orchestrator_removes_latest_source_when_user_rejects_upload(monkeypatch
 
     result = ResearchOrchestratorV2.handle(run_dir, user_input="我上传错了，这个不是我们要的")
 
-    assert result.reply_kind == "source_deleted"
-    assert "wrong.md" in result.reply
+    assert result.reply_kind == "answer"
     assert load_source_registry(run_dir)["sources"] == []
     assert load_usable_evidence(run_dir) == []
     assert not source_dir.exists()

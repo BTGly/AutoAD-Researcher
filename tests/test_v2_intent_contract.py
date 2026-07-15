@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from autoad_researcher.assistant.v2.intent_contract import (
     CONTRACT_DRAFT_FILE,
     CONTRACT_FILE,
@@ -225,6 +227,7 @@ def test_build_contract_keeps_repo_analysis_readiness_separate(tmp_path: Path):
     assert contract.baseline_repo == "https://github.com/example/repo"
 
 
+@pytest.mark.skip(reason="obsolete multi-call orchestrator contract flow; removed in summary architecture")
 def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
@@ -643,6 +646,7 @@ def test_repo_failure_with_truncated_cloning_error_is_explained_as_transport_fai
     assert "dependency failed: job_000001" in reply
 
 
+@pytest.mark.skip(reason="obsolete multi-call orchestrator contract flow; removed in summary architecture")
 def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
@@ -827,6 +831,7 @@ def test_need_spec_maps_non_hardcoded_baseline_into_contract(tmp_path: Path, mon
     assert contract.metric_priority == "co_primary"
 
 
+@pytest.mark.skip(reason="obsolete contract-backed orchestrator behavior; removed in summary architecture")
 def test_hf2_identity_question_does_not_chase_dataset(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
@@ -851,6 +856,7 @@ def test_hf2_identity_question_does_not_chase_dataset(tmp_path: Path):
     assert result.intent_contract["missing_required_fields"] == ["dataset"]
 
 
+@pytest.mark.skip(reason="obsolete contract-backed orchestrator behavior; removed in summary architecture")
 def test_hf2_user_identity_does_not_update_contract(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
@@ -870,6 +876,7 @@ def test_hf2_user_identity_does_not_update_contract(tmp_path: Path):
     assert "请补充" not in result.reply
 
 
+@pytest.mark.skip(reason="obsolete contract-backed orchestrator behavior; removed in summary architecture")
 def test_hf2_playful_message_not_contract_update(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
@@ -881,6 +888,7 @@ def test_hf2_playful_message_not_contract_update(tmp_path: Path):
     assert "dataset" not in result.reply
 
 
+@pytest.mark.skip(reason="obsolete contract-backed orchestrator behavior; removed in summary architecture")
 def test_hf2_frustration_not_contract_update(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
@@ -892,6 +900,7 @@ def test_hf2_frustration_not_contract_update(tmp_path: Path):
     assert "dataset" not in result.reply
 
 
+@pytest.mark.skip(reason="obsolete contract-backed orchestrator behavior; removed in summary architecture")
 def test_hf2_research_keyword_joke_without_api_is_unknown_not_contract_update(tmp_path: Path):
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
@@ -903,6 +912,7 @@ def test_hf2_research_keyword_joke_without_api_is_unknown_not_contract_update(tm
     assert "dataset" not in result.reply
 
 
+@pytest.mark.skip(reason="TurnGate is not part of the summary architecture")
 def test_hf2_research_keyword_joke_with_api_is_decided_by_turn_gate(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         if "TurnGateDecision JSON" in messages[0]["content"]:
@@ -930,6 +940,7 @@ def test_hf2_research_keyword_joke_with_api_is_decided_by_turn_gate(tmp_path: Pa
     assert "dataset" not in result.reply
 
 
+@pytest.mark.skip(reason="TurnGate is not part of the summary architecture")
 def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         if "TurnGateDecision JSON" in messages[0]["content"]:
@@ -967,6 +978,7 @@ def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path
     assert result.intent_contract["primary_metrics"] == ["image_level_auroc"]
 
 
+@pytest.mark.skip(reason="obsolete contract-backed orchestrator behavior; removed in summary architecture")
 def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         if "TurnGateDecision JSON" in messages[0]["content"]:
@@ -1011,6 +1023,7 @@ def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, mon
     assert result.intent_contract["evaluation_protocol"] == "keep baseline/original evaluation protocol; no test split or metric changes"
 
 
+@pytest.mark.skip(reason="field-completion dialogue is removed in summary architecture")
 def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         if "TurnGateDecision JSON" in messages[0]["content"]:

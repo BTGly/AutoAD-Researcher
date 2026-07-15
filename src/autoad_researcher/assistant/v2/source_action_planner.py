@@ -112,7 +112,7 @@ def plan_source_actions(
     they remain ordinary chat.
     """
 
-    explicit = _explicit_source_plan(
+    explicit = plan_explicit_source_actions(
         user_input=user_input,
         attachments=attachments,
         source_registry=source_registry,
@@ -292,7 +292,7 @@ def _build_source_action_messages(
     ]
 
 
-def _explicit_source_plan(
+def plan_explicit_source_actions(
     *,
     user_input: str,
     attachments: list[str] | None,
