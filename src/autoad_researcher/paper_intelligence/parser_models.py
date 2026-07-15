@@ -100,3 +100,11 @@ class ParseQualityReport(BaseModel):
     formula_parse_warnings: list[str] = Field(default_factory=list)
     figure_parse_warnings: list[str] = Field(default_factory=list)
     fatal_errors: list[str] = Field(default_factory=list)
+    character_count: int = Field(default=0, ge=0)
+    word_like_token_count: int = Field(default=0, ge=0)
+    natural_language_density: float = Field(default=0.0, ge=0.0, le=1.0)
+    page_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    repetition_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    valid_paragraphs: int = Field(default=0, ge=0)
+    structured_markup_document: bool = False

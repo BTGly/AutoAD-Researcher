@@ -225,11 +225,14 @@ class PaperIntelligenceOrchestrator:
                 provider.get_quality_report(parse_result),
                 parse_result=parse_result,
                 parser=request.parser_profile_id,
-                has_readable_markdown=paper_markdown_path is not None,
+                paper_markdown_path=paper_markdown_path,
             )
             _write_atomic_json(attempt.attempt_dir / "parse_quality_report.json", quality.model_dump())
-            if paper_markdown_path is None:
-                warnings.append("parse produced no readable paper.md; parsed text is not usable evidence")
+            if quality.quality_level != "usable":
+                warnings.append(
+                    "parse output did not pass the multi-signal text quality gate: "
+                    + ", ".join(quality.fatal_errors)
+                )
                 _record_parse_attempt_result(
                     run_dir,
                     attempt,
@@ -884,9 +887,15 @@ def _quality_report_for_attempt(
     *,
     parse_result,
     parser: str,
-    has_readable_markdown: bool = True,
+    paper_markdown_path: Path | None = None,
 ) -> ParseQualityReport:
-    if parse_result.status == "success" and has_readable_markdown:
+    from autoad_researcher.paper_intelligence.text_quality import assess_extracted_text
+
+    extracted_text = ""
+    if paper_markdown_path is not None and paper_markdown_path.is_file():
+        extracted_text = paper_markdown_path.read_text(encoding="utf-8", errors="replace")
+    assessment = assess_extracted_text(extracted_text)
+    if parse_result.status == "success" and assessment.usable:
         quality_level = "usable"
         usable_for = ["paper_artifact_synthesis", "research_context_draft"]
         not_usable_for: list[str] = []
@@ -895,7 +904,7 @@ def _quality_report_for_attempt(
         quality_level = "unusable"
         usable_for = []
         not_usable_for = ["supported_research_facts", "paper_content_claims", "research_context_draft"]
-        fatal_errors = [*quality.fatal_errors, "parse produced no readable paper.md"]
+        fatal_errors = [*quality.fatal_errors, *assessment.warnings]
     elif parse_result.status == "partial_success":
         quality_level = "partial"
         usable_for = ["parse_diagnostics"]
@@ -916,6 +925,7 @@ def _quality_report_for_attempt(
             "usable_for": usable_for,
             "not_usable_for": not_usable_for,
             "fatal_errors": fatal_errors,
+            **assessment.model_dump(exclude={"usable", "warnings"}),
         }
     )
 

@@ -1114,38 +1114,40 @@ def _run_paper_parse_mineru(run_dir: Path, job: dict[str, Any]) -> tuple[bool, l
 def _run_paper_parse_markitdown(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = str(job.get("source_id", ""))
     source = _find_source(run_dir, source_id)
+    parse_attempt_id, output_dir = _begin_paper_fallback_attempt(run_dir, source_id, "markitdown")
     stored_path = str(source.get("stored_path") or "") if source else ""
     if not stored_path:
-        _write_parse_error(run_dir, source_id, "markitdown", "source has no stored_path")
+        _fail_paper_fallback_attempt(run_dir, source_id, parse_attempt_id, "markitdown", "source has no stored_path")
         return False, []
     input_path = run_dir / stored_path
-    output_dir = run_dir / "paper" / "parse" / "markitdown" / source_id
     output_path = output_dir / "paper.md"
 
-    from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
     from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
 
     result = convert_local_to_markdown(input_path, output_path, run_dir=run_dir)
     if not result.ok:
-        _write_parse_error(run_dir, source_id, "markitdown", result.error or "markitdown failed")
+        _fail_paper_fallback_attempt(
+            run_dir, source_id, parse_attempt_id, "markitdown", result.error or "markitdown failed"
+        )
         return False, []
     artifact_path = result.output_paths[0]
-    _mark_source_parsed_via_fallback(run_dir, source_id, artifact_path)
-    append_artifact_evidence(
+    if not _publish_paper_fallback_attempt(
         run_dir,
         source_id=source_id,
-        artifact_path=artifact_path,
-        evidence_type="paper_markdown_fallback",
+        parse_attempt_id=parse_attempt_id,
         parser_name=result.parser_name,
-        summary=_markdown_preview(output_path),
-        raw={**result.metadata, "fallback_for": "paper_parse_mineru"},
-    )
+        output_path=output_path,
+        artifact_path=artifact_path,
+        evidence_metadata=result.metadata,
+    ):
+        return False, []
     summary_ok, summary_outputs = _run_paper_summarize(run_dir, {
         **job,
         "payload": {
             **(job.get("payload") if isinstance(job.get("payload"), dict) else {}),
             "paper_markdown_path": artifact_path,
             "parser_name": result.parser_name,
+            "parse_attempt_id": parse_attempt_id,
         },
     })
     return True, _dedupe_outputs(result.output_paths + (summary_outputs if summary_ok else []))
@@ -1202,38 +1204,40 @@ def _run_paper_fallbacks(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list
 def _run_paper_parse_pdftotext(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = str(job.get("source_id", ""))
     source = _find_source(run_dir, source_id)
+    parse_attempt_id, output_dir = _begin_paper_fallback_attempt(run_dir, source_id, "pdftotext")
     stored_path = str(source.get("stored_path") or "") if source else ""
     if not stored_path:
-        _write_parse_error(run_dir, source_id, "pdftotext", "source has no stored_path")
+        _fail_paper_fallback_attempt(run_dir, source_id, parse_attempt_id, "pdftotext", "source has no stored_path")
         return False, []
     input_path = run_dir / stored_path
-    output_dir = run_dir / "paper" / "parse" / "pdftotext" / source_id
     output_path = output_dir / "paper.md"
 
-    from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
     from autoad_researcher.tools.pdf_text_adapter import convert_pdf_to_markdown
 
     result = convert_pdf_to_markdown(input_path, output_path, run_dir=run_dir)
     if not result.ok:
-        _write_parse_error(run_dir, source_id, "pdftotext", result.error or "pdftotext failed")
+        _fail_paper_fallback_attempt(
+            run_dir, source_id, parse_attempt_id, "pdftotext", result.error or "pdftotext failed"
+        )
         return False, []
     artifact_path = result.output_paths[0]
-    _mark_source_parsed_via_fallback(run_dir, source_id, artifact_path)
-    append_artifact_evidence(
+    if not _publish_paper_fallback_attempt(
         run_dir,
         source_id=source_id,
-        artifact_path=artifact_path,
-        evidence_type="paper_markdown_fallback",
+        parse_attempt_id=parse_attempt_id,
         parser_name=result.parser_name,
-        summary=_markdown_preview(output_path),
-        raw={**result.metadata, "fallback_for": "paper_parse_mineru"},
-    )
+        output_path=output_path,
+        artifact_path=artifact_path,
+        evidence_metadata=result.metadata,
+    ):
+        return False, []
     summary_ok, summary_outputs = _run_paper_summarize(run_dir, {
         **job,
         "payload": {
             **(job.get("payload") if isinstance(job.get("payload"), dict) else {}),
             "paper_markdown_path": artifact_path,
             "parser_name": result.parser_name,
+            "parse_attempt_id": parse_attempt_id,
         },
     })
     return True, _dedupe_outputs(result.output_paths + (summary_outputs if summary_ok else []))
@@ -1242,45 +1246,51 @@ def _run_paper_parse_pdftotext(run_dir: Path, job: dict[str, Any]) -> tuple[bool
 def _run_paper_parse_arxiv_abs(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = str(job.get("source_id", ""))
     source = _find_source(run_dir, source_id)
+    parse_attempt_id, output_dir = _begin_paper_fallback_attempt(run_dir, source_id, "arxiv_abs")
     label = " ".join(str(source.get(key) or "") for key in ("user_label", "stored_path")) if source else ""
     arxiv_id = _extract_arxiv_id(label)
     if not arxiv_id:
-        _write_parse_error(run_dir, source_id, "arxiv_abs", "no arXiv id found in source label/path")
+        _fail_paper_fallback_attempt(
+            run_dir, source_id, parse_attempt_id, "arxiv_abs", "no arXiv id found in source label/path"
+        )
         return False, []
     url = f"https://arxiv.org/abs/{arxiv_id}"
-    output_dir = run_dir / "paper" / "parse" / "arxiv_abs" / source_id
     output_path = output_dir / "paper.md"
     try:
         from autoad_researcher.tools.providers import SecureWebFetchProvider
         fetched = SecureWebFetchProvider().fetch(url)
         markdown = _arxiv_abs_html_to_markdown(fetched.content, arxiv_id, url)
     except Exception as exc:
-        _write_parse_error(run_dir, source_id, "arxiv_abs", f"arXiv abs fetch failed: {exc}")
+        _fail_paper_fallback_attempt(
+            run_dir, source_id, parse_attempt_id, "arxiv_abs", f"arXiv abs fetch failed: {exc}"
+        )
         return False, []
     if not markdown:
-        _write_parse_error(run_dir, source_id, "arxiv_abs", "arXiv abs page produced no readable markdown")
+        _fail_paper_fallback_attempt(
+            run_dir, source_id, parse_attempt_id, "arxiv_abs", "arXiv abs page produced no readable markdown"
+        )
         return False, []
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(markdown, encoding="utf-8")
     artifact_path = str(output_path.relative_to(run_dir))
-    _mark_source_parsed_via_fallback(run_dir, source_id, artifact_path)
-
-    from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
-    append_artifact_evidence(
+    if not _publish_paper_fallback_attempt(
         run_dir,
         source_id=source_id,
-        artifact_path=artifact_path,
-        evidence_type="paper_markdown_fallback",
+        parse_attempt_id=parse_attempt_id,
         parser_name="arxiv_abs",
-        summary=_markdown_preview(output_path),
-        raw={"url": url, "arxiv_id": arxiv_id, "fallback_for": "paper_parse_mineru"},
-    )
+        output_path=output_path,
+        artifact_path=artifact_path,
+        evidence_metadata={"url": url, "arxiv_id": arxiv_id},
+    ):
+        return False, []
+
     summary_ok, summary_outputs = _run_paper_summarize(run_dir, {
         **job,
         "payload": {
             **(job.get("payload") if isinstance(job.get("payload"), dict) else {}),
             "paper_markdown_path": artifact_path,
             "parser_name": "arxiv_abs",
+            "parse_attempt_id": parse_attempt_id,
         },
     })
     return True, _dedupe_outputs([artifact_path] + (summary_outputs if summary_ok else []))
@@ -1323,6 +1333,7 @@ def _run_paper_summarize(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list
     append_artifact_evidence(
         run_dir,
         source_id=source_id,
+        parse_attempt_id=parse_attempt_id or None,
         artifact_path=artifacts.summary_md_path,
         evidence_type="paper_reading_summary",
         parser_name="paper_reading_summarizer",
@@ -1337,6 +1348,7 @@ def _run_paper_summarize(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list
     append_artifact_evidence(
         run_dir,
         source_id=source_id,
+        parse_attempt_id=parse_attempt_id or None,
         artifact_path=artifacts.manifest_path,
         evidence_type="paper_artifact_manifest",
         parser_name="paper_reading_summarizer",
@@ -1398,20 +1410,175 @@ def _cleanup_incomplete_repository_target(run_dir: Path, source_id: str) -> None
     shutil.rmtree(target)
 
 
-def _mark_source_parsed_via_fallback(run_dir: Path, source_id: str, stored_path: str) -> None:
-    try:
-        from autoad_researcher.ui.sources import update_source_intake_result
+def _begin_paper_fallback_attempt(run_dir: Path, source_id: str, parser_name: str) -> tuple[str, Path]:
+    from autoad_researcher.ui.sources import append_source_parse_attempt, update_source_lifecycle
 
-        update_source_intake_result(
+    parse_attempt_id = f"pa_{uuid4().hex[:16]}"
+    output_dir = run_dir / "paper" / "parse" / "attempts" / parse_attempt_id
+    output_dir.mkdir(parents=True, exist_ok=False)
+    quality_path = output_dir / "parse_quality_report.json"
+    append_source_parse_attempt(
+        run_dir,
+        source_id,
+        {
+            "parse_attempt_id": parse_attempt_id,
+            "source_id": source_id,
+            "parser": parser_name,
+            "status": "running",
+            "output_dir": str(output_dir.relative_to(run_dir)),
+            "quality_report": str(quality_path.relative_to(run_dir)),
+            "fallback_for": "paper_parse_mineru",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+        make_active=False,
+    )
+    update_source_lifecycle(run_dir, source_id, parse_status="running")
+    return parse_attempt_id, output_dir
+
+
+def _publish_paper_fallback_attempt(
+    run_dir: Path,
+    *,
+    source_id: str,
+    parse_attempt_id: str,
+    parser_name: str,
+    output_path: Path,
+    artifact_path: str,
+    evidence_metadata: dict[str, Any],
+) -> bool:
+    from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
+    from autoad_researcher.paper_intelligence.text_quality import assess_extracted_text
+    from autoad_researcher.ui.sources import update_source_lifecycle, update_source_parse_attempt
+
+    try:
+        text = output_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _fail_paper_fallback_attempt(
+            run_dir, source_id, parse_attempt_id, parser_name, f"fallback output unreadable: {exc}"
+        )
+        return False
+    page_texts = [part.strip() for part in re.split(r"(?m)^## Page \d+\s*$", text) if part.strip()]
+    assessment = assess_extracted_text(text, page_texts=page_texts or None)
+    quality_path = output_path.parent / "parse_quality_report.json"
+    quality_report = _fallback_quality_report(
+        source_id=source_id,
+        parse_attempt_id=parse_attempt_id,
+        parser_name=parser_name,
+        assessment=assessment.model_dump(),
+        page_count=len(page_texts) or (1 if text.strip() else 0),
+    )
+    atomic_write_json(quality_path, quality_report)
+    if not assessment.usable:
+        error = "fallback text failed quality gate: " + ", ".join(assessment.warnings)
+        update_source_parse_attempt(
             run_dir,
             source_id,
-            status="parsed",
-            stored_path=stored_path,
-            intake_status="ok",
-            clear_intake_error=True,
+            parse_attempt_id,
+            {
+                "status": "failed",
+                "warnings": assessment.warnings,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            },
+            make_active=False,
         )
-    except Exception:
-        return
+        _write_parse_error(run_dir, source_id, parser_name, error)
+        return False
+
+    append_artifact_evidence(
+        run_dir,
+        source_id=source_id,
+        parse_attempt_id=parse_attempt_id,
+        artifact_path=artifact_path,
+        evidence_type="paper_markdown_fallback",
+        parser_name=parser_name,
+        summary=_markdown_preview(output_path),
+        raw={**evidence_metadata, "fallback_for": "paper_parse_mineru"},
+    )
+    update_source_parse_attempt(
+        run_dir,
+        source_id,
+        parse_attempt_id,
+        {"status": "ok", "warnings": [], "completed_at": datetime.now(timezone.utc).isoformat()},
+        make_active=True,
+    )
+    update_source_lifecycle(run_dir, source_id, parse_status="succeeded", evidence_status="succeeded")
+    return True
+
+
+def _fail_paper_fallback_attempt(
+    run_dir: Path,
+    source_id: str,
+    parse_attempt_id: str,
+    parser_name: str,
+    error: str,
+) -> None:
+    from autoad_researcher.paper_intelligence.text_quality import assess_extracted_text
+    from autoad_researcher.ui.sources import update_source_parse_attempt
+
+    attempt_dir = run_dir / "paper" / "parse" / "attempts" / parse_attempt_id
+    assessment = assess_extracted_text("")
+    report = _fallback_quality_report(
+        source_id=source_id,
+        parse_attempt_id=parse_attempt_id,
+        parser_name=parser_name,
+        assessment=assessment.model_dump(),
+        page_count=0,
+        extra_errors=[str(error)],
+    )
+    atomic_write_json(attempt_dir / "parse_quality_report.json", report)
+    update_source_parse_attempt(
+        run_dir,
+        source_id,
+        parse_attempt_id,
+        {
+            "status": "failed",
+            "warnings": [str(error)],
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        },
+        make_active=False,
+    )
+    _write_parse_error(run_dir, source_id, parser_name, error)
+
+
+def _fallback_quality_report(
+    *,
+    source_id: str,
+    parse_attempt_id: str,
+    parser_name: str,
+    assessment: dict[str, Any],
+    page_count: int,
+    extra_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    usable = bool(assessment.get("usable")) and not extra_errors
+    warnings = [str(item) for item in assessment.get("warnings", [])]
+    return {
+        "schema_version": 1,
+        "status": "success" if usable else "failed",
+        "parse_attempt_id": parse_attempt_id,
+        "source_id": source_id,
+        "parser": parser_name,
+        "quality_level": "usable" if usable else "unusable",
+        "usable_for": ["paper_content_evidence"] if usable else [],
+        "not_usable_for": [] if usable else ["paper_content_evidence", "research_claims"],
+        "page_count": page_count,
+        "empty_pages": [],
+        "scanned_pages": [],
+        "ocr_pages": [],
+        "low_confidence_pages": [],
+        "garbled_pages": [],
+        "table_parse_warnings": [],
+        "formula_parse_warnings": [],
+        "figure_parse_warnings": [],
+        "fatal_errors": [*(extra_errors or []), *warnings],
+        "character_count": int(assessment.get("character_count", 0)),
+        "word_like_token_count": int(assessment.get("word_like_token_count", 0)),
+        "natural_language_density": float(assessment.get("natural_language_density", 0.0)),
+        "page_coverage": float(assessment.get("page_coverage", 0.0)),
+        "metadata_ratio": float(assessment.get("metadata_ratio", 0.0)),
+        "repetition_ratio": float(assessment.get("repetition_ratio", 0.0)),
+        "valid_paragraphs": int(assessment.get("valid_paragraphs", 0)),
+        "structured_markup_document": bool(assessment.get("structured_markup_document", False)),
+    }
 
 
 def _find_source_url(run_dir: Path, source_id: str) -> str:

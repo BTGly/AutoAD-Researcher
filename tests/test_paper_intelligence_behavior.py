@@ -63,7 +63,16 @@ from autoad_researcher.paper_intelligence.agent import budget_for_profile
 
 
 def _make_valid_pdf(path: Path):
-    path.write_bytes(b"%PDF-1.4\n1 0 obj<</Type/Page>>endobj\n%%EOF")
+    prose = (
+        b"This research paper describes a reproducible evaluation protocol with controlled variables hardware settings and repeated trials. "
+        b"The method section documents implementation details correctness checks latency measurements memory measurements and comparison procedures. "
+        b"The results section reports observations limitations variance and evidence needed to reproduce the experiment under the same conditions."
+    )
+    path.write_bytes(
+        b"%PDF-1.4\n1 0 obj<</Type/Page>>endobj\nstream\nBT ("
+        + prose
+        + b") Tj ET\nendstream\n%%EOF"
+    )
 
 
 def _chdir_tmp(tmp_path, work):
@@ -139,6 +148,35 @@ class TestDeterministicMinerU:
             result = provider.parse(req, output_dir)
             assert result.status == "failed"
             assert "source PDF not found" in result.warnings[0]
+
+        _chdir_tmp(tmp_path, work)
+
+    def test_pdf_object_ascii_is_not_promoted_to_successful_parse(self, tmp_path):
+        provider = FixtureMinerUProvider(
+            profile=MINERU_PIPELINE_V1_PROFILE,
+            runtime_python_version="3.10",
+            runtime_platform="linux",
+            device_profile="cpu",
+        )
+
+        def work():
+            Path("metadata.pdf").write_bytes(
+                b"%PDF-1.4\n1 0 obj<</Type/Page /Metadata 2 0 R>>endobj\n%%EOF"
+            )
+            result = provider.parse(DocumentParseRequest(
+                schema_version=1,
+                source_id="src_metadata",
+                source_pdf_path="metadata.pdf",
+                parser_profile_id="mineru_pipeline_v1",
+                ocr_policy="auto",
+                max_pages=40,
+                max_runtime_seconds=600,
+            ), Path("parse_output"))
+
+            assert result.status == "failed"
+            quality = provider.get_quality_report(result)
+            assert quality.quality_level == "unusable"
+            assert quality.page_count == 0
 
         _chdir_tmp(tmp_path, work)
 

@@ -18,6 +18,7 @@ from autoad_researcher.paper_intelligence.parser_models import (
     ParserManifest,
     ParseQualityReport,
 )
+from autoad_researcher.paper_intelligence.text_quality import assess_extracted_text
 
 
 class MinerUProvider(Protocol):
@@ -118,6 +119,7 @@ class FixtureMinerUProvider:
         self._last_source_sha256 = ""
         self._last_canonical_sha256 = ""
         self._last_page_count = 0
+        self._last_extracted_text = ""
 
     @property
     def parser_version(self) -> str:
@@ -174,6 +176,7 @@ class FixtureMinerUProvider:
         # Extract text from PDF bytes (simple approach: decode text between stream/endstream)
         pages = _extract_pages_from_pdf_bytes(pdf_bytes)
         self._last_page_count = len(pages)
+        self._last_extracted_text = "\n\n".join(str(page.get("text") or "") for page in pages)
 
         # Write canonical output artifacts
         _write_atomic_jsonl(output_dir / "pages.jsonl", pages)
@@ -196,10 +199,17 @@ class FixtureMinerUProvider:
         self._last_canonical_sha256 = canonical_sha256
 
         # Write parse_quality_report
+        assessment = assess_extracted_text(
+            self._last_extracted_text,
+            page_texts=[str(page.get("text") or "") for page in pages],
+        )
         quality = ParseQualityReport(
             schema_version=1,
-            status="success" if pages else "partial_success",
+            status="success" if assessment.usable else "failed",
+            quality_level="usable" if assessment.usable else "unusable",
             page_count=len(pages),
+            fatal_errors=[] if assessment.usable else list(assessment.warnings),
+            **assessment.model_dump(exclude={"usable", "warnings"}),
         )
         _write_atomic_json(output_dir / "parse_quality_report.json", quality.model_dump())
 
@@ -224,8 +234,8 @@ class FixtureMinerUProvider:
             parser_manifest_path=str(output_dir / "parser_manifest.json"),
             canonical_output_path=str(output_dir),
             parse_quality_report_path=str(output_dir / "parse_quality_report.json"),
-            status="success",
-            warnings=[],
+            status="success" if assessment.usable else "failed",
+            warnings=[] if assessment.usable else list(assessment.warnings),
         )
 
     def get_manifest(self, result: DocumentParseResult) -> ParserManifest:
@@ -251,16 +261,23 @@ class FixtureMinerUProvider:
     def get_quality_report(self, result: DocumentParseResult) -> ParseQualityReport:
         """Generate a parse quality report from actual parse data."""
         if result.status == "failed":
+            assessment = assess_extracted_text(self._last_extracted_text)
             return ParseQualityReport(
                 schema_version=1,
                 status="failed",
+                quality_level="unusable",
                 page_count=0,
-                fatal_errors=result.warnings,
+                fatal_errors=[*result.warnings, *assessment.warnings],
+                **assessment.model_dump(exclude={"usable", "warnings"}),
             )
+        assessment = assess_extracted_text(self._last_extracted_text)
         return ParseQualityReport(
             schema_version=1,
-            status="success",
+            status="success" if assessment.usable else "failed",
+            quality_level="usable" if assessment.usable else "unusable",
             page_count=self._last_page_count,
+            fatal_errors=[] if assessment.usable else list(assessment.warnings),
+            **assessment.model_dump(exclude={"usable", "warnings"}),
         )
 
 
@@ -272,8 +289,8 @@ class FixtureMinerUProvider:
 def _extract_pages_from_pdf_bytes(pdf_bytes: bytes) -> list[dict]:
     """Extract page text from PDF bytes.
 
-    Looks for text between BT/ET markers inside stream objects.
-    Falls back to extracting readable ASCII if no text operators found.
+    Looks for text between BT/ET markers inside stream objects. Binary stream
+    bytes and whole-file ASCII are never promoted to page text.
     """
     text = ""
     try:
@@ -308,11 +325,7 @@ def _extract_pages_from_pdf_bytes(pdf_bytes: bytes) -> list[dict]:
             for t in text_ops:
                 page_text_parts.append(t)
 
-        if page_text_parts:
-            page_text = " ".join(page_text_parts)
-        else:
-            # Fallback: extract readable ASCII
-            page_text = "".join(c if 32 <= ord(c) < 127 or c in "\n\r\t" else " " for c in content_text)[:2000]
+        page_text = " ".join(page_text_parts)
 
         if page_text.strip():
             pages.append({
@@ -321,16 +334,6 @@ def _extract_pages_from_pdf_bytes(pdf_bytes: bytes) -> list[dict]:
                 "block_ids": [f"b_{page_num}_0"],
             })
             page_num += 1
-
-    # If no pages found, create one page from full text
-    if not pages:
-        readable = "".join(c if 32 <= ord(c) < 127 or c in "\n\r\t" else " " for c in text)[:5000]
-        if readable.strip():
-            pages.append({
-                "physical_page_index": 0,
-                "text": readable.strip(),
-                "block_ids": ["b_0_0"],
-            })
 
     return pages
 

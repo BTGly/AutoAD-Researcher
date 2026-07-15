@@ -17,9 +17,9 @@ from autoad_researcher.server.routes import draft as draft_route
 from autoad_researcher.server.routes import evidence as evidence_route
 from autoad_researcher.server.routes import sources as sources_route
 from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
-from autoad_researcher.tools.pdf_text_adapter import convert_pdf_to_markdown
+from autoad_researcher.tools.pdf_text_adapter import PdfTextAdapterResult, convert_pdf_to_markdown
 from autoad_researcher.tools.providers import GitHubCommitRef, GitHubRepositoryMetadata
-from autoad_researcher.ui.sources import append_source_ref
+from autoad_researcher.ui.sources import append_source_parse_attempt, append_source_ref, load_source_registry
 from autoad_researcher.worker.main import (
     _process_pending_jobs,
     _run_git_clone,
@@ -51,6 +51,47 @@ def test_append_artifact_evidence_is_loaded_as_usable(tmp_path: Path):
     assert loaded[0]["artifact_path"] == "sources/src_web/content.md"
     assert loaded[0]["support_level"] == "supported"
     assert loaded[0]["summary"] == "Converted web page text"
+
+
+def test_parse_attempt_evidence_is_limited_to_current_active_attempt(tmp_path: Path):
+    run_dir = tmp_path / "run_active_attempt"
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        status="uploaded_not_parsed",
+        stored_path="sources/src_pdf/paper.pdf",
+    )
+    for parse_attempt_id in ("pa_first", "pa_second"):
+        quality_path = f"paper/parse/attempts/{parse_attempt_id}/parse_quality_report.json"
+        path = run_dir / quality_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"quality_level": "usable"}), encoding="utf-8")
+        append_source_parse_attempt(
+            run_dir,
+            "src_pdf",
+            {
+                "parse_attempt_id": parse_attempt_id,
+                "parser": "pdftotext",
+                "status": "ok",
+                "quality_report": quality_path,
+            },
+            make_active=True,
+        )
+        append_artifact_evidence(
+            run_dir,
+            source_id="src_pdf",
+            parse_attempt_id=parse_attempt_id,
+            artifact_path=f"paper/parse/attempts/{parse_attempt_id}/paper.md",
+            evidence_type="paper_markdown_fallback",
+            parser_name="pdftotext",
+            summary=parse_attempt_id,
+        )
+
+    loaded = load_usable_evidence(run_dir)
+
+    assert [item["parse_attempt_id"] for item in loaded] == ["pa_second"]
 
 
 def test_local_repo_unpack_then_repo_summary_creates_evidence(tmp_path: Path):
@@ -422,10 +463,112 @@ def test_worker_paper_fallbacks_create_usable_evidence_from_pdf(tmp_path: Path):
     ok, outputs = _run_paper_fallbacks(run_dir, {"source_id": "src_pdf", "payload": {}})
 
     assert ok is True
-    assert "paper/parse/pdftotext/src_pdf/paper.md" in outputs
+    registry = load_source_registry(run_dir)
+    source = registry["sources"][0]
+    active_id = source["active_parse_attempt_id"]
+    assert f"paper/parse/attempts/{active_id}/paper.md" in outputs
+    assert source["parse_attempts"][-1]["status"] == "ok"
     context = build_llm_context(run_dir)
     assert context["answerability"]["can_answer"] is True
-    assert any(item["parser_name"] == "pdftotext" for item in context["usable_evidence"])
+    assert any(
+        item["parser_name"] == "pdftotext" and item["parse_attempt_id"] == active_id
+        for item in context["usable_evidence"]
+    )
+
+
+def test_worker_pdftotext_fallback_activates_only_quality_checked_attempt(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_pdf_fallback_offline"
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        status="uploaded_not_parsed",
+        stored_path="sources/src_pdf/paper.pdf",
+    )
+    input_path = run_dir / "sources" / "src_pdf" / "paper.pdf"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_bytes(b"%PDF-1.4 offline fixture")
+
+    def fake_convert(_input_path: Path, output_path: Path, *, run_dir: Path):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            "## Page 1\n\n"
+            "This research paper presents a reproducible evaluation protocol for a general computational method. "
+            "The experimental design compares a documented baseline with the proposed implementation under fixed "
+            "hardware, software, correctness, and measurement conditions. Results are reported with uncertainty and "
+            "the discussion distinguishes observed evidence from unresolved limitations and future investigation.\n",
+            encoding="utf-8",
+        )
+        return PdfTextAdapterResult(
+            ok=True,
+            output_paths=[str(output_path.relative_to(run_dir))],
+            metadata={"tool": "offline_fixture"},
+        )
+
+    monkeypatch.setattr("autoad_researcher.tools.pdf_text_adapter.convert_pdf_to_markdown", fake_convert)
+
+    ok, outputs = _run_paper_parse_pdftotext(run_dir, {"source_id": "src_pdf", "payload": {}})
+
+    assert ok is True
+    source = load_source_registry(run_dir)["sources"][0]
+    active_id = source["active_parse_attempt_id"]
+    assert active_id
+    assert len(source["parse_attempts"]) == 1
+    attempt = source["parse_attempts"][0]
+    assert attempt["parse_attempt_id"] == active_id
+    assert attempt["status"] == "ok"
+    assert attempt["parser"] == "pdftotext"
+    assert f"paper/parse/attempts/{active_id}/paper.md" in outputs
+    quality = json.loads((run_dir / attempt["quality_report"]).read_text(encoding="utf-8"))
+    assert quality["quality_level"] == "usable"
+    evidence = load_usable_evidence(run_dir)
+    assert any(item["parse_attempt_id"] == active_id for item in evidence)
+
+
+def test_worker_pdftotext_rejects_xml_metadata_without_evidence(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_pdf_metadata"
+    append_source_ref(
+        run_dir,
+        source_id="src_pdf",
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        status="uploaded_not_parsed",
+        stored_path="sources/src_pdf/paper.pdf",
+    )
+    input_path = run_dir / "sources" / "src_pdf" / "paper.pdf"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_bytes(b"%PDF-1.4 offline fixture")
+
+    def fake_convert(_input_path: Path, output_path: Path, *, run_dir: Path):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            "<x:xmpmeta xmlns:x='adobe:ns:meta/'>"
+            "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+            "<rdf:Description title='Metadata only' creator='Fixture'/>"
+            "</rdf:RDF></x:xmpmeta>",
+            encoding="utf-8",
+        )
+        return PdfTextAdapterResult(
+            ok=True,
+            output_paths=[str(output_path.relative_to(run_dir))],
+            metadata={"tool": "offline_fixture"},
+        )
+
+    monkeypatch.setattr("autoad_researcher.tools.pdf_text_adapter.convert_pdf_to_markdown", fake_convert)
+
+    ok, outputs = _run_paper_parse_pdftotext(run_dir, {"source_id": "src_pdf", "payload": {}})
+
+    assert ok is False
+    assert outputs == []
+    source = load_source_registry(run_dir)["sources"][0]
+    assert source["active_parse_attempt_id"] is None
+    attempt = source["parse_attempts"][0]
+    assert attempt["status"] == "failed"
+    quality = json.loads((run_dir / attempt["quality_report"]).read_text(encoding="utf-8"))
+    assert quality["quality_level"] == "unusable"
+    assert quality["structured_markup_document"] is True
+    assert load_usable_evidence(run_dir) == []
 
 
 class _BodyRequest:
@@ -734,6 +877,10 @@ def test_worker_paper_summarize_job_writes_manifest_and_evidence(tmp_path: Path)
     (run_dir / "sources").mkdir()
     (run_dir / "sources" / "source_references.json").write_text(
         '{"schema_version":1,"sources":[{"source_id":"src_pdf","kind":"paper_pdf","user_label":"paper.pdf","status":"parsed","active_parse_attempt_id":"pa_000001","parse_attempts":[{"parse_attempt_id":"pa_000001","parser":"mineru_pipeline_v1","status":"ok","quality_report":"paper/parse/attempts/pa_000001/parse_quality_report.json","warnings":[]}]}]}',
+        encoding="utf-8",
+    )
+    (paper_md.parent / "parse_quality_report.json").write_text(
+        json.dumps({"quality_level": "usable"}),
         encoding="utf-8",
     )
 
