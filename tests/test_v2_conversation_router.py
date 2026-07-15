@@ -10,6 +10,7 @@ from autoad_researcher.assistant.v2.conversation_router import (
     route_conversation_with_llm,
 )
 from autoad_researcher.assistant.v2.intent_contract import load_contract_draft
+from autoad_researcher.assistant.v2.contract_confirmation_service import load_pending_contract_confirmation
 from autoad_researcher.assistant.v2.llm_trace_service import TRACE_DIR, TRACE_INDEX
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.source_action_planner import SourceAction, SourceActionPlan
@@ -467,11 +468,47 @@ def test_orchestrator_uses_one_router_and_no_legacy_semantic_planners(monkeypatc
     assert "reply_planner" in call_sites
 
 
-def test_pure_url_and_attachment_bypass_router_even_when_model_is_configured(monkeypatch, tmp_path: Path):
-    def unexpected_call(*args, **kwargs):
-        raise AssertionError("structured source ingress must not call a semantic model")
+def test_pure_url_bypasses_router_but_attachment_text_is_routed(monkeypatch, tmp_path: Path):
+    calls = 0
 
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", unexpected_call)
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        assert "ConversationRouter" in messages[0]["content"]
+        return {
+            "reply": json.dumps({
+                "source_action_plan": {
+                    "actions": [],
+                    "user_visible_summary": "",
+                    "confidence": 1.0,
+                    "reason": "attachment already handled by upload route",
+                },
+                "conversation_intents": ["source_request"],
+                "contract_mutation_request": {
+                    "requested": False,
+                    "full_turn_mutation_evidence": None,
+                    "confidence": 0.99,
+                    "rationale": "source-only turn",
+                },
+                "confirmation_request": {
+                    "requested": False,
+                    "action": "none",
+                    "full_turn_mutation_evidence": None,
+                    "confidence": 0.99,
+                    "rationale": "no confirmation request",
+                },
+                "task_identity_proposal": {
+                    "suggested_title": None,
+                    "suggested_summary": None,
+                },
+                "task_profile_proposal": "general_research",
+                "task_profile_evidence": None,
+                "requires_need_discovery_enrichment": False,
+            }, ensure_ascii=False),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
 
     url_run = tmp_path / "run_pure_url"
     url_run.mkdir()
@@ -494,6 +531,7 @@ def test_pure_url_and_attachment_bypass_router_even_when_model_is_configured(mon
 
     assert url_result.reply_kind == "source_intake"
     assert attachment_result.reply_kind == "source_intake"
+    assert calls == 1
 
 
 def test_url_with_natural_language_registers_first_then_routes_once(monkeypatch, tmp_path: Path):
@@ -529,3 +567,100 @@ def test_url_with_natural_language_registers_first_then_routes_once(monkeypatch,
     assert result.reply_kind == "source_intake"
     assert result.intent_contract == {}
     assert load_source_registry(run_dir)["sources"][0]["user_label"] == "https://example.test/paper"
+
+
+def test_source_action_and_contract_mutation_complete_in_the_same_turn(monkeypatch, tmp_path: Path):
+    user_input = (
+        "登记 https://example.test/spec\n研究目标是复现 Library-A，"
+        "成功标准是输出与参考一致。"
+    )
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        system = messages[0]["content"]
+        if "ConversationRouter" in system:
+            return {"reply": json.dumps({
+                "source_action_plan": {
+                    "actions": [],
+                    "user_visible_summary": "",
+                    "confidence": 0.99,
+                    "reason": "deterministic source plan already exists",
+                },
+                "conversation_intents": ["source_request", "research_planning"],
+                "contract_mutation_request": {
+                    "requested": True,
+                    "full_turn_mutation_evidence": user_input,
+                    "confidence": 0.98,
+                    "rationale": "The current turn states a research objective and criterion.",
+                },
+                "confirmation_request": {
+                    "requested": False,
+                    "action": "none",
+                    "full_turn_mutation_evidence": None,
+                    "confidence": 0.99,
+                    "rationale": "No chat confirmation.",
+                },
+                "task_identity_proposal": {
+                    "suggested_title": "Library-A 复现",
+                    "suggested_summary": "复现 Library-A 并核对输出。",
+                },
+                "task_profile_proposal": "general_research",
+                "task_profile_evidence": "Library-A",
+                "requires_need_discovery_enrichment": False,
+            }, ensure_ascii=False), "error": ""}
+        assert "ResearchIntentInterpreter" in system
+        operations = []
+        for target, value, evidence in (
+            ("research_goal", "复现 Library-A", "复现 Library-A"),
+            ("research_object", "Library-A", "Library-A"),
+            ("success_criteria", "输出与参考一致", "输出与参考一致"),
+        ):
+            start = user_input.index(evidence)
+            operations.append({
+                "operation": "set",
+                "target": target,
+                "proposed_value": value,
+                "evidence_spans": [{
+                    "source": "current_user_turn",
+                    "start": start,
+                    "end": start + len(evidence),
+                    "text": evidence,
+                }],
+                "confidence": 0.96,
+            })
+        return {"reply": json.dumps({
+            "research_modes": {
+                "primary_mode": "reproduction",
+                "secondary_modes": [],
+                "confidence": 0.95,
+                "rationale": "Reproduction is explicitly requested.",
+            },
+            "intent_mutation": {
+                "base_draft_sha256": None,
+                "full_turn_mutation_evidence": user_input,
+                "operations": operations,
+            },
+            "material_observations": [],
+            "open_questions": [],
+            "evidence_conflicts": [],
+            "advisory_suggestions": [],
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_compound_source_mutation"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=user_input,
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.reply_kind == "intent_contract_confirmation"
+    assert result.created_sources
+    assert result.created_jobs
+    assert result.mutation_receipt["status"] == "applied"
+    durable = load_contract_draft(run_dir)
+    assert durable is not None and durable.research_goal == "复现 Library-A"
+    assert load_pending_contract_confirmation(run_dir) is not None
+    assert load_source_registry(run_dir)["sources"][0]["user_label"] == "https://example.test/spec"

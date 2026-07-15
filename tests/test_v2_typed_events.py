@@ -114,11 +114,46 @@ def test_orchestrator_persists_low_frequency_typed_events_without_token_deltas(m
                 }, ensure_ascii=False),
                 "error": "",
             }
-        if "Need Discovery" in system_text:
-            return {
-                "reply": json.dumps(_ready_need_spec_payload(), ensure_ascii=False),
-                "error": "",
-            }
+        if "ResearchIntentInterpreter" in system_text:
+            user_text = messages[-1]["content"]
+            spans = []
+            for operation, target, value, evidence in (
+                ("set", "research_goal", "提升 PatchCore 在 MVTec AD 上的 image AUROC", user_text),
+                ("set", "baseline", "PatchCore", "PatchCore"),
+                ("set", "dataset", "MVTec AD", "MVTec AD"),
+                ("set", "primary_metrics", ["image_level_auroc"], "image AUROC"),
+                ("set", "success_criteria", "提升 image AUROC", "提升 MVTec AD，主要看 image AUROC"),
+            ):
+                start = user_text.index(evidence)
+                spans.append({
+                    "operation": operation,
+                    "target": target,
+                    "proposed_value": value,
+                    "evidence_spans": [{
+                        "source": "current_user_turn",
+                        "start": start,
+                        "end": start + len(evidence),
+                        "text": evidence,
+                    }],
+                    "confidence": 0.95,
+                })
+            return {"reply": json.dumps({
+                "research_modes": {
+                    "primary_mode": "open_research",
+                    "secondary_modes": [],
+                    "confidence": 0.9,
+                    "rationale": "research task",
+                },
+                "intent_mutation": {
+                    "base_draft_sha256": None,
+                    "full_turn_mutation_evidence": user_text,
+                    "operations": spans,
+                },
+                "material_observations": [],
+                "open_questions": [],
+                "evidence_conflicts": [],
+                "advisory_suggestions": [],
+            }, ensure_ascii=False), "error": ""}
         return {"reply": json.dumps({"reply_to_user": "ok"}, ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -136,8 +171,9 @@ def test_orchestrator_persists_low_frequency_typed_events_without_token_deltas(m
     assert "planner.conversation_route.decided" in event_types
     assert "planner.source_action.decided" not in event_types
     assert "planner.turn_gate.decided" not in event_types
-    assert "planner.need_discovery.decided" in event_types
-    assert "contract.draft.updated" in event_types
+    assert "planner.need_discovery.decided" not in event_types
+    assert "contract.draft.updated" not in event_types
+    assert "contract.mutation.applied" in event_types
     assert "contract.confirmation.requested" in event_types
     assert "prompt.trace.created" in event_types
     assert "assistant.delta" not in event_types

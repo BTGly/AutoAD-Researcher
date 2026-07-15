@@ -15,6 +15,7 @@ from autoad_researcher.assistant.v2.intent_contract import (
     load_contract_draft,
     refresh_contract_state,
 )
+from autoad_researcher.assistant.v2.research_semantics import ContractSemanticMetadata
 from autoad_researcher.core.control_plane.io import atomic_write_json
 from autoad_researcher.core.control_plane.unit_of_work import ControlPlaneUnitOfWork
 
@@ -31,6 +32,10 @@ MutationReason = Literal[
     "set_requires_empty_target",
     "invalid_remove_value",
     "contract_schema_rejected",
+    "interpreter_provider_error",
+    "interpreter_non_json",
+    "interpreter_schema_error",
+    "interpreter_invalid_current_turn_provenance",
 ]
 
 
@@ -134,12 +139,13 @@ def apply_contract_mutation(
     *,
     user_input: str,
     proposal: ContractMutationProposal,
+    semantic_metadata: ContractSemanticMetadata | None = None,
 ) -> MutationReceipt:
     """Validate and atomically publish all operations, or publish none."""
 
     if proposal.full_turn_mutation_evidence.strip() != user_input.strip():
         return _rejected("missing_full_turn_evidence")
-    if not proposal.operations:
+    if not proposal.operations and semantic_metadata is None:
         existing = load_contract_draft(run_dir)
         current_hash = confirmation_draft_sha256(existing) if existing is not None else None
         return MutationReceipt(
@@ -196,6 +202,12 @@ def apply_contract_mutation(
                 values[operation.target] = next_value
                 if operation.target not in changed_fields:
                     changed_fields.append(operation.target)
+        if semantic_metadata is not None:
+            metadata_values = semantic_metadata.model_dump(mode="python")
+            for target, next_value in metadata_values.items():
+                if values[target] != next_value:
+                    values[target] = next_value
+                    changed_fields.append(target)
         if not changed_fields:
             return MutationReceipt(
                 status="unchanged",

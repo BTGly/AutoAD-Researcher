@@ -79,6 +79,11 @@ def test_v3_readiness_uses_generic_coverage_questions_and_conflicts():
 
     refresh_contract_state(contract)
     assert contract.ready_for_plan is True
+
+    rendered = format_contract_for_user(contract)
+    assert "基线方法：待确认" not in rendered
+    assert "数据集：待确认" not in rendered
+    assert "系统安全边界" in rendered
     assert contract.missing_required_fields == []
     assert contract.baseline is None
     assert contract.dataset is None
@@ -489,26 +494,26 @@ async def test_orchestrator_text_confirmation_requires_modal_approval(tmp_path: 
                 evidence_from_current_turn=[user_text],
                 mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
-        if "Need Discovery" in system_text:
-            return {"reply": json.dumps(_need_spec_payload(
-                baseline="PatchCore",
-                dataset="MVTec AD",
-                metrics=["image_level_auroc"],
-            ), ensure_ascii=False), "error": ""}
+        if "ResearchIntentInterpreter" in system_text:
+            return {"reply": json.dumps(_interpreter_payload(messages, [
+                ("set", "research_goal", "提升 PatchCore 的 image AUROC", "提升 PatchCore 的 image AUROC"),
+                ("set", "baseline", "PatchCore", "PatchCore"),
+                ("set", "dataset", "MVTec AD", "MVTec AD"),
+                ("set", "primary_metrics", ["image_level_auroc"], "image AUROC"),
+                ("set", "success_criteria", "在原始评价协议下提升 image AUROC", "在原始评价协议下提升 image AUROC"),
+            ]), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     monkeypatch.setattr(draft_route, "RUNS_ROOT", str(tmp_path))
     run_dir = tmp_path / "run_contract"
     run_dir.mkdir()
-    transcript_tail = [
-        {"role": "user", "content": "baseline 是 PatchCore，数据集 MVTec AD，指标 image AUROC"},
-    ]
-
     result = ResearchOrchestratorV2.handle(
         run_dir,
-        user_input="我的目标是提升指标效果，保持 baseline 原始评价协议。",
-        transcript_tail=transcript_tail,
+        user_input=(
+            "我的目标是提升 PatchCore 的 image AUROC，数据集是 MVTec AD，"
+            "成功标准是在原始评价协议下提升 image AUROC。"
+        ),
         api_key="sk-test",
         provider_url="https://example.test",
     )
@@ -564,12 +569,14 @@ def test_orchestrator_persists_ready_draft_before_requesting_confirmation(tmp_pa
                 evidence_from_current_turn=[user_text],
                 mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
-        if "Need Discovery" in system_text:
-            return {"reply": json.dumps(_need_spec_payload(
-                baseline="PatchCore",
-                dataset="MVTec AD",
-                metrics=["image_level_auroc"],
-            ), ensure_ascii=False), "error": ""}
+        if "ResearchIntentInterpreter" in system_text:
+            return {"reply": json.dumps(_interpreter_payload(messages, [
+                ("set", "research_goal", "改进 PatchCore 异常检测", "我想基于 PatchCore 改进异常检测"),
+                ("set", "baseline", "PatchCore", "PatchCore"),
+                ("set", "dataset", "MVTec AD", "MVTec AD"),
+                ("set", "primary_metrics", ["image_level_auroc"], "image-level AUROC"),
+                ("set", "success_criteria", "在相同评估协议下提升指标", "在相同评估协议下提升指标"),
+            ]), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -591,7 +598,7 @@ def test_orchestrator_persists_ready_draft_before_requesting_confirmation(tmp_pa
     assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
 
 
-def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tmp_path: Path, monkeypatch):
+def test_text_confirmation_does_not_recover_missing_draft_from_chat_history(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         system_text = messages[0]["content"]
         user_text = messages[-1]["content"]
@@ -602,12 +609,6 @@ def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tm
                 allowed=False,
                 evidence_from_current_turn=[user_text],
                 mutation_evidence_from_current_turn=user_text,
-            ), ensure_ascii=False), "error": ""}
-        if "Need Discovery" in system_text:
-            return {"reply": json.dumps(_need_spec_payload(
-                baseline="PatchCore",
-                dataset="MVTec AD",
-                metrics=["image_level_auroc"],
             ), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
 
@@ -630,14 +631,12 @@ def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tm
         provider_url="https://example.test",
     )
 
-    assert result.reply_kind == "intent_contract_confirmation"
+    assert result.reply_kind == "intent_contract_unchanged"
     assert result.intent_contract_confirmed is False
-    assert result.intent_contract["baseline"] == "PatchCore"
-    assert result.intent_contract["dataset"] == "MVTec AD"
-    assert result.intent_contract["primary_metrics"] == ["image_level_auroc"]
-    assert (run_dir / CONTRACT_DRAFT_FILE).is_file()
+    assert result.intent_contract == {}
+    assert not (run_dir / CONTRACT_DRAFT_FILE).exists()
     assert not (run_dir / CONTRACT_FILE).exists()
-    assert load_pending_contract_confirmation(run_dir) is not None
+    assert load_pending_contract_confirmation(run_dir) is None
     assert load_experiment_session(run_dir) is None
 
 
@@ -714,12 +713,23 @@ def test_task_1231_turn_gate_json_failure_fails_closed_without_repair(tmp_path: 
                 allowed=False,
                 mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
-        if "Need Discovery" in system_text:
-            return {"reply": json.dumps(_need_spec_payload(
-                baseline="PatchCore",
-                dataset="MVTec AD",
-                metrics=["image_level_auroc"],
-            ), ensure_ascii=False), "error": ""}
+        if "ResearchIntentInterpreter" in system_text:
+            return {"reply": json.dumps(_interpreter_payload(messages, [
+                ("set", "success_criteria", "提升 5%", "提升5%"),
+            ], open_questions=[
+                {
+                    "category": "objective",
+                    "question": "请在当前消息中明确要应用该标准的研究目标。",
+                    "required_now": True,
+                    "rationale": "Historical text cannot authorize a current mutation.",
+                },
+                {
+                    "category": "research_object",
+                    "question": "该标准适用于哪个研究对象？",
+                    "required_now": True,
+                    "rationale": "The current turn does not state the object.",
+                },
+            ]), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -1467,17 +1477,31 @@ def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch
                 evidence_from_current_turn=[user_text],
                 mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
-        if "Need Discovery" in system_text:
-            metrics = (
-                ["image_level_auroc", "pixel_level_auroc"]
-                if "pixel AUROC" in user_text
-                else ["image_level_auroc"]
-            )
-            return {"reply": json.dumps(_need_spec_payload(
-                baseline="PatchCore",
-                dataset="MVTec AD",
-                metrics=metrics,
-            ), ensure_ascii=False), "error": ""}
+        if "ResearchIntentInterpreter" in system_text:
+            if "pixel AUROC" in user_text:
+                operations = [
+                    ("set", "primary_metrics", ["image_level_auroc", "pixel_level_auroc"], "image AUROC 和 pixel AUROC"),
+                    ("replace", "success_criteria", "比原始 PatchCore 有提升", "成功标准是比原始 PatchCore 有提升"),
+                    ("set", "evaluation_protocol", "保持测试集和指标定义不变", "不能改测试集和指标定义"),
+                ]
+                questions = []
+            else:
+                operations = [
+                    ("set", "research_goal", "改进 PatchCore 在 MVTec AD 上的效果", "基于 PatchCore 做异常检测改进，主要想提升 MVTec AD 上的效果"),
+                    ("set", "baseline", "PatchCore", "PatchCore"),
+                    ("set", "dataset", "MVTec AD", "MVTec AD"),
+                    ("set", "success_criteria", "提升 MVTec AD 上的效果", "提升 MVTec AD 上的效果"),
+                ]
+                questions = [{
+                    "category": "evaluation",
+                    "question": "主要使用哪些评价指标？",
+                    "required_now": True,
+                    "rationale": "Metric is not stated in the current turn.",
+                }]
+            return {"reply": json.dumps(
+                _interpreter_payload(messages, operations, open_questions=questions),
+                ensure_ascii=False,
+            ), "error": ""}
         return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -1751,7 +1775,7 @@ def test_hf2_research_keyword_joke_with_api_is_decided_by_turn_gate(tmp_path: Pa
     assert "dataset" not in result.reply
 
 
-def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path, monkeypatch):
+def test_contextual_turn_cannot_reuse_old_facts_as_current_mutation_evidence(tmp_path: Path, monkeypatch):
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         if "ConversationRouter" in messages[0]["content"]:
             return {"reply": json.dumps(_turn_gate_payload(
@@ -1787,9 +1811,9 @@ def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path
         provider_url="https://example.test",
     )
 
-    assert result.intent_contract["baseline"] == "PatchCore"
-    assert result.intent_contract["dataset"] == "MVTec AD"
-    assert result.intent_contract["primary_metrics"] == ["image_level_auroc"]
+    assert result.reply_kind == "intent_contract_unchanged"
+    assert result.intent_contract == {}
+    assert load_contract_draft(run_dir) is None
 
 
 def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, monkeypatch):
@@ -1800,12 +1824,13 @@ def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, mon
                 evidence_from_current_turn=[user_text],
                 mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
-        if "Need Discovery" in messages[0]["content"]:
-            return {"reply": json.dumps(_need_spec_payload(
-                baseline="PatchCore",
-                dataset="MVTec AD",
-                metrics=["image_level_auroc", "pixel_level_auroc"],
-            ), ensure_ascii=False), "error": ""}
+        if "ResearchIntentInterpreter" in messages[0]["content"]:
+            return {"reply": json.dumps(_interpreter_payload(messages, [
+                ("replace", "primary_metrics", ["image_level_auroc", "pixel_level_auroc"], "image AUROC 和 pixel AUROC"),
+                ("replace", "metric_priority", "co_primary", "主要看 image AUROC 和 pixel AUROC"),
+                ("replace", "success_criteria", "比原始 PatchCore 有提升", "成功标准是比原始 PatchCore 有提升"),
+                ("set", "evaluation_protocol", "keep test set unchanged; keep metric definition unchanged", "不能改测试集和指标定义"),
+            ]), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("已记录。"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -1850,8 +1875,16 @@ def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path, mon
                 evidence_from_current_turn=[user_text],
                 mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
-        if "Need Discovery" in messages[0]["content"]:
-            return {"reply": json.dumps(_incomplete_need_spec_payload(), ensure_ascii=False), "error": ""}
+        if "ResearchIntentInterpreter" in messages[0]["content"]:
+            return {"reply": json.dumps(_interpreter_payload(messages, [
+                ("set", "research_goal", "基于 PatchCore 做异常检测改进", "基于 PatchCore 做异常检测改进"),
+                ("set", "baseline", "PatchCore", "PatchCore"),
+            ], open_questions=[{
+                "category": "evaluation",
+                "question": "主要使用哪些评价指标和成功标准？",
+                "required_now": True,
+                "rationale": "Evaluation is not stated.",
+            }]), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("还需要确认数据集和指标。", "你主要看哪些指标？"), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -1865,8 +1898,8 @@ def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path, mon
         provider_url="https://example.test",
     )
 
-    assert result.reply_kind == "answer"
-    assert "主要目标" in result.reply or "指标" in result.reply
+    assert result.reply_kind == "intent_contract_updated"
+    assert "指标" in result.reply
     assert result.intent_contract.get("missing_required_fields")
 
 
@@ -2037,6 +2070,48 @@ def _reply_payload(reply: str, question: str = "") -> dict:
         "next_question": question,
         "ready_for_confirmation": False,
         "ready_for_experiment_agents": False,
+    }
+
+
+def _interpreter_payload(
+    messages: list[dict],
+    operations: list[tuple[str, str, object, str]],
+    *,
+    open_questions: list[dict] | None = None,
+) -> dict:
+    user_text = messages[-1]["content"]
+    snapshot = json.loads(messages[-2]["content"].split("\n", 1)[1])
+    field_operations = []
+    for operation, target, value, evidence in operations:
+        start = user_text.index(evidence)
+        field_operations.append({
+            "operation": operation,
+            "target": target,
+            "proposed_value": value,
+            "evidence_spans": [{
+                "source": "current_user_turn",
+                "start": start,
+                "end": start + len(evidence),
+                "text": evidence,
+            }],
+            "confidence": 0.95,
+        })
+    return {
+        "research_modes": {
+            "primary_mode": "open_research",
+            "secondary_modes": [],
+            "confidence": 0.9,
+            "rationale": "The current turn states a research task.",
+        },
+        "intent_mutation": {
+            "base_draft_sha256": snapshot["current_draft_sha256"],
+            "full_turn_mutation_evidence": user_text,
+            "operations": field_operations,
+        },
+        "material_observations": [],
+        "open_questions": open_questions or [],
+        "evidence_conflicts": [],
+        "advisory_suggestions": [],
     }
 
 
@@ -2245,12 +2320,23 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
                 _conversation_route_payload(turn_gate),
                 ensure_ascii=False,
             ), "error": ""}
-        if "Need Discovery" in system_text:
-            return {"reply": json.dumps(_need_spec_payload(
-                baseline="PatchCore",
-                dataset="MVTec AD",
-                metrics=["image_level_auroc"],
-            ), ensure_ascii=False), "error": ""}
+        if "ResearchIntentInterpreter" in system_text:
+            return {"reply": json.dumps(_interpreter_payload(messages, [
+                ("set", "success_criteria", "提升 5%", "提升5%"),
+            ], open_questions=[
+                {
+                    "category": "objective",
+                    "question": "请在当前消息中明确要应用该标准的研究目标。",
+                    "required_now": True,
+                    "rationale": "Historical text cannot authorize a current mutation.",
+                },
+                {
+                    "category": "research_object",
+                    "question": "该标准适用于哪个研究对象？",
+                    "required_now": True,
+                    "rationale": "The current turn does not state the object.",
+                },
+            ]), ensure_ascii=False), "error": ""}
         raise AssertionError(f"unexpected LLM call: {system_text[:80]}")
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -2282,23 +2368,17 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
 
     persisted = load_contract_draft(run_dir)
     draft_state = load_research_draft_state(run_dir)
-    assert result.reply_kind == "intent_contract_confirmation"
-    assert selected_models == ["selected-model"]
+    assert result.reply_kind == "intent_contract_updated"
+    assert selected_models == ["selected-model", "selected-model"]
     assert persisted is not None
-    assert persisted.ready_for_plan is True
+    assert persisted.ready_for_plan is False
     assert "5%" in (persisted.success_criteria or "")
-    assert "未指定绝对百分点或相对比例" in (persisted.success_criteria or "")
-    assert persisted.execution_mode == "approve_each_step"
-    assert persisted.evaluation_constraints.preserve_test_set.value is True
-    assert persisted.evaluation_constraints.preserve_metric_definition.value is True
-    assert persisted.evaluation_constraints.preserve_dataset_split.value is True
-    assert persisted.evaluation_constraints.preserve_test_set.source == "user"
-    assert persisted.evaluation_constraints.preserve_test_set.evidence_quote in transcript_tail[-2]["content"]
-    assert persisted.evaluation_protocol == (
-        "keep test set unchanged; keep metric definition unchanged; keep dataset split unchanged"
-    )
-    assert draft_state["confirmation"]["status"] == "pending"
-    assert "确认弹窗" in result.reply
+    assert persisted.research_goal is None
+    assert persisted.baseline is None
+    assert persisted.dataset is None
+    assert persisted.evaluation_constraints.preserve_test_set.value is None
+    assert draft_state["confirmation"] is None
+    assert "确认弹窗" not in result.reply
     assert "HF-2" not in result.reply
     assert "plan_only" not in result.reply
 

@@ -56,6 +56,7 @@ def _call(monkeypatch, tmp_path: Path, response: dict):
         run_dir=tmp_path,
         user_input="先复现 Library-A，再评估能否迁移。",
         persisted_contract=None,
+        persisted_draft_sha256=None,
         recent_mutation_receipts=[],
         recent_dialogue=[],
         active_sources=[],
@@ -104,6 +105,7 @@ def test_interpreter_context_keeps_current_turn_separate():
         system_prompt="system",
         user_input="当前纠正",
         persisted_contract={"research_goal": "持久化目标"},
+        persisted_draft_sha256="a" * 64,
         recent_mutation_receipts=[{"status": "applied"}],
         recent_dialogue=[{"role": "user", "content": "旧目标"}],
         active_sources=[],
@@ -117,5 +119,6 @@ def test_interpreter_context_keeps_current_turn_separate():
     assert messages[-1] == {"role": "user", "content": "当前纠正"}
     snapshot = json.loads(messages[-2]["content"].split("\n", 1)[1])
     assert snapshot["current_persisted_contract"]["research_goal"] == "持久化目标"
+    assert snapshot["current_draft_sha256"] == "a" * 64
     assert snapshot["recent_dialogue"][0]["content"] == "旧目标"
     assert "当前纠正" not in messages[-2]["content"]

@@ -68,6 +68,7 @@ def interpret_research_intent(
     run_dir: Path,
     user_input: str,
     persisted_contract: dict[str, Any] | None,
+    persisted_draft_sha256: str | None,
     recent_mutation_receipts: list[dict[str, Any]],
     recent_dialogue: list[dict[str, str]],
     active_sources: list[dict[str, Any]],
@@ -89,6 +90,7 @@ def interpret_research_intent(
         system_prompt=system_prompt,
         user_input=user_input,
         persisted_contract=persisted_contract,
+        persisted_draft_sha256=persisted_draft_sha256,
         recent_mutation_receipts=recent_mutation_receipts,
         recent_dialogue=recent_dialogue,
         active_sources=active_sources,
@@ -161,6 +163,7 @@ def _build_interpreter_messages(
     system_prompt: str,
     user_input: str,
     persisted_contract: dict[str, Any] | None,
+    persisted_draft_sha256: str | None,
     recent_mutation_receipts: list[dict[str, Any]],
     recent_dialogue: list[dict[str, str]],
     active_sources: list[dict[str, Any]],
@@ -172,6 +175,7 @@ def _build_interpreter_messages(
 ) -> list[dict[str, str]]:
     context = {
         "current_persisted_contract": persisted_contract,
+        "current_draft_sha256": persisted_draft_sha256,
         "recent_mutation_receipts": recent_mutation_receipts[-3:],
         "recent_dialogue": recent_dialogue[-4:],
         "active_sources": active_sources,

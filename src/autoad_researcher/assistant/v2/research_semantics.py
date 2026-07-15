@@ -64,3 +64,13 @@ class AdvisorySuggestion(BaseModel):
 
     summary: str = Field(min_length=1)
     evidence_refs: list[str] = Field(default_factory=list)
+
+
+class ContractSemanticMetadata(BaseModel):
+    """Interpreter metadata persisted with the same CAS write as intent fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    research_modes: ResearchModeAssessment
+    open_questions: list[OpenQuestion] = Field(default_factory=list)
+    evidence_conflicts: list[EvidenceConflict] = Field(default_factory=list)

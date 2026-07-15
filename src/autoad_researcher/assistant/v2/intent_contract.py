@@ -525,6 +525,9 @@ def is_contract_confirmation(user_input: str) -> bool:
 def format_contract_for_user(contract: ResearchIntentContract) -> str:
     """Render a compact confirmation text without method-design pressure."""
 
+    if contract.authorization_schema_version == 3:
+        return _format_generic_contract_for_user(contract)
+
     lines = [
         "我整理到的研究设定如下：",
         f"- 研究领域：{contract.task_domain or '待确认'}",
@@ -570,6 +573,50 @@ def format_contract_for_user(contract: ResearchIntentContract) -> str:
             "如果以上正确，请在确认弹窗中点击“确认合同”。确认后会保存合同并创建实验准备任务；"
             "不会修改代码、创建代码工作目录、运行基线实验或占用 GPU。"
         )
+    return "\n".join(lines)
+
+
+def _format_generic_contract_for_user(contract: ResearchIntentContract) -> str:
+    lines = ["我整理到的研究设定如下："]
+    fields = (
+        ("研究目标", contract.research_goal),
+        ("研究对象", contract.research_object),
+        ("目标平台", contract.target_platform),
+        ("工作负载", contract.workload),
+        ("基线", contract.baseline),
+        ("数据集", contract.dataset),
+        ("主要指标", ", ".join(contract.primary_metrics)),
+        ("次要指标", ", ".join(contract.secondary_metrics)),
+        ("成功标准", contract.success_criteria),
+        ("评估协议", contract.evaluation_protocol),
+        ("计算环境", str(contract.compute_environment) if contract.compute_environment else None),
+        ("风险偏好", contract.risk_preference),
+    )
+    for label, value in fields:
+        if value:
+            lines.append(f"- {label}：{value}")
+    if contract.research_modes is not None:
+        modes = [
+            mode
+            for mode in [
+                contract.research_modes.primary_mode,
+                *contract.research_modes.secondary_modes,
+            ]
+            if mode
+        ]
+        if modes:
+            lines.append("- 研究模式：" + ", ".join(modes))
+    lines.append(f"- 执行方式：{_format_execution_mode_for_user(contract.execution_mode)}")
+    if contract.allowed_change_scope:
+        lines.append("- 用户允许调整范围：" + ", ".join(contract.allowed_change_scope))
+    if contract.forbidden_change_scope:
+        lines.append("- 用户禁止调整范围：" + ", ".join(contract.forbidden_change_scope))
+    if contract.system_safety_policy:
+        lines.append("- 系统安全边界：" + ", ".join(contract.system_safety_policy))
+    lines.append(
+        "如果以上正确，请在确认弹窗中点击“确认合同”。确认后会保存合同并创建实验准备任务；"
+        "不会修改代码、创建代码工作目录、运行基线实验或占用 GPU。"
+    )
     return "\n".join(lines)
 
 

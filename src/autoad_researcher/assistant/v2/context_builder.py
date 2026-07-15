@@ -106,6 +106,7 @@ def build_llm_context(
         "unusable_parsed_sources": unusable_parsed,
         "pending_jobs": pending_jobs,
         "failed_jobs": failed_jobs,
+        "jobs": [_job_context(job) for job in jobs],
         "answerability": {
             "can_answer": can_answer,
             "basis": [e.get("evidence_type", "") for e in usable],
