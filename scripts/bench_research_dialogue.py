@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.evidence_service import load_usable_evidence
@@ -96,7 +97,10 @@ class SemanticRunManifest(BaseModel):
     corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     dialogue_temperature: float = Field(ge=0.0, le=2.0)
     judge_temperature: float = Field(ge=0.0, le=2.0)
+    variant_seed: int
+    variant_limit: int = Field(ge=0)
     variant_count: int = Field(ge=0)
+    selected_variants: dict[str, list[str]]
     judge_call_limit: int = Field(ge=0)
     wall_time_limit_seconds: float = Field(ge=0)
     created_at: str = Field(min_length=1)
@@ -121,9 +125,9 @@ class SemanticCase(BaseModel):
     source_url: str
     turns: list[str] = Field(min_length=1)
     expected: SemanticExpectation
-    paraphrases: list[str]
-    entity_variant: str
-    counterfactuals: list[str]
+    paraphrases: list[str] = Field(min_length=2)
+    entity_variant: str = Field(min_length=1)
+    counterfactuals: list[str] = Field(min_length=1)
 
 
 class SemanticCaseCorpus(BaseModel):
@@ -145,6 +149,79 @@ class SemanticJudgeObservation(BaseModel):
     rationale: str = ""
 
 
+class VariantPlan(BaseModel):
+    """One reproducibly selected semantic mutation and its dialogue turns."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(pattern=r"^(entity|paraphrase_[0-9]{2}|counterfactual_[0-9]{2})$")
+    kind: Literal["entity", "paraphrase", "counterfactual"]
+    user_input: str = Field(min_length=1)
+    turns: list[str] = Field(min_length=1)
+
+
+class VariantJudgeObservation(BaseModel):
+    """Typed semantic comparison between a base summary and one mutation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    semantic_equivalent: bool | None = None
+    counterfactual_applied: bool | None = None
+    stale_constraints: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
+class VariantResult(BaseModel):
+    """Complete, independently auditable outcome for one semantic mutation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    kind: Literal["entity", "paraphrase", "counterfactual"]
+    user_input: str
+    reply_transcript: list[dict[str, str]]
+    summary: ResearchIntentSummary
+    source_action_types: list[str]
+    boundary_violations: list[str]
+    evidence_checks: dict[str, bool]
+    judge: VariantJudgeObservation | None = None
+    passed: bool
+
+    @model_validator(mode="after")
+    def _validate_judgment_for_kind(self) -> "VariantResult":
+        if self.judge is None:
+            if self.passed:
+                raise ValueError("a variant without a Judge result cannot pass")
+            return self
+        if self.kind == "counterfactual":
+            expected_pass = (
+                self.judge.counterfactual_applied is True
+                and not self.judge.stale_constraints
+                and not self.boundary_violations
+            )
+        else:
+            expected_pass = (
+                self.judge.semantic_equivalent is True
+                and not self.boundary_violations
+            )
+        if self.passed != expected_pass:
+            raise ValueError("variant passed flag conflicts with its typed judgment")
+        return self
+
+
+class DeterministicRunState(BaseModel):
+    """Filesystem, job, source, and evidence facts that need no LLM judgment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    experiment_session_created: bool
+    experiment_jobs_created: bool
+    code_modified: bool
+    source_action_matches: bool
+    evidence_checks: dict[str, bool]
+    hard_failures: list[str]
+
+
 class CaseRuntimeObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -156,7 +233,10 @@ class CaseRuntimeObservation(BaseModel):
     experiment_jobs_created: bool
     code_modified: bool
     evidence_checks: dict[str, bool]
-    judge: SemanticJudgeObservation
+    deterministic_failures: list[str] = Field(default_factory=list)
+    judge: SemanticJudgeObservation | None = None
+    variant_results: list[VariantResult] = Field(default_factory=list)
+    semantic_stability: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 def load_corpus(path: Path) -> SemanticCaseCorpus:
@@ -167,6 +247,71 @@ def load_corpus(path: Path) -> SemanticCaseCorpus:
     if len(case_ids) != 9:
         raise ValueError(f"expected exactly nine semantic cases, got {len(case_ids)}")
     return corpus
+
+
+def select_variant_matrix(
+    corpus: SemanticCaseCorpus,
+    *,
+    seed: int,
+    variant_limit: int,
+) -> dict[str, list[VariantPlan]]:
+    """Select two paraphrases and one entity/counterfactual per Case reproducibly."""
+
+    plans_by_case = {
+        case.case_id: _case_variant_plans(case, seed=seed)
+        for case in corpus.cases
+    }
+    all_entries = [
+        (case.case_id, plan)
+        for case in corpus.cases
+        for plan in plans_by_case[case.case_id]
+    ]
+    if variant_limit <= 0 or variant_limit >= len(all_entries):
+        return plans_by_case
+    rng = random.Random(_stable_seed(seed, "variant_limit"))
+    selected_positions = set(rng.sample(range(len(all_entries)), variant_limit))
+    limited = {case.case_id: [] for case in corpus.cases}
+    for position, (case_id, plan) in enumerate(all_entries):
+        if position in selected_positions:
+            limited[case_id].append(plan)
+    return limited
+
+
+def _case_variant_plans(case: SemanticCase, *, seed: int) -> list[VariantPlan]:
+    rng = random.Random(_stable_seed(seed, case.case_id))
+    paraphrase_indexes = sorted(rng.sample(range(len(case.paraphrases)), 2))
+    counterfactual_index = rng.randrange(len(case.counterfactuals))
+    plans = [
+        VariantPlan(
+            label="entity",
+            kind="entity",
+            user_input=case.entity_variant,
+            turns=[case.entity_variant],
+        )
+    ]
+    plans.extend(
+        VariantPlan(
+            label=f"paraphrase_{index + 1:02d}",
+            kind="paraphrase",
+            user_input=case.paraphrases[index],
+            turns=[*case.turns, case.paraphrases[index]],
+        )
+        for index in paraphrase_indexes
+    )
+    plans.append(
+        VariantPlan(
+            label=f"counterfactual_{counterfactual_index + 1:02d}",
+            kind="counterfactual",
+            user_input=case.counterfactuals[counterfactual_index],
+            turns=[*case.turns, case.counterfactuals[counterfactual_index]],
+        )
+    )
+    return plans
+
+
+def _stable_seed(seed: int, label: str) -> int:
+    digest = hashlib.sha256(f"{seed}\0{label}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
 
 
 def run_case(
@@ -180,6 +325,7 @@ def run_case(
     dialogue_temperature: float = 0.0,
     judge_temperature: float = 0.0,
     budget: SemanticRunBudget | None = None,
+    variant_plans: list[VariantPlan] | None = None,
 ) -> CaseRuntimeObservation:
     run_dir.mkdir(parents=True, exist_ok=False)
     transcript: list[dict[str, str]] = []
@@ -218,51 +364,60 @@ def run_case(
         _process_until_idle(run_dir)
 
     summary = load_research_intent_summary(run_dir) or ResearchIntentSummary()
-    jobs = load_pipeline_jobs(run_dir)
     evidence = load_usable_evidence(run_dir)
-    evidence_checks = _evidence_checks(case.case_id, run_dir, evidence)
-    judge = _judge_case(
+    state = _collect_deterministic_state(
         case,
-        transcript=transcript,
-        summary=summary,
+        run_dir=run_dir,
+        source_action_types=source_action_types,
         evidence=evidence,
-        api_key=api_key,
-        provider_url=provider_url,
-        model=judge_model,
-        temperature=judge_temperature,
-        budget=budget,
     )
-    if case.case_id == "case05_kernelbench":
-        if not evidence_checks.get("exact_target_file_read", False):
-            judge.veto_failures = _append_unique(
-                judge.veto_failures,
-                ["workload_identifier_lost", "benchmark_integrity_missing"],
-            )
-    if case.case_id == "case06_flashattention_feasibility":
-        if not evidence_checks.get("repository_readme_evidenced", False):
-            judge.veto_failures = _append_unique(
-                judge.veto_failures,
-                ["repository_conflict_ignored"],
-            )
-
-    experiment_jobs = [
-        job
-        for job in jobs
-        if str(job.get("job_type") or "") not in MATERIAL_JOB_TYPES
+    judge = None
+    if not state.hard_failures:
+        judge = _judge_case(
+            case,
+            transcript=transcript,
+            summary=summary,
+            evidence=evidence,
+            api_key=api_key,
+            provider_url=provider_url,
+            model=judge_model,
+            temperature=judge_temperature,
+            budget=budget,
+        )
+    variant_results = [
+        _run_variant(
+            case,
+            plan=plan,
+            run_dir=run_dir / "semantic_variants" / plan.label,
+            base_summary=summary,
+            api_key=api_key,
+            provider_url=provider_url,
+            model=model,
+            judge_model=judge_model,
+            dialogue_temperature=dialogue_temperature,
+            judge_temperature=judge_temperature,
+            budget=budget,
+        )
+        for plan in (variant_plans or [])
     ]
+    semantic_stability = (
+        sum(result.passed for result in variant_results) / len(variant_results)
+        if variant_results
+        else 0.0
+    )
     return CaseRuntimeObservation(
         case_id=case.case_id,
         reply_transcript=transcript,
         summary=summary,
         source_action_types=source_action_types,
-        experiment_session_created=(run_dir / "experiments" / "sessions").exists(),
-        experiment_jobs_created=bool(experiment_jobs),
-        code_modified=any(
-            (run_dir / relative).exists()
-            for relative in ("code", "patches", "workspace/code")
-        ),
-        evidence_checks=evidence_checks,
+        experiment_session_created=state.experiment_session_created,
+        experiment_jobs_created=state.experiment_jobs_created,
+        code_modified=state.code_modified,
+        evidence_checks=state.evidence_checks,
+        deterministic_failures=state.hard_failures,
         judge=judge,
+        variant_results=variant_results,
+        semantic_stability=semantic_stability,
     )
 
 
@@ -271,24 +426,28 @@ def score_case(
     observation: CaseRuntimeObservation,
 ) -> dict[str, Any]:
     expected = case.expected
+    judge = observation.judge
     expected_targets = set(expected.required_operation_targets)
-    actual_targets = set(observation.judge.operation_targets)
+    actual_targets = set(judge.operation_targets if judge is not None else [])
     target_score = 30.0 * len(expected_targets & actual_targets) / len(expected_targets)
-    advisory_score = 15.0 if not observation.judge.advisory_commitments else 0.0
+    advisory_commitments = judge.advisory_commitments if judge is not None else []
+    advisory_score = 15.0 if judge is not None and not advisory_commitments else 0.0
     expected_conflicts = set(expected.required_conflict_topics)
-    actual_conflicts = set(observation.judge.conflict_topics)
+    actual_conflicts = set(judge.conflict_topics if judge is not None else [])
     conflict_score = (
         15.0 * len(expected_conflicts & actual_conflicts) / len(expected_conflicts)
-        if expected_conflicts
-        else 15.0
+        if expected_conflicts and judge is not None
+        else (15.0 if judge is not None else 0.0)
     )
     boundary_ok = not (
         observation.experiment_session_created
         or observation.experiment_jobs_created
         or observation.code_modified
     )
-    observed_execution_mode = observation.judge.execution_mode or (
-        "plan_only" if boundary_ok else ""
+    observed_execution_mode = (
+        (judge.execution_mode or ("plan_only" if boundary_ok else ""))
+        if judge is not None
+        else ""
     )
     execution_score = (
         10.0
@@ -301,8 +460,13 @@ def score_case(
         else 0.0
     )
     boundary_score = 10.0 if boundary_ok else 0.0
-    question_score = 10.0 if observation.judge.blocking_question_appropriate else 0.0
-    vetoes = list(observation.judge.veto_failures)
+    question_score = (
+        10.0 if judge is not None and judge.blocking_question_appropriate else 0.0
+    )
+    vetoes = [
+        *(judge.veto_failures if judge is not None else []),
+        *observation.deterministic_failures,
+    ]
     if not boundary_ok:
         vetoes = _append_unique(vetoes, ["plan_only_boundary_violated"])
     score = round(
@@ -318,12 +482,19 @@ def score_case(
     return {
         "case_id": case.case_id,
         "score": score,
-        "passes_case_threshold": score >= 85.0 and not vetoes,
-        "veto_failures": vetoes,
+        "passes_case_threshold": (
+            score >= 85.0
+            and not vetoes
+            and bool(observation.variant_results)
+            and observation.semantic_stability == 1.0
+        ),
+        "veto_failures": list(dict.fromkeys(vetoes)),
         "missing_operation_targets": sorted(expected_targets - actual_targets),
-        "advisory_commitments": observation.judge.advisory_commitments,
+        "advisory_commitments": advisory_commitments,
         "missing_conflict_topics": sorted(expected_conflicts - actual_conflicts),
-        "blocking_question_appropriate": observation.judge.blocking_question_appropriate,
+        "blocking_question_appropriate": (
+            judge.blocking_question_appropriate if judge is not None else False
+        ),
         "source_action_types": observation.source_action_types,
         "evidence_checks": observation.evidence_checks,
         "boundary": {
@@ -331,7 +502,19 @@ def score_case(
             "experiment_jobs_created": observation.experiment_jobs_created,
             "code_modified": observation.code_modified,
         },
-        "judge_rationale": observation.judge.rationale,
+        "deterministic_failures": observation.deterministic_failures,
+        "semantic_stability": observation.semantic_stability,
+        "variant_results": [
+            {
+                "label": result.label,
+                "kind": result.kind,
+                "passed": result.passed,
+                "boundary_violations": result.boundary_violations,
+                "rationale": result.judge.rationale if result.judge is not None else "",
+            }
+            for result in observation.variant_results
+        ],
+        "judge_rationale": judge.rationale if judge is not None else "",
     }
 
 
@@ -345,17 +528,29 @@ def score_report(
     results = [score_case(case, by_id[case.case_id]) for case in corpus.cases]
     average = round(sum(item["score"] for item in results) / len(results), 2)
     veto_count = sum(len(item["veto_failures"]) for item in results)
+    variant_count = sum(len(item.variant_results) for item in observations)
+    variant_failure_count = sum(
+        not result.passed
+        for observation in observations
+        for result in observation.variant_results
+    )
+    variant_coverage_complete = variant_count == len(corpus.cases) * 4
     return {
         "schema_version": 1,
         "case_count": len(results),
         "average_score": average,
         "minimum_score": min(item["score"] for item in results),
         "veto_failure_count": veto_count,
+        "variant_count": variant_count,
+        "variant_failure_count": variant_failure_count,
+        "variant_coverage_complete": variant_coverage_complete,
         "judge_independent": judge_independent,
         "release_gate_passed": (
             average >= 88.0
             and all(item["score"] >= 85.0 for item in results)
             and veto_count == 0
+            and variant_failure_count == 0
+            and variant_coverage_complete
             and judge_independent
         ),
         "results": results,
@@ -398,6 +593,153 @@ def _process_until_idle(run_dir: Path, limit: int = 10) -> None:
         if _process_pending_jobs(run_dir) == 0:
             return
     raise RuntimeError(f"material jobs did not become idle for {run_dir.name}")
+
+
+def _run_variant(
+    case: SemanticCase,
+    *,
+    plan: VariantPlan,
+    run_dir: Path,
+    base_summary: ResearchIntentSummary,
+    api_key: str,
+    provider_url: str,
+    model: str,
+    judge_model: str,
+    dialogue_temperature: float,
+    judge_temperature: float,
+    budget: SemanticRunBudget | None,
+) -> VariantResult:
+    run_dir.mkdir(parents=True, exist_ok=False)
+    transcript: list[dict[str, str]] = []
+    source_result = _dialogue_turn(
+        run_dir,
+        case.source_url,
+        transcript=transcript,
+        api_key=api_key,
+        provider_url=provider_url,
+        model=model,
+        temperature=dialogue_temperature,
+        budget=budget,
+    )
+    source_action_types = [
+        "register_github_repo"
+        for source in source_result.created_sources
+        if source.get("kind") == "github_repo"
+    ]
+    if case.case_id in MATERIAL_CASES:
+        _process_until_idle(run_dir)
+    for turn in plan.turns:
+        _dialogue_turn(
+            run_dir,
+            turn,
+            transcript=transcript,
+            api_key=api_key,
+            provider_url=provider_url,
+            model=model,
+            temperature=dialogue_temperature,
+            budget=budget,
+        )
+    if case.case_id == "case05_kernelbench":
+        _process_until_idle(run_dir)
+
+    summary = load_research_intent_summary(run_dir) or ResearchIntentSummary()
+    evidence = load_usable_evidence(run_dir)
+    state = _collect_deterministic_state(
+        case,
+        run_dir=run_dir,
+        source_action_types=source_action_types,
+        evidence=evidence,
+        enforce_case_evidence=plan.kind != "entity",
+    )
+    violations = list(state.hard_failures)
+    if not state.source_action_matches:
+        violations.append("source_action_mismatch")
+    judge = None
+    if not state.hard_failures:
+        judge = _judge_variant(
+            case,
+            plan=plan,
+            base_summary=base_summary,
+            variant_summary=summary,
+            transcript=transcript,
+            evidence=evidence,
+            api_key=api_key,
+            provider_url=provider_url,
+            model=judge_model,
+            temperature=judge_temperature,
+            budget=budget,
+        )
+    if judge is None:
+        passed = False
+    elif plan.kind == "counterfactual":
+        passed = (
+            judge.counterfactual_applied is True
+            and not judge.stale_constraints
+            and not violations
+        )
+    else:
+        passed = judge.semantic_equivalent is True and not violations
+    return VariantResult(
+        label=plan.label,
+        kind=plan.kind,
+        user_input=plan.user_input,
+        reply_transcript=transcript,
+        summary=summary,
+        source_action_types=source_action_types,
+        boundary_violations=violations,
+        evidence_checks=state.evidence_checks,
+        judge=judge,
+        passed=passed,
+    )
+
+
+def _collect_deterministic_state(
+    case: SemanticCase,
+    *,
+    run_dir: Path,
+    source_action_types: list[str],
+    evidence: list[dict[str, Any]],
+    enforce_case_evidence: bool = True,
+) -> DeterministicRunState:
+    jobs = load_pipeline_jobs(run_dir)
+    experiment_jobs = [
+        job
+        for job in jobs
+        if str(job.get("job_type") or "") not in MATERIAL_JOB_TYPES
+    ]
+    experiment_session_created = (run_dir / "experiments" / "sessions").exists()
+    code_modified = any(
+        (run_dir / relative).exists()
+        for relative in ("code", "patches", "workspace/code")
+    )
+    hard_failures: list[str] = []
+    if experiment_session_created or experiment_jobs or code_modified:
+        hard_failures.append("plan_only_boundary_violated")
+    evidence_checks = (
+        _evidence_checks(case.case_id, run_dir, evidence)
+        if enforce_case_evidence
+        else {}
+    )
+    if (
+        case.case_id == "case05_kernelbench"
+        and not evidence_checks.get("exact_target_file_read", False)
+    ):
+        hard_failures.extend(["workload_identifier_lost", "benchmark_integrity_missing"])
+    if (
+        case.case_id == "case06_flashattention_feasibility"
+        and not evidence_checks.get("repository_readme_evidenced", False)
+    ):
+        hard_failures.append("repository_conflict_ignored")
+    return DeterministicRunState(
+        experiment_session_created=experiment_session_created,
+        experiment_jobs_created=bool(experiment_jobs),
+        code_modified=code_modified,
+        source_action_matches=(
+            set(source_action_types) == set(case.expected.expected_source_action_types)
+        ),
+        evidence_checks=evidence_checks,
+        hard_failures=list(dict.fromkeys(hard_failures)),
+    )
 
 
 def _evidence_checks(
@@ -555,6 +897,97 @@ Output one JSON object with exactly: operation_targets, advisory_commitments, co
     return observation
 
 
+def _judge_variant(
+    case: SemanticCase,
+    *,
+    plan: VariantPlan,
+    base_summary: ResearchIntentSummary,
+    variant_summary: ResearchIntentSummary,
+    transcript: list[dict[str, str]],
+    evidence: list[dict[str, Any]],
+    api_key: str,
+    provider_url: str,
+    model: str,
+    temperature: float,
+    budget: SemanticRunBudget | None,
+) -> VariantJudgeObservation:
+    system = """You are a strict semantic-mutation evaluator.
+Compare the base research summary with one independently executed mutation. Judge meaning, not wording, and do not require facts that the mutation did not express.
+
+For entity: semantic_equivalent is true when the anonymized entities preserve the same research-intent structure and constraints explicitly present in the entity mutation.
+For paraphrase: semantic_equivalent is true when appending the paraphrase preserves the established goal, constraints, conflicts, and evidence boundaries without introducing a contradiction.
+For counterfactual: counterfactual_applied is true only when the explicit correction is reflected in the new summary. List in stale_constraints any superseded base constraint that incorrectly remains active. Unrelated facts may remain.
+
+Do not infer equivalence from shared keywords or entity spelling. Use the complete summaries and transcript semantics.
+Output one JSON object with exactly: semantic_equivalent, counterfactual_applied, stale_constraints, rationale."""
+    compact_evidence = [
+        {
+            "source_id": item.get("source_id"),
+            "evidence_type": item.get("evidence_type"),
+            "artifact_path": item.get("artifact_path"),
+            "summary": str(item.get("summary") or "")[:1200],
+        }
+        for item in evidence[:6]
+    ]
+    payload = {
+        "case_id": case.case_id,
+        "variant_label": plan.label,
+        "variant_kind": plan.kind,
+        "mutation_text": plan.user_input,
+        "base_summary": base_summary.model_dump(mode="json"),
+        "variant_summary": variant_summary.model_dump(mode="json"),
+        "variant_transcript": transcript,
+        "usable_evidence": compact_evidence,
+    }
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True)},
+    ]
+    errors: list[str] = []
+    for attempt in range(3):
+        if budget is not None:
+            budget.reserve_judge_call()
+        attempt_messages = list(messages)
+        if attempt:
+            attempt_messages.append({
+                "role": "system",
+                "content": "The prior response was invalid. Return only the exact JSON object.",
+            })
+        result = call_research_chat(
+            api_key,
+            provider_url,
+            attempt_messages,
+            model=model,
+            timeout_s=60,
+            temperature=temperature,
+            response_format_json=True,
+        )
+        if result.get("error"):
+            errors.append(str(result["error"]))
+            continue
+        parsed = _parse_json_object(str(result.get("reply") or ""))
+        if parsed is None:
+            errors.append("invalid JSON")
+            continue
+        try:
+            observation = VariantJudgeObservation.model_validate(parsed)
+        except ValueError as exc:
+            errors.append(f"schema validation: {exc}")
+            continue
+        if plan.kind == "counterfactual":
+            if observation.counterfactual_applied is None:
+                errors.append("counterfactual_applied is required for a counterfactual")
+                continue
+        elif observation.semantic_equivalent is None:
+            errors.append("semantic_equivalent is required for this variant kind")
+            continue
+        return observation
+    raise RuntimeError(
+        f"variant judge failed after 3 attempts for {case.case_id}/{plan.label}: "
+        f"{errors[-1]}"
+    )
+
+
 def _parse_json_object(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
     if stripped.startswith("```") and stripped.endswith("```"):
@@ -619,6 +1052,8 @@ def build_run_manifest(
     provider_url: str,
     dialogue_temperature: float,
     judge_temperature: float,
+    variant_seed: int,
+    variant_limit: int,
     judge_call_limit: int,
     wall_time_limit_seconds: float,
     created_at: str | None = None,
@@ -629,6 +1064,15 @@ def build_run_manifest(
     provider_host = urlparse(provider_url).hostname
     if not provider_host:
         raise ValueError("DEEPSEEK_BASE_URL must contain an explicit hostname")
+    variant_matrix = select_variant_matrix(
+        corpus,
+        seed=variant_seed,
+        variant_limit=variant_limit,
+    )
+    selected_variants = {
+        case.case_id: [plan.label for plan in variant_matrix[case.case_id]]
+        for case in corpus.cases
+    }
     return SemanticRunManifest(
         commit_sha=_git_head_sha(),
         dialogue_model=dialogue_model,
@@ -641,7 +1085,10 @@ def build_run_manifest(
         corpus_sha256=_sha256_file(corpus_path),
         dialogue_temperature=dialogue_temperature,
         judge_temperature=judge_temperature,
-        variant_count=0,
+        variant_seed=variant_seed,
+        variant_limit=variant_limit,
+        variant_count=sum(len(labels) for labels in selected_variants.values()),
+        selected_variants=selected_variants,
         judge_call_limit=judge_call_limit,
         wall_time_limit_seconds=wall_time_limit_seconds,
         created_at=created_at or datetime.now(timezone.utc).isoformat(),
@@ -725,11 +1172,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Judge sampling temperature used only by this benchmark.",
     )
+    parser.add_argument("--seed", type=int, default=0, help="Stable variant sampling seed.")
+    parser.add_argument(
+        "--variant-limit",
+        type=int,
+        default=0,
+        help="Maximum variants to execute; 0 means the complete 36-variant matrix.",
+    )
     parser.add_argument(
         "--judge-call-limit",
         type=int,
         default=0,
-        help="Maximum provider calls made by the semantic Judge; 0 disables the limit.",
+        help="Maximum top-level semantic Judge invocations; 0 disables the limit.",
     )
     parser.add_argument(
         "--wall-time-limit",
@@ -759,6 +1213,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.variant_limit < 0:
+        raise SystemExit("--variant-limit must be non-negative")
     if args.judge_call_limit < 0:
         raise SystemExit("--judge-call-limit must be non-negative")
     if args.wall_time_limit < 0:
@@ -777,8 +1233,15 @@ def main() -> int:
         provider_url=provider_url,
         dialogue_temperature=args.dialogue_temperature,
         judge_temperature=args.judge_temperature,
+        variant_seed=args.seed,
+        variant_limit=args.variant_limit,
         judge_call_limit=args.judge_call_limit,
         wall_time_limit_seconds=args.wall_time_limit,
+    )
+    variant_matrix = select_variant_matrix(
+        corpus,
+        seed=args.seed,
+        variant_limit=args.variant_limit,
     )
     resuming = args.suite_dir is not None
     if args.suite_dir is not None:
@@ -808,6 +1271,7 @@ def main() -> int:
     try:
         for case in corpus.cases:
             completed_path = completed_dir / f"{case.case_id}.json"
+            variants_path = completed_dir / f"{case.case_id}_variants.json"
             legacy_completed_path = suite_dir / case.case_id / "semantic_observation.json"
             reusable_path = (
                 completed_path
@@ -831,6 +1295,14 @@ def main() -> int:
                         reusable_path.read_text(encoding="utf-8"),
                         encoding="utf-8",
                     )
+                if not variants_path.is_file():
+                    _write_json_atomic(
+                        variants_path,
+                        [
+                            result.model_dump(mode="json")
+                            for result in observation.variant_results
+                        ],
+                    )
                 continue
             if args.verbose:
                 print(f"[semantic] running {case.case_id}", flush=True)
@@ -845,6 +1317,7 @@ def main() -> int:
                 dialogue_temperature=args.dialogue_temperature,
                 judge_temperature=args.judge_temperature,
                 budget=budget,
+                variant_plans=variant_matrix[case.case_id],
             )
             observations.append(observation)
             observation_text = json.dumps(
@@ -858,6 +1331,10 @@ def main() -> int:
                 encoding="utf-8",
             )
             completed_path.write_text(observation_text, encoding="utf-8")
+            _write_json_atomic(
+                variants_path,
+                [result.model_dump(mode="json") for result in observation.variant_results],
+            )
             partial = score_case(case, observation)
             if args.verbose:
                 print(
@@ -868,8 +1345,8 @@ def main() -> int:
     except SemanticBudgetExceeded as exc:
         budget_failure = exc.reason
 
-    coverage_complete = len(observations) == len(corpus.cases)
-    if coverage_complete:
+    case_coverage_complete = len(observations) == len(corpus.cases)
+    if case_coverage_complete:
         report = score_report(
             corpus,
             observations,
@@ -887,6 +1364,10 @@ def main() -> int:
             "release_gate_passed": False,
             "results": [],
         }
+    coverage_complete = (
+        case_coverage_complete
+        and bool(report.get("variant_coverage_complete", False))
+    )
     report["coverage_complete"] = coverage_complete
     report["budget"] = {
         "status": budget_failure or "within_limit",
@@ -897,6 +1378,8 @@ def main() -> int:
         "elapsed_seconds": round(budget.elapsed_seconds(), 3),
     }
     if budget_failure:
+        report["release_gate_passed"] = False
+    if not coverage_complete:
         report["release_gate_passed"] = False
     report_path = suite_dir / "semantic_acceptance_report.json"
     report_path.write_text(
