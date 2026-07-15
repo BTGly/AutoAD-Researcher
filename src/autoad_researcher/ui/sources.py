@@ -390,14 +390,14 @@ def _source_with_read_compat(run_dir: Path, source: dict[str, Any]) -> dict[str,
     if isinstance(attempts, list):
         normalized["parse_attempts"] = [dict(item) for item in attempts if isinstance(item, dict)]
         normalized.setdefault("active_parse_attempt_id", None)
-        return normalized
-
-    if status == "parsed":
-        normalized["parse_attempts"] = [_legacy_parse_attempt(run_dir)]
-        normalized.setdefault("active_parse_attempt_id", LEGACY_PARSE_ATTEMPT_ID)
     else:
-        normalized["parse_attempts"] = []
-        normalized.setdefault("active_parse_attempt_id", None)
+        if status == "parsed":
+            normalized["parse_attempts"] = [_legacy_parse_attempt(run_dir)]
+            normalized.setdefault("active_parse_attempt_id", LEGACY_PARSE_ATTEMPT_ID)
+        else:
+            normalized["parse_attempts"] = []
+            normalized.setdefault("active_parse_attempt_id", None)
+    normalized["status"] = _artifact_derived_source_status(run_dir, normalized)
     return normalized
 
 
@@ -537,6 +537,103 @@ def _default_intake_status(status: str | None) -> IntakeStatus:
     if status == "user_provided_not_ingested":
         return "pending"
     return "pending"
+
+
+def _artifact_derived_source_status(run_dir: Path, source: dict[str, Any]) -> SourceStatus:
+    source_id = str(source.get("source_id") or "")
+    current = str(source.get("status") or "user_provided_not_ingested")
+    if source_id and _source_has_supported_evidence(run_dir, source_id):
+        return "parsed"
+    active_id = source.get("active_parse_attempt_id")
+    attempts = source.get("parse_attempts")
+    if isinstance(active_id, str) and isinstance(attempts, list):
+        for attempt in attempts:
+            if (
+                isinstance(attempt, dict)
+                and attempt.get("parse_attempt_id") == active_id
+                and attempt.get("status") == "ok"
+            ):
+                return "parsed"
+    if source_id and source.get("kind") in {"github_repo", "local_repo"}:
+        attestation = (
+            run_dir
+            / "repo_acquisition"
+            / source_id
+            / "repository_attestation.json"
+        )
+        if attestation.is_file() and current == "user_provided_not_ingested":
+            return "uploaded_not_parsed"
+    return current if current in {
+        "uploaded_not_parsed",
+        "user_provided_not_ingested",
+        "parsing",
+        "parsed",
+        "failed",
+    } else "user_provided_not_ingested"
+
+
+def _source_has_supported_evidence(run_dir: Path, source_id: str) -> bool:
+    path = run_dir / "evidence" / "evidence_index.jsonl"
+    if not path.is_file():
+        return False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(item, dict)
+            and item.get("source_id") == source_id
+            and item.get("support_level") == "supported"
+            and (run_dir / str(item.get("artifact_path") or "")).exists()
+            and _evidence_matches_current_source(run_dir, source_id, item)
+        ):
+            return True
+    return False
+
+
+def _evidence_matches_current_source(
+    run_dir: Path,
+    source_id: str,
+    evidence: dict[str, Any],
+) -> bool:
+    registry_path = run_dir / SOURCES_DIR / REGISTRY_FILE
+    try:
+        raw_sources = json.loads(registry_path.read_text(encoding="utf-8")).get("sources", [])
+    except (json.JSONDecodeError, OSError):
+        raw_sources = []
+    source = next(
+        (
+            item
+            for item in raw_sources
+            if isinstance(item, dict) and item.get("source_id") == source_id
+        ),
+        None,
+    )
+    parse_attempt_id = evidence.get("parse_attempt_id")
+    if isinstance(parse_attempt_id, str) and parse_attempt_id:
+        if not isinstance(source, dict) or source.get("active_parse_attempt_id") != parse_attempt_id:
+            return False
+        attempts = source.get("parse_attempts")
+        if not isinstance(attempts, list) or not any(
+            isinstance(attempt, dict)
+            and attempt.get("parse_attempt_id") == parse_attempt_id
+            and attempt.get("status") == "ok"
+            for attempt in attempts
+        ):
+            return False
+    if evidence.get("evidence_type") in {
+        "repo_summary",
+        "repository_target_analysis",
+        "repository_target_evidence",
+    }:
+        return (
+            run_dir
+            / "repo_acquisition"
+            / source_id
+            / "repository_attestation.json"
+        ).is_file()
+    return True
 
 
 # ── file upload ──

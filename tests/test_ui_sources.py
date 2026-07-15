@@ -1,6 +1,7 @@
 """Tests for source intake helpers — file upload + source registry."""
 
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -271,6 +272,59 @@ class TestSourceRegistry:
         assert source["intake_error"] is None
         assert source["active_parse_attempt_id"] is None
         assert source["parse_attempts"] == []
+
+    def test_repository_status_is_projected_from_acquisition_artifact(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="github_repo",
+            user_label="https://github.com/example/repository",
+            stored_path=None,
+            status="user_provided_not_ingested",
+        )
+        attestation = run_dir / "repo_acquisition" / sid / "repository_attestation.json"
+        attestation.parent.mkdir(parents=True)
+        attestation.write_text("{}\n", encoding="utf-8")
+
+        source = load_source_registry(run_dir)["sources"][0]
+
+        assert source["status"] == "uploaded_not_parsed"
+
+    def test_repository_status_is_parsed_only_with_supported_artifact(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        sid = append_source_ref(
+            run_dir,
+            kind="github_repo",
+            user_label="https://github.com/example/repository",
+            stored_path=None,
+            status="user_provided_not_ingested",
+        )
+        attestation = run_dir / "repo_acquisition" / sid / "repository_attestation.json"
+        attestation.parent.mkdir(parents=True)
+        attestation.write_text("{}\n", encoding="utf-8")
+        artifact = run_dir / "repos" / sid / "repo_brief.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("# Repository\n", encoding="utf-8")
+        evidence_path = run_dir / "evidence" / "evidence_index.jsonl"
+        evidence_path.parent.mkdir(parents=True)
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "source_id": sid,
+                    "artifact_path": f"repos/{sid}/repo_brief.md",
+                    "evidence_type": "repo_summary",
+                    "support_level": "supported",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        source = load_source_registry(run_dir)["sources"][0]
+
+        assert source["status"] == "parsed"
 
     def test_source_kind_accepts_v04_reference_kinds(self, tmp_path):
         run_dir = tmp_path / "run_test"

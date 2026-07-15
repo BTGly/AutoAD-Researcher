@@ -111,6 +111,7 @@ def append_artifact_evidence(
     evidence_type: str,
     summary: str,
     parser_name: str,
+    parse_attempt_id: str | None = None,
     support_level: str = "supported",
     raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -131,6 +132,8 @@ def append_artifact_evidence(
         "raw": raw or {},
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if parse_attempt_id is not None:
+        entry["parse_attempt_id"] = parse_attempt_id
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True))
         handle.write("\n")
@@ -215,12 +218,44 @@ def _load_v2_artifact_evidence(run_dir: Path) -> list[dict[str, Any]]:
 
 
 def _artifact_evidence_is_currently_supported(run_dir: Path, item: dict[str, Any]) -> bool:
-    if item.get("evidence_type") != "repo_summary":
+    parse_attempt_id = item.get("parse_attempt_id")
+    if isinstance(parse_attempt_id, str) and parse_attempt_id:
+        source_id = str(item.get("source_id") or "")
+        source = _raw_source(run_dir, source_id)
+        if source is None or source.get("active_parse_attempt_id") != parse_attempt_id:
+            return False
+        attempts = source.get("parse_attempts")
+        if not isinstance(attempts, list) or not any(
+            isinstance(attempt, dict)
+            and attempt.get("parse_attempt_id") == parse_attempt_id
+            and attempt.get("status") == "ok"
+            for attempt in attempts
+        ):
+            return False
+    if item.get("evidence_type") not in {
+        "repo_summary",
+        "repository_target_analysis",
+        "repository_target_evidence",
+    }:
         return True
     source_id = str(item.get("source_id") or "")
     if not source_id:
         return False
     return (run_dir / "repo_acquisition" / source_id / "repository_attestation.json").is_file()
+
+
+def _raw_source(run_dir: Path, source_id: str) -> dict[str, Any] | None:
+    path = run_dir / "sources" / "source_references.json"
+    if not path.is_file():
+        return None
+    try:
+        sources = json.loads(path.read_text(encoding="utf-8")).get("sources", [])
+    except (json.JSONDecodeError, OSError):
+        return None
+    for source in sources:
+        if isinstance(source, dict) and source.get("source_id") == source_id:
+            return source
+    return None
 
 
 def _source_ids_with_supported_text_evidence(run_dir: Path) -> set[str]:

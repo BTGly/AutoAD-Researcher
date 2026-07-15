@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any
 
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.event_service import append_event
-from autoad_researcher.assistant.v2.job_service import append_pipeline_job
+from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import ResearchDialogueAgent
 from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
@@ -69,6 +70,14 @@ class ResearchOrchestratorV2:
                 user_input,
                 source_plan,
             )
+        target_job = _queue_explicit_repository_target(
+            run_dir,
+            user_input,
+            created_sources=created_sources,
+            created_jobs=created_jobs,
+        )
+        if target_job is not None:
+            created_jobs.append(target_job)
 
         context = build_llm_context(run_dir, transcript_tail=transcript_tail)
         context["current_turn_material_actions"] = {
@@ -211,3 +220,68 @@ def _execute_source_action_plan(
 def _source_registry_sources(run_dir: Path) -> list[dict[str, Any]]:
     sources = load_source_registry(run_dir).get("sources", [])
     return [item for item in sources if isinstance(item, dict)]
+
+
+def _queue_explicit_repository_target(
+    run_dir: Path,
+    user_input: str,
+    *,
+    created_sources: list[dict[str, Any]],
+    created_jobs: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    target = _parse_explicit_repository_target(user_input)
+    if target is None:
+        return None
+    repository_sources = [
+        source
+        for source in created_sources
+        if source.get("kind") in {"github_repo", "local_repo"}
+    ]
+    if not repository_sources:
+        repository_sources = [
+            source
+            for source in _source_registry_sources(run_dir)
+            if source.get("kind") in {"github_repo", "local_repo"}
+        ]
+    if not repository_sources:
+        return None
+    source = max(repository_sources, key=lambda item: str(item.get("created_at") or ""))
+    source_id = str(source.get("source_id") or "")
+    if not source_id:
+        return None
+    payload = {"repository_target": target}
+    for job in load_pipeline_jobs(run_dir):
+        if (
+            job.get("source_id") == source_id
+            and job.get("job_type") in {"repo_analyze", "repo_summarize"}
+            and (job.get("payload") or {}).get("repository_target") == target
+        ):
+            return None
+    clone = next(
+        (
+            job
+            for job in created_jobs
+            if job.get("source_id") == source_id and job.get("job_type") == "git_clone"
+        ),
+        None,
+    )
+    if clone is not None:
+        payload["depends_on"] = clone.get("job_id")
+    return append_pipeline_job(
+        run_dir,
+        source_id=source_id,
+        job_type="repo_analyze",
+        evidence_role="repo_acquired",
+        payload=payload,
+    )
+
+
+def _parse_explicit_repository_target(user_input: str) -> dict[str, int] | None:
+    level_match = re.search(r"(?<![A-Za-z0-9_])level\s*=\s*([0-9]+)", user_input)
+    problem_match = re.search(r"(?<![A-Za-z0-9_])problem_id\s*=\s*([0-9]+)", user_input)
+    if level_match is None or problem_match is None:
+        return None
+    return {
+        "level": int(level_match.group(1)),
+        "problem_id": int(problem_match.group(1)),
+    }

@@ -22,9 +22,9 @@ from autoad_researcher.server.routes import evidence as evidence_route
 from autoad_researcher.server.routes import intent_summary as intent_summary_route
 from autoad_researcher.server.routes import sources as sources_route
 from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
-from autoad_researcher.tools.pdf_text_adapter import convert_pdf_to_markdown
+from autoad_researcher.tools.pdf_text_adapter import PdfTextAdapterResult, convert_pdf_to_markdown
 from autoad_researcher.tools.providers import GitHubCommitRef, GitHubRepositoryMetadata
-from autoad_researcher.ui.sources import append_source_ref
+from autoad_researcher.ui.sources import append_source_ref, load_source_registry
 from autoad_researcher.worker.main import (
     _process_pending_jobs,
     _run_git_clone,
@@ -100,6 +100,102 @@ def test_local_repo_unpack_then_repo_summary_creates_evidence(tmp_path: Path):
     evidence = load_usable_evidence(run_dir)
     assert evidence[0]["evidence_type"] == "repo_summary"
     assert "PatchCore" in evidence[0]["summary"]
+
+
+def test_repo_target_analysis_reads_exact_task_file_into_evidence(tmp_path: Path):
+    run_dir = tmp_path / "run_target"
+    task = run_dir / "repos" / "src_repo" / "KernelBench" / "level2" / "40_Matmul.py"
+    task.parent.mkdir(parents=True)
+    task.write_text(
+        "import torch\n\nclass Model(torch.nn.Module):\n    pass\n",
+        encoding="utf-8",
+    )
+    attestation = run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json"
+    attestation.parent.mkdir(parents=True)
+    attestation.write_text("{}\n", encoding="utf-8")
+
+    ok, outputs = _run_repo_analyze(
+        run_dir,
+        {
+            "job_id": "job_000040",
+            "source_id": "src_repo",
+            "job_type": "repo_analyze",
+            "payload": {"repository_target": {"level": 2, "problem_id": 40}},
+        },
+    )
+
+    assert ok is True
+    assert outputs[0] == "repository_intelligence/src_repo/targets/job_000040.json"
+    analysis = json.loads((run_dir / outputs[0]).read_text(encoding="utf-8"))
+    assert analysis["status"] == "found"
+    assert analysis["resolved_path"] == "KernelBench/level2/40_Matmul.py"
+    assert analysis["bytes_read"] == task.stat().st_size
+    target_evidence = next(
+        item
+        for item in load_usable_evidence(run_dir)
+        if item["evidence_type"] == "repository_target_evidence"
+    )
+    assert target_evidence["artifact_path"] == "repos/src_repo/KernelBench/level2/40_Matmul.py"
+    assert "class Model" in target_evidence["summary"]
+    assert target_evidence["raw"]["target"] == {"level": 2, "problem_id": 40}
+
+
+def test_pdftotext_fallback_records_actual_parser_and_preserves_pdf_path(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_pdf"
+    pdf = run_dir / "sources" / "src_pdf" / "paper.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"%PDF fake")
+    append_source_ref(
+        run_dir,
+        kind="paper_pdf",
+        user_label="paper.pdf",
+        stored_path="sources/src_pdf/paper.pdf",
+        status="uploaded_not_parsed",
+        source_id="src_pdf",
+    )
+
+    def fake_convert(input_path, output_path, *, run_dir=None, timeout_s=120):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            "# Actual fallback parser\n\nReadable method and experiment evidence.\n",
+            encoding="utf-8",
+        )
+        return PdfTextAdapterResult(
+            ok=True,
+            parser_name="pdftotext",
+            output_paths=[output_path.relative_to(run_dir).as_posix()],
+            metadata={"tool": "/usr/bin/pdftotext"},
+        )
+
+    monkeypatch.setattr(
+        "autoad_researcher.tools.pdf_text_adapter.convert_pdf_to_markdown",
+        fake_convert,
+    )
+
+    ok, outputs = _run_paper_parse_pdftotext(
+        run_dir,
+        {"job_id": "job_pdf", "source_id": "src_pdf", "job_type": "paper_parse_pdftotext"},
+    )
+
+    assert ok is True
+    source = load_source_registry(run_dir)["sources"][0]
+    assert source["stored_path"] == "sources/src_pdf/paper.pdf"
+    assert source["status"] == "parsed"
+    active_id = source["active_parse_attempt_id"]
+    assert active_id.startswith("pa_")
+    active = next(item for item in source["parse_attempts"] if item["parse_attempt_id"] == active_id)
+    assert active["parser"] == "pdftotext"
+    assert active["output_dir"] == f"paper/parse/attempts/{active_id}"
+    quality = json.loads((run_dir / active["quality_report"]).read_text(encoding="utf-8"))
+    assert quality["parser"] == "pdftotext"
+    evidence = next(
+        item
+        for item in load_usable_evidence(run_dir)
+        if item["evidence_type"] == "paper_markdown_fallback"
+    )
+    assert evidence["parser_name"] == "pdftotext"
+    assert evidence["parse_attempt_id"] == active_id
+    assert f"paper/parse/attempts/{active_id}/paper.md" in outputs
 
 
 def test_archive_bundle_classifies_mixed_materials_and_queues_child_jobs(tmp_path: Path):

@@ -260,6 +260,56 @@ def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monk
     assert len(calls) == 1
 
 
+def test_orchestrator_queues_explicit_repository_target_and_calls_dialogue_once(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_target"
+    run_dir.mkdir()
+    calls = 0
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "reply": json.dumps(
+                {
+                    "reply_to_user": "我会先读取指定任务文件，再基于该文件内容分析。",
+                    "summary": {
+                        "goal": "分析 KernelBench 指定任务",
+                        "confirmed_facts": ["用户指定 level=2、problem_id=40"],
+                        "inferred_facts": [],
+                        "unresolved_conflicts": [],
+                        "blocking_question": None,
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=(
+            "https://github.com/ScalingIntelligence/KernelBench "
+            "请分析 level=2、problem_id=40，只做 plan_only"
+        ),
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert calls == 1
+    assert [job["job_type"] for job in result.created_jobs] == [
+        "git_clone",
+        "repo_summarize",
+        "repo_analyze",
+    ]
+    target_job = result.created_jobs[-1]
+    assert target_job["payload"]["repository_target"] == {"level": 2, "problem_id": 40}
+    assert target_job["payload"]["depends_on"] == result.created_jobs[0]["job_id"]
+    assert not (run_dir / "code").exists()
+    assert not (run_dir / "experiments" / "sessions").exists()
+
+
 def test_explicit_mirror_search_does_not_auto_create_web_search_without_provider(tmp_path: Path):
     run_dir = tmp_path / "run_mirror"
     source_dir = run_dir / "sources"
