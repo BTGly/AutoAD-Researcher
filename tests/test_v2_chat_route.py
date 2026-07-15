@@ -4,10 +4,12 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from starlette.requests import Request
 
 from autoad_researcher.server.models import ChatRequest
 from autoad_researcher.server.routes.chat import (
     _append_transcript,
+    _extract_api_headers,
     _load_transcript_tail,
     _resolve_message_id,
 )
@@ -41,3 +43,22 @@ def test_chat_request_id_falls_back_and_rejects_unsafe_characters():
 
     with pytest.raises(ValidationError):
         ChatRequest(user_input="hello", request_id="request id with spaces")
+
+
+def test_chat_headers_supply_the_dialogue_model():
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/chat/send",
+        "headers": [
+            (b"x-autoad-api-key", b"sk-test"),
+            (b"x-autoad-base-url", b"https://example.test"),
+            (b"x-autoad-model", b"configured-dialogue-model"),
+        ],
+    })
+
+    assert _extract_api_headers(request) == (
+        "sk-test",
+        "https://example.test",
+        "configured-dialogue-model",
+    )

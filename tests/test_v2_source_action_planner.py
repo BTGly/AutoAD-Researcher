@@ -46,6 +46,7 @@ def test_orchestrator_does_not_use_llm_to_invent_repo_url(monkeypatch, tmp_path:
         user_input="你先 clone pathcore 的 github 仓库吧",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert result.reply_kind == "answer"
@@ -146,6 +147,7 @@ def test_orchestrator_does_not_create_web_search_from_dialogue_llm(monkeypatch, 
         user_input="帮我搜一下 PatchCore 有哪些能提升 AUROC 的方法",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert result.reply_kind == "answer"
@@ -185,6 +187,7 @@ def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monk
         user_input="https://github.com/example/repository",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert result.reply_kind == "answer"
@@ -247,6 +250,7 @@ def test_orchestrator_queues_typed_repository_target_from_natural_expression(
         ),
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert calls == 1
@@ -289,6 +293,7 @@ def test_exact_selector_text_without_typed_target_does_not_queue_analysis(monkey
         user_input="https://github.com/ScalingIntelligence/KernelBench level=2 problem_id=40",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
@@ -382,6 +387,7 @@ def test_orchestrator_returns_confirmable_typed_removal_without_deleting(monkeyp
         user_input="刚发的不是目标论文，撤回它。",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert result.reply_kind == "answer"
@@ -430,6 +436,7 @@ def test_orchestrator_rejects_removal_action_for_unknown_source(monkeypatch, tmp
         user_input="删除那个材料",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert result.source_action is None

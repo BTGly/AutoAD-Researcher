@@ -71,11 +71,17 @@ class ResearchDialogueAgent:
         transcript_tail: list[dict[str, Any]] | None = None,
         api_key: str = "",
         provider_url: str = "",
+        model: str = "",
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> ResearchDialogueResponse:
         if not api_key:
             return ResearchDialogueResponse(
                 reply_to_user="当前没有可用的对话模型连接，材料任务仍可在后台处理。",
+                summary=last_summary or ResearchIntentSummary(),
+            )
+        if not model.strip():
+            return ResearchDialogueResponse(
+                reply_to_user="当前没有配置对话模型，材料任务仍可在后台处理。",
                 summary=last_summary or ResearchIntentSummary(),
             )
 
@@ -91,7 +97,7 @@ class ResearchDialogueAgent:
             api_key,
             provider_url,
             messages,
-            model="deepseek-v4-flash",
+            model=model,
             timeout_s=30,
         )
         payload = _parse_json_object(str(result.get("reply") or ""))

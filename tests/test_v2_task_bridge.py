@@ -160,6 +160,7 @@ def test_orchestrator_typed_task_action_only_prepares_plan_only_input(monkeypatc
         transcript_tail=[{"role": "user", "content": "只做 plan_only"}],
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert result.experiment_task is not None

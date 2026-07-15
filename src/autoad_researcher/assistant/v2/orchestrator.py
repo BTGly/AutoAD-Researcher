@@ -55,6 +55,7 @@ class ResearchOrchestratorV2:
         transcript_tail: list[dict[str, Any]] | None = None,
         api_key: str = "",
         provider_url: str = "",
+        model: str = "",
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> OrchestratorResult:
         user_input = user_input.strip()
@@ -87,6 +88,7 @@ class ResearchOrchestratorV2:
             transcript_tail=transcript_tail,
             api_key=api_key,
             provider_url=provider_url,
+            model=model,
             on_reply_delta=on_reply_delta,
         )
         if dialogue.should_persist:

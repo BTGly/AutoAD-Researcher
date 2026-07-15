@@ -108,6 +108,8 @@ def run_case(
     run_dir: Path,
     api_key: str,
     provider_url: str,
+    model: str,
+    judge_model: str,
 ) -> CaseRuntimeObservation:
     run_dir.mkdir(parents=True, exist_ok=False)
     transcript: list[dict[str, str]] = []
@@ -117,6 +119,7 @@ def run_case(
         transcript=transcript,
         api_key=api_key,
         provider_url=provider_url,
+        model=model,
     )
     source_action_types = [
         "register_github_repo"
@@ -134,6 +137,7 @@ def run_case(
             transcript=transcript,
             api_key=api_key,
             provider_url=provider_url,
+            model=model,
         )
 
     if case.case_id == "case05_kernelbench":
@@ -150,6 +154,7 @@ def run_case(
         evidence=evidence,
         api_key=api_key,
         provider_url=provider_url,
+        model=judge_model,
     )
     if case.case_id == "case05_kernelbench":
         if not evidence_checks.get("exact_target_file_read", False):
@@ -284,6 +289,7 @@ def _dialogue_turn(
     transcript: list[dict[str, str]],
     api_key: str,
     provider_url: str,
+    model: str,
 ):
     result = ResearchOrchestratorV2.handle(
         run_dir,
@@ -291,6 +297,7 @@ def _dialogue_turn(
         transcript_tail=transcript[-12:],
         api_key=api_key,
         provider_url=provider_url,
+        model=model,
     )
     transcript.extend(
         [
@@ -345,6 +352,7 @@ def _judge_case(
     evidence: list[dict[str, Any]],
     api_key: str,
     provider_url: str,
+    model: str,
 ) -> SemanticJudgeObservation:
     expected = case.expected
     system = """You are a strict release evaluator for a research dialogue assistant.
@@ -410,7 +418,7 @@ Output one JSON object with exactly: operation_targets, advisory_commitments, co
             api_key,
             provider_url,
             attempt_messages,
-            model="deepseek-v4-flash",
+            model=model,
             timeout_s=60,
         )
         if result.get("error"):
@@ -517,6 +525,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rubric", type=Path, default=DEFAULT_RUBRIC)
     parser.add_argument("--runs-root", type=Path, default=Path("runs"))
     parser.add_argument(
+        "--model",
+        default=os.environ.get("AUTOAD_DIALOGUE_MODEL", "deepseek-v4-flash"),
+        help="Production dialogue model used by ResearchDialogueAgent.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=os.environ.get("AUTOAD_JUDGE_MODEL", ""),
+        help="Semantic judge model; defaults to --model when omitted.",
+    )
+    parser.add_argument(
         "--suite-dir",
         type=Path,
         help="Resume a prior suite directory and reuse completed case observations.",
@@ -537,6 +555,7 @@ def main() -> int:
     if not api_key or not provider_url:
         raise SystemExit("DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL are required")
     corpus = load_corpus(args.rubric)
+    judge_model = args.judge_model or args.model
     if args.suite_dir is not None:
         suite_dir = args.suite_dir
         if not suite_dir.is_dir():
@@ -579,6 +598,8 @@ def main() -> int:
             run_dir=case_run_dir,
             api_key=api_key,
             provider_url=provider_url,
+            model=args.model,
+            judge_model=judge_model,
         )
         observations.append(observation)
         observation_text = json.dumps(

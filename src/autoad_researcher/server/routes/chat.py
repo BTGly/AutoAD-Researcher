@@ -68,7 +68,7 @@ async def chat_send(req: ChatRequest, request: Request):
     run_dir = Path("runs") / req.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    api_key, provider_url, _ = _extract_api_headers(request)
+    api_key, provider_url, model = _extract_api_headers(request)
     stored_transcript_tail = _load_transcript_tail(run_dir)
     transcript_tail = req.transcript_tail or stored_transcript_tail
     message_id = _resolve_message_id(req.request_id)
@@ -97,6 +97,7 @@ async def chat_send(req: ChatRequest, request: Request):
         transcript_tail=transcript_tail,
         api_key=api_key,
         provider_url=provider_url,
+        model=model,
         on_reply_delta=on_reply_delta,
     )
     _append_transcript(run_dir, "user", req.user_input)

@@ -83,6 +83,7 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         captured["calls"] = int(captured["calls"]) + 1
         captured["messages"] = messages
+        captured["model"] = kwargs.get("model")
         return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
@@ -98,9 +99,11 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
         transcript_tail=[{"role": "user", "content": "先看仓库"}],
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert captured["calls"] == 1
+    assert captured["model"] == "configured-dialogue-model"
     system = captured["messages"][0]["content"]
     assert "Propose first" in system
     assert "Don't interrogate" in system
@@ -121,6 +124,26 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert "禁止给出并行分支" not in system
     assert response.should_persist is True
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
+
+
+def test_dialogue_agent_does_not_choose_a_model_when_configuration_is_missing(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("model call must not run without an injected model")
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fail_if_called)
+
+    response = ResearchDialogueAgent.respond(
+        user_input="继续",
+        evidence_state={},
+        last_summary=ResearchIntentSummary(goal="原目标"),
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="",
+    )
+
+    assert "没有配置对话模型" in response.reply_to_user
+    assert response.should_persist is False
+    assert response.summary.goal == "原目标"
 
 
 def test_source_removal_instruction_is_typed_and_forbids_extra_fields():
@@ -185,6 +208,7 @@ def test_orchestrator_invalid_llm_output_preserves_existing_summary(monkeypatch,
         user_input="继续",
         api_key="sk-test",
         provider_url="https://example.test",
+        model="configured-dialogue-model",
     )
 
     assert "格式无效" not in result.reply
