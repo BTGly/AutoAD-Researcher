@@ -1,18 +1,18 @@
-import { useState, type KeyboardEvent } from 'react';
+import type { KeyboardEvent } from 'react';
 
 interface Props {
+  value: string;
+  onChange: (value: string) => void;
   onSend: (text: string) => void;
   disabled?: boolean;
 }
 
-export function ChatInput({ onSend, disabled }: Props) {
-  const [text, setText] = useState('');
-
+export function ChatInput({ value, onChange, onSend, disabled }: Props) {
   const send = () => {
-    const trimmed = text.trim();
+    const trimmed = value.trim();
     if (!trimmed || disabled) return;
     onSend(trimmed);
-    setText('');
+    onChange('');
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -25,15 +25,15 @@ export function ChatInput({ onSend, disabled }: Props) {
   return (
     <div style={{ display: 'flex', gap: 8, padding: '8px 0', borderTop: '1px solid var(--border)' }}>
       <textarea
-        value={text}
-        onChange={e => setText(e.target.value)}
+        value={value}
+        onChange={e => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="输入问题，或粘贴 URL…"
         rows={1}
         disabled={disabled}
         style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
       />
-      <button onClick={send} disabled={disabled || !text.trim()} className="primary" style={{ padding: '6px 16px' }}>
+      <button onClick={send} disabled={disabled || !value.trim()} className="primary" style={{ padding: '6px 16px' }}>
         发送
       </button>
     </div>

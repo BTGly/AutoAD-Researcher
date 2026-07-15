@@ -71,7 +71,7 @@ async def chat_send(req: ChatRequest, request: Request):
     api_key, provider_url, _ = _extract_api_headers(request)
     stored_transcript_tail = _load_transcript_tail(run_dir)
     transcript_tail = req.transcript_tail or stored_transcript_tail
-    message_id = f"assistant_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    message_id = _resolve_message_id(req.request_id)
     loop = asyncio.get_running_loop()
 
     def on_reply_delta(delta: str) -> None:
@@ -166,3 +166,9 @@ def _append_transcript(run_dir: Path, role: str, content: str) -> None:
     }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _resolve_message_id(request_id: str | None) -> str:
+    if request_id:
+        return request_id
+    return f"assistant_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"

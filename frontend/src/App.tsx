@@ -1,5 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { ChatInput } from './components/ChatInput';
+import { FollowupQueue } from './components/FollowupQueue';
 import { PlusMenu } from './components/PlusMenu';
 import { UserMessage, AssistantMessage, WelcomeMessage } from './components/Messages';
 import { ToastContainer } from './components/Toast';
@@ -33,7 +34,7 @@ import {
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary } from './lib/types';
+import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
@@ -71,11 +72,27 @@ export default function App() {
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
   const [page, setPage] = useState<PageId>('chat');
-  const streamingAssistantIdRef = useRef<string | null>(null);
-  const streamingHadDeltaRef = useRef(false);
-  const suppressLateDeltaRef = useRef(false);
+  const [composerText, setComposerText] = useState('');
+  const [queuedMessagesByRun, setQueuedMessagesByRun] = useState<Record<string, QueuedChatMessage[]>>({});
+  const [queuePausedByRun, setQueuePausedByRun] = useState<Record<string, boolean>>({});
+  const [runLoading, setRunLoading] = useState(false);
+  const [loadedRunId, setLoadedRunId] = useState('');
+  const currentRunIdRef = useRef('');
+  const messagesRef = useRef<Message[]>([]);
+  const activeChatTurnRunIdsRef = useRef(new Map<string, string>());
+  const streamingHadDeltaIdsRef = useRef(new Set<string>());
+  const completedAssistantIdsRef = useRef(new Set<string>());
+  const drainingQueueRunIdRef = useRef<string | null>(null);
+  const [chatTurnActive, setChatTurnActive] = useState(false);
   const bottomRef = useAutoScroll([messages]);
   const activeTask = tasks.find(task => task.run_id === runId) || null;
+  const visibleTaskStatus = chatTurnActive ? 'Working' : taskStatus;
+  const queuedMessages = useMemo(() => queuedMessagesByRun[runId] || [], [queuedMessagesByRun, runId]);
+  const queuePaused = Boolean(queuePausedByRun[runId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const addToast = useCallback((message: string, kind: 'success' | 'error' | 'info') => {
     setToasts(prev => [...prev, { id: generateId(), message, kind }].slice(-MAX_VISIBLE_TOASTS));
@@ -100,6 +117,7 @@ export default function App() {
     const e = Array.isArray(evidenceState.usable_evidence)
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
+    if (currentRunIdRef.current && currentRunIdRef.current !== nextRunId) return;
     setSources(s.map((src: any) => ({ sourceId: src.source_id || generateId(), kind: src.kind || 'unknown', label: src.user_label || src.source_id || 'source', status: src.status || 'unknown' })));
     setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '', error: job.error || '' })));
     setEvidence(e.map(normalizeEvidence));
@@ -114,9 +132,11 @@ export default function App() {
 
   const switchRun = useCallback(async (nextRunId: string) => {
     if (!nextRunId) return;
-    streamingAssistantIdRef.current = null;
-    streamingHadDeltaRef.current = false;
-    suppressLateDeltaRef.current = true;
+    setRunLoading(true);
+    setLoadedRunId('');
+    currentRunIdRef.current = nextRunId;
+    setChatTurnActive([...activeChatTurnRunIdsRef.current.values()].some(value => value === nextRunId));
+    setComposerText('');
     setRunId(nextRunId);
     setTaskStatus('Ready');
     setSources([]);
@@ -127,6 +147,7 @@ export default function App() {
     setArtifacts([]);
     setToasts([]);
     const transcript = await getTranscript(nextRunId).catch(() => []);
+    if (currentRunIdRef.current !== nextRunId) return;
     setMessages(transcript.map(entry => ({
       id: generateId(),
       role: entry.role === 'user' ? 'user' : 'assistant',
@@ -134,7 +155,10 @@ export default function App() {
       timestamp: entry.created_at ? new Date(entry.created_at).getTime() : Date.now(),
     })));
     await refreshSidebarForRun(nextRunId);
-    suppressLateDeltaRef.current = false;
+    if (currentRunIdRef.current === nextRunId) {
+      setLoadedRunId(nextRunId);
+      setRunLoading(false);
+    }
   }, [refreshSidebarForRun]);
 
   useEffect(() => {
@@ -187,6 +211,16 @@ export default function App() {
       addToast('删除失败', 'error');
       return;
     }
+    setQueuedMessagesByRun(prev => {
+      const next = { ...prev };
+      delete next[targetRunId];
+      return next;
+    });
+    setQueuePausedByRun(prev => {
+      const next = { ...prev };
+      delete next[targetRunId];
+      return next;
+    });
     const remaining = await refreshTasks();
     if (targetRunId === runId) {
       const nextTask = remaining.find(task => task.run_id !== targetRunId);
@@ -217,48 +251,125 @@ export default function App() {
     saveConfig(c);
     try {
       const r = await createRun();
+      currentRunIdRef.current = r.run_id;
+      setLoadedRunId(r.run_id);
       setRunId(r.run_id);
       setTasks([r]);
       setTaskStatus('Ready');
     } catch {
+      currentRunIdRef.current = 'run_default';
+      setLoadedRunId('run_default');
       setRunId('run_default');
     }
   }, [saveConfig]);
 
-  // ── Real chat handler ──
-  const handleSend = useCallback(async (text: string) => {
+  // ── Real chat turn ──
+  const runChatTurn = useCallback(async (text: string, targetRunId: string): Promise<boolean> => {
     const userMsg: Message = { id: generateId(), role: 'user', content: text, timestamp: Date.now() };
     const assistantId = generateId();
     const assistantMsg: Message = { id: assistantId, role: 'assistant', content: '', timestamp: Date.now() };
-    const transcriptTail = messages.slice(-12).map(msg => ({ role: msg.role, content: msg.content }));
-    streamingAssistantIdRef.current = assistantId;
-    streamingHadDeltaRef.current = false;
-    suppressLateDeltaRef.current = false;
-    setTaskStatus('Working');
-    setMessages(prev => [...prev, userMsg, assistantMsg]);
+    const transcriptTail = messagesRef.current.slice(-12).map(msg => ({ role: msg.role, content: msg.content }));
+    activeChatTurnRunIdsRef.current.set(assistantId, targetRunId);
+    streamingHadDeltaIdsRef.current.delete(assistantId);
+    completedAssistantIdsRef.current.delete(assistantId);
+    if (currentRunIdRef.current === targetRunId) {
+      setChatTurnActive(true);
+      setTaskStatus('Working');
+      setMessages(prev => [...prev, userMsg, assistantMsg]);
+    }
 
     try {
-      const res = await sendChat(text, runId || 'run_default', transcriptTail);
-      if (!streamingHadDeltaRef.current) {
+      const res = await sendChat(text, targetRunId, assistantId, transcriptTail);
+      if (
+        currentRunIdRef.current === targetRunId
+        && !streamingHadDeltaIdsRef.current.has(assistantId)
+        && !completedAssistantIdsRef.current.has(assistantId)
+      ) {
         setMessages(prev => prev.map(msg => (
           msg.id === assistantId ? { ...msg, content: res.reply } : msg
         )));
-        suppressLateDeltaRef.current = true;
-        streamingAssistantIdRef.current = null;
-        setTaskStatus('Ready');
       }
-      await refreshSidebar();
+      if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
+      return true;
     } catch {
-      streamingAssistantIdRef.current = null;
-      suppressLateDeltaRef.current = true;
-      setTaskStatus('Error');
-      setMessages(prev => prev.map(msg => (
-        msg.id === assistantId
-          ? { ...msg, content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000' }
-          : msg
-      )));
+      if (currentRunIdRef.current === targetRunId) {
+        setTaskStatus('Error');
+        setMessages(prev => prev.map(msg => (
+          msg.id === assistantId
+            ? { ...msg, content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000' }
+            : msg
+        )));
+      }
+      return false;
+    } finally {
+      activeChatTurnRunIdsRef.current.delete(assistantId);
+      streamingHadDeltaIdsRef.current.delete(assistantId);
+      if (currentRunIdRef.current === targetRunId) {
+        const hasActiveTurn = [...activeChatTurnRunIdsRef.current.values()].some(value => value === targetRunId);
+        setChatTurnActive(hasActiveTurn);
+        if (!hasActiveTurn) setTaskStatus(current => current === 'Error' ? current : 'Ready');
+      }
     }
-  }, [messages, runId, refreshSidebar]);
+  }, [refreshSidebarForRun]);
+
+  const enqueueChatMessage = useCallback((text: string, targetRunId: string) => {
+    const queued: QueuedChatMessage = {
+      id: generateId(),
+      runId: targetRunId,
+      content: text,
+      createdAt: Date.now(),
+      status: 'queued',
+    };
+    setQueuedMessagesByRun(prev => ({
+      ...prev,
+      [targetRunId]: [...(prev[targetRunId] || []), queued],
+    }));
+  }, []);
+
+  const handleSend = useCallback((text: string) => {
+    const targetRunId = runId || 'run_default';
+    const hasActiveTurn = [...activeChatTurnRunIdsRef.current.values()].some(value => value === targetRunId);
+    const hasQueuedMessages = Boolean(queuedMessagesByRun[targetRunId]?.length);
+    if (hasActiveTurn || hasQueuedMessages) {
+      enqueueChatMessage(text, targetRunId);
+      if (!hasActiveTurn && queuePausedByRun[targetRunId]) {
+        setQueuePausedByRun(prev => ({ ...prev, [targetRunId]: false }));
+      }
+      return;
+    }
+    setQueuePausedByRun(prev => ({ ...prev, [targetRunId]: false }));
+    void runChatTurn(text, targetRunId);
+  }, [enqueueChatMessage, queuePausedByRun, queuedMessagesByRun, runChatTurn, runId]);
+
+  const handleRestoreQueuedMessage = useCallback((id: string) => {
+    const item = (queuedMessagesByRun[runId] || []).find(entry => entry.id === id);
+    if (!item) return;
+    setQueuedMessagesByRun(prev => ({
+      ...prev,
+      [runId]: (prev[runId] || []).filter(entry => entry.id !== id),
+    }));
+    setComposerText(current => current.trim() ? `${item.content}\n${current}` : item.content);
+  }, [queuedMessagesByRun, runId]);
+
+  useEffect(() => {
+    const next = queuedMessages[0];
+    if (!runId || loadedRunId !== runId || !next || runLoading || chatTurnActive || queuePaused) return;
+    if ([...activeChatTurnRunIdsRef.current.values()].some(value => value === runId)) return;
+    if (drainingQueueRunIdRef.current === runId) return;
+
+    drainingQueueRunIdRef.current = runId;
+    setQueuedMessagesByRun(prev => ({
+      ...prev,
+      [runId]: (prev[runId] || []).filter(entry => entry.id !== next.id),
+    }));
+    void runChatTurn(next.content, next.runId)
+      .then(success => {
+        if (!success) setQueuePausedByRun(prev => ({ ...prev, [runId]: true }));
+      })
+      .finally(() => {
+        if (drainingQueueRunIdRef.current === runId) drainingQueueRunIdRef.current = null;
+      });
+  }, [chatTurnActive, loadedRunId, queuePaused, queuedMessages, runChatTurn, runId, runLoading]);
 
   // ── File upload — goes through real backend ──
   const handleFile = useCallback(async (file: File) => {
@@ -354,24 +465,22 @@ export default function App() {
       refreshSidebar();
     }
     if (msg.type === 'assistant.delta' && msg.content) {
-      const assistantId = streamingAssistantIdRef.current;
-      if (!assistantId || suppressLateDeltaRef.current) return;
-      streamingHadDeltaRef.current = true;
+      const assistantId = msg.message_id;
+      if (!assistantId || completedAssistantIdsRef.current.has(assistantId)) return;
+      streamingHadDeltaIdsRef.current.add(assistantId);
       setMessages(prev => prev.map(m => (
         m.id === assistantId ? { ...m, content: m.content + msg.content } : m
       )));
     }
     if (msg.type === 'assistant.done') {
-      const assistantId = streamingAssistantIdRef.current;
+      const assistantId = msg.message_id;
+      if (assistantId) completedAssistantIdsRef.current.add(assistantId);
       if (assistantId && typeof msg.content === 'string') {
-        streamingHadDeltaRef.current = true;
+        streamingHadDeltaIdsRef.current.add(assistantId);
         setMessages(prev => prev.map(m => (
           m.id === assistantId ? { ...m, content: msg.content || m.content } : m
         )));
       }
-      streamingAssistantIdRef.current = null;
-      suppressLateDeltaRef.current = false;
-      setTaskStatus('Ready');
     }
     if (msg.type === 'toast.success' && msg.message) addToast(msg.message, 'success');
     if (msg.type === 'toast.error' && msg.message) addToast(msg.message, 'error');
@@ -403,10 +512,10 @@ export default function App() {
           />
           <span style={{
             fontSize: '0.75em', padding: '2px 8px', borderRadius: 4,
-            background: taskStatus === 'Ready' ? '#1a3a1a' : taskStatus === 'Working' ? '#3a2a0a' : taskStatus === 'Error' ? '#3a1a1a' : '#1a1a3a',
-            color: taskStatus === 'Ready' ? 'var(--green)' : taskStatus === 'Working' ? 'var(--orange)' : taskStatus === 'Error' ? 'var(--red)' : 'var(--blue)',
+            background: visibleTaskStatus === 'Ready' ? '#1a3a1a' : visibleTaskStatus === 'Working' ? '#3a2a0a' : visibleTaskStatus === 'Error' ? '#3a1a1a' : '#1a1a3a',
+            color: visibleTaskStatus === 'Ready' ? 'var(--green)' : visibleTaskStatus === 'Working' ? 'var(--orange)' : visibleTaskStatus === 'Error' ? 'var(--red)' : 'var(--blue)',
           }}>
-            {taskStatus}
+            {visibleTaskStatus}
           </span>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -424,13 +533,27 @@ export default function App() {
               <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
                 {messages.length === 0 && <WelcomeMessage />}
                 {messages.map(msg =>
-                  msg.role === 'user' ? <UserMessage key={msg.id} msg={msg} /> : <AssistantMessage key={msg.id} msg={msg} />
+                  msg.role === 'user'
+                    ? <UserMessage key={msg.id} msg={msg} />
+                    : <AssistantMessage key={msg.id} msg={msg} />
                 )}
                 {messages.length > 0 && <div ref={bottomRef} />}
               </div>
               <div style={{ padding: '0 16px', flexShrink: 0 }}>
+                <FollowupQueue
+                  items={queuedMessages}
+                  paused={queuePaused}
+                  onRestore={handleRestoreQueuedMessage}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ flex: 1 }}><ChatInput onSend={handleSend} /></div>
+                  <div style={{ flex: 1 }}>
+                    <ChatInput
+                      value={composerText}
+                      onChange={setComposerText}
+                      onSend={handleSend}
+                      disabled={runLoading}
+                    />
+                  </div>
                   <PlusMenu onFile={handleFile} />
                 </div>
                 <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
