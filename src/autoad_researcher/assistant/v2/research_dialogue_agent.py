@@ -227,6 +227,13 @@ def _compact_evidence_state(state: dict[str, Any]) -> dict[str, Any]:
                 for key in (
                     "analysis_id",
                     "repository_commit",
+                    "source_fingerprint",
+                    "validation_status",
+                    "formal_artifact_paths",
+                    "entrypoint_candidates",
+                    "configuration_candidates",
+                    "declared_entrypoints",
+                    "top_level_entries",
                     "compatibility_status",
                     "quality_level",
                     "warnings",

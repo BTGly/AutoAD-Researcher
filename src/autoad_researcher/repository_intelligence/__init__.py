@@ -95,6 +95,11 @@ from autoad_researcher.repository_intelligence.repair import (
     RepairBudgetState,
     repair_repository_artifacts,
 )
+from autoad_researcher.repository_intelligence.structure_profile import (
+    RepositoryPathProfile,
+    RepositoryStructureProfile,
+    build_repository_structure_profile,
+)
 from autoad_researcher.repository_intelligence.validate import (
     RepositoryValidationReport,
     ValidationIssue,
@@ -168,9 +173,11 @@ __all__ = [
     "RepositoryIntelligenceResult",
     "RepositoryModelConfig",
     "RepositoryResolution",
+    "RepositoryPathProfile",
     "RepositorySearchQueries",
     "RepositorySearchResultRecord",
     "RepositorySource",
+    "RepositoryStructureProfile",
     "RepositoryValidationReport",
     "RepairAttemptRecord",
     "RepairBudgetState",
@@ -201,6 +208,7 @@ __all__ = [
     "build_discovery_queries",
     "build_environment_plan_handoff",
     "build_clarification_question_candidates",
+    "build_repository_structure_profile",
     "create_file_evidence",
     "create_repository_identity_evidence",
     "decide_analysis_transition",

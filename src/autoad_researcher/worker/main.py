@@ -1156,6 +1156,11 @@ def _run_repo_analyze(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[st
         _write_parse_error(run_dir, source_id, "repo_summarize", "repository directory not found")
         return False, []
 
+    source_path = run_dir / "repo_acquisition" / source_id / "repository_source.json"
+    if not source_path.is_file():
+        _write_parse_error(run_dir, source_id, "repo_summarize", "repository source identity not found")
+        return False, []
+
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     target_payload = payload.get("repository_target")
     target_outputs: list[str] = []
@@ -1211,28 +1216,165 @@ def _run_repo_analyze(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[st
                 },
             )
 
-    files = list(repo_dir.glob("**/*.py"))[:50]
-    readme = repo_dir / "README.md"
-    summary_lines = [
-        f"# Repository: {source_id}",
-        f"Python files: {len(files)}",
-    ]
-    if readme.exists():
-        summary_lines.append(f"\n## README\n{readme.read_text(encoding='utf-8', errors='replace')[:2000]}")
-    brief_path = repo_dir / "repo_brief.md"
-    brief_path.write_text("\n".join(summary_lines))
-    rel = str(brief_path.relative_to(run_dir))
+    try:
+        intelligence_outputs = _run_full_repository_intelligence(
+            run_dir=run_dir,
+            job=job,
+            source_id=source_id,
+            repo_dir=repo_dir,
+            source_path=source_path,
+        )
+    except Exception as exc:
+        _write_parse_error(run_dir, source_id, "repo_summarize", str(exc))
+        return False, []
+    return True, [*target_outputs, *intelligence_outputs]
+
+
+def _run_full_repository_intelligence(
+    *,
+    run_dir: Path,
+    job: dict[str, Any],
+    source_id: str,
+    repo_dir: Path,
+    source_path: Path,
+) -> list[str]:
+    """Run one bounded analysis attempt over an already attested repository."""
     from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
+    from autoad_researcher.repository_intelligence.analysis import RepositoryAnalysisAgent
+    from autoad_researcher.repository_intelligence.artifacts import synthesize_repository_artifacts
+    from autoad_researcher.repository_intelligence.clarification_handoff import (
+        build_clarification_question_candidates,
+    )
+    from autoad_researcher.repository_intelligence.models import (
+        RepositoryIntelligenceRequest,
+        RepositorySource,
+    )
+    from autoad_researcher.repository_intelligence.structure_profile import (
+        build_repository_structure_profile,
+    )
+    from autoad_researcher.repository_intelligence.validate import (
+        validate_repository_intelligence_run,
+    )
+    from autoad_researcher.ui.sources import update_source_intake_result
+
+    source = RepositorySource.model_validate_json(source_path.read_text(encoding="utf-8"))
+    job_id = str(job.get("job_id") or "manual")
+    attempt_dir = run_dir / "repository_intelligence" / source_id / "attempts" / job_id
+    if attempt_dir.exists():
+        raise FileExistsError(f"repository intelligence attempt already exists: {job_id}")
+    attempt_dir.mkdir(parents=True)
+
+    acquisition_evidence = run_dir / "repo_acquisition" / source_id / "evidence_index.jsonl"
+    analysis_evidence = attempt_dir / "evidence_index.jsonl"
+    if acquisition_evidence.is_file():
+        shutil.copyfile(acquisition_evidence, analysis_evidence)
+
+    request = RepositoryIntelligenceRequest(
+        schema_version=1,
+        request_id=f"req_{job_id}",
+        run_id=run_dir.name,
+        user_goal="Analyze the registered repository structure, entrypoints, configurations, and evaluation evidence.",
+        repository_url=source.canonical_remote_url,
+        local_path=source.local_path_label,
+        requested_ref=source.requested_ref,
+        discovery_allowed=False,
+        user_confirmation_policy="when_ambiguous",
+        budget_profile="small",
+    )
+    analysis = RepositoryAnalysisAgent().run_cycle(
+        request=request,
+        source=source,
+        repository_root=repo_dir,
+        run_dir=attempt_dir,
+        iteration=1,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    synthesized = synthesize_repository_artifacts(
+        output_dir=attempt_dir,
+        observations=analysis.observations,
+        progress=analysis.progress,
+    )
+    validation = validate_repository_intelligence_run(
+        source=source,
+        repository_root=repo_dir,
+        run_dir=attempt_dir,
+        artifacts=synthesized.paths,
+    )
+    validation_path = attempt_dir / "evidence_validation.json"
+    validation_path.write_text(
+        json.dumps(validation.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    if validation.status != "passed":
+        raise ValueError("repository intelligence evidence validation failed")
+
+    clarification_path = attempt_dir / "clarification_question_candidates.json"
+    build_clarification_question_candidates(
+        artifact_dir=attempt_dir,
+        output_path=clarification_path,
+    )
+    profile = build_repository_structure_profile(
+        repository_root=repo_dir,
+        source_id=source_id,
+        source_fingerprint=source.source_fingerprint,
+    )
+    profile_path = attempt_dir / "repository_structure_profile.json"
+    profile_path.write_text(
+        json.dumps(profile.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    profile_rel = profile_path.relative_to(run_dir).as_posix()
+    formal_paths = [
+        (attempt_dir / path).relative_to(run_dir).as_posix()
+        for path in sorted(synthesized.paths.path_set())
+    ]
+    summary = _repository_structure_summary(profile)
     append_artifact_evidence(
         run_dir,
         source_id=source_id,
-        artifact_path=rel,
+        artifact_path=profile_rel,
         evidence_type="repo_summary",
-        parser_name="repo_summarizer",
-        summary=_markdown_preview(brief_path),
-        raw={"python_files_sampled": len(files)},
+        parser_name="repository_intelligence_v2",
+        summary=summary,
+        raw={
+            "repository_commit": source.resolved_commit,
+            "source_fingerprint": source.source_fingerprint,
+            "validation_status": validation.status,
+            "formal_artifact_paths": formal_paths,
+            "entrypoint_candidates": profile.entrypoint_candidates,
+            "configuration_candidates": profile.configuration_candidates,
+            "declared_entrypoints": profile.declared_entrypoints,
+            "top_level_entries": [item.model_dump(mode="json") for item in profile.top_level_entries],
+        },
     )
-    return True, [*target_outputs, rel]
+    update_source_intake_result(
+        run_dir,
+        source_id,
+        status="parsed",
+        intake_status="ok",
+        clear_intake_error=True,
+    )
+    return [
+        profile_rel,
+        *formal_paths,
+        validation_path.relative_to(run_dir).as_posix(),
+        clarification_path.relative_to(run_dir).as_posix(),
+    ]
+
+
+def _repository_structure_summary(profile: Any) -> str:
+    top_level = ", ".join(item.path for item in profile.top_level_entries) or "none observed"
+    entrypoints = ", ".join(profile.entrypoint_candidates) or "none confirmed"
+    configurations = ", ".join(profile.configuration_candidates) or "none observed"
+    declared = ", ".join(
+        f"{name} -> {target}" for name, target in profile.declared_entrypoints.items()
+    ) or "none declared"
+    return (
+        f"Repository structure (bounded scan): top-level [{top_level}]. "
+        f"Entrypoint candidates [{entrypoints}]; declared commands [{declared}]. "
+        f"Configuration candidates [{configurations}]. "
+        "Candidates are repository-discovered facts, not a user-confirmed primary entrypoint or config."
+    )
 
 
 def _dependency_status(run_dir: Path, job: dict[str, Any]) -> str | None:

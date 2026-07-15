@@ -65,6 +65,8 @@ def test_local_repo_unpack_then_repo_summary_creates_evidence(tmp_path: Path):
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("patchcore/README.md", "# PatchCore\nbaseline repository\n")
         zf.writestr("patchcore/patchcore/__init__.py", "")
+        zf.writestr("patchcore/train.py", "def main(): pass\n")
+        zf.writestr("patchcore/configs/baseline.yaml", "seed: 1\n")
     append_source_ref(
         run_dir,
         kind="local_repo",
@@ -95,10 +97,17 @@ def test_local_repo_unpack_then_repo_summary_creates_evidence(tmp_path: Path):
     )
 
     assert summary_ok is True
-    assert summary_outputs == ["repos/src_repo/repo_brief.md"]
+    attempt_dir = "repository_intelligence/src_repo/attempts/job_000002"
+    assert f"{attempt_dir}/repository_structure_profile.json" in summary_outputs
+    assert f"{attempt_dir}/repository_summary.json" in summary_outputs
+    assert f"{attempt_dir}/entrypoints.json" in summary_outputs
+    assert f"{attempt_dir}/evidence_validation.json" in summary_outputs
     evidence = load_usable_evidence(run_dir)
     assert evidence[0]["evidence_type"] == "repo_summary"
-    assert "PatchCore" in evidence[0]["summary"]
+    assert evidence[0]["raw"]["validation_status"] == "passed"
+    assert evidence[0]["raw"]["entrypoint_candidates"] == ["train.py"]
+    assert evidence[0]["raw"]["configuration_candidates"] == ["configs/baseline.yaml"]
+    assert "train.py" in evidence[0]["summary"]
 
 
 def test_repo_target_analysis_reads_exact_task_file_into_evidence(tmp_path: Path):
@@ -112,6 +121,20 @@ def test_repo_target_analysis_reads_exact_task_file_into_evidence(tmp_path: Path
     attestation = run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json"
     attestation.parent.mkdir(parents=True)
     attestation.write_text("{}\n", encoding="utf-8")
+    (attestation.parent / "repository_source.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "source_id": "src_repo",
+            "kind": "local_workspace",
+            "acquisition_profile": "local",
+            "tree_sha": "a" * 64,
+            "dirty": False,
+            "local_path_label": "repos/src_repo",
+            "submodule_declarations": [],
+            "source_fingerprint": "b" * 64,
+        }),
+        encoding="utf-8",
+    )
 
     ok, outputs = _run_repo_analyze(
         run_dir,

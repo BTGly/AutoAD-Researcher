@@ -145,6 +145,48 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
 
 
+def test_dialogue_agent_receives_repository_structure_evidence(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        captured["messages"] = messages
+        return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    ResearchDialogueAgent.respond(
+        user_input="请你自己看仓库并给我计划。",
+        evidence_state={
+            "usable_evidence": [{
+                "source_id": "src_repo",
+                "evidence_type": "repo_summary",
+                "artifact_path": "repository_intelligence/src_repo/structure.json",
+                "parser_name": "repository_intelligence_v2",
+                "summary": "Repository structure was inspected.",
+                "raw": {
+                    "source_fingerprint": "a" * 64,
+                    "validation_status": "passed",
+                    "formal_artifact_paths": ["repository_intelligence/src_repo/entrypoints.json"],
+                    "entrypoint_candidates": ["src/main.py"],
+                    "configuration_candidates": ["configs/baseline.yaml"],
+                    "declared_entrypoints": {"demo": "src.main:main"},
+                    "top_level_entries": [{"path": "src", "kind": "directory"}],
+                },
+            }],
+        },
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    system = captured["messages"][0]["content"]
+    assert '"entrypoint_candidates": ["src/main.py"]' in system
+    assert '"configuration_candidates": ["configs/baseline.yaml"]' in system
+    assert '"declared_entrypoints": {"demo": "src.main:main"}' in system
+    assert '"validation_status": "passed"' in system
+
+
 def test_policy_assessment_requires_structured_refusal_details():
     assessment = ResearchPolicyAssessment(
         decision="reject",
