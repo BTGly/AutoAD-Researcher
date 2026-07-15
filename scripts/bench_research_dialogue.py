@@ -814,7 +814,20 @@ Output one JSON object with exactly: operation_targets, advisory_commitments, co
             "evidence_type": item.get("evidence_type"),
             "artifact_path": item.get("artifact_path"),
             "summary": str(item.get("summary") or "")[:3000],
-            "raw": item.get("raw") or {},
+            "metadata": {
+                key: (item.get("raw") or {}).get(key)
+                for key in (
+                    "analysis_id",
+                    "repository_commit",
+                    "compatibility_status",
+                    "quality_level",
+                    "target",
+                    "bytes_read",
+                    "warnings",
+                    "fatal_errors",
+                )
+                if (item.get("raw") or {}).get(key) is not None
+            },
         }
         for item in evidence[:12]
     ]
@@ -850,15 +863,17 @@ Output one JSON object with exactly: operation_targets, advisory_commitments, co
             attempt_messages,
             model=model,
             timeout_s=60,
+            max_tokens=4096,
             temperature=temperature,
             response_format_json=True,
         )
         if result.get("error"):
             errors.append(str(result["error"]))
             continue
-        parsed = _parse_json_object(str(result.get("reply") or ""))
+        raw_reply = str(result.get("reply") or "")
+        parsed = _parse_json_object(raw_reply)
         if parsed is None:
-            errors.append("invalid JSON")
+            errors.append(f"invalid JSON ({_response_shape(raw_reply)})")
             continue
         try:
             candidate = SemanticJudgeObservation.model_validate(
@@ -959,15 +974,17 @@ Output one JSON object with exactly: semantic_equivalent, counterfactual_applied
             attempt_messages,
             model=model,
             timeout_s=60,
+            max_tokens=4096,
             temperature=temperature,
             response_format_json=True,
         )
         if result.get("error"):
             errors.append(str(result["error"]))
             continue
-        parsed = _parse_json_object(str(result.get("reply") or ""))
+        raw_reply = str(result.get("reply") or "")
+        parsed = _parse_json_object(raw_reply)
         if parsed is None:
-            errors.append("invalid JSON")
+            errors.append(f"invalid JSON ({_response_shape(raw_reply)})")
             continue
         try:
             observation = VariantJudgeObservation.model_validate(parsed)
@@ -1008,6 +1025,16 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
                 return payload
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _response_shape(text: str) -> str:
+    """Return non-content diagnostics for an invalid provider response."""
+
+    stripped = text.strip()
+    return (
+        f"length={len(text)},contains_object_start={'{' in text},"
+        f"starts_fence={stripped.startswith('```')}"
+    )
 
 
 def _normalize_judge_collections(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1268,6 +1295,7 @@ def main() -> int:
     )
     observations: list[CaseRuntimeObservation] = []
     budget_failure = ""
+    run_failure = ""
     try:
         for case in corpus.cases:
             completed_path = completed_dir / f"{case.case_id}.json"
@@ -1344,6 +1372,8 @@ def main() -> int:
                 )
     except SemanticBudgetExceeded as exc:
         budget_failure = exc.reason
+    except RuntimeError:
+        run_failure = f"case_runtime_error:{case.case_id}"
 
     case_coverage_complete = len(observations) == len(corpus.cases)
     if case_coverage_complete:
@@ -1379,6 +1409,9 @@ def main() -> int:
     }
     if budget_failure:
         report["release_gate_passed"] = False
+    if run_failure:
+        report["run_failure"] = run_failure
+        report["release_gate_passed"] = False
     if not coverage_complete:
         report["release_gate_passed"] = False
     report_path = suite_dir / "semantic_acceptance_report.json"
@@ -1413,6 +1446,8 @@ def main() -> int:
             reasons.append("judge_not_independent")
         if budget_failure:
             reasons.append(budget_failure)
+        if run_failure:
+            reasons.append(run_failure)
         if not coverage_complete:
             reasons.append("coverage_incomplete")
         if reasons:

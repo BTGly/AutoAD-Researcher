@@ -277,6 +277,7 @@ def test_judge_prompt_uses_only_case_specific_prohibitions(monkeypatch):
     def fake_call(api_key, provider_url, messages, **kwargs):
         captured["messages"] = messages
         captured["temperature"] = kwargs.get("temperature")
+        captured["max_tokens"] = kwargs.get("max_tokens")
         return {
             "reply": json.dumps({
                 "operation_targets": case.expected.required_operation_targets,
@@ -314,6 +315,7 @@ def test_judge_prompt_uses_only_case_specific_prohibitions(monkeypatch):
         assert case_shaped_term not in system
     assert payload["prohibited_advisory_commitments"] == case.expected.prohibited_advisory_commitments
     assert captured["temperature"] == 0.0
+    assert captured["max_tokens"] == 4096
 
 
 def test_variant_judge_uses_typed_equivalence_and_counterfactual_fields(monkeypatch):
@@ -519,6 +521,37 @@ def test_main_writes_manifest_and_per_case_variant_artifacts_quietly(
     assert len(list(completed.glob("*_variants.json"))) == 9
 
 
+def test_main_persists_partial_report_on_case_runtime_failure(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    def fail_run_case(*args, **kwargs):
+        raise RuntimeError("private detail")
+
+    monkeypatch.setattr(MODULE, "run_case", fail_run_case)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://provider.test")
+    monkeypatch.setattr(sys, "argv", [
+        "bench_research_dialogue.py",
+        "--runs-root",
+        str(tmp_path),
+        "--model",
+        "dialogue-model",
+        "--judge-model",
+        "judge-model",
+    ])
+
+    assert MODULE.main() == 1
+    output = capsys.readouterr().out
+    assert "case_runtime_error:case01_patchcore_reproduction" in output
+    assert "private detail" not in output
+    suite_dir = next(tmp_path.iterdir())
+    report = json.loads((suite_dir / "semantic_acceptance_report.json").read_text())
+    assert report["run_failure"] == "case_runtime_error:case01_patchcore_reproduction"
+    assert report["release_gate_passed"] is False
+
+
 def test_judge_boolean_map_variant_is_normalized_without_name_guessing():
     normalized = MODULE._normalize_judge_collections(
         {
@@ -561,6 +594,32 @@ def test_judge_json_parser_accepts_one_complete_object_with_transport_text():
         "operation_targets": [],
         "execution_mode": "plan_only",
     }
+
+
+def test_invalid_response_diagnostics_do_not_include_response_content(monkeypatch):
+    case = _corpus().cases[0]
+    secret_response = "private-provider-response-without-an-object"
+    monkeypatch.setattr(
+        MODULE,
+        "call_research_chat",
+        lambda *args, **kwargs: {"reply": secret_response, "error": ""},
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        MODULE._judge_case(
+            case,
+            transcript=[],
+            summary=MODULE.ResearchIntentSummary(goal="goal"),
+            evidence=[],
+            api_key="sk-test",
+            provider_url="https://provider.test",
+            model="judge-model",
+        )
+
+    diagnostic = str(exc_info.value)
+    assert f"length={len(secret_response)}" in diagnostic
+    assert "contains_object_start=False" in diagnostic
+    assert secret_response not in diagnostic
 
 
 def test_next_case_run_dir_preserves_incomplete_attempts(tmp_path: Path):
