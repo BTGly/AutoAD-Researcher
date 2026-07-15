@@ -58,6 +58,16 @@ app.include_router(ws.router)
 app.include_router(experiment_config.router)
 app.include_router(report_route.router)
 
+
+def _spa_fallback_response(full_path: str, frontend_dir: Path):
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    index = frontend_dir / "index.html"
+    if index.exists():
+        return FileResponse(index)
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
 # Serve React frontend (production mode)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "dist"
 if FRONTEND_DIR.exists():
@@ -74,9 +84,4 @@ if FRONTEND_DIR.exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
-        if full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="Not Found")
-        index = FRONTEND_DIR / "index.html"
-        if index.exists():
-            return FileResponse(index)
-        raise HTTPException(status_code=404, detail="Not Found")
+        return _spa_fallback_response(full_path, FRONTEND_DIR)

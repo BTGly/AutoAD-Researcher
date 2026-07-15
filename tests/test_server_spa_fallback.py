@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
+from fastapi.responses import FileResponse
 
-from autoad_researcher.server.main import app
+from autoad_researcher.server.main import _spa_fallback_response, app
 
 
 @pytest.mark.asyncio
@@ -32,11 +35,12 @@ async def test_intent_summary_api_replaces_draft_api():
     }
 
 
-@pytest.mark.asyncio
-async def test_non_api_route_keeps_spa_fallback():
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/research/workspace")
+def test_non_api_route_keeps_spa_fallback(tmp_path):
+    index = tmp_path / "index.html"
+    index.write_text("<html>AutoAD</html>", encoding="utf-8")
 
+    response = _spa_fallback_response("research/workspace", tmp_path)
+
+    assert isinstance(response, FileResponse)
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
+    assert Path(response.path) == index
