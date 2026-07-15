@@ -112,6 +112,11 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert "只准备一个 plan_only" in system
     assert "不要用正则格式要求用户重述" in system
     assert '"benchmark_family":"kernelbench"' in system
+    assert "初步假设（preliminary hypothesis）" in system
+    assert "初步假设不得写成 inferred_facts" in system
+    assert "当用户明确要求对比、步骤、清单、表格或实施细节时" in system
+    assert "两到四个短自然段" not in system
+    assert "禁止给出并行分支" not in system
     assert response.should_persist is True
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
 
