@@ -49,9 +49,7 @@
     },
     "expected_action": "update_contract",
     "expected_recovery": [
-      "ignored_extra_fields",
-      "ignored_extra_fields",
-      "normalized_evidence_from_current_turn"
+      "ignored_extra_fields"
     ]
   },
   {

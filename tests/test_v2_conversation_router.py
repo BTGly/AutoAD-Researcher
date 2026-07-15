@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from autoad_researcher.assistant.v2.conversation_router import (
+    ConversationRouteDecision,
     _build_conversation_route_messages,
     _validate_route_payload,
     route_conversation_with_llm,
@@ -100,12 +101,70 @@ def test_router_schema_instruction_requires_verbatim_complete_mutation_evidence(
     assert "copy the complete current user message" in messages[0]["content"]
     assert "Distinguish a correction from pure frustration" in messages[0]["content"]
     assert "identical internal spaces, case, and punctuation" in messages[1]["content"]
-    assert "task_profile_evidence and evidence_from_current_turn never authorize mutation" in messages[1]["content"]
+    assert "task_profile_evidence never authorizes mutation" in messages[1]["content"]
     assert "correction-to-a-new-research-direction" in messages[1]["content"]
     assert "诊断 Rust 服务在高并发下的内存泄漏" in messages[1]["content"]
     prompt_text = "\n".join(message["content"] for message in messages[:2])
     assert "不对啊，我真的想做 AI infra、AI 算子优化、底层的" not in prompt_text
     assert "AI Infra 与算子优化研究" not in prompt_text
+    schema = ConversationRouteDecision.model_json_schema()
+    assert "turn_gate" not in schema["properties"]
+    assert "contract_mutation_request" in schema["properties"]
+    assert "confirmation_request" in schema["properties"]
+
+
+def test_orthogonal_route_keeps_source_mutation_and_confirmation_dimensions():
+    user_input = "登记这个仓库，同时把任务改成复现排序基准，随后让我在弹窗确认。"
+    payload = {
+        "source_action_plan": {
+            "actions": [{
+                "action_type": "register_github_repo",
+                "target": "https://github.com/example/library-a",
+                "source_url": "https://github.com/example/library-a",
+                "source_kind": "github_repo",
+                "confidence": 0.95,
+            }],
+            "confidence": 0.95,
+            "reason": "The user supplied a repository.",
+        },
+        "conversation_intents": ["source_request", "research_planning"],
+        "contract_mutation_request": {
+            "requested": True,
+            "full_turn_mutation_evidence": user_input,
+            "confidence": 0.95,
+            "rationale": "The user changed the research task.",
+        },
+        "confirmation_request": {
+            "requested": True,
+            "action": "request_pending",
+            "full_turn_mutation_evidence": user_input,
+            "confidence": 0.9,
+            "rationale": "The user requested the approval UI.",
+        },
+        "task_identity_proposal": {
+            "suggested_title": "Library-A 排序基准复现",
+            "suggested_summary": "复现排序基准。",
+        },
+        "task_profile_proposal": "empirical_model_research",
+        "task_profile_evidence": "复现排序基准",
+        "requires_need_discovery_enrichment": True,
+    }
+
+    decision, errors, recovery = _validate_route_payload(
+        payload,
+        user_input=user_input,
+        transcript_tail=[],
+        deterministic_source_plan=None,
+        repository_hints=[],
+    )
+
+    assert errors == []
+    assert recovery == []
+    assert decision is not None
+    assert [action.action_type for action in decision.source_action_plan.actions] == ["register_github_repo"]
+    assert decision.contract_mutation_request.requested is True
+    assert decision.confirmation_request.action == "request_pending"
+    assert decision.turn_gate.contract_action == "update_contract"
 
 
 def test_deterministic_source_plan_cannot_be_replaced_by_router_payload():

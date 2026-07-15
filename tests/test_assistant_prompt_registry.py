@@ -157,7 +157,10 @@ def test_v2_core_prompt_profiles_are_registered_with_io_contracts():
 
     assert "ConversationRouter" in registry.require("assistant.v2.conversation_route.v1").system_prompt
     assert "SourceActionPlanner" in registry.require("assistant.v2.conversation_route.v1").system_prompt
-    assert "TurnGateDecision JSON" in registry.require("assistant.v2.conversation_route.v1").system_prompt
+    route_prompt = registry.require("assistant.v2.conversation_route.v1").system_prompt
+    assert "ROUTING DIMENSIONS" in route_prompt
+    assert "contract_mutation_request" in route_prompt
+    assert "TurnGateDecision JSON" not in route_prompt
     assert "SourceActionPlanner" in registry.require("assistant.v2.source_action_plan.v1").system_prompt
     assert "TurnGateDecision JSON" in registry.require("assistant.v2.turn_gate.v1").system_prompt
     assert "RequiredNeedSpec JSON" in registry.require("assistant.v2.need_discovery.v1").system_prompt
@@ -205,7 +208,7 @@ def test_user_visible_profiles_have_forbidden_outputs_or_schema_contracts():
 def test_v2_prompt_profiles_match_reviewed_content_hashes():
     registry = get_default_prompt_registry()
     expected = {
-        "assistant.v2.conversation_route.v1": "edf63c441f1762184eb424388f4431d4b72e38ef5d44f655a2b6a2fb1acd62e5",
+        "assistant.v2.conversation_route.v1": "a712235801d6132abcbeaaaaadcf07ff24fd31bc39b9564af3ed2b336da4f6f8",
         "assistant.v2.source_action_plan.v1": "12672a757d47ef7c181d3e9b87c1b6b75a86ed3be85f57f2b783f7824b4db763",
         "assistant.v2.turn_gate.v1": "5366c2597162200201f5842ec606b71a1f54276f1d437f57ad6f0341a2611a85",
         "assistant.v2.need_discovery.v1": "583a477ce4b6ae5449ed76f2ab1f4a46d34870d7500e83efe855142369073158",
