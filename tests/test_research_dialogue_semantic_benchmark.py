@@ -335,8 +335,10 @@ def test_variant_judge_uses_typed_equivalence_and_counterfactual_fields(monkeypa
             "rationale": "correction applied",
         },
     ])
+    captured_messages = []
 
-    def fake_call(*args, **kwargs):
+    def fake_call(api_key, provider_url, messages, **kwargs):
+        captured_messages.append(messages)
         return {"reply": json.dumps(next(replies)), "error": ""}
 
     monkeypatch.setattr(MODULE, "call_research_chat", fake_call)
@@ -370,6 +372,13 @@ def test_variant_judge_uses_typed_equivalence_and_counterfactual_fields(monkeypa
     assert entity.semantic_equivalent is True
     assert counter.counterfactual_applied is True
     assert counter.stale_constraints == []
+    entity_system = captured_messages[0][0]["content"]
+    entity_payload = json.loads(captured_messages[0][1]["content"])
+    assert "never require facts or constraints absent" in entity_system
+    assert "necessary clarification about placeholders is allowed" in entity_system
+    assert entity_payload["base_summary"] is None
+    counter_payload = json.loads(captured_messages[1][1]["content"])
+    assert counter_payload["base_summary"]["goal"] == "base"
 
 
 def test_manifest_fingerprints_prompt_corpus_models_and_provider(tmp_path: Path):

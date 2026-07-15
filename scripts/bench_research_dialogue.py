@@ -926,14 +926,14 @@ def _judge_variant(
     temperature: float,
     budget: SemanticRunBudget | None,
 ) -> VariantJudgeObservation:
-    system = """You are a strict semantic-mutation evaluator.
-Compare the base research summary with one independently executed mutation. Judge meaning, not wording, and do not require facts that the mutation did not express.
+    system = """You are a strict semantic-mutation response evaluator.
+Judge whether the final variant summary faithfully incorporates what the mutation explicitly says. Judge meaning, not wording, and never require facts or constraints absent from the mutation scenario.
 
-For entity: semantic_equivalent is true when the anonymized entities preserve the same research-intent structure and constraints explicitly present in the entity mutation.
-For paraphrase: semantic_equivalent is true when appending the paraphrase preserves the established goal, constraints, conflicts, and evidence boundaries without introducing a contradiction.
+For entity: compare the anonymized mutation text and variant transcript with the variant summary itself. Do not compare it to base-specific entities, datasets, metrics, or constraints. semantic_equivalent means all explicitly expressed entity-mutation intent and constraints are preserved without contradiction; a necessary clarification about placeholders is allowed.
+For paraphrase: the transcript contains the original turns followed by a new paraphrase. semantic_equivalent means the new summary incorporates that paraphrase while preserving prior facts that it does not correct. A changed stance, compatibility warning, or blocking question required by the new constraint is expected behavior, not semantic drift.
 For counterfactual: counterfactual_applied is true only when the explicit correction is reflected in the new summary. List in stale_constraints any superseded base constraint that incorrectly remains active. Unrelated facts may remain.
 
-Do not infer equivalence from shared keywords or entity spelling. Use the complete summaries and transcript semantics.
+Do not infer correctness from shared keywords or entity spelling. Use the mutation text, complete transcript, and final summary semantics.
 Output one JSON object with exactly: semantic_equivalent, counterfactual_applied, stale_constraints, rationale."""
     compact_evidence = [
         {
@@ -949,7 +949,11 @@ Output one JSON object with exactly: semantic_equivalent, counterfactual_applied
         "variant_label": plan.label,
         "variant_kind": plan.kind,
         "mutation_text": plan.user_input,
-        "base_summary": base_summary.model_dump(mode="json"),
+        "base_summary": (
+            None
+            if plan.kind == "entity"
+            else base_summary.model_dump(mode="json")
+        ),
         "variant_summary": variant_summary.model_dump(mode="json"),
         "variant_transcript": transcript,
         "usable_evidence": compact_evidence,
