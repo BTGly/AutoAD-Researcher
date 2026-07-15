@@ -190,34 +190,16 @@ function DraftPanel({ draft }: { draft: DraftState | null }) {
       <div className="sidebar-card">
         <div className="sidebar-card-head">
           <div className="sidebar-title">{draft.title || '研究计划草案'}</div>
-          <Badge meta={{ label: draft.ready ? '可生成计划' : '还需补充', tone: draft.ready ? 'good' : 'warn' }} />
+          <Badge meta={{ label: '自动整理', tone: 'info' }} />
         </div>
         <div className="sidebar-body">
-          {draft.ready ? '核心研究信息已经齐，可以进入计划生成。' : '仍有缺口，补齐后再生成计划更稳。'}
+          根据当前对话和材料持续更新。
         </div>
       </div>
 
       <DraftSection title="核心信息" fields={coreFields} />
       <DraftSection title="方法线索" fields={methodFields} />
       <DraftSection title="执行与来源" fields={otherFields} />
-
-      {draft.missing.length > 0 && (
-        <div className="sidebar-card warning">
-          <div className="sidebar-title">还缺这些</div>
-          <div className="sidebar-body">{draft.missing.map(item => item.label).join('、')}</div>
-        </div>
-      )}
-
-      {draft.next_questions.length > 0 && (
-        <div className="sidebar-card">
-          <div className="sidebar-title">下一步可问</div>
-          {draft.next_questions.map((question, index) => (
-            <div key={`${question}-${index}`} className="sidebar-body spaced">
-              {question}
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="sidebar-muted">
         草案来源：{draft.sources.length} 个资料，{draft.evidence.length} 条证据，{draft.jobs.length} 个相关任务。
