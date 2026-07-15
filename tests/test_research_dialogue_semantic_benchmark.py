@@ -402,8 +402,8 @@ def test_manifest_fingerprints_prompt_corpus_models_and_provider(tmp_path: Path)
     assert manifest.judge_model == "judge-model"
     assert manifest.judge_independent is True
     assert manifest.provider_host == "api.example.test"
-    assert manifest.prompt_id == "assistant.research_dialogue.v2"
-    assert manifest.prompt_version == "v2"
+    assert manifest.prompt_id == "assistant.research_dialogue.v3"
+    assert manifest.prompt_version == "v3"
     assert len(manifest.prompt_sha256) == 64
     assert manifest.corpus_sha256 == MODULE._sha256_file(corpus_path)
     assert manifest.dialogue_temperature == 0.0

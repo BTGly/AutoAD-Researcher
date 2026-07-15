@@ -7,11 +7,18 @@ from autoad_researcher.repository_intelligence.structure_profile import (
 
 def test_structure_profile_reports_candidates_without_selecting_a_primary(tmp_path: Path):
     (tmp_path / "configs").mkdir()
+    (tmp_path / "bin").mkdir()
     (tmp_path / "src").mkdir()
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / "train.py").write_text("def main(): pass\n", encoding="utf-8")
     (tmp_path / "src" / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+    (tmp_path / "bin" / "run_demo.py").write_text(
+        "def cli(): pass\n\nif __name__ == '__main__':\n    cli()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "launch_experiment.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     (tmp_path / "configs" / "baseline.yaml").write_text("seed: 1\n", encoding="utf-8")
+    (tmp_path / "requirements_dev.txt").write_text("pytest\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(
         "[project]\nname='demo'\n[project.scripts]\ndemo-train='src.main:main'\n",
         encoding="utf-8",
@@ -23,8 +30,17 @@ def test_structure_profile_reports_candidates_without_selecting_a_primary(tmp_pa
         source_fingerprint="a" * 64,
     )
 
-    assert profile.entrypoint_candidates == ["src/main.py", "train.py"]
-    assert profile.configuration_candidates == ["configs/baseline.yaml", "pyproject.toml"]
+    assert profile.entrypoint_candidates == [
+        "bin/run_demo.py",
+        "launch_experiment.sh",
+        "src/main.py",
+        "train.py",
+    ]
+    assert profile.configuration_candidates == [
+        "configs/baseline.yaml",
+        "pyproject.toml",
+        "requirements_dev.txt",
+    ]
     assert profile.declared_entrypoints == {"demo-train": "src.main:main"}
     assert {item.path for item in profile.top_level_entries} >= {"configs", "src", "train.py"}
 

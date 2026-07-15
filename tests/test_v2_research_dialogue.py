@@ -138,6 +138,11 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert "不要按关键词机械分类" in system
     assert "evaluation leakage" in system
     assert "能力目录，不表示当前已登记对应仓库" in system
+    assert "即使缺材料也保持 plan" in system
+    assert "reply_to_user 不能只有索要材料" in system
+    assert "不得补写这些字段没有出现的文件或目录路径" in system
+    assert "不能据此断言代码中没有 main" in system
+    assert "evaluation_manipulation" in system
     assert "当用户明确要求对比、步骤、清单、表格或实施细节时" in system
     assert "两到四个短自然段" not in system
     assert "禁止给出并行分支" not in system

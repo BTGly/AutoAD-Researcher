@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import tomllib
 from pathlib import Path
@@ -43,6 +44,9 @@ _CONFIG_FILENAMES = {
     "environment.yml",
     "environment.yaml",
     "package.json",
+    "pipfile",
+    "pipfile.lock",
+    "poetry.lock",
     "pyproject.toml",
     "requirements.txt",
     "requirements-dev.txt",
@@ -127,10 +131,7 @@ def build_repository_structure_profile(
             break
 
     entrypoint_candidates = sorted(
-        path
-        for path in files
-        if Path(path).suffix.lower() in {".py", ".sh"}
-        and Path(path).stem.lower() in _ENTRYPOINT_STEMS
+        path for path in files if _is_entrypoint_candidate(root, path)
     )[:max_candidates]
     configuration_candidates = sorted(
         path
@@ -157,9 +158,58 @@ def _is_configuration_candidate(relative_path: str) -> bool:
     lowered_parts = [part.lower() for part in path.parts]
     if path.name.lower() in _CONFIG_FILENAMES:
         return True
+    if path.name.lower().startswith("requirements") and path.suffix.lower() == ".txt":
+        return True
     return (
         any(part in {"config", "configs", "conf"} for part in lowered_parts[:-1])
         and path.suffix.lower() in {".cfg", ".ini", ".json", ".toml", ".yaml", ".yml"}
+    )
+
+
+def _is_entrypoint_candidate(repository_root: Path, relative_path: str) -> bool:
+    path = Path(relative_path)
+    suffix = path.suffix.lower()
+    if suffix == ".sh":
+        return True
+    if suffix != ".py":
+        return False
+    if path.stem.lower() in _ENTRYPOINT_STEMS:
+        return True
+    return _declares_python_main(repository_root / path)
+
+
+def _declares_python_main(path: Path, *, max_bytes: int = 524288) -> bool:
+    try:
+        if path.stat().st_size > max_bytes:
+            return False
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        return False
+    return any(
+        isinstance(node, ast.If) and _is_python_main_guard(node.test)
+        for node in module.body
+    )
+
+
+def _is_python_main_guard(expression: ast.expr) -> bool:
+    if not isinstance(expression, ast.Compare):
+        return False
+    if len(expression.ops) != 1 or not isinstance(expression.ops[0], ast.Eq):
+        return False
+    if len(expression.comparators) != 1:
+        return False
+    left = expression.left
+    right = expression.comparators[0]
+    return (
+        isinstance(left, ast.Name)
+        and left.id == "__name__"
+        and isinstance(right, ast.Constant)
+        and right.value == "__main__"
+    ) or (
+        isinstance(right, ast.Name)
+        and right.id == "__name__"
+        and isinstance(left, ast.Constant)
+        and left.value == "__main__"
     )
 
 
