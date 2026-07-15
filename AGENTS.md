@@ -50,8 +50,8 @@ Entry: `ResearchOrchestratorV2.handle()` in `assistant/v2/orchestrator.py`.
 - Backend: `uv run uvicorn autoad_researcher.server.main:app --host 0.0.0.0 --port 8000`
 - Frontend dev: `cd frontend && npm run dev` (proxies `/api` to `127.0.0.1:8000`)
 - Frontend build: `cd frontend && npm run build` → served from FastAPI's `frontend/dist/`
-- V2 routes: `server/routes/{chat,runs,sources,evidence,jobs,draft,artifacts,ws,experiment_config,report_route}.py`
-- V2 assistant modules: `assistant/v2/{orchestrator,reply_planner,intent_contract,turn_gate,source_action_planner,context_builder,...}.py`
+- V2 routes: `server/routes/{chat,runs,sources,evidence,jobs,intent_summary,artifacts,ws,experiment_config,report_route}.py`
+- V2 assistant modules: `assistant/v2/{orchestrator,research_dialogue_agent,research_intent_summary,source_actions,context_builder,...}.py`
 
 **V1 (CLI pipeline)** — deterministic planning pipeline via `autoad` CLI.
 - Entry: `autoad_researcher.cli:main`  → configures `cli.py` 12 subcommands
@@ -100,8 +100,8 @@ bash scripts/docker-up.sh        # or docker compose -f docker/docker-compose.ym
 | `docs/AutoAD_任务参数决策与来源协议.md` | Baseline/dataset/metrics must be user-confirmed |
 | `docs/internal_benchmark_case.md` | Internal benchmark: PatchCore + MVTec bottle |
 | `configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml` | Benchmark config |
-| `assistant/v2/intent_contract.py` | HF-2 ResearchIntentContract schema + builder |
-| `assistant/v2/reply_planner.py` | LLM-first reply strategy (no keyword matching) |
+| `assistant/v2/research_intent_summary.py` | Compact research dialogue summary model + atomic persistence |
+| `assistant/v2/intent_contract.py` | Read-only compatibility for legacy intent-contract artifacts |
 | `src/autoad_researcher/schemas/` | Pydantic v2 schemas |
 | `scripts/verify.sh` | Full verification gate |
 | `scripts/verify_and_push.sh` | Verify → add → commit → push (reads `.env` for token) |

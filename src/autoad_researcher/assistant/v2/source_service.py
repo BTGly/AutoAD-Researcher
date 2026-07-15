@@ -1,7 +1,7 @@
 """Unified source intake for V2 orchestrator.
 
 Only structured source signals live here: uploads and explicit URLs. Natural
-language tool intent is planned by ``source_action_planner``.
+language tool intent remains part of the single research dialogue call.
 """
 
 from __future__ import annotations

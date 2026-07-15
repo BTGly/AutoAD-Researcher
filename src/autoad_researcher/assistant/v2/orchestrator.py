@@ -17,7 +17,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     load_research_intent_summary,
     save_research_intent_summary,
 )
-from autoad_researcher.assistant.v2.source_action_planner import (
+from autoad_researcher.assistant.v2.source_actions import (
     SourceActionPlan,
     plan_explicit_source_actions,
 )
@@ -62,7 +62,6 @@ class ResearchOrchestratorV2:
         source_plan = plan_explicit_source_actions(
             user_input=user_input,
             attachments=attachments,
-            source_registry=_source_registry_sources(run_dir),
         )
         if removed_source is None and source_plan is not None:
             created_sources, created_jobs = _execute_source_action_plan(
@@ -152,13 +151,13 @@ def _execute_source_action_plan(
     for action in source_plan.actions:
         if action.requires_confirmation or action.action_type == "answer_only":
             continue
-        if action.action_type not in {"register_webpage", "register_github_repo", "git_clone"}:
+        if action.action_type not in {"register_webpage", "register_github_repo"}:
             continue
         if not action.source_url:
             continue
         source_kind = (
             "github_repo"
-            if action.action_type in {"register_github_repo", "git_clone"}
+            if action.action_type == "register_github_repo"
             else "webpage"
         )
         source = registered_urls.get(action.source_url)

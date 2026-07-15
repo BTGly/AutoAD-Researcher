@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from autoad_researcher.assistant.chat_facts import extract_confirmed_from_chat
+from autoad_researcher.assistant.metric_normalization import canonicalize_metrics
+
+
+def test_canonicalize_explicit_metric_phrases():
+    assert canonicalize_metrics("看 AUROC") == ["image_level_auroc"]
+    assert canonicalize_metrics("看 pixel AUROC") == ["pixel_level_auroc"]
 
 
 def test_confirmed_from_chat_extracts_mvtec_patchcore():

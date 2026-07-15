@@ -10,7 +10,6 @@ from fastapi import HTTPException
 from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence, load_usable_evidence
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, fail_pipeline_job, load_pipeline_jobs
-from autoad_researcher.assistant.v2.reply_planner import plan_reply
 from autoad_researcher.assistant.v2.research_intent_summary import (
     BasedStatement,
     ResearchIntentSummary,
@@ -827,42 +826,6 @@ def test_worker_paper_summarize_job_writes_manifest_and_evidence(tmp_path: Path)
     assert "paper/artifacts/paper_artifact_manifest.json" in outputs
     evidence = load_usable_evidence(run_dir)
     assert any(item["evidence_type"] == "paper_artifact_manifest" for item in evidence)
-
-
-def test_reply_fallback_mentions_pending_jobs():
-    _kind, reply = plan_reply(
-        {
-            "answerability": {"blocking_next_step": "parse"},
-            "unparsed_sources": ["src_pdf"],
-            "usable_evidence": [],
-            "readable_summaries": [],
-            "pending_jobs": [{"job_id": "job_000001", "job_type": "paper_parse_mineru", "status": "queued"}],
-            "failed_jobs": [],
-        },
-        "pdf什么时候解析完成",
-    )
-
-    assert "paper_parse_mineru" in reply
-    assert "queued" in reply
-    assert "不能声称已经读完 PDF" in reply
-
-
-def test_reply_fallback_mentions_unusable_parse():
-    _kind, reply = plan_reply(
-        {
-            "answerability": {"blocking_next_step": "parse_quality"},
-            "unparsed_sources": [],
-            "usable_evidence": [],
-            "readable_summaries": [],
-            "pending_jobs": [],
-            "failed_jobs": [],
-            "unusable_parsed_sources": [{"source_id": "src_pdf", "user_label": "paper.pdf"}],
-        },
-        "你看不到解析结果吗",
-    )
-
-    assert "解析不可用 source" in reply
-    assert "不能从中提取论文方法" in reply
 
 
 def test_embedded_worker_enabled_can_be_disabled(monkeypatch):

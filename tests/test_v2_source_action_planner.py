@@ -6,11 +6,6 @@ from pathlib import Path
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_intent_summary import load_research_intent_summary
-from autoad_researcher.assistant.v2.source_action_planner import (
-    SourceActionPlan,
-    load_repository_hints,
-    plan_source_actions,
-)
 from autoad_researcher.assistant.v2.source_service import classify_input
 from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence, load_usable_evidence
 from autoad_researcher.ui.sources import load_source_registry
@@ -20,67 +15,6 @@ from autoad_researcher.worker.main import _run_web_search
 def test_natural_language_repo_request_is_not_classified_by_source_service():
     assert classify_input("你先 clone pathcore 的 github 仓库吧") == "general_chat"
     assert classify_input("搜索 MVTec AD 上能迁移到 PatchCore 的方法") == "general_chat"
-
-
-def test_source_action_planner_exposes_configured_repository_hints(tmp_path: Path):
-    run_dir = tmp_path / "run_repo"
-    run_dir.mkdir()
-
-    hints = load_repository_hints(run_dir)
-
-    assert hints
-    assert hints[0].hint_id == "internal_benchmark_patchcore"
-    assert hints[0].url == "https://github.com/amazon-science/patchcore-inspection"
-    assert hints[0].source == "configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml"
-
-
-def test_source_action_planner_uses_llm_for_natural_language_clone(monkeypatch, tmp_path: Path):
-    run_dir = tmp_path / "run_repo"
-    run_dir.mkdir()
-    captured: dict[str, object] = {}
-
-    def fake_call(api_key, provider_base_url, messages, **kwargs):
-        captured["messages"] = messages
-        return {
-            "reply": json.dumps(
-                {
-                    "actions": [
-                        {
-                            "action_type": "git_clone",
-                            "target": "PatchCore official repository",
-                            "repository_hint_id": "internal_benchmark_patchcore",
-                            "source_url": None,
-                            "query": None,
-                            "source_kind": "github_repo",
-                            "confidence": 0.86,
-                            "requires_confirmation": False,
-                            "rationale": "用户明确要求 clone 当前 baseline 的 GitHub 仓库；上下文候选中有已配置的 PatchCore 仓库。",
-                        }
-                    ],
-                    "user_visible_summary": "将登记并 clone PatchCore 仓库。",
-                    "confidence": 0.86,
-                    "reason": "Explicit clone request with matching repository hint.",
-                },
-                ensure_ascii=False,
-            ),
-            "error": "",
-        }
-
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
-
-    plan = plan_source_actions(
-        run_dir=run_dir,
-        user_input="你先 clone pathcore 的 github 仓库吧",
-        api_key="sk-test",
-        provider_url="https://example.test",
-    )
-
-    system_text = "\n".join(message["content"] for message in captured["messages"] if message["role"] == "system")
-    assert "不是关键词分类器" in system_text
-    assert "repository_hints" in system_text
-    assert isinstance(plan, SourceActionPlan)
-    assert plan.actions[0].action_type == "git_clone"
-    assert plan.actions[0].source_url == "https://github.com/amazon-science/patchcore-inspection"
 
 
 def test_orchestrator_does_not_use_llm_to_invent_repo_url(monkeypatch, tmp_path: Path):

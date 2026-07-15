@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from autoad_researcher.assistant.v2.need_discovery import canonicalize_metrics
+from autoad_researcher.assistant.metric_normalization import canonicalize_metrics
 
 
 def extract_confirmed_from_chat(transcript_tail: list[dict[str, Any]]) -> dict[str, Any]:
