@@ -95,6 +95,7 @@ def test_orchestrator_persists_low_frequency_typed_events_without_token_deltas(m
                         "user_intent_summary": "research contract update",
                         "evidence_from_current_turn": ["PatchCore"],
                         "evidence_from_context": [],
+                        "mutation_evidence_from_current_turn": "我想基于 PatchCore 提升 MVTec AD，主要看 image AUROC。",
                         "confidence": 0.9,
                         "reason": "research turn",
                         "next_reply_instruction": None,

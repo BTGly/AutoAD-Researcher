@@ -20,6 +20,8 @@ from autoad_researcher.assistant.v2.source_action_planner import (
 )
 from autoad_researcher.assistant.v2.turn_gate import (
     TurnGateDecision,
+    _mutation_evidence_matches,
+    _requires_mutation_evidence,
     _validate_task_profile_proposal,
     _validate_turn_gate_decision,
     _validate_turn_gate_payload,
@@ -271,10 +273,6 @@ def _validate_route_payload(
 
     exact_current = _exact_evidence(route.turn_gate.evidence_from_current_turn, user_input)
     exact_context = _exact_evidence(route.turn_gate.evidence_from_context, context_user_text)
-    profile_evidence = (route.task_profile_evidence or "").strip()
-    if profile_evidence and profile_evidence in user_input and profile_evidence not in exact_current:
-        exact_current.append(profile_evidence)
-        recovery_reasons.append("reused_exact_task_profile_evidence")
     route = route.model_copy(update={
         "turn_gate": route.turn_gate.model_copy(update={
             "evidence_from_current_turn": exact_current,
@@ -298,13 +296,22 @@ def _validate_route_payload(
         "task_profile_evidence": route.turn_gate.task_profile_evidence,
         "requires_need_discovery_enrichment": route.turn_gate.requires_need_discovery_enrichment,
     })
-    if _requires_exact_current_evidence(route.turn_gate) and not exact_current:
-        recovery_reasons.append("missing_exact_current_turn_evidence")
+    if _requires_mutation_evidence(route.turn_gate) and not _mutation_evidence_matches(
+        route.turn_gate,
+        user_input,
+    ):
+        recovery_reasons.append("missing_exact_mutation_evidence")
         safe = conservative_conversation_route(
             source_action_plan=source_plan,
-            reason="Mutating route lacked exact current-turn evidence.",
+            reason="Mutating route lacked the complete current-turn mutation evidence.",
         )
         return safe, [], recovery_reasons
+    if not _requires_mutation_evidence(route.turn_gate):
+        route = route.model_copy(update={
+            "turn_gate": route.turn_gate.model_copy(
+                update={"mutation_evidence_from_current_turn": None}
+            ),
+        })
     route = route.model_copy(update={
         "turn_gate": _validate_turn_gate_decision(route.turn_gate),
     })
@@ -328,8 +335,9 @@ def _build_conversation_route_messages(
     schema = (
         "Return exactly one JSON object and no Markdown. It must validate against this JSON Schema:\n"
         + json.dumps(ConversationRouteDecision.model_json_schema(), ensure_ascii=False, sort_keys=True)
-        + "\nFor any mutating contract or confirmation action, evidence_from_current_turn must contain the complete "
-        "current user message copied verbatim, with identical spaces, case, and punctuation."
+        + "\nFor any mutating contract or confirmation action, mutation_evidence_from_current_turn must contain "
+        "the complete current user message copied verbatim, with identical internal spaces, case, and punctuation. "
+        "task_profile_evidence and evidence_from_current_turn never authorize mutation."
         + "\nValid ordinary-chat example:\n"
         + json.dumps(_ordinary_route_example(), ensure_ascii=False, sort_keys=True)
         + "\nValid research-update example:\n"
@@ -379,6 +387,7 @@ def _ordinary_route_example() -> dict[str, Any]:
             "user_intent_summary": "ordinary conversation",
             "evidence_from_current_turn": [],
             "evidence_from_context": [],
+            "mutation_evidence_from_current_turn": None,
             "confidence": 0.9,
             "reason": "No research contract change.",
             "next_reply_instruction": None,
@@ -395,6 +404,7 @@ def _ordinary_route_example() -> dict[str, Any]:
 
 
 def _contract_route_example() -> dict[str, Any]:
+    user_message = "我想以 PatchCore 为 baseline，在 MVTec AD 上提升 image-level AUROC。"
     example = _ordinary_route_example()
     example.update({
         "task_profile_proposal": "empirical_model_research",
@@ -414,6 +424,7 @@ def _contract_route_example() -> dict[str, Any]:
         "suggested_task_summary": "提升 MVTec AD 的图像级 AUROC。",
         "user_intent_summary": "PatchCore experiment improvement",
         "evidence_from_current_turn": ["PatchCore"],
+        "mutation_evidence_from_current_turn": user_message,
         "reason": "The user supplied research-contract evidence.",
     })
     return example
@@ -432,6 +443,7 @@ def _research_correction_route_example() -> dict[str, Any]:
             "task_profile_evidence": "我真的想做 AI infra、AI 算子优化、底层的",
             "requires_need_discovery_enrichment": True,
             "evidence_from_current_turn": [user_message],
+            "mutation_evidence_from_current_turn": user_message,
         },
         "source_action_plan": {},
         "task_profile_proposal": "systems_optimization",
@@ -457,13 +469,6 @@ def _exact_evidence(candidates: list[str], text: str) -> list[str]:
         if quote and quote in text and quote not in result:
             result.append(quote)
     return result
-
-
-def _requires_exact_current_evidence(turn_gate: TurnGateDecision) -> bool:
-    return (
-        turn_gate.contract_action in {"update_contract", "confirm_contract"}
-        or turn_gate.confirmation_action_proposal != "none"
-    )
 
 
 def _validation_error_summary(exc: ValidationError) -> list[dict[str, str]]:

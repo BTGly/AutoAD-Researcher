@@ -8,9 +8,11 @@ from autoad_researcher.assistant.v2.conversation_router import (
     _validate_route_payload,
     route_conversation_with_llm,
 )
+from autoad_researcher.assistant.v2.intent_contract import load_contract_draft
 from autoad_researcher.assistant.v2.llm_trace_service import TRACE_DIR, TRACE_INDEX
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.source_action_planner import SourceAction, SourceActionPlan
+from autoad_researcher.task_workspace.task_profile import load_task_profile
 from autoad_researcher.ui.sources import load_source_registry
 
 
@@ -32,6 +34,7 @@ def _route_payload(*, user_input: str, contract_action: str = "answer_without_co
             "user_intent_summary": user_input,
             "evidence_from_current_turn": [user_input] if mutating else [],
             "evidence_from_context": [],
+            "mutation_evidence_from_current_turn": user_input if mutating else None,
             "confidence": 0.9,
             "reason": "replay route",
             "next_reply_instruction": None,
@@ -74,12 +77,10 @@ def test_conversation_router_replay_uses_only_safe_local_recovery():
             assert decision.turn_gate.contract_update_allowed is True
             assert decision.turn_gate.need_discovery_allowed is True
             assert decision.turn_gate.save_draft_allowed is True
-        if case["name"] == "exact_top_level_profile_evidence_recovers_nested_quote":
+        if case["name"] == "task_profile_evidence_cannot_authorize_mutation":
             assert decision is not None
-            assert decision.task_profile_proposal == "systems_optimization"
-            assert decision.turn_gate.evidence_from_current_turn == [
-                "我真的想做 AI infra、AI 算子优化、底层的"
-            ]
+            assert decision.task_profile_proposal == "general_research"
+            assert decision.suggested_task_title is None
 
 
 def test_router_schema_instruction_requires_verbatim_complete_mutation_evidence():
@@ -98,7 +99,8 @@ def test_router_schema_instruction_requires_verbatim_complete_mutation_evidence(
 
     assert "copy the complete current user message" in messages[0]["content"]
     assert "Distinguish a correction from pure frustration" in messages[0]["content"]
-    assert "identical spaces, case, and punctuation" in messages[1]["content"]
+    assert "identical internal spaces, case, and punctuation" in messages[1]["content"]
+    assert "task_profile_evidence and evidence_from_current_turn never authorize mutation" in messages[1]["content"]
     assert "correction-to-a-new-research-direction" in messages[1]["content"]
     assert "AI Infra 与算子优化研究" in messages[1]["content"]
 
@@ -168,6 +170,116 @@ def test_router_top_level_task_profile_is_authoritative_and_evidence_validated()
     assert decision.turn_gate.task_profile_proposal == "systems_optimization"
     assert decision.turn_gate.task_profile_evidence == "CUDA 算子"
     assert decision.requires_need_discovery_enrichment is True
+
+
+def test_router_rejects_joke_misrouted_as_contract_update_without_mutation_evidence():
+    user_input = "你是 PatchCore 战神哈哈哈"
+    payload = _route_payload(user_input=user_input, contract_action="update_contract")
+    payload["turn_gate"].update({
+        "task_profile_proposal": "empirical_model_research",
+        "task_profile_evidence": "PatchCore",
+        "mutation_evidence_from_current_turn": None,
+    })
+    payload.update({
+        "task_profile_proposal": "empirical_model_research",
+        "task_profile_evidence": "PatchCore",
+        "suggested_task_title": "PatchCore 研究",
+        "suggested_task_summary": "研究 PatchCore。",
+    })
+
+    decision, errors, recovery = _validate_route_payload(
+        payload,
+        user_input=user_input,
+        transcript_tail=[],
+        deterministic_source_plan=None,
+        repository_hints=[],
+    )
+
+    assert errors == []
+    assert decision is not None
+    assert decision.turn_gate.contract_action == "answer_without_contract_update"
+    assert decision.task_profile_proposal == "general_research"
+    assert decision.suggested_task_title is None
+    assert recovery == ["missing_exact_mutation_evidence"]
+
+
+def test_router_rejects_profile_name_as_contract_mutation_authorization():
+    user_input = "PatchCore"
+    payload = _route_payload(user_input=user_input, contract_action="update_contract")
+    payload["turn_gate"].update({
+        "task_profile_proposal": "empirical_model_research",
+        "task_profile_evidence": "PatchCore",
+        "mutation_evidence_from_current_turn": None,
+    })
+    payload.update({
+        "task_profile_proposal": "empirical_model_research",
+        "task_profile_evidence": "PatchCore",
+    })
+
+    decision, errors, recovery = _validate_route_payload(
+        payload,
+        user_input=user_input,
+        transcript_tail=[],
+        deterministic_source_plan=None,
+        repository_hints=[],
+    )
+
+    assert errors == []
+    assert decision is not None
+    assert decision.turn_gate.contract_action == "answer_without_contract_update"
+    assert recovery == ["missing_exact_mutation_evidence"]
+
+
+def test_misrouted_patchcore_joke_updates_neither_contract_nor_task_title(monkeypatch, tmp_path: Path):
+    user_input = "你是 PatchCore 战神哈哈哈"
+    unsafe_payload = _route_payload(user_input=user_input, contract_action="update_contract")
+    unsafe_payload["turn_gate"].update({
+        "task_profile_proposal": "empirical_model_research",
+        "task_profile_evidence": "PatchCore",
+        "mutation_evidence_from_current_turn": None,
+    })
+    unsafe_payload.update({
+        "task_profile_proposal": "empirical_model_research",
+        "task_profile_evidence": "PatchCore",
+        "suggested_task_title": "PatchCore 研究",
+        "suggested_task_summary": "研究 PatchCore。",
+    })
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        if "ConversationRouter" in messages[0]["content"]:
+            return {"reply": json.dumps(unsafe_payload, ensure_ascii=False), "error": ""}
+        return {
+            "reply": json.dumps({
+                "reply_to_user": "哈哈，先不改研究任务。",
+                "contract_updates": {},
+                "new_user_confirmed_fields": [],
+                "missing_required_fields": [],
+                "primary_metrics": [],
+                "secondary_metrics": [],
+                "metric_priority": None,
+                "optional_hints_detected": {},
+                "next_question": "",
+                "ready_for_confirmation": False,
+                "ready_for_experiment_agents": False,
+            }, ensure_ascii=False),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    run_dir = tmp_path / "run_profile_evidence_boundary"
+    run_dir.mkdir()
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=user_input,
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.intent_contract == {}
+    assert result.task_update == {}
+    assert load_contract_draft(run_dir) is None
+    assert load_task_profile(run_dir) is None
 
 
 def test_router_calls_provider_once_and_records_registered_trace(monkeypatch, tmp_path: Path):

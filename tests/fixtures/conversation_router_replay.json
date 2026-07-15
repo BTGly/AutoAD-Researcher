@@ -36,6 +36,7 @@
         "task_profile_proposal": "empirical_model_research",
         "task_profile_evidence": "PatchCore",
         "evidence_from_current_turn": "PatchCore",
+        "mutation_evidence_from_current_turn": "以 PatchCore 为 baseline",
         "unknown_nested_field": "ignored"
       },
       "source_action_plan": {},
@@ -97,7 +98,7 @@
       "requires_need_discovery_enrichment": false
     },
     "expected_action": "answer_without_contract_update",
-    "expected_recovery": ["missing_exact_current_turn_evidence"]
+    "expected_recovery": ["missing_exact_mutation_evidence"]
   },
   {
     "name": "update_action_normalizes_inconsistent_flags",
@@ -110,7 +111,8 @@
         "contract_update_allowed": false,
         "need_discovery_allowed": false,
         "save_draft_allowed": false,
-        "evidence_from_current_turn": ["pixel AUROC"]
+        "evidence_from_current_turn": ["pixel AUROC"],
+        "mutation_evidence_from_current_turn": "把指标改为 pixel AUROC"
       },
       "source_action_plan": {},
       "task_profile_proposal": "general_research",
@@ -123,7 +125,7 @@
     "expected_recovery": []
   },
   {
-    "name": "exact_top_level_profile_evidence_recovers_nested_quote",
+    "name": "task_profile_evidence_cannot_authorize_mutation",
     "user_input": "不对啊，我真的想做 AI infra、AI 算子优化、底层的，你有什么建议吗？",
     "context_user_text": "",
     "payload": {
@@ -144,7 +146,7 @@
       "suggested_task_summary": "研究 AI infra 与底层算子优化。",
       "requires_need_discovery_enrichment": false
     },
-    "expected_action": "update_contract",
-    "expected_recovery": ["reused_exact_task_profile_evidence"]
+    "expected_action": "answer_without_contract_update",
+    "expected_recovery": ["missing_exact_mutation_evidence"]
   }
 ]

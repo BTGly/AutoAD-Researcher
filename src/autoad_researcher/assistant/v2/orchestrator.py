@@ -237,10 +237,7 @@ class ResearchOrchestratorV2:
 
         active_confirmation = load_active_contract_confirmation(run_dir)
         if active_confirmation is not None and turn_decision.confirmation_action_proposal != "none":
-            evidence_quote = _current_turn_evidence_quote(
-                user_input,
-                turn_decision.evidence_from_current_turn,
-            )
+            evidence_quote = turn_decision.mutation_evidence_from_current_turn
             try:
                 confirmation_state = apply_confirmation_action_proposal(
                     run_dir,
@@ -586,14 +583,6 @@ def _append_conversation_route_decided_event(
         "requires_need_discovery_enrichment": decision.requires_need_discovery_enrichment,
         "turn_confidence": turn.confidence,
     })
-
-
-def _current_turn_evidence_quote(user_input: str, candidates: list[str]) -> str | None:
-    for candidate in candidates:
-        quote = str(candidate).strip()
-        if quote and quote in user_input:
-            return quote
-    return None
 
 
 def _unique_strings(values: list[str | None]) -> list[str]:

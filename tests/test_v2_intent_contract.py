@@ -414,9 +414,11 @@ def test_orchestrator_writes_draft_then_confirms_existing_contract(tmp_path: Pat
                     contract_action="confirm_contract",
                     allowed=False,
                     evidence_from_current_turn=[user_text],
+                    mutation_evidence_from_current_turn=user_text,
                 ), ensure_ascii=False), "error": ""}
             return {"reply": json.dumps(_turn_gate_payload(
                 evidence_from_current_turn=[user_text],
+                mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
@@ -471,6 +473,7 @@ def test_orchestrator_persists_ready_draft_before_requesting_confirmation(tmp_pa
                 allowed=True,
                 save_draft_allowed=False,
                 evidence_from_current_turn=[user_text],
+                mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
@@ -509,6 +512,7 @@ def test_text_confirmation_recovers_missing_draft_from_recent_research_intent(tm
                 contract_action="confirm_contract",
                 allowed=False,
                 evidence_from_current_turn=[user_text],
+                mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
@@ -569,6 +573,7 @@ def test_task_1231_turn_gate_json_failure_fails_closed_without_repair(tmp_path: 
                 turn_type="contract_confirmation",
                 contract_action="confirm_contract",
                 allowed=False,
+                mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             return {"reply": json.dumps(_need_spec_payload(
@@ -1321,6 +1326,7 @@ def test_hf2_contract_preserves_dataset_across_turns(tmp_path: Path, monkeypatch
         if "ConversationRouter" in system_text:
             return {"reply": json.dumps(_turn_gate_payload(
                 evidence_from_current_turn=[user_text],
+                mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in system_text:
             metrics = (
@@ -1612,6 +1618,7 @@ def test_hf2_contextual_turn_with_api_can_be_allowed_by_turn_gate(tmp_path: Path
             return {"reply": json.dumps(_turn_gate_payload(
                 requires_need_discovery_enrichment=True,
                 evidence_from_current_turn=[messages[-1]["content"]],
+                mutation_evidence_from_current_turn=messages[-1]["content"],
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_need_spec_payload(
@@ -1652,6 +1659,7 @@ def test_hf2_multi_metric_update_replaces_old_single_primary(tmp_path: Path, mon
         if "ConversationRouter" in messages[0]["content"]:
             return {"reply": json.dumps(_turn_gate_payload(
                 evidence_from_current_turn=[user_text],
+                mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_need_spec_payload(
@@ -1701,6 +1709,7 @@ def test_hf2_contract_related_turn_still_asks_missing_fields(tmp_path: Path, mon
         if "ConversationRouter" in messages[0]["content"]:
             return {"reply": json.dumps(_turn_gate_payload(
                 evidence_from_current_turn=[user_text],
+                mutation_evidence_from_current_turn=user_text,
             ), ensure_ascii=False), "error": ""}
         if "Need Discovery" in messages[0]["content"]:
             return {"reply": json.dumps(_incomplete_need_spec_payload(), ensure_ascii=False), "error": ""}
@@ -1811,6 +1820,7 @@ def _turn_gate_decision_payload(
     contract_action: str = "update_contract",
     allowed: bool = True,
     instruction: str | None = None,
+    mutation_evidence_from_current_turn: str | None = None,
 ) -> dict:
     return {
         "turn_type": turn_type,
@@ -1821,6 +1831,7 @@ def _turn_gate_decision_payload(
         "user_intent_summary": "测试 turn gate 决策",
         "evidence_from_current_turn": [],
         "evidence_from_context": [],
+        "mutation_evidence_from_current_turn": mutation_evidence_from_current_turn,
         "confidence": 0.9,
         "reason": "test",
         "next_reply_instruction": instruction,
@@ -2087,6 +2098,7 @@ def test_reported_conversation_persists_numeric_draft_and_requests_confirmation(
                 "user_intent_summary": "用户补充了数值成功标准。",
                 "evidence_from_current_turn": ["我要提升5%"],
                 "evidence_from_context": ["PatchCore", "MVTec AD", "image-level AUROC"],
+                "mutation_evidence_from_current_turn": "我要提升5%",
                 "confidence": 0.93,
                 "reason": "research contract update",
             })
@@ -2285,6 +2297,7 @@ def test_orchestrator_suspends_confirmation_without_mutating_draft(tmp_path: Pat
                 allowed=False,
                 confirmation_action_proposal="suspend",
                 evidence_from_current_turn=["我先聊晚餐"],
+                mutation_evidence_from_current_turn="我先聊晚餐",
             ), ensure_ascii=False), "error": ""}
         return {"reply": json.dumps(_reply_payload("可以，研究草案会保留。"), ensure_ascii=False), "error": ""}
 
@@ -2336,6 +2349,7 @@ def test_orchestrator_redirects_confirmed_topic_change_to_new_task(tmp_path: Pat
             return {"reply": json.dumps(_turn_gate_payload(
                 confirmation_action_proposal="supersede",
                 evidence_from_current_turn=["改做算子优化"],
+                mutation_evidence_from_current_turn="我想改做算子优化",
             ), ensure_ascii=False), "error": ""}
         raise AssertionError("confirmed topic change must not enter Need Discovery or Reply Planner")
 

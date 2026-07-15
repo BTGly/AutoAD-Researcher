@@ -27,6 +27,7 @@
       "task_profile_evidence": "PatchCore",
       "requires_need_discovery_enrichment": false,
       "evidence_from_current_turn": "PatchCore",
+      "mutation_evidence_from_current_turn": "以 PatchCore 为 baseline",
       "unknown_debug_field": "ignored"
     },
     "expected_action": "update_contract"

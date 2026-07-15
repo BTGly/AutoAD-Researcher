@@ -302,14 +302,15 @@ _V2_TURN_GATE_PROMPT = (
     "如果用户明确表示不想继续当前研究方向，只能要求 ReplyPlanner 澄清是暂停、取消还是暂时切换话题；不能静默清空、改写或取消已有任务状态。\n"
     "你只能通过 confirmation_action_proposal 提议 none、suspend、resume 或 supersede，不能直接改变确认状态。"
     "suspend 仅用于暂时转开且保留旧草案；resume 仅用于明确继续旧题；supersede 仅用于用户明确换题、取消或放弃。\n"
-    "提出 suspend/resume/supersede 时，evidence_from_current_turn 必须逐字引用本轮用户原文；不确定时提议 none。\n"
+    "提出 update_contract、confirm_contract、suspend、resume 或 supersede 时，mutation_evidence_from_current_turn "
+    "必须完整复制本轮用户消息；task_profile_evidence 和 evidence_from_current_turn 不能授权任何变更。\n"
     "不确定时优先 answer_without_contract_update 或 ask_clarifying_question，不能贸然 save draft。\n"
     "LLM 不能直接确认最终合同；最终确认必须由 orchestrator 根据 existing draft 和明确确认意图执行。\n"
     "task_profile_proposal 只是语义提议，必须提供逐字 task_profile_evidence；证据不足时使用 general_research。"
     "只有任务类型或关键缺口确实存在语义歧义时，requires_need_discovery_enrichment 才能为 true。\n"
     "Schema: {turn_type, contract_action, contract_update_allowed, need_discovery_allowed, save_draft_allowed, confirmation_action_proposal, "
     "task_profile_proposal, task_profile_evidence, requires_need_discovery_enrichment, user_intent_summary, "
-    "evidence_from_current_turn, evidence_from_context, confidence, reason, next_reply_instruction}."
+    "evidence_from_current_turn, evidence_from_context, mutation_evidence_from_current_turn, confidence, reason, next_reply_instruction}."
 )
 
 
@@ -323,7 +324,7 @@ _V2_CONVERSATION_ROUTE_PROMPT = (
     "Only exact user language may authorize contract changes. If a deterministic source plan is present, "
     "keep that plan and decide only whether the surrounding natural language changes the contract. "
     "For update_contract, confirm_contract, suspend, resume, or supersede, copy the complete current user message "
-    "verbatim into evidence_from_current_turn. Do not paraphrase or normalize its spaces, case, or punctuation; "
+    "verbatim into mutation_evidence_from_current_turn. Do not paraphrase or normalize its internal spaces, case, or punctuation; "
     "a non-verbatim quote loses mutation permission. "
     "Distinguish a correction from pure frustration: when the user rejects an earlier framing and immediately states "
     "a concrete replacement research direction, route the replacement as a contract update (and propose supersede only "

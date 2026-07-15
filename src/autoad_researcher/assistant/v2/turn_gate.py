@@ -53,6 +53,7 @@ class TurnGateDecision(BaseModel):
     user_intent_summary: str = ""
     evidence_from_current_turn: list[str] = Field(default_factory=list)
     evidence_from_context: list[str] = Field(default_factory=list)
+    mutation_evidence_from_current_turn: str | None = None
     confidence: float = 0.0
     reason: str = ""
     next_reply_instruction: str | None = None
@@ -181,6 +182,40 @@ def decide_turn_gate_with_llm(
             transcript_tail=transcript_tail,
             existing_contract_draft=existing_contract_draft,
         )
+    decision = _validate_task_profile_proposal(
+        decision,
+        user_input=user_input,
+        context_user_text=context_user_text,
+    )
+    if _requires_mutation_evidence(decision) and not _mutation_evidence_matches(
+        decision,
+        user_input,
+    ):
+        recovery_reasons.append("missing_exact_mutation_evidence")
+        append_llm_trace(
+            run_dir,
+            call_site="turn_gate",
+            prompt_id=profile.prompt_id,
+            prompt_version=profile.prompt_version,
+            prompt_text=system_prompt,
+            model=model,
+            provider_url=provider_url,
+            messages=messages,
+            raw_output=reply_text,
+            parse_status="ok",
+            schema_validation="recovered",
+            schema_validation_errors=validation_errors,
+            fallback_reason=",".join(recovery_reasons),
+            latency_ms=latency_ms,
+            **runtime_trace_fields(result),
+        )
+        return _offline_no_contract_decision(
+            user_input=user_input,
+            transcript_tail=transcript_tail,
+            existing_contract_draft=existing_contract_draft,
+        )
+    if not _requires_mutation_evidence(decision):
+        decision = decision.model_copy(update={"mutation_evidence_from_current_turn": None})
     append_llm_trace(
         run_dir,
         call_site="turn_gate",
@@ -197,11 +232,6 @@ def decide_turn_gate_with_llm(
         fallback_reason=",".join(recovery_reasons),
         latency_ms=latency_ms,
         **runtime_trace_fields(result),
-    )
-    decision = _validate_task_profile_proposal(
-        decision,
-        user_input=user_input,
-        context_user_text=context_user_text,
     )
     return _validate_turn_gate_decision(decision)
 
@@ -276,6 +306,7 @@ def _build_turn_gate_messages(
             "user_intent_summary": "ordinary conversation",
             "evidence_from_current_turn": [],
             "evidence_from_context": [],
+            "mutation_evidence_from_current_turn": None,
             "confidence": 0.9,
             "reason": "The user is not changing the research contract.",
             "next_reply_instruction": None,
@@ -296,6 +327,7 @@ def _build_turn_gate_messages(
             "user_intent_summary": "empirical model improvement",
             "evidence_from_current_turn": ["PatchCore"],
             "evidence_from_context": [],
+            "mutation_evidence_from_current_turn": "我想以 PatchCore 为 baseline，在 MVTec AD 上提升 image-level AUROC。",
             "confidence": 0.9,
             "reason": "The user supplied research-contract evidence.",
             "next_reply_instruction": None,
@@ -364,6 +396,18 @@ def _validate_task_profile_proposal(
     return decision
 
 
+def _requires_mutation_evidence(decision: TurnGateDecision) -> bool:
+    return (
+        decision.contract_action in {"update_contract", "confirm_contract"}
+        or decision.confirmation_action_proposal != "none"
+    )
+
+
+def _mutation_evidence_matches(decision: TurnGateDecision, user_input: str) -> bool:
+    evidence = (decision.mutation_evidence_from_current_turn or "").strip()
+    return bool(evidence) and evidence == user_input.strip()
+
+
 def _offline_no_contract_decision(
     *,
     user_input: str = "",
@@ -386,6 +430,7 @@ def _offline_no_contract_decision(
             need_discovery_allowed=False,
             save_draft_allowed=True,
             user_intent_summary="user confirmed contract via text",
+            mutation_evidence_from_current_turn=user_input.strip(),
             confidence=0.9,
             reason="Offline text confirmation detected: assistant requested confirmation in previous turn.",
             next_reply_instruction="已确认合同。",

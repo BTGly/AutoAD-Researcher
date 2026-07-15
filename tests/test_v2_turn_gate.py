@@ -96,6 +96,42 @@ def test_turn_gate_uses_llm_for_research_keyword_joke(monkeypatch):
     assert decision.save_draft_allowed is False
 
 
+def test_turn_gate_profile_evidence_cannot_authorize_contract_update(monkeypatch):
+    user_input = "PatchCore"
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        return {"reply": json.dumps({
+            "turn_type": "contract_update",
+            "contract_action": "update_contract",
+            "contract_update_allowed": True,
+            "need_discovery_allowed": True,
+            "save_draft_allowed": True,
+            "task_profile_proposal": "empirical_model_research",
+            "task_profile_evidence": "PatchCore",
+            "user_intent_summary": "profile name",
+            "evidence_from_current_turn": ["PatchCore"],
+            "evidence_from_context": [],
+            "confidence": 0.9,
+            "reason": "misrouted update",
+        }, ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    decision = decide_turn_gate_with_llm(
+        user_input=user_input,
+        transcript_tail=[],
+        existing_contract_draft=None,
+        created_sources=[],
+        created_jobs=[],
+        answerability={},
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert decision.contract_action == "answer_without_contract_update"
+    assert decision.contract_update_allowed is False
+
+
 def test_turn_gate_invalid_llm_output_falls_back_to_no_contract_update(monkeypatch):
     calls = 0
 
@@ -137,6 +173,7 @@ def test_turn_gate_ignores_only_extra_fields_without_repair_call(monkeypatch):
             "user_intent_summary": "research intent supplied",
             "evidence_from_current_turn": [],
             "evidence_from_context": [],
+            "mutation_evidence_from_current_turn": "我想基于 PatchCore 在 MVTec AD 上提升 image AUROC",
             "confidence": 0.9,
             "reason": "research turn",
             "next_reply_instruction": None,
@@ -230,6 +267,7 @@ def test_turn_gate_schema_and_examples_are_generated_from_model(monkeypatch):
     assert '"turn_type"' in schema_text
     assert '"ordinary_chat"' in schema_text
     assert '"contract_update"' in schema_text
+    assert '"mutation_evidence_from_current_turn"' in schema_text
     assert decision.evidence_from_current_turn == ["你好"]
 
 
@@ -244,6 +282,7 @@ def test_update_contract_action_normalizes_inconsistent_model_flags(monkeypatch)
             "user_intent_summary": "用户补充了数值成功标准。",
             "evidence_from_current_turn": ["我要提升5%"],
             "evidence_from_context": ["PatchCore", "MVTec AD", "image-level AUROC"],
+            "mutation_evidence_from_current_turn": "我要提升5%",
             "confidence": 0.93,
             "reason": "研究合同更新。",
             "next_reply_instruction": "更新成功标准。",
