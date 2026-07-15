@@ -371,6 +371,21 @@ _V2_NEED_DISCOVERY_PROMPT = (
 )
 
 
+_V2_RESEARCH_INTENT_INTERPRETER_PROMPT = (
+    "You are the AutoAD ResearchIntentInterpreter. Return one strict ResearchIntentInterpretation JSON object and no Markdown.\n"
+    "The upstream Router has already determined that the current user turn requests a Draft mutation. Do not repeat routing.\n"
+    "Interpret only the current user turn against the persisted Draft snapshot. Recent turns are conversational context, not current authorization.\n"
+    "Return field-level set, replace, or remove operations instead of a complete replacement contract. Every operation must include exact "
+    "current-turn character offsets and text. Use replace when correcting a non-empty value and remove when the user explicitly rejects a value.\n"
+    "Research modes may be composite. Modes help explain the task but never authorize mutation or determine readiness.\n"
+    "Keep user intent mutations, evidence-backed material observations, and advisory suggestions separate. Material observations require Evidence IDs "
+    "and cannot change user-owned goals, metrics, constraints, or execution boundaries. Advice never mutates the Draft.\n"
+    "Identify unresolved questions and evidence conflicts. Do not invent paths, symbols, metrics, targets, performance numbers, source status, or job status.\n"
+    "Do not claim that a Draft was saved, a contract was confirmed, a source was parsed, a repository was analyzed, or a background job was started.\n"
+    "If the current turn does not support a field operation, omit it. Never use keyword matching or old transcript text as substitute evidence."
+)
+
+
 _V2_REPLY_PLAN_PROMPT = (
     "你是 AutoAD Researcher v2，科研资料对齐助手。\n"
     "你的内部任务是把用户的实验目标整理成一份 ResearchIntentContract，\n"
@@ -757,6 +772,31 @@ def _default_profiles() -> list[PromptProfile]:
                 "docs/prompts/autoad_assistant_prompt_architecture.md#7",
             ],
             changelog=["v1: registered existing V2 inline NeedDiscovery prompt without behavior change."],
+        ),
+        PromptProfile(
+            prompt_id="assistant.v2.research_intent_interpreter.v1",
+            prompt_version="v1",
+            layer="schema_bound_draft",
+            title="V2 Research Intent Interpreter",
+            description="Proposes evidence-spanned, hash-bound Draft mutations without writing state.",
+            system_prompt=_V2_RESEARCH_INTENT_INTERPRETER_PROMPT,
+            io=PromptIOContract(
+                input_schema="PersistedResearchIntentSnapshot",
+                output_schema="ResearchIntentInterpretation",
+                required_artifacts=["research_intent_contract_draft.json"],
+                forbidden_outputs=[
+                    "complete_contract_overwrite",
+                    "state_change_claim",
+                    "keyword_fallback",
+                    "unreferenced_material_fact",
+                    "advisory_as_authorization",
+                ],
+            ),
+            visibility="internal",
+            source_references=[
+                "src/autoad_researcher/assistant/v2/research_intent_interpreter.py",
+            ],
+            changelog=["v1: add field-level semantic mutation proposals with exact current-turn provenance."],
         ),
         PromptProfile(
             prompt_id="assistant.v2.reply_plan.v1",
