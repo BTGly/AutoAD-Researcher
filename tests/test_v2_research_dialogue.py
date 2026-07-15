@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     ResearchDialogueAgent,
+    ResearchDialogueResponse,
+    SourceInstruction,
     _parse_json_object,
 )
 from autoad_researcher.assistant.v2.research_intent_summary import (
@@ -103,8 +105,34 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert "不要宣告“已保存”、“已更新”" in system
     assert "job_000001" in system
     assert "用户要求 plan_only" in system
+    assert "source_id 必须逐字复制" in system
+    assert "先不要删除" in system
     assert response.should_persist is True
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
+
+
+def test_source_removal_instruction_is_typed_and_forbids_extra_fields():
+    response = ResearchDialogueResponse.model_validate({
+        **_response_payload(),
+        "source_action": {
+            "action": "request_source_removal",
+            "source_id": "src_wrong",
+            "label_hint": "wrong.md",
+            "reason": "用户明确要求撤回",
+        },
+    })
+
+    assert response.source_action == SourceInstruction(
+        action="request_source_removal",
+        source_id="src_wrong",
+        label_hint="wrong.md",
+        reason="用户明确要求撤回",
+    )
+    with pytest.raises(ValidationError):
+        SourceInstruction.model_validate({
+            "action": "remove_latest",
+            "source_id": "src_wrong",
+        })
 
 
 def test_orchestrator_invalid_llm_output_preserves_existing_summary(monkeypatch, tmp_path: Path):

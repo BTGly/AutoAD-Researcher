@@ -132,6 +132,7 @@ async def chat_send(req: ChatRequest, request: Request):
     return ChatResponse(
         reply=result.reply,
         reply_kind=result.reply_kind,
+        source_action=result.source_action,
     )
 
 

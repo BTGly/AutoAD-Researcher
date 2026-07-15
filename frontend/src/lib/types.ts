@@ -48,6 +48,13 @@ export interface IntentSummary {
   blocking_question: string | null;
 }
 
+export interface SourceInstruction {
+  action: 'request_source_removal';
+  source_id: string;
+  label_hint: string;
+  reason: string;
+}
+
 export interface JobItem {
   jobId: string;
   jobType: string;

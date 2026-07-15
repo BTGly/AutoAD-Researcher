@@ -273,7 +273,7 @@ def test_explicit_mirror_search_does_not_auto_create_web_search_without_provider
     assert load_pipeline_jobs(run_dir) == []
 
 
-def test_orchestrator_removes_latest_source_when_user_rejects_upload(monkeypatch, tmp_path: Path):
+def test_orchestrator_returns_confirmable_typed_removal_without_deleting(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_remove"
     source_dir = run_dir / "sources" / "src_wrong"
     source_dir.mkdir(parents=True)
@@ -303,17 +303,86 @@ def test_orchestrator_removes_latest_source_when_user_rejects_upload(monkeypatch
         summary="wrong material",
     )
 
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("LLM planner should not be called for direct source removal")
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        assert "src_wrong" in messages[0]["content"]
+        return {
+            "reply": json.dumps({
+                "reply_to_user": "你明确要求撤回 wrong.md；删除前需要确认。",
+                "summary": {
+                    "goal": "",
+                    "confirmed_facts": ["用户明确要求撤回 wrong.md"],
+                    "inferred_facts": [],
+                    "unresolved_conflicts": [],
+                    "blocking_question": None,
+                },
+                "source_action": {
+                    "action": "request_source_removal",
+                    "source_id": "src_wrong",
+                    "label_hint": "wrong.md",
+                    "reason": "用户明确要求撤回",
+                },
+            }, ensure_ascii=False),
+            "error": "",
+        }
 
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fail_if_called)
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
 
-    result = ResearchOrchestratorV2.handle(run_dir, user_input="我上传错了，这个不是我们要的")
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="刚发的不是目标论文，撤回它。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
 
     assert result.reply_kind == "answer"
-    assert load_source_registry(run_dir)["sources"] == []
-    assert load_usable_evidence(run_dir) == []
-    assert not source_dir.exists()
+    assert result.source_action == {
+        "action": "request_source_removal",
+        "source_id": "src_wrong",
+        "label_hint": "wrong.md",
+        "reason": "用户明确要求撤回",
+    }
+    assert load_source_registry(run_dir)["sources"][0]["source_id"] == "src_wrong"
+    assert load_usable_evidence(run_dir)[0]["source_id"] == "src_wrong"
+    assert source_dir.exists()
+
+
+def test_orchestrator_rejects_removal_action_for_unknown_source(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_unknown_remove"
+    run_dir.mkdir()
+
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {
+            "reply": json.dumps({
+                **{
+                    "reply_to_user": "无法定位要删除的材料。",
+                    "summary": {
+                        "goal": "",
+                        "confirmed_facts": [],
+                        "inferred_facts": [],
+                        "unresolved_conflicts": [],
+                        "blocking_question": None,
+                    },
+                },
+                "source_action": {
+                    "action": "request_source_removal",
+                    "source_id": "src_invented",
+                    "label_hint": "",
+                    "reason": "",
+                },
+            }, ensure_ascii=False),
+            "error": "",
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="删除那个材料",
+        api_key="sk-test",
+        provider_url="https://example.test",
+    )
+
+    assert result.source_action is None
 
 
 def test_worker_web_search_wraps_pipeline_job_for_material_subagent(monkeypatch, tmp_path: Path):

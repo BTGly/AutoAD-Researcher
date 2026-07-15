@@ -289,6 +289,16 @@ export default function App() {
           msg.id === assistantId ? { ...msg, content: res.reply } : msg
         )));
       }
+      if (currentRunIdRef.current === targetRunId && res.source_action) {
+        const action = res.source_action;
+        const label = action.label_hint || action.source_id;
+        const reason = action.reason ? `\n原因：${action.reason}` : '';
+        const confirmed = window.confirm(`删除材料“${label}”及其 Evidence？${reason}`);
+        if (confirmed) {
+          const deleted = await deleteSource(targetRunId, action.source_id).catch(() => null);
+          addToast(deleted ? '资料已删除' : '删除资料失败', deleted ? 'success' : 'error');
+        }
+      }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
       return true;
     } catch {
@@ -310,7 +320,7 @@ export default function App() {
         if (!hasActiveTurn) setTaskStatus(current => current === 'Error' ? current : 'Ready');
       }
     }
-  }, [refreshSidebarForRun]);
+  }, [addToast, refreshSidebarForRun]);
 
   const enqueueChatMessage = useCallback((text: string, targetRunId: string) => {
     const queued: QueuedChatMessage = {

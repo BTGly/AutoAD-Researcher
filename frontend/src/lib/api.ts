@@ -1,4 +1,4 @@
-import type { TaskRun } from './types';
+import type { SourceInstruction, TaskRun } from './types';
 
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
@@ -32,7 +32,7 @@ export async function sendChat(
   runId: string,
   requestId: string,
   transcriptTail: Array<{ role: string; content: string }> = [],
-): Promise<{ reply: string; reply_kind: string }> {
+): Promise<{ reply: string; reply_kind: string; source_action: SourceInstruction | null }> {
   const res = await fetch('/api/chat/send', {
     method: 'POST',
     headers: getHeaders(),

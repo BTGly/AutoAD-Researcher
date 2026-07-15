@@ -5,11 +5,22 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
+
+
+class SourceInstruction(BaseModel):
+    """A destructive source action that still requires user confirmation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["request_source_removal"]
+    source_id: str = Field(min_length=1)
+    label_hint: str = ""
+    reason: str = ""
 
 
 class ResearchDialogueResponse(BaseModel):
@@ -19,6 +30,7 @@ class ResearchDialogueResponse(BaseModel):
 
     reply_to_user: str = Field(min_length=1)
     summary: ResearchIntentSummary
+    source_action: SourceInstruction | None = None
     _should_persist: bool = PrivateAttr(default=False)
 
     @property
@@ -133,8 +145,14 @@ class ResearchDialogueAgent:
 - 当模型参数、优化器状态、激活或运行时需求明显超过用户硬件时，即使 offload、checkpointing 等手段可能缓解，也必须把训练/运行可行性写入 unresolved_conflicts；在真实配置和资源未验证前不得宣称已经可行
 - 当前只做研究对齐与计划；不得声称已经修改代码、创建实验 Session、运行训练或执行实验
 
+材料删除动作：
+- source_action 只表示请求删除，系统还会要求用户确认；不得声称材料已经删除
+- 只有用户明确、无否定地要求删除某一项已登记材料时，才输出 source_action；“先不要删除”“保留比较”“是否应该删除”等表达必须输出 null
+- source_id 必须逐字复制“当前可用材料”中的 registered_sources.source_id，不得猜测、改写或使用“最新一个”代替
+- 如果无法唯一确定 source_id，source_action 必须为 null；是否追问仍按 blocking_question 的真正阻塞规则判断
+
 只输出 JSON object，不要输出 Markdown code fence。输出结构：
-{{"reply_to_user":"...","summary":{{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{{"statement":"...","basis":"..."}}],"unresolved_conflicts":[{{"statement":"...","basis":"..."}}],"blocking_question":null}}}}"""
+{{"reply_to_user":"...","summary":{{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{{"statement":"...","basis":"..."}}],"unresolved_conflicts":[{{"statement":"...","basis":"..."}}],"blocking_question":null}},"source_action":null}}"""
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_input},
@@ -184,6 +202,7 @@ def _compact_evidence_state(state: dict[str, Any]) -> dict[str, Any]:
         "failed_jobs": state.get("failed_jobs") or [],
         "answerability": state.get("answerability") or {},
         "current_turn_material_actions": state.get("current_turn_material_actions") or {},
+        "registered_sources": state.get("registered_sources") or [],
     }
 
 

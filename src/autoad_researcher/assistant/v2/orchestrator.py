@@ -9,9 +9,11 @@ import re
 from typing import Any
 
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
-from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
-from autoad_researcher.assistant.v2.research_dialogue_agent import ResearchDialogueAgent
+from autoad_researcher.assistant.v2.research_dialogue_agent import (
+    ResearchDialogueAgent,
+    SourceInstruction,
+)
 from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     load_research_intent_summary,
@@ -22,7 +24,7 @@ from autoad_researcher.assistant.v2.source_actions import (
     plan_explicit_source_actions,
 )
 from autoad_researcher.assistant.v2.source_service import register_source_intake
-from autoad_researcher.ui.sources import load_source_registry, remove_source
+from autoad_researcher.ui.sources import load_source_registry
 
 
 @dataclass
@@ -34,6 +36,7 @@ class OrchestratorResult:
     evidence_used: list[dict[str, Any]] = field(default_factory=list)
     answerability: dict[str, Any] = field(default_factory=dict)
     intent_summary: dict[str, Any] = field(default_factory=dict)
+    source_action: dict[str, str] | None = None
 
 
 class ResearchOrchestratorV2:
@@ -57,13 +60,11 @@ class ResearchOrchestratorV2:
 
         created_sources: list[dict[str, Any]] = []
         created_jobs: list[dict[str, Any]] = []
-        removed_source = _maybe_remove_latest_source(run_dir, user_input)
-
         source_plan = plan_explicit_source_actions(
             user_input=user_input,
             attachments=attachments,
         )
-        if removed_source is None and source_plan is not None:
+        if source_plan is not None:
             created_sources, created_jobs = _execute_source_action_plan(
                 run_dir,
                 user_input,
@@ -79,10 +80,10 @@ class ResearchOrchestratorV2:
             created_jobs.append(target_job)
 
         context = build_llm_context(run_dir, transcript_tail=transcript_tail)
+        context["registered_sources"] = _registered_source_context(run_dir)
         context["current_turn_material_actions"] = {
             "created_sources": created_sources,
             "created_jobs": created_jobs,
-            "removed_source": removed_source,
         }
         previous = load_research_intent_summary(run_dir)
         dialogue = ResearchDialogueAgent.respond(
@@ -96,6 +97,7 @@ class ResearchOrchestratorV2:
         )
         if dialogue.should_persist:
             save_research_intent_summary(run_dir, dialogue.summary)
+        source_action = _validate_source_action(run_dir, dialogue.source_action)
 
         return OrchestratorResult(
             reply=dialogue.visible_reply(),
@@ -104,39 +106,38 @@ class ResearchOrchestratorV2:
             evidence_used=context.get("usable_evidence", []),
             answerability=context.get("answerability", {}),
             intent_summary=dialogue.summary.model_dump(mode="json"),
+            source_action=(
+                source_action.model_dump(mode="json")
+                if source_action is not None
+                else None
+            ),
         )
 
 
-def _maybe_remove_latest_source(run_dir: Path, user_input: str) -> dict[str, Any] | None:
-    if not _is_source_removal_request(user_input):
-        return None
-    sources = _source_registry_sources(run_dir)
-    if not sources:
-        return None
-    latest = max(sources, key=lambda item: str(item.get("created_at") or ""))
-    source_id = str(latest.get("source_id") or "")
-    if not source_id:
-        return None
-    removed = remove_source(run_dir, source_id, reason="user_rejected_latest_upload")
-    if removed is None:
-        return None
-    append_event(run_dir, "source.deleted", {"source_id": source_id})
-    append_event(run_dir, "evidence.updated", {"source_id": source_id})
-    append_event(run_dir, "toast.success", {"message": "已删除误上传资料"})
-    return removed
+def _registered_source_context(run_dir: Path) -> list[dict[str, str]]:
+    return [
+        {
+            "source_id": str(source.get("source_id") or ""),
+            "kind": str(source.get("kind") or ""),
+            "label": str(source.get("user_label") or source.get("stored_path") or ""),
+            "status": str(source.get("status") or ""),
+        }
+        for source in _source_registry_sources(run_dir)
+        if source.get("source_id")
+    ]
 
 
-def _is_source_removal_request(text: str) -> bool:
-    lowered = text.strip().lower()
-    wrong = any(
-        token in lowered
-        for token in ("上传错", "传错", "不是我们要的", "不是我要的", "不相关", "删掉", "删除")
-    )
-    source = any(
-        token in lowered
-        for token in ("资料", "文件", "上传", "source", "evidence", "这个", "刚才")
-    )
-    return wrong and source
+def _validate_source_action(
+    run_dir: Path,
+    action: SourceInstruction | None,
+) -> SourceInstruction | None:
+    if action is None:
+        return None
+    source_ids = {
+        str(source.get("source_id") or "")
+        for source in _source_registry_sources(run_dir)
+    }
+    return action if action.source_id in source_ids else None
 
 
 def _execute_source_action_plan(
