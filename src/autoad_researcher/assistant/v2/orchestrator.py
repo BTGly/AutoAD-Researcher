@@ -11,7 +11,9 @@ from autoad_researcher.assistant.llm_runtime import with_conversation_deadline
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
+    DialogueMode,
     ResearchDialogueAgent,
+    ResearchDialogueResponse,
     SourceInstruction,
     TargetSpec,
 )
@@ -41,6 +43,8 @@ class OrchestratorResult:
     intent_summary: dict[str, Any] = field(default_factory=dict)
     source_action: dict[str, str] | None = None
     experiment_task: dict[str, Any] | None = None
+    dialogue_mode: DialogueMode = "ask"
+    policy_assessment: dict[str, str] = field(default_factory=dict)
 
 
 class ResearchOrchestratorV2:
@@ -93,24 +97,33 @@ class ResearchOrchestratorV2:
             provider_url=provider_url,
             model=model,
             temperature=temperature,
-            on_reply_delta=on_reply_delta,
+            on_reply_delta=None,
         )
         if dialogue.should_persist:
             save_research_intent_summary(run_dir, dialogue.summary)
+        actions_allowed = (
+            dialogue.should_persist
+            and dialogue.policy_assessment.decision == "allow"
+            and dialogue.dialogue_mode in {"ask", "plan"}
+        )
         target_job = _queue_repository_target_spec(
             run_dir,
-            dialogue.target_spec,
+            dialogue.target_spec if actions_allowed else None,
             created_sources=created_sources,
             created_jobs=created_jobs,
         )
         if target_job is not None:
             created_jobs.append(target_job)
-        source_action = _validate_source_action(run_dir, dialogue.source_action)
+        source_action = _validate_source_action(
+            run_dir,
+            dialogue.source_action if actions_allowed else None,
+        )
         experiment_task = None
         if (
-            dialogue.task_action is not None
+            dialogue.dialogue_mode == "plan"
+            and dialogue.task_action is not None
             and dialogue.source_action is None
-            and dialogue.should_persist
+            and actions_allowed
         ):
             try:
                 experiment_task = TaskBridge.build_experiment_task(
@@ -121,8 +134,11 @@ class ResearchOrchestratorV2:
             except (FileExistsError, ValueError):
                 experiment_task = None
 
+        reply = _validated_dialogue_reply(run_dir, dialogue.dialogue_mode, dialogue)
+        if on_reply_delta is not None:
+            on_reply_delta(reply)
         return OrchestratorResult(
-            reply=dialogue.visible_reply(),
+            reply=reply,
             created_sources=created_sources,
             created_jobs=created_jobs,
             evidence_used=context.get("usable_evidence", []),
@@ -134,7 +150,27 @@ class ResearchOrchestratorV2:
                 else None
             ),
             experiment_task=experiment_task,
+            dialogue_mode=dialogue.dialogue_mode,
+            policy_assessment=dialogue.policy_assessment.model_dump(mode="json"),
         )
+
+
+def _validated_dialogue_reply(
+    run_dir: Path,
+    mode: DialogueMode,
+    dialogue: ResearchDialogueResponse,
+) -> str:
+    if mode != "act_request":
+        return dialogue.visible_reply()
+    if not (run_dir / "input_task.yaml").is_file():
+        return (
+            "我不能开始修改代码或运行实验：当前没有已确认的 input_task.yaml，"
+            "自然语言中的“刚才确认”不能替代真实确认记录。请先完成研究任务准备与确认。"
+        )
+    return (
+        "我已识别到执行请求，但当前 V2 对话入口只支持研究对齐和 plan_only 任务准备，"
+        "不能在这里修改代码或运行实验。已确认的任务记录会保留，执行仍需独立的授权与 readiness gate。"
+    )
 
 
 def _registered_source_context(run_dir: Path) -> list[dict[str, str]]:

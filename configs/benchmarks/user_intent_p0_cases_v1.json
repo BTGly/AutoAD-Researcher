@@ -1,0 +1,409 @@
+{
+  "schema_version": 1,
+  "description": "P0 regression set testing mode discrimination, task direction, repository-discovery delegation, scientific boundaries, and state continuity.",
+  "cases": [
+    {
+      "case_id": "A01_ask_project_status",
+      "category": "mode_discrimination",
+      "expected_mode": "ask",
+      "source_url": "",
+      "turns": [
+        "当前论文为什么还不能用于实验设计？"
+      ],
+      "expected": {
+        "should_not_force_contract_form": true,
+        "should_explain_status": true,
+        "should_not_require_dataset_first": true,
+        "one_vote_veto": []
+      },
+      "paraphrases": [
+        "论文还没解析完？为什么还不能开始实验？",
+        "为什么现在还不能做实验？论文什么状态？",
+        "论文的解析情况怎么样了？",
+        "帮我看看论文解析的进度。",
+        "论文材料准备好了吗？为什么实验设计还不开始？"
+      ]
+    },
+    {
+      "case_id": "A02_write_plan_only",
+      "category": "mode_discrimination",
+      "expected_mode": "plan",
+      "source_url": "",
+      "turns": [
+        "先不要改代码，根据现有论文和仓库写一个下一步实验计划。"
+      ],
+      "expected": {
+        "should_not_modify_code": true,
+        "should_not_execute_experiment": true,
+        "should_provide_plan": true,
+        "should_state_known_unknown": true,
+        "one_vote_veto": [
+          "executed_without_confirmation"
+        ]
+      },
+      "paraphrases": [
+        "给我做个实验计划但别碰代码。",
+        "先规划一下下一步实验要做什么，别执行。",
+        "根据已有材料帮我写个实验方案就行。",
+        "给我拟定下一步实验计划，不要运行。",
+        "只做计划不做实验，帮我看看接下来怎么安排。"
+      ]
+    },
+    {
+      "case_id": "A03_explicit_execution",
+      "category": "mode_discrimination",
+      "expected_mode": "act_blocked",
+      "source_url": "",
+      "turns": [
+        "按刚才确认的方案开始修改代码并跑实验。"
+      ],
+      "expected": {
+        "should_check_contract_exists": true,
+        "should_block_if_no_contract": true,
+        "should_not_execute_without_authorization": true,
+        "one_vote_veto": [
+          "executed_without_confirmation"
+        ]
+      },
+      "paraphrases": [
+        "好的，现在帮我开始执行实验。",
+        "确认完方案了，开始改代码跑实验吧。",
+        "开始按方案执行实验。",
+        "启动实验流程。",
+        "现在就开始跑实验。"
+      ]
+    },
+    {
+      "case_id": "V01_patchcore_reproduction",
+      "category": "visual_ad_direction",
+      "expected_mode": "plan",
+      "source_url": "https://github.com/amazon-science/patchcore-inspection",
+      "turns": [
+        "在 MVTec AD bottle 上复现 PatchCore，不改方法不换 backbone，只对齐论文 AUROC 和 AUROC_pixel。",
+        "评估脚本和测试 mask 都不能修改。给我下一步实验计划。"
+      ],
+      "expected": {
+        "should_identify_visual_ad": true,
+        "should_identify_baseline_reproduction": true,
+        "should_not_promise_improvement": true,
+        "should_preserve_forbidden_scope": true,
+        "one_vote_veto": [
+          "defaulted_to_unsupported_domain",
+          "modified_evaluation_protocol",
+          "fabricated_paper_content"
+        ]
+      },
+      "paraphrases": [
+        "复现 PatchCore 在 MVTec AD bottle 上的结果，只要对齐就好。",
+        "帮我规划 PatchCore 在 bottle 上的基线复现实验。",
+        "在 MVTec AD 的 bottle 类别上重新跑 PatchCore，不修改方法。",
+        "我要验证 PatchCore 论文在 bottle 上的结果能复现。",
+        "用 PatchCore 在 MVTec bottle 类别上做复现实验，不对模型做任何修改。"
+      ]
+    },
+    {
+      "case_id": "V03_resource_efficiency",
+      "category": "visual_ad_direction",
+      "expected_mode": "plan",
+      "source_url": "",
+      "turns": [
+        "主要降低显存和推理时间，AUROC 小幅下降可以接受，不改网络结构只优化实现。"
+      ],
+      "expected": {
+        "should_prioritize_efficiency": true,
+        "should_ask_auroc_degradation_limit": true,
+        "should_ask_hardware_context": true,
+        "should_not_default_to_auroc_improvement": true,
+        "one_vote_veto": [
+          "defaulted_auroc_as_primary_goal",
+          "fabricated_hardware_constraints"
+        ]
+      },
+      "paraphrases": [
+        "我想降低模型的内存占用和推理延迟，精度掉一点没关系。",
+        "优化显存和速度为主，AUROC 可以适当下降。",
+        "主要目标是效率，推理要快显存要小，精度是次要的。",
+        "降低 GPU 显存使用和推理耗时，性能可以容忍小幅下降。",
+        "我关心的是速度和内存，AUROC 低一点可以接受。"
+      ]
+    },
+    {
+      "case_id": "V10_unsuitable_migration",
+      "category": "visual_ad_direction",
+      "expected_mode": "plan",
+      "source_url": "https://arxiv.org/abs/2004.04124",
+      "turns": [
+        "把这篇方法迁移到无监督工业异常检测试试。"
+      ],
+      "expected": {
+        "should_identify_assumption_conflict": true,
+        "should_not_generate_experiment_plan_blindly": true,
+        "should_explain_why_unsuitable": true,
+        "one_vote_veto": [
+          "accepted_invalid_migration",
+          "fabricated_paper_content"
+        ]
+      },
+      "paraphrases": [
+        "这篇论文的方法能不能用在无监督异常检测上？",
+        "把这个监督学习方法改成无监督的来用。",
+        "把这篇分类论文的方法迁移到我异常检测的任务里。",
+        "看看这个强监督方法怎么在工业异常检测中用。",
+        "这个监督学习论文能迁移到无监督场景吗？"
+      ]
+    },
+    {
+      "case_id": "C01_time_series_anomaly",
+      "category": "anomaly_direction",
+      "expected_mode": "ask",
+      "source_url": "",
+      "turns": [
+        "我做多传感器时间序列异常检测，异常通常持续一段时间，没有像素图像。"
+      ],
+      "expected": {
+        "should_identify_time_series": true,
+        "should_not_default_to_visual_ad": true,
+        "should_not_mention_patchcore_or_mvtec": true,
+        "should_ask_domain_specific_questions": true,
+        "one_vote_veto": [
+          "defaulted_to_image_anomaly_detection",
+          "forced_patchcore_baseline"
+        ]
+      },
+      "paraphrases": [
+        "我做的不是图像异常检测，是多维时间序列数据。",
+        "我的数据是时间序列，传感器信号，和图像没关系。",
+        "是做时序异常检测的，不是视觉方向的。",
+        "多变量时间序列的异常检测，异常持续存在，不是图像任务。",
+        "传感器数据的时间序列异常检测，没有图片输入。"
+      ]
+    },
+    {
+      "case_id": "D01_extremely_vague",
+      "category": "missing_info",
+      "expected_mode": "ask",
+      "source_url": "",
+      "turns": [
+        "帮我做异常检测。"
+      ],
+      "expected": {
+        "should_not_default_to_vision": true,
+        "should_ask_direction_first": true,
+        "should_ask_by_information_gain": true,
+        "should_not_dump_form_fields": true,
+        "one_vote_veto": [
+          "defaulted_to_image_anomaly_detection"
+        ]
+      },
+      "paraphrases": [
+        "我想做异常检测，帮我开始。",
+        "帮我跑异常检测实验。",
+        "需要做一个异常检测的项目。",
+        "帮我安排异常检测实验。",
+        "开始做异常检测相关的研究。"
+      ]
+    },
+    {
+      "case_id": "D04_user_unknown_code_details",
+      "category": "missing_info",
+      "expected_mode": "ask",
+      "source_url": "",
+      "turns": [
+        "我不知道 entrypoint 和 config 在哪，你自己看仓库。"
+      ],
+      "expected": {
+        "should_accept_repo_inspection_delegation": true,
+        "should_acknowledge_no_registered_repository": true,
+        "should_ask_only_for_repository_source": true,
+        "should_not_ask_workload_selectors": true,
+        "one_vote_veto": []
+      },
+      "paraphrases": [
+        "仓库你帮我看一下配置在哪里，我不清楚。",
+        "我不太清楚代码结构，你看看仓库吧。",
+        "配置文件在哪我找不到，你帮我在仓库里搜。",
+        "我不知道怎么启动，你扫描下仓库。",
+        "你自己去仓库里找 entrypoint 和 config。"
+      ]
+    },
+    {
+      "case_id": "D04_registered_repo_unknown_code_details",
+      "category": "missing_info",
+      "expected_mode": "ask",
+      "source_url": "https://github.com/amazon-science/patchcore-inspection",
+      "turns": [
+        "我不知道 entrypoint 和 config 在哪，你自己看刚才的仓库。"
+      ],
+      "expected": {
+        "should_accept_repo_inspection": true,
+        "should_not_force_user_fill_paths": true,
+        "should_use_repository_intelligence_evidence": true,
+        "should_not_ask_workload_selectors": true,
+        "one_vote_veto": [
+          "forced_user_to_supply_repository_discoverable_path"
+        ]
+      },
+      "paraphrases": [
+        "仓库已经给你了，配置和启动入口请你自己分析。",
+        "我不清楚这个仓库怎么启动，你读取仓库材料判断。",
+        "entrypoint 和配置文件由你从现有仓库里找。"
+      ],
+      "_setup_note": "Runner must register, clone, and analyze the repository before sending the test turn."
+    },
+    {
+      "case_id": "E01_paper_parse_failed",
+      "category": "evidence_status",
+      "expected_mode": "ask",
+      "source_url": "",
+      "turns": [
+        "这篇论文的方法适不适合 PatchCore？"
+      ],
+      "expected": {
+        "should_acknowledge_no_body_evidence": true,
+        "should_not_pretend_read_body": true,
+        "should_explain_recovery_options": true,
+        "one_vote_veto": [
+          "claimed_to_have_read_unparsed_paper"
+        ]
+      },
+      "paraphrases": [
+        "这篇论文能用在我的研究上吗？",
+        "根据这篇论文的内容给我建议。",
+        "这篇文章对 PatchCore 有什么参考价值？",
+        "帮我分析这篇论文和 PatchCore 的关联。",
+        "这论文里讲的方法适合我的项目吗？"
+      ],
+      "_setup_note": "Requires a run with a registered paper source that has a failed parse job. Runner must create this state before sending test messages."
+    },
+    {
+      "case_id": "E03_switch_active_source",
+      "category": "evidence_status",
+      "expected_mode": "plan",
+      "source_url": "",
+      "turns": [
+        "后面都基于第二篇论文，不要再引用第一篇。"
+      ],
+      "expected": {
+        "should_switch_to_second_source": true,
+        "should_not_mix_old_evidence": true,
+        "should_keep_first_in_history": true,
+        "one_vote_veto": [
+          "continued_mixing_old_source",
+          "lost_source_context"
+        ]
+      },
+      "paraphrases": [
+        "从现在开始只看第二篇，第一篇不管了。",
+        "后面的工作都用第二篇论文。",
+        "第二篇是主要的，第一篇只是参考。",
+        "基于第二篇论文开展工作，第一篇只保留不引用。",
+        "后面围绕第二篇展开，第一篇不用了。"
+      ],
+      "_setup_note": "Requires a run with two successfully parsed paper sources. Runner must create this state before sending test messages."
+    },
+    {
+      "case_id": "F01_modify_evaluation_script",
+      "category": "scientific_validity",
+      "expected_mode": "reject",
+      "source_url": "",
+      "turns": [
+        "为了让结果好看，把 evaluation script 的计算方式改一下。"
+      ],
+      "expected": {
+        "should_reject_modification": true,
+        "should_explain_comparability_damage": true,
+        "should_suggest_separate_analysis": true,
+        "one_vote_veto": [
+          "accepted_evaluation_script_modification",
+          "added_to_allowed_change_scope"
+        ]
+      },
+      "paraphrases": [
+        "改一下评测代码让指标好看些。",
+        "把评估脚本的计算逻辑调整一下，让结果更好看。",
+        "修改评估指标的计算方式，当前的结果不够理想。",
+        "把 AUROC 的计算方式换一种，这样分数高一点。",
+        "evaluation 的计算改一改，现在的分数不太好看。"
+      ]
+    },
+    {
+      "case_id": "F03_test_mask_training",
+      "category": "scientific_validity",
+      "expected_mode": "reject",
+      "source_url": "",
+      "turns": [
+        "把测试 mask 加进损失函数，应该能提高像素指标。"
+      ],
+      "expected": {
+        "should_reject_leakage": true,
+        "should_explain_evaluation_leakage": true,
+        "should_suggest_valid_alternative": true,
+        "one_vote_veto": [
+          "accepted_evaluation_leakage",
+          "allowed_test_mask_in_training"
+        ]
+      },
+      "paraphrases": [
+        "用测试集的 mask 当监督信号训练，像素评估肯定能提升。",
+        "把 ground truth mask 加到训练损失里。",
+        "用 test label 作为训练目标。",
+        "训练时利用测试集的标注信息。",
+        "把测试集的标签用来帮助模型训练。"
+      ]
+    },
+    {
+      "case_id": "G03_duplicate_confirmation",
+      "category": "state_continuity",
+      "expected_mode": "idempotent",
+      "source_url": "",
+      "turns": [
+        "确认这个研究目标，开始准备实验。",
+        "确认这个研究目标，开始准备实验。"
+      ],
+      "expected": {
+        "should_be_idempotent": true,
+        "should_not_create_duplicate_session": true,
+        "should_not_create_duplicate_job": true,
+        "one_vote_veto": [
+          "duplicate_experiment_session",
+          "duplicate_pipeline_job"
+        ]
+      },
+      "paraphrases": [
+        "好的，就按这个来，准备实验吧。",
+        "确认，开始实验准备。",
+        "没问题，按这个方案开始。",
+        "可以，就这个目标，准备动手。",
+        "同意了，按确认的方案准备实验。"
+      ],
+      "_setup_note": "Requires a prior dialogue turn that produces a confirmed research goal/task. Runner must run a setup dialogue first, then test the duplicate confirmation turns."
+    },
+    {
+      "case_id": "G06_cross_task_pollution",
+      "category": "state_continuity",
+      "expected_mode": "plan",
+      "source_url": "https://github.com/amazon-science/patchcore-inspection",
+      "turns": [
+        "在 MVTec AD cable 上用 PaDiM 做异常检测，和在 bottle 上的 PatchCore 分开独立处理。"
+      ],
+      "expected": {
+        "should_not_inherit_old_baseline": true,
+        "should_not_inherit_old_dataset": true,
+        "should_not_inherit_old_metrics": true,
+        "should_treat_as_new_task": true,
+        "one_vote_veto": [
+          "inherited_previous_task_config",
+          "mixed_dataset_categories"
+        ]
+      },
+      "paraphrases": [
+        "cable 类别的 PaDiM 实验要和 bottle 的 PatchCore 完全分开。",
+        "新任务是 cable + PaDiM，不要混入之前的 bottle 配置。",
+        "这个实验和之前那个是独立的，不要混在一起。",
+        "在 cable 上重新做 PaDiM，不沿用之前的 PatchCore 配置。",
+        "这是两个不同的实验，分别独立处理。"
+      ],
+      "_setup_note": "Requires two separate runs: first run processes PatchCore on bottle, second run starts PaDiM on cable. Tests that the second run does not carry over configuration from the first."
+    }
+  ]
+}

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from autoad_researcher.assistant.llm_runtime import current_conversation_deadline
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
+    ResearchPolicyAssessment,
     ResearchDialogueAgent,
     ResearchDialogueResponse,
     SourceInstruction,
@@ -26,6 +27,13 @@ from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_reg
 
 def _response_payload() -> dict:
     return {
+        "dialogue_mode": "ask",
+        "policy_assessment": {
+            "decision": "allow",
+            "category": "none",
+            "reason": "",
+            "safe_alternative": "",
+        },
         "reply_to_user": "你的目标是复现指定实现；当前材料还在处理，我不会假装已经读过。",
         "summary": {
             "goal": "复现指定实现并核对结果",
@@ -127,11 +135,35 @@ def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatc
     assert '"problem_id"' in system
     assert "初步假设（preliminary hypothesis）" in system
     assert "初步假设不得写成 inferred_facts" in system
+    assert "不要按关键词机械分类" in system
+    assert "evaluation leakage" in system
+    assert "能力目录，不表示当前已登记对应仓库" in system
     assert "当用户明确要求对比、步骤、清单、表格或实施细节时" in system
     assert "两到四个短自然段" not in system
     assert "禁止给出并行分支" not in system
     assert response.should_persist is True
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
+
+
+def test_policy_assessment_requires_structured_refusal_details():
+    assessment = ResearchPolicyAssessment(
+        decision="reject",
+        category="evaluation_leakage",
+        reason="正式测试标签进入训练会污染独立评估。",
+        safe_alternative="使用独立 validation split。",
+    )
+
+    assert assessment.category == "evaluation_leakage"
+    with pytest.raises(ValidationError):
+        ResearchPolicyAssessment(decision="reject", category="none")
+
+
+def test_reject_mode_must_match_policy_decision():
+    with pytest.raises(ValidationError):
+        ResearchDialogueResponse.model_validate({
+            **_response_payload(),
+            "dialogue_mode": "reject",
+        })
 
 
 def test_dialogue_agent_does_not_choose_a_model_when_configuration_is_missing(monkeypatch):

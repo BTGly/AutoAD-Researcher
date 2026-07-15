@@ -124,8 +124,9 @@ def test_research_task_draft_profile_separates_candidate_and_confirmed_parameter
 
 
 def test_research_dialogue_profile_registers_production_contract():
-    profile = get_default_prompt_registry().require("assistant.research_dialogue.v1")
+    profile = get_default_prompt_registry().require("assistant.research_dialogue.v2")
 
+    assert profile.prompt_version == "v2"
     assert profile.assistant_stage == "understanding_intent"
     assert profile.io.input_schema == "ResearchDialogueContext"
     assert profile.io.output_schema == "ResearchDialogueResponse"
@@ -133,6 +134,7 @@ def test_research_dialogue_profile_registers_production_contract():
     assert "preliminary hypothesis" in profile.system_prompt
     assert "request_source_removal" not in profile.system_prompt
     assert "source_action" in profile.system_prompt
+    assert "evaluation leakage" in profile.system_prompt
 
 
 def test_progress_digest_profile_is_user_visible_but_hides_raw_internals():

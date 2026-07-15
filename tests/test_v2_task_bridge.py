@@ -139,6 +139,7 @@ def test_orchestrator_typed_task_action_only_prepares_plan_only_input(monkeypatc
         "autoad_researcher.ui.chat_client.call_research_chat",
         lambda *args, **kwargs: {
             "reply": json.dumps({
+                "dialogue_mode": "plan",
                 "reply_to_user": "目标已对齐，可以准备 plan_only 实验输入供你确认。",
                 "summary": {
                     "goal": "比较候选方法",
@@ -168,3 +169,86 @@ def test_orchestrator_typed_task_action_only_prepares_plan_only_input(monkeypatc
     assert not (run_dir / "input_task.yaml").exists()
     assert load_pipeline_jobs(run_dir) == []
     assert not (run_dir / "experiments" / "sessions").exists()
+
+
+def test_orchestrator_reject_mode_drops_all_candidate_actions(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_rejected_task_action"
+    run_dir.mkdir()
+    save_research_intent_summary(run_dir, _ready_summary())
+
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {
+            "reply": json.dumps({
+                "dialogue_mode": "reject",
+                "policy_assessment": {
+                    "decision": "reject",
+                    "category": "evaluation_leakage",
+                    "reason": "正式测试 mask 不能成为训练信号。",
+                    "safe_alternative": "使用独立 validation split。",
+                },
+                "reply_to_user": "我不能把正式测试 mask 加进训练损失。",
+                "summary": _ready_summary().model_dump(mode="json"),
+                "task_action": {"action": "prepare_experiment_task"},
+                "target_spec": {
+                    "adapter_id": "kernelbench",
+                    "selectors": {"level": 2, "problem_id": 40},
+                },
+            }, ensure_ascii=False),
+            "error": "",
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="把正式测试 mask 加进损失函数",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.dialogue_mode == "reject"
+    assert result.policy_assessment["category"] == "evaluation_leakage"
+    assert result.experiment_task is None
+    assert result.created_jobs == []
+    assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()
+
+
+def test_orchestrator_act_request_is_explicitly_blocked_without_confirmed_task(
+    monkeypatch,
+    tmp_path: Path,
+):
+    run_dir = tmp_path / "run_act_blocked"
+    run_dir.mkdir()
+
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {
+            "reply": json.dumps({
+                "dialogue_mode": "act_request",
+                "reply_to_user": "开始执行。",
+                "summary": {
+                    "goal": "执行实验",
+                    "confirmed_facts": ["用户要求执行"],
+                    "inferred_facts": [],
+                    "unresolved_conflicts": [],
+                    "blocking_question": None,
+                },
+                "task_action": {"action": "prepare_experiment_task"},
+            }, ensure_ascii=False),
+            "error": "",
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="按刚才确认的方案开始修改代码并跑实验",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.dialogue_mode == "act_request"
+    assert "没有已确认的 input_task.yaml" in result.reply
+    assert result.experiment_task is None
+    assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()

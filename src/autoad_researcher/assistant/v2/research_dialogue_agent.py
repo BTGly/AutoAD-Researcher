@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
@@ -35,17 +35,66 @@ class TargetSpec(BaseModel):
     selectors: dict[str, Any]
 
 
+DialogueMode = Literal["ask", "plan", "act_request", "reject"]
+PolicyCategory = Literal[
+    "none",
+    "evaluation_leakage",
+    "evaluation_manipulation",
+    "evidence_falsification",
+    "evidence_destruction",
+    "unsafe_operation",
+]
+
+
+class ResearchPolicyAssessment(BaseModel):
+    """Semantic research-policy decision proposed by the dialogue model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["allow", "reject"] = "allow"
+    category: PolicyCategory = "none"
+    reason: str = ""
+    safe_alternative: str = ""
+
+    @model_validator(mode="after")
+    def _validate_decision(self) -> "ResearchPolicyAssessment":
+        if self.decision == "allow":
+            if self.category != "none":
+                raise ValueError("allow policy decision requires category=none")
+            if self.reason or self.safe_alternative:
+                raise ValueError("allow policy decision must not carry refusal details")
+        else:
+            if self.category == "none":
+                raise ValueError("reject policy decision requires a policy category")
+            if not self.reason.strip():
+                raise ValueError("reject policy decision requires a reason")
+            if not self.safe_alternative.strip():
+                raise ValueError("reject policy decision requires a safe alternative")
+        return self
+
+
 class ResearchDialogueResponse(BaseModel):
     """Schema-bound result of one research dialogue turn."""
 
     model_config = ConfigDict(extra="forbid")
 
+    dialogue_mode: DialogueMode = "ask"
+    policy_assessment: ResearchPolicyAssessment = Field(
+        default_factory=ResearchPolicyAssessment,
+    )
     reply_to_user: str = Field(min_length=1)
     summary: ResearchIntentSummary
     source_action: SourceInstruction | None = None
     task_action: TaskInstruction | None = None
     target_spec: TargetSpec | None = None
     _should_persist: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="after")
+    def _validate_mode_policy(self) -> "ResearchDialogueResponse":
+        rejected = self.policy_assessment.decision == "reject"
+        if rejected != (self.dialogue_mode == "reject"):
+            raise ValueError("dialogue_mode=reject must match policy_assessment.decision=reject")
+        return self
 
     @property
     def should_persist(self) -> bool:
@@ -143,7 +192,7 @@ class ResearchDialogueAgent:
 当前可用材料：{evidence_summary}
 上一轮研究摘要：{previous}
 最近对话：{recent_dialogue}
-可用仓库目标 Adapter：{target_adapters}"""
+系统支持的仓库目标 Adapter（能力目录，不表示当前已登记对应仓库）：{target_adapters}"""
         system = behavior_contract.rstrip() + "\n\n" + runtime_context
         return [
             {"role": "system", "content": system},

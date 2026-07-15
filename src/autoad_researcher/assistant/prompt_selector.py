@@ -34,7 +34,7 @@ _MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = {
 MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = _MODE_TO_STAGE
 
 RESEARCH_TASK_DRAFT_PROMPT_ID = "assistant.research_task_draft.v1"
-RESEARCH_DIALOGUE_PROMPT_ID = "assistant.research_dialogue.v1"
+RESEARCH_DIALOGUE_PROMPT_ID = "assistant.research_dialogue.v2"
 
 _RESEARCH_CHAT_MODE_TO_PROMPT: dict[str, str] = {
     "intent_clarification": "assistant.material_alignment.v1",
