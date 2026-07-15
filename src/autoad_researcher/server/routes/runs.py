@@ -1,5 +1,4 @@
 import json
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,11 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.core.run_lifecycle import (
+    abort_run_creation,
+    begin_run_creation,
     begin_run_deletion,
-    create_run_lifecycle,
     finalize_run_deletion,
     lifecycle_exists,
+    publish_run_creation,
     run_operation_lease,
+    staging_run_dir,
 )
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_lifecycle import active_run_lease
@@ -94,16 +96,31 @@ async def create_run(req: CreateRunRequest | None = None):
         suffix = now.strftime("%f")
         run_id = f"{run_id}_{suffix}"
         run_dir = run_dir_path(RUNS_ROOT, run_id)
-    run_dir.mkdir(parents=True, exist_ok=False)
-    (run_dir / "sources").mkdir(exist_ok=True)
-    (run_dir / "ui_chat").mkdir(exist_ok=True)
-    (run_dir / "context").mkdir(exist_ok=True)
-    (run_dir / "chat").mkdir(exist_ok=True)
+    lifecycle = begin_run_creation(RUNS_ROOT, run_id, created_at=now)
+    staging_dir = staging_run_dir(RUNS_ROOT, run_id, lifecycle.generation)
     try:
-        create_task_profile(run_dir=run_dir, run_id=run_id, task_title=task_title, created_at=now)
-        create_run_lifecycle(RUNS_ROOT, run_id, created_at=now)
+        staging_dir.mkdir(parents=True, exist_ok=False)
+        (staging_dir / "sources").mkdir()
+        (staging_dir / "ui_chat").mkdir()
+        (staging_dir / "context").mkdir()
+        (staging_dir / "chat").mkdir()
+        create_task_profile(
+            run_dir=staging_dir,
+            run_id=run_id,
+            task_title=task_title,
+            created_at=now,
+        )
+        publish_run_creation(
+            RUNS_ROOT,
+            run_id,
+            generation=lifecycle.generation,
+        )
     except Exception:
-        shutil.rmtree(run_dir, ignore_errors=True)
+        abort_run_creation(
+            RUNS_ROOT,
+            run_id,
+            generation=lifecycle.generation,
+        )
         raise
     return _run_info(run_dir)
 

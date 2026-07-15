@@ -6,6 +6,7 @@ from fastapi import BackgroundTasks
 
 from autoad_researcher.server.routes import runs as runs_route
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
+from autoad_researcher.core.run_lifecycle import lifecycle_root, load_run_lifecycle
 
 
 @pytest.mark.asyncio
@@ -17,6 +18,9 @@ async def test_create_list_rename_and_transcript(tmp_path: Path, monkeypatch):
     assert created.task_title == "PatchCore Task"
     assert created.sources_count == 0
     assert created.archived_at is None
+    assert load_run_lifecycle(tmp_path, created.run_id).status == "active"
+    staging_root = tmp_path / ".control" / "staging"
+    assert not staging_root.exists() or list(staging_root.iterdir()) == []
 
     run_dir = tmp_path / created.run_id
     artifact_marker = run_dir / "context" / "directory-must-not-change.txt"
@@ -66,3 +70,28 @@ async def test_archive_restore_and_delete_session(tmp_path: Path, monkeypatch):
     assert deleted.status_code == 202
     await background()
     assert not (tmp_path / created.run_id).exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_run_creation_leaves_no_publishable_directory(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(runs_route, "RUNS_ROOT", str(tmp_path))
+
+    def fail_task_profile(**kwargs):
+        raise OSError("simulated task profile write failure")
+
+    monkeypatch.setattr(runs_route, "create_task_profile", fail_task_profile)
+
+    with pytest.raises(OSError, match="simulated task profile write failure"):
+        await runs_route.create_run(runs_route.CreateRunRequest(task_title="Will Fail"))
+
+    records = sorted(lifecycle_root(tmp_path).glob("*.json"))
+    assert len(records) == 1
+    record = load_run_lifecycle(tmp_path, records[0].stem)
+    assert record is not None and record.status == "deleted"
+    assert not (tmp_path / record.run_id).exists()
+    staging_root = tmp_path / ".control" / "staging"
+    assert not staging_root.exists() or list(staging_root.iterdir()) == []
+    assert await runs_route.list_runs(include_archived=True) == []

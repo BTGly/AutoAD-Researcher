@@ -27,10 +27,14 @@ async def health():
 @app.on_event("startup")
 async def start_embedded_worker():
     global _worker_task
-    from autoad_researcher.core.run_lifecycle import recover_incomplete_run_deletions
+    from autoad_researcher.core.run_lifecycle import (
+        recover_incomplete_run_creations,
+        recover_incomplete_run_deletions,
+    )
     from autoad_researcher.server.config import RUNS_ROOT
     from autoad_researcher.server.worker_runtime import embedded_worker_enabled, embedded_worker_loop
 
+    await asyncio.to_thread(recover_incomplete_run_creations, RUNS_ROOT)
     await asyncio.to_thread(recover_incomplete_run_deletions, RUNS_ROOT)
     if embedded_worker_enabled() and _worker_task is None:
         _worker_task = asyncio.create_task(embedded_worker_loop())
