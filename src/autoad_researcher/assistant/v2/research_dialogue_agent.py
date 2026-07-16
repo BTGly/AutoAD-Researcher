@@ -16,11 +16,11 @@ from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_reg
 
 
 class SourceInstruction(BaseModel):
-    """A destructive source action that still requires user confirmation."""
+    """A typed candidate action against one registered source."""
 
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["request_source_removal"]
+    action: Literal["request_source_removal", "request_source_reparse"]
     source_id: str = Field(min_length=1)
     label_hint: str = ""
     reason: str = ""
@@ -104,6 +104,7 @@ class GatedDialogueDecision(BaseModel):
     dialogue_mode: DialogueMode
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
+    source_permission: dict[str, Any] | None = None
     task_action: TaskInstruction | None = None
     target_spec: TargetSpec | None = None
     execution_gate: ExecutionGate = "not_requested"

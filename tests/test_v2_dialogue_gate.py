@@ -137,6 +137,59 @@ def test_gate_keeps_valid_source_or_target_candidate(tmp_path: Path):
     assert gated_target.target_spec == target.target_spec
 
 
+def test_gate_allows_registered_pdf_reparse_and_audits_permission(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act_request",
+        policy_assessment=_allow_policy(),
+        source_action=SourceInstruction(
+            action="request_source_reparse",
+            source_id="src_paper",
+        ),
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[{
+            "source_id": "src_paper",
+            "kind": "paper_pdf",
+            "stored_path": "sources/src_paper/paper.pdf",
+        }],
+    )
+
+    assert gated.source_action is not None
+    assert gated.source_action.action == "request_source_reparse"
+    assert gated.source_permission is not None
+    assert gated.source_permission["permission_decision"] == "allow"
+    assert gated.execution_gate == "not_requested"
+    assert (tmp_path / "assistant" / "permission_decisions.jsonl").is_file()
+
+
+def test_gate_rejects_reparse_without_registered_pdf_input(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act_request",
+        policy_assessment=_allow_policy(),
+        source_action=SourceInstruction(
+            action="request_source_reparse",
+            source_id="src_summary_only",
+        ),
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[{
+            "source_id": "src_summary_only",
+            "kind": "paper_pdf",
+            "stored_path": "",
+        }],
+    )
+
+    assert gated.source_action is None
+    assert gated.source_permission is None
+    assert "source_reparse_unavailable" in gated.gate_notes
+
+
 def test_task_action_requires_plan_goal_and_no_blocker(tmp_path: Path):
     decision = _valid(DialogueDecision(
         dialogue_mode="plan",

@@ -9,6 +9,10 @@ from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueDecision,
     GatedDialogueDecision,
 )
+from autoad_researcher.assistant.v2.dialogue_permissions import (
+    decide_source_action_permission,
+    source_can_reparse,
+)
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
 from autoad_researcher.assistant.v2.task_bridge import (
     BRIDGE_DIR,
@@ -16,6 +20,7 @@ from autoad_researcher.assistant.v2.task_bridge import (
     TaskInstruction,
 )
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
+from autoad_researcher.tools import append_permission_decision
 
 
 class DialogueGate:
@@ -52,26 +57,51 @@ class DialogueGate:
             decision.is_valid
             and decision_consistent
             and policy.decision == "allow"
-            and mode in {"ask", "plan"}
         )
+        source_permission: dict[str, Any] | None = None
         if not actions_allowed:
             source_action = None
             task_action = None
             target_spec = None
         else:
-            source_ids = {
-                str(item.get("source_id") or "")
+            source_by_id = {
+                str(item.get("source_id") or ""): item
                 for item in registered_sources
                 if item.get("source_id")
             }
-            if source_action is not None and source_action.source_id not in source_ids:
-                source_action = None
-                notes.append("unregistered_source_action_removed")
+            if source_action is not None:
+                source = source_by_id.get(source_action.source_id)
+                if source is None:
+                    source_action = None
+                    notes.append("unregistered_source_action_removed")
+                elif (
+                    source_action.action == "request_source_reparse"
+                    and not source_can_reparse(source)
+                ):
+                    source_action = None
+                    notes.append("source_reparse_unavailable")
+                else:
+                    permission = decide_source_action_permission(
+                        run_dir=run_dir,
+                        action=source_action,
+                        source=source,
+                    )
+                    append_permission_decision(
+                        run_dir / "assistant" / "permission_decisions.jsonl",
+                        permission,
+                    )
+                    source_permission = permission.model_dump(mode="json")
+                    if permission.permission_decision == "deny":
+                        source_action = None
+                        notes.append("source_action_permission_denied")
             if source_action is not None:
                 task_action = None
                 target_spec = None
             elif mode != "plan":
                 task_action = None
+            if mode not in {"ask", "plan"}:
+                task_action = None
+                target_spec = None
             elif task_action is not None and (
                 run_dir / BRIDGE_DIR / PENDING_TASK_FILE
             ).is_file():
@@ -87,7 +117,7 @@ class DialogueGate:
                     notes.append("invalid_target_spec_removed")
 
         execution_gate = "not_requested"
-        if mode == "act_request":
+        if mode == "act_request" and source_action is None:
             execution_gate = (
                 "blocked_dialogue_only"
                 if (run_dir / "input_task.yaml").is_file()
@@ -98,6 +128,7 @@ class DialogueGate:
             dialogue_mode=mode,
             policy_assessment=policy,
             source_action=source_action,
+            source_permission=source_permission,
             task_action=task_action,
             target_spec=target_spec,
             execution_gate=execution_gate,

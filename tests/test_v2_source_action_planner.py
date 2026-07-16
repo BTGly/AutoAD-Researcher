@@ -442,6 +442,78 @@ def test_orchestrator_rejects_removal_action_for_unknown_source(monkeypatch, tmp
     assert result.source_action is None
 
 
+def test_orchestrator_queues_one_authorized_source_reparse(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_reparse"
+    source_dir = run_dir / "sources" / "src_paper"
+    source_dir.mkdir(parents=True)
+    (source_dir / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    (run_dir / "sources" / "source_references.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "sources": [{
+                "source_id": "src_paper",
+                "kind": "paper_pdf",
+                "user_label": "paper.pdf",
+                "stored_path": "sources/src_paper/paper.pdf",
+                "status": "parsed",
+                "parse_attempts": [{"parse_attempt_id": "pa_old", "status": "ok"}],
+                "active_parse_attempt_id": "pa_old",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    decision = _allow_decision(
+        dialogue_mode="act_request",
+        source_action={
+            "action": "request_source_reparse",
+            "source_id": "src_paper",
+            "label_hint": "paper.pdf",
+            "reason": "用户明确要求重新解析",
+        },
+    )
+    reply = {
+        "reply_to_user": "我会创建新的解析尝试，保留当前解析记录。",
+        "summary": {
+            "goal": "重新解析当前论文",
+            "confirmed_facts": ["用户明确要求重新解析当前论文"],
+            "inferred_facts": [],
+            "unresolved_conflicts": [],
+            "blocking_question": None,
+        },
+    }
+    replies = iter([decision, reply, decision, reply])
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(next(replies), ensure_ascii=False), "error": ""},
+    )
+
+    first = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="重新解析最新版论文。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+    second = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="重新解析最新版论文。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    jobs = load_pipeline_jobs(run_dir)
+    assert [job["job_type"] for job in jobs] == ["paper_parse_mineru"]
+    assert first.created_jobs[-1]["job_id"] == jobs[0]["job_id"]
+    assert second.created_jobs == []
+    assert first.source_permission is not None
+    assert first.source_permission["permission_decision"] == "allow"
+    registry = load_source_registry(run_dir)
+    assert registry["sources"][0]["parse_attempts"][0]["parse_attempt_id"] == "pa_old"
+    decisions = (run_dir / "assistant" / "permission_decisions.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(decisions) == 2
+
+
 def test_worker_web_search_wraps_pipeline_job_for_material_subagent(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_search"
     run_dir.mkdir()

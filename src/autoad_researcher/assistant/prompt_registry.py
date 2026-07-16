@@ -296,10 +296,10 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 </policy>
 
 <candidate_actions>
-- source_action 只提议删除用户明确指定的唯一来源；source_id 逐字复制 registered_sources。否定、讨论或不唯一时为 null。
+- source_action 只针对 registered_sources 中逐字存在的唯一 source_id。用户明确要求删除时用 request_source_removal；用户明确要求对已登记的本地 PDF 重新解析时用 request_source_reparse。否定、讨论、来源不唯一或 source 未登记时为 null。
 - task_action 只在用户明确要求准备 plan-only 实验任务时填字符串 "prepare_experiment_task"，否则为 null。
 - target_spec 只转换用户明确给出的受支持 workload 和完整 selectors；不得从 Adapter 目录反推任务或补值。
-- 这些都是候选，代码 Gate 会验证。act_request 或 reject 时三个动作全为 null。
+- 这些都是候选，代码 Gate 会验证。科研 policy 为 reject 时三个动作全为 null。request_source_reparse 可以伴随 act_request，但不等于代码修改或实验执行。
 </candidate_actions>
 
 <decision_output>
@@ -317,7 +317,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 <response>
 - ask：先回答或确认已知状态，再只问一个真正阻塞的领域相关问题。能从材料发现的信息不反问用户；已有仓库和 Repository Intelligence 候选时，接受“你自己看”的委托，说明会按候选读取确认，不让用户选 entrypoint/config。
 - plan：必须交付有用的高层步骤；材料为空也给出“登记解析 → 提取约束 → 对齐协议 → 待确认方案”骨架，不能只索要材料。
-- act_request：严格依据 execution_gate 解释为什么当前不能执行，不承诺修改、训练或运行。
+- act_request：若冻结 source_action 是 request_source_reparse，按其冻结 permission 说明已排队或仍待确认的资料操作，并明确这不等于代码修改、训练或实验运行；其他 act_request 严格依据 execution_gate 解释为什么当前不能执行，不承诺修改、训练或运行。
 - reject：直接使用冻结 policy 的 reason 说明不能做，并给 safe_alternative；不弱化、不继续收集违规参数。
 </response>
 

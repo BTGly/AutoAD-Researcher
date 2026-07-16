@@ -10,6 +10,7 @@ from typing import Any
 from autoad_researcher.assistant.llm_runtime import with_conversation_deadline
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
+from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueMode,
@@ -45,6 +46,7 @@ class OrchestratorResult:
     answerability: dict[str, Any] = field(default_factory=dict)
     intent_summary: dict[str, Any] = field(default_factory=dict)
     source_action: dict[str, str] | None = None
+    source_permission: dict[str, Any] | None = None
     experiment_task: dict[str, Any] | None = None
     dialogue_mode: DialogueMode = "ask"
     policy_assessment: dict[str, str] = field(default_factory=dict)
@@ -156,10 +158,14 @@ class ResearchOrchestratorV2:
         )
         if target_job is not None:
             created_jobs.append(target_job)
-        source_action = _validate_source_action(
+        source_action = _validate_source_action(run_dir, decision.source_action)
+        source_job = _dispatch_allowed_source_action(
             run_dir,
-            decision.source_action if actions_allowed else None,
-        )
+            source_action,
+            decision.source_permission,
+        ) if reply_response.should_persist else None
+        if source_job is not None:
+            created_jobs.append(source_job)
         experiment_task = None
         if actions_allowed and DialogueGate.task_action_allowed(
             decision,
@@ -189,6 +195,7 @@ class ResearchOrchestratorV2:
                 if source_action is not None
                 else None
             ),
+            source_permission=decision.source_permission,
             experiment_task=experiment_task,
             dialogue_mode=decision.dialogue_mode,
             policy_assessment=decision.policy_assessment.model_dump(mode="json"),
@@ -199,7 +206,7 @@ def _validated_dialogue_reply(
     decision: GatedDialogueDecision,
     reply_response: ResearchReplyResponse,
 ) -> str:
-    if decision.dialogue_mode != "act_request":
+    if decision.dialogue_mode != "act_request" or decision.source_action is not None:
         return reply_response.visible_reply()
     if decision.execution_gate == "blocked_missing_contract":
         return (
@@ -219,6 +226,7 @@ def _registered_source_context(run_dir: Path) -> list[dict[str, str]]:
             "kind": str(source.get("kind") or ""),
             "label": str(source.get("user_label") or source.get("stored_path") or ""),
             "status": str(source.get("status") or ""),
+            "stored_path": str(source.get("stored_path") or ""),
         }
         for source in _source_registry_sources(run_dir)
         if source.get("source_id")
@@ -236,6 +244,46 @@ def _validate_source_action(
         for source in _source_registry_sources(run_dir)
     }
     return action if action.source_id in source_ids else None
+
+
+def _dispatch_allowed_source_action(
+    run_dir: Path,
+    action: SourceInstruction | None,
+    permission: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if (
+        action is None
+        or action.action != "request_source_reparse"
+        or permission is None
+        or permission.get("permission_decision") != "allow"
+    ):
+        return None
+    existing = [
+        job for job in load_pipeline_jobs(run_dir)
+        if job.get("source_id") == action.source_id
+        and job.get("job_type") == "paper_parse_mineru"
+        and job.get("status") in {"queued", "running"}
+        and isinstance(job.get("payload"), dict)
+        and job["payload"].get("requested_action") == action.action
+    ]
+    if existing:
+        return None
+    job = append_pipeline_job(
+        run_dir,
+        source_id=action.source_id,
+        job_type="paper_parse_mineru",
+        evidence_role="parsed_paper_evidence",
+        payload={
+            "requested_action": action.action,
+            "source_action": action.model_dump(mode="json"),
+        },
+    )
+    append_event(
+        run_dir,
+        "source.reparse_queued",
+        {"source_id": action.source_id, "job_id": job["job_id"]},
+    )
+    return job
 
 
 def _execute_source_action_plan(
