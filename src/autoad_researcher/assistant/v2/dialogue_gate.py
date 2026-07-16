@@ -38,13 +38,20 @@ class DialogueGate:
         policy = decision.policy_assessment
         notes: list[str] = []
         decision_consistent = True
+        action_policy = decision.policy
 
         if policy.decision == "reject":
-            mode = "reject"
+            action_policy = "deny"
+            if mode == "reject":
+                mode = "ask"
+                notes.append("legacy_reject_mode_normalized")
         elif mode == "reject":
             mode = "ask"
             decision_consistent = False
             notes.append("reject_mode_without_reject_policy_removed")
+        if mode == "act_request":
+            mode = "act"
+            notes.append("legacy_act_request_mode_normalized")
 
         source_action = decision.source_action
         task_action = (
@@ -56,7 +63,7 @@ class DialogueGate:
         actions_allowed = (
             decision.is_valid
             and decision_consistent
-            and policy.decision == "allow"
+            and action_policy != "deny"
         )
         source_permission: dict[str, Any] | None = None
         if not actions_allowed:
@@ -117,7 +124,17 @@ class DialogueGate:
                     notes.append("invalid_target_spec_removed")
 
         execution_gate = "not_requested"
-        if mode == "act_request" and source_action is None:
+        action_scope = "none"
+        if source_action is not None:
+            action_scope = "source"
+        elif target_spec is not None:
+            action_scope = "repository"
+        elif task_action is not None:
+            action_scope = "experiment"
+        if decision.action_scope != action_scope:
+            notes.append("action_scope_normalized")
+
+        if mode == "act" and source_action is None:
             execution_gate = (
                 "blocked_dialogue_only"
                 if (run_dir / "input_task.yaml").is_file()
@@ -126,6 +143,12 @@ class DialogueGate:
 
         return GatedDialogueDecision(
             dialogue_mode=mode,
+            action_scope=action_scope,
+            policy=action_policy,
+            evidence_status=decision.evidence_status,
+            conversation_transition=decision.conversation_transition,
+            feasibility=decision.feasibility,
+            numeric_claim_allowed=decision.numeric_claim_allowed,
             policy_assessment=policy,
             source_action=source_action,
             source_permission=source_permission,
@@ -142,7 +165,7 @@ class DialogueGate:
     ) -> bool:
         return (
             decision.dialogue_mode == "plan"
-            and decision.policy_assessment.decision == "allow"
+            and decision.policy == "allow"
             and decision.task_action is not None
             and decision.source_action is None
             and bool(summary.goal.strip())

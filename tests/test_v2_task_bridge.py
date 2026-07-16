@@ -216,7 +216,8 @@ def test_orchestrator_reject_mode_drops_all_candidate_actions(monkeypatch, tmp_p
         model="configured-dialogue-model",
     )
 
-    assert result.dialogue_mode == "reject"
+    assert result.dialogue_mode == "plan"
+    assert result.policy == "deny"
     assert result.policy_assessment["category"] == "evaluation_leakage"
     assert result.experiment_task is None
     assert result.created_jobs == []
@@ -257,7 +258,7 @@ def test_orchestrator_act_request_is_explicitly_blocked_without_confirmed_task(
         model="configured-dialogue-model",
     )
 
-    assert result.dialogue_mode == "act_request"
+    assert result.dialogue_mode == "act"
     assert "没有已确认的 input_task.yaml" in result.reply
     assert result.experiment_task is None
     assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()

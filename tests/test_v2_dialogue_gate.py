@@ -50,7 +50,8 @@ def test_gate_forces_reject_policy_and_removes_all_actions(tmp_path: Path):
         registered_sources=[{"source_id": "src_repo"}],
     )
 
-    assert gated.dialogue_mode == "reject"
+    assert gated.dialogue_mode == "plan"
+    assert gated.policy == "deny"
     assert gated.source_action is None
     assert gated.task_action is None
     assert gated.target_spec is None
@@ -159,10 +160,31 @@ def test_gate_allows_registered_pdf_reparse_and_audits_permission(tmp_path: Path
 
     assert gated.source_action is not None
     assert gated.source_action.action == "request_source_reparse"
+    assert gated.action_scope == "source"
     assert gated.source_permission is not None
     assert gated.source_permission["permission_decision"] == "allow"
     assert gated.execution_gate == "not_requested"
     assert (tmp_path / "assistant" / "permission_decisions.jsonl").is_file()
+
+
+def test_gate_retains_evidence_and_feasibility_axes(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        evidence_status="insufficient",
+        conversation_transition="revise",
+        feasibility="infeasible_as_stated",
+        numeric_claim_allowed=False,
+        policy_assessment=_allow_policy(),
+    ))
+
+    gated = DialogueGate.validate(decision, run_dir=tmp_path, registered_sources=[])
+
+    assert gated.action_scope == "none"
+    assert gated.policy == "allow"
+    assert gated.evidence_status == "insufficient"
+    assert gated.conversation_transition == "revise"
+    assert gated.feasibility == "infeasible_as_stated"
+    assert gated.numeric_claim_allowed is False
 
 
 def test_gate_rejects_reparse_without_registered_pdf_input(tmp_path: Path):

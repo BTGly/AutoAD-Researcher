@@ -35,7 +35,12 @@ class TargetSpec(BaseModel):
     selectors: dict[str, Any]
 
 
-DialogueMode = Literal["ask", "plan", "act_request", "reject"]
+DialogueMode = Literal["ask", "plan", "act", "act_request", "reject"]
+ActionScope = Literal["none", "source", "repository", "code", "experiment", "system"]
+DialoguePolicy = Literal["allow", "ask_permission", "deny"]
+EvidenceStatus = Literal["sufficient", "insufficient", "conflicting", "unavailable"]
+ConversationTransition = Literal["new", "continue", "revise", "confirm", "cancel"]
+Feasibility = Literal["not_assessed", "feasible", "infeasible_as_stated"]
 TaskActionProposal = Literal["prepare_experiment_task"]
 PolicyCategory = Literal[
     "none",
@@ -85,6 +90,12 @@ class DialogueDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dialogue_mode: DialogueMode
+    action_scope: ActionScope = "none"
+    policy: DialoguePolicy = "allow"
+    evidence_status: EvidenceStatus = "unavailable"
+    conversation_transition: ConversationTransition = "new"
+    feasibility: Feasibility = "not_assessed"
+    numeric_claim_allowed: bool = True
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
     task_action: TaskActionProposal | None = None
@@ -95,6 +106,12 @@ class DialogueDecision(BaseModel):
     def is_valid(self) -> bool:
         return self._is_valid
 
+    @model_validator(mode="after")
+    def _align_legacy_policy_assessment(self) -> "DialogueDecision":
+        if self.policy_assessment.decision == "reject":
+            self.policy = "deny"
+        return self
+
 
 class GatedDialogueDecision(BaseModel):
     """Decision after deterministic state, identifier, and permission checks."""
@@ -102,6 +119,12 @@ class GatedDialogueDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dialogue_mode: DialogueMode
+    action_scope: ActionScope = "none"
+    policy: DialoguePolicy = "allow"
+    evidence_status: EvidenceStatus = "unavailable"
+    conversation_transition: ConversationTransition = "new"
+    feasibility: Feasibility = "not_assessed"
+    numeric_claim_allowed: bool = True
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
     source_permission: dict[str, Any] | None = None

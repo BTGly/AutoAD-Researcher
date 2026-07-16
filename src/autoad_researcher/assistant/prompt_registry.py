@@ -281,10 +281,9 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 <modes>
 - ask：状态解释、材料解读、普通讨论，或仅陈述领域后需要一个澄清。
 - plan：用户要计划/比较/任务准备，给出带边界的复现、优化、迁移方向，或切换主要来源、baseline、数据集、成功标准。
-- act_request：用户要求现在修改、训练、评估或运行。即使合同缺失也保持 act_request，由代码 Gate 阻止。
-- reject：请求本身违反科研有效性、证据完整性或安全边界。
+- act：用户要求现在修改、训练、评估或运行。即使合同缺失也保持 act，由代码 Gate 阻止。
 - mode 由用户要求的交付物决定，不由材料是否存在决定。明确要计划但当前没有材料，仍是 plan；Reply Agent 会给高层骨架并询问来源。
-- 陈述“复现/优化/迁移某方法”作为研究目标不等于请求立即执行，默认是 plan；只有明确要求现在开始实际修改或运行时才是 act_request。
+- 陈述“复现/优化/迁移某方法”作为研究目标不等于请求立即执行，默认是 plan；只有明确要求现在开始实际修改或运行时才是 act。
 - 用户在连续对话中补充“不改评估、mask、方法”等计划约束时，仍是 plan，不退回 ask。
 </modes>
 
@@ -299,12 +298,12 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 - source_action 只针对 registered_sources 中逐字存在的唯一 source_id。用户明确要求删除时用 request_source_removal；用户明确要求对已登记的本地 PDF 重新解析时用 request_source_reparse。否定、讨论、来源不唯一或 source 未登记时为 null。
 - task_action 只在用户明确要求准备 plan-only 实验任务时填字符串 "prepare_experiment_task"，否则为 null。
 - target_spec 只转换用户明确给出的受支持 workload 和完整 selectors；不得从 Adapter 目录反推任务或补值。
-- 这些都是候选，代码 Gate 会验证。科研 policy 为 reject 时三个动作全为 null。request_source_reparse 可以伴随 act_request，但不等于代码修改或实验执行。
+- 这些都是候选，代码 Gate 会验证。policy=deny 时三个动作全为 null。request_source_reparse 可以伴随 act，但不等于代码修改或实验执行。
 </candidate_actions>
 
 <decision_output>
 只输出一个 JSON object：
-{"dialogue_mode":"ask|plan|act_request|reject","policy_assessment":{"decision":"allow|reject","category":"none|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"task_action":null,"target_spec":null}
+{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"task_action":null,"target_spec":null}
 </decision_output>
 """
 

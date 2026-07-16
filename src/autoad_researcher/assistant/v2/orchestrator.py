@@ -50,6 +50,12 @@ class OrchestratorResult:
     source_permission: dict[str, Any] | None = None
     experiment_task: dict[str, Any] | None = None
     dialogue_mode: DialogueMode = "ask"
+    action_scope: str = "none"
+    policy: str = "allow"
+    evidence_status: str = "unavailable"
+    conversation_transition: str = "new"
+    feasibility: str = "not_assessed"
+    numeric_claim_allowed: bool = True
     policy_assessment: dict[str, str] = field(default_factory=dict)
 
 
@@ -129,6 +135,12 @@ class ResearchOrchestratorV2:
                     (previous or ResearchIntentSummary()).model_dump(mode="json")
                 ),
                 dialogue_mode=decision.dialogue_mode,
+                action_scope=decision.action_scope,
+                policy=decision.policy,
+                evidence_status=decision.evidence_status,
+                conversation_transition=decision.conversation_transition,
+                feasibility=decision.feasibility,
+                numeric_claim_allowed=decision.numeric_claim_allowed,
                 policy_assessment=decision.policy_assessment.model_dump(mode="json"),
             )
 
@@ -148,7 +160,7 @@ class ResearchOrchestratorV2:
             save_research_intent_summary(run_dir, reply_response.summary)
         actions_allowed = (
             reply_response.should_persist
-            and decision.policy_assessment.decision == "allow"
+            and decision.policy == "allow"
             and decision.dialogue_mode in {"ask", "plan"}
         )
         target_job = _queue_repository_target_spec(
@@ -206,6 +218,12 @@ class ResearchOrchestratorV2:
             source_permission=decision.source_permission,
             experiment_task=experiment_task,
             dialogue_mode=decision.dialogue_mode,
+            action_scope=decision.action_scope,
+            policy=decision.policy,
+            evidence_status=decision.evidence_status,
+            conversation_transition=decision.conversation_transition,
+            feasibility=decision.feasibility,
+            numeric_claim_allowed=decision.numeric_claim_allowed,
             policy_assessment=decision.policy_assessment.model_dump(mode="json"),
         )
 
@@ -214,7 +232,7 @@ def _validated_dialogue_reply(
     decision: GatedDialogueDecision,
     reply_response: ResearchReplyResponse,
 ) -> str:
-    if decision.dialogue_mode != "act_request" or decision.source_action is not None:
+    if decision.dialogue_mode != "act" or decision.source_action is not None:
         return reply_response.visible_reply()
     if decision.execution_gate == "blocked_missing_contract":
         return (

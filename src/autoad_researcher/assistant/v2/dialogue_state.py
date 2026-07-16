@@ -30,6 +30,12 @@ class DialogueTransitionRecord(BaseModel):
     schema_version: Literal[1] = 1
     created_at: str
     dialogue_mode: str
+    action_scope: str
+    policy: str
+    evidence_status: str
+    conversation_transition: str
+    feasibility: str
+    numeric_claim_allowed: bool
     policy_decision: str
     policy_category: str
     source_action: dict[str, Any] | None = None
@@ -85,6 +91,12 @@ def append_dialogue_transition(
     record = DialogueTransitionRecord(
         created_at=datetime.now(timezone.utc).isoformat(),
         dialogue_mode=decision.dialogue_mode,
+        action_scope=decision.action_scope,
+        policy=decision.policy,
+        evidence_status=decision.evidence_status,
+        conversation_transition=decision.conversation_transition,
+        feasibility=decision.feasibility,
+        numeric_claim_allowed=decision.numeric_claim_allowed,
         policy_decision=decision.policy_assessment.decision,
         policy_category=decision.policy_assessment.category,
         source_action=(
