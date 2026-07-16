@@ -297,6 +297,7 @@ def test_orchestrator_invalid_decision_preserves_existing_summary(monkeypatch, t
     assert load_research_intent_summary(tmp_path) == previous
     assert result.source_action is None
     assert result.experiment_task is None
+    assert not (tmp_path / "assistant" / "v2_dialogue_transitions.jsonl").exists()
 
 
 def test_orchestrator_calls_decision_then_reply_under_one_deadline(monkeypatch, tmp_path: Path):
@@ -338,5 +339,6 @@ def test_orchestrator_calls_decision_then_reply_under_one_deadline(monkeypatch, 
     assert all(item["deadline"] is not None for item in calls)
     assert calls[0]["deadline"] is calls[1]["deadline"]
     assert all(item["temperature"] == 0.0 for item in calls)
+    assert (tmp_path / "assistant" / "v2_dialogue_transitions.jsonl").is_file()
     assert result.dialogue_mode == "ask"
     assert result.intent_summary["goal"] == "复现指定实现并核对结果"

@@ -390,6 +390,7 @@ def _compact_evidence_state(state: dict[str, Any]) -> dict[str, Any]:
         "answerability": state.get("answerability") or {},
         "current_turn_material_actions": state.get("current_turn_material_actions") or {},
         "registered_sources": state.get("registered_sources") or [],
+        "dialogue_state": state.get("dialogue_state") or {},
     }
 
 

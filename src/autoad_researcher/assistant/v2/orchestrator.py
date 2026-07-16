@@ -10,6 +10,7 @@ from typing import Any
 from autoad_researcher.assistant.llm_runtime import with_conversation_deadline
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
+from autoad_researcher.assistant.v2.dialogue_state import append_dialogue_transition
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
@@ -179,6 +180,13 @@ class ResearchOrchestratorV2:
                 ).model_dump(mode="json")
             except (FileExistsError, ValueError):
                 experiment_task = None
+
+        if reply_response.should_persist:
+            append_dialogue_transition(
+                run_dir,
+                decision=decision,
+                summary=reply_response.summary,
+            )
 
         reply = _validated_dialogue_reply(decision, reply_response)
         if on_reply_delta is not None:

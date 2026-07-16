@@ -13,6 +13,7 @@ from autoad_researcher.assistant.v2.evidence_service import (
     load_usable_evidence,
 )
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
+from autoad_researcher.assistant.v2.dialogue_state import build_dialogue_state_projection
 
 FORBIDDEN_ACTIONS = [
     "patch_apply",
@@ -105,6 +106,7 @@ def build_llm_context(
         "unusable_parsed_sources": unusable_parsed,
         "pending_jobs": pending_jobs,
         "failed_jobs": failed_jobs,
+        "dialogue_state": build_dialogue_state_projection(run_dir).model_dump(mode="json"),
         "answerability": {
             "can_answer": can_answer,
             "basis": [e.get("evidence_type", "") for e in usable],
