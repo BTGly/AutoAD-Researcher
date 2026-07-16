@@ -184,46 +184,37 @@ preserved_refs
 summary_hash
 ```
 
-## 4.1 Coordinator 崩溃恢复：CycleJournal + ObservationSnapshot
+## 4.1 Coordinator 崩溃恢复：ObservationSnapshot + CognitiveCommit
 
-### CycleJournal（运行恢复）
+采用 Arbor 的简化做法：Idea Tree 是权威，Snapshot 是草稿，Commit 是正式结果，DeepAgents checkpoint 是加速恢复缓存。
 
-记录认知周期的运行状态：
-
-```text
-CREATED | OBSERVING | OBSERVED | IDEATING | PROPOSED | COMMITTING | COMMITTED | DISPATCHED
-```
-
-### ObservationSnapshot（OBSERVE 后写的恢复检查点）
+### ObservationSnapshot（OBSERVE 后写）
 
 OBSERVE 完成后写：
 
 ```text
-当前 Tree revision
-OutcomeCard 引用
-关键比较结果
-未解决问题
-下一步 ideation focus
-prompt/context hash
+cycle_id
+tree_revision
+outcome_refs
+observation
+ideation_focus
 ```
 
-它不是科研结论——只是让恢复时知道 Coordinator 已看到什么。
+它不是科研结论——只用于快速恢复时跳过重复 OBSERVE。
 
 ### CognitiveCommit（完整决策后）
 
-只有 OBSERVE + IDEATE + SELECT + validated mutations + next action 全部完成后才写。
+OBSERVE + IDEATE + SELECT + validated mutations + next action 全部完成后才写。
 
-### 崩溃恢复规则
+### 崩溃恢复规则（简化为两条）
 
-| 崩溃位置 | 恢复行为 |
-|----------|----------|
-| OBSERVED 前 | 重做 OBSERVE（读 TreeView + 最新实验结果） |
-| OBSERVED 后、PROPOSED 前（Tree revision 未变） | 只重做 IDEATE，跳过 OBSERVE |
-| PROPOSED 后、COMMITTED 前（Tree revision 未变） | 验证 proposal 后幂等提交到 Tree |
-| COMMITTED 后、DISPATCHED 前 | 只补建 Job（不重新生成 Idea） |
-| Tree revision 已变化 | 废弃旧 ObservationSnapshot，重新 OBSERVE |
+```text
+ObservationSnapshot 存在 AND tree_revision 未变 → 重做 IDEATE
+ObservationSnapshot 丢失 OR tree_revision 已变 → 从 Tree + Attempts 重做 OBSERVE
+有 CognitiveCommit 但 Job 未创建 → 以 commit_id 为幂等键补建 Job
+```
 
-不提前在 OBSERVE 后写大量半成品 CognitiveCommit；也不每次崩溃都重新消耗 OBSERVE token。
+不需要 8 态状态机。Tree 是权威，Snapshot 是草稿，checkpoint 是缓存。
 
 ---
 

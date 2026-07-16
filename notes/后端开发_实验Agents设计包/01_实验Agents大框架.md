@@ -129,7 +129,6 @@
 │ BatchSupervisor / BatchFailurePolicy                          │
 │ PreApplyPatchGate / PostApplyDiffGuard                        │
 │ NoiseCalibrationPolicy / LaunchProfile                        │
-│ CycleJournal / ObservationSnapshot                            │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -248,40 +247,24 @@ DeepAgents checkpoint 只是连续认知缓存：
 - 可以丢失；
 - 可以从 Session、Idea Tree、Attempt 和 CognitiveCommit 重建。
 
-### 4.6 CycleJournal 与 ObservationSnapshot — Coordinator 崩溃恢复
+### 4.6 ObservationSnapshot — Coordinator 崩溃恢复
 
-Coordinator 的认知周期使用两阶段记录，而非每次 OBSERVE 后写完整 CognitiveCommit。
-
-**CycleJournal（运行恢复）：**
+采用 Arbor 的简化做法：不引入 8 态状态机。
 
 ```text
-状态：CREATED | OBSERVING | OBSERVED | IDEATING | PROPOSED | COMMITTING | COMMITTED | DISPATCHED
+IdeaTree                科研状态真源
+ObservationSnapshot     当前轮临时观察结果 (cycle_id + tree_revision + outcome_refs)
+CognitiveCommit         已完成的认知决策
+DeepAgents checkpoint   可丢失的对话缓存
 ```
 
-OBSERVE 完成后写 **ObservationSnapshot**：
+恢复规则：
 
 ```text
-当前 Tree revision
-OutcomeCard 引用
-关键比较结果
-未解决问题
-下一步 ideation focus
-prompt/context hash
+ObservationSnapshot 存在 AND tree_revision 未变 → 重做 IDEATE
+Snapshot 丢失 OR tree_revision 已变 → 从 Tree + Attempts 重做 OBSERVE
+有 CognitiveCommit 但 Job 未创建 → 以 commit_id 补建 Job
 ```
-
-ObservationSnapshot 只是恢复检查点，不是科研结论。
-
-**CognitiveCommit（完整决策）：** 只有 OBSERVE + IDEATE + SELECT + validated mutations + next action 全部完成后才写。
-
-**崩溃恢复规则：**
-
-| 崩溃位置 | 恢复行为 |
-|----------|----------|
-| OBSERVED 前 | 重做 OBSERVE |
-| OBSERVED 后、PROPOSED 前（Tree 未变化） | 只重做 IDEATE |
-| PROPOSED 后、COMMITTED 前（Tree 未变化） | 验证 proposal 后幂等提交 |
-| COMMITTED 后、DISPATCHED 前 | 只补建 Job，不重新生成 Idea |
-| Tree revision 已变化 | 废弃旧 ObservationSnapshot，重新 OBSERVE |
 
 ---
 
@@ -715,24 +698,21 @@ storage
 
 ### CognitiveBudget
 
-```text
-LLM calls
-input/output tokens
-deep cycles
-IdeaExplorer calls
-Reflection calls
-Reviewer calls
+采用 mini-swe-agent 的简约风格——只在每次 query 前检查硬限制：
+
+```python
+if call_count >= max_llm_calls:
+    raise CognitiveBudgetExceeded
+if total_cost >= max_llm_cost:
+    raise CognitiveBudgetExceeded
+if step_count >= max_agent_steps:
+    raise CognitiveBudgetExceeded
+
+# 每次 LLM 调用记录一行到 llm_usage.jsonl
+# { cycle_id, role, input_tokens, output_tokens, cost }
 ```
 
-便宜实验使用批处理和 Compact Cycle；昂贵实验使用顺序模式并允许更深推理。
-
-每个 Session 必须输出：
-
-```text
-compute_cost
-cognitive_cost
-wall_clock_cost
-```
+不需要第一版实现 UsageLedger、cost_class、retry_of、recovery_reserve、ResearchProgressLedger。实际调用和重做都计费——这是 API 的实际花费，不对账目做「有效/无效」分类。
 
 ---
 

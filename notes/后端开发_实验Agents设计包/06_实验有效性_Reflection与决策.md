@@ -130,6 +130,29 @@ INCONCLUSIVE
 
 只有前三层通过才计算。
 
+### 3.5 AttemptCategory（简化版——三类）
+
+遵循 SWE-Together 的二进制分类思路，扩展为三类：
+
+```python
+class AttemptCategory(str, Enum):
+    SCIENTIFICALLY_EVALUABLE = "evaluable"   # 正常结束 + metrics 可解析 + 协议完好
+    INFRA_FAILED = "infra_failed"             # OOM/NaN/timeout/crash → 不比较，可重试
+    PROTOCOL_VIOLATED = "protocol_violated"   # 改 protected 文件/split/metric → 排除不重试
+```
+
+`scientific_effect` 仅在 `SCIENTIFICALLY_EVALUABLE` 时存在：
+```text
+IMPROVEMENT | NO_EFFECT | REGRESSION | INCONCLUSIVE
+```
+
+对于 OOM 的 Attempt：
+```json
+{ "attempt_category": "infra_failed", "failure_code": "OOM", "scientific_effect": null, "retryable": true }
+```
+
+不需要 5 级 EvidenceDisposition 或 5 级 OperationalDisposition。
+
 ---
 
 ## 4. Noise Floor（自适应 3→5→7 渐进策略）

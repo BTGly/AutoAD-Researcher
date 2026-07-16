@@ -118,11 +118,11 @@ pre-edit dirty_commit
   → apply (4层策略栈)
   → diff validate
   → syntax/import/smoke
-  → activation evidence
+  → metrics parsed
   → finish or bounded repair
 ```
 
-### 3.4 有界修复与两层 Gate
+### 3.4 有界修复与 Gate
 
 #### 3.4.1 PreApplyPatchGate — 修复前验证
 
@@ -218,26 +218,19 @@ SEMANTIC_DEVIATION
 
 不继续修改。Coordinator 决定 child Idea。
 
-### 3.6 Implementation Activation Evidence
+### 3.6 ImplementationStatus（简化版）
 
-仅 smoke 通过不够，需要验证 intervention 生效。
-
-可选证据：
-
-- config dump；
-- module class/name；
-- hook counter；
-- runtime parameter；
-- feature shape；
-- branch marker；
-- changed-path import trace；
-- deterministic debug artifact。
-
-生成：
+第一版不引入 activation evidence verification。遵循 Arbor 的「产生指标 = 实验有效」原则，只做三层确定性检查：
 
 ```text
-implementation_validity.json
+PATCH_APPLIED → patch 非空 + 在 allowed_paths 内 + protected SHA256 未变
+SMOKE_PASSED  → exit code 0
+METRICS_PARSED → metrics.json 存在且符合 schema
 ```
+
+不称为 `ACTIVATION_VERIFIED`。不宣称「代码已按假设生效」。只说「当前 patch 在当前协议下产生了该指标结果」。
+
+何时加 activation probe：等真实运行中反复出现以下假阳性后，在具体 Adapter 中增加领域检查（如 `AnomalibAdapter.activation_checks()`），不做通用 TrustedProbeRunner。
 
 ---
 
@@ -251,8 +244,6 @@ attempt/
 ├── patch.diff
 ├── changed_files.json
 ├── repair_log.jsonl
-├── activation_evidence.json
-├── implementation_validity.json
 └── executor_summary.json
 ```
 
