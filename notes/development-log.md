@@ -22,3 +22,4 @@
 | 2026-07-07 | [2026-07-07.md](2026-07-07.md) | Pending material web_search request execution and status updates |
 | 2026-07-08 | [2026-07-08.md](2026-07-08.md) | Removed Streamlit surface; added FastAPI/React current-task list, switching, rename, archive, restore, delete, transcript reload, and task workspace migration |
 | 2026-07-15 | [2026-07-15.md](2026-07-15.md) | Established the simplified product baseline from f72da8f with the current AGENTS.md and 13 obsolete document deletions |
+| 2026-07-16 | [2026-07-16.md](2026-07-16.md) | V2 dialogue orthogonal-decision and state-projection design |
