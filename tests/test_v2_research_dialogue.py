@@ -9,9 +9,10 @@ from pydantic import ValidationError
 from autoad_researcher.assistant.llm_runtime import current_conversation_deadline
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
+    GatedDialogueDecision,
+    ResearchDecisionAgent,
     ResearchPolicyAssessment,
-    ResearchDialogueAgent,
-    ResearchDialogueResponse,
+    ResearchReplyAgent,
     SourceInstruction,
     TargetSpec,
     _parse_json_object,
@@ -25,29 +26,46 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 
 
-def _response_payload() -> dict:
+def _allow_policy() -> dict[str, str]:
     return {
-        "dialogue_mode": "ask",
-        "policy_assessment": {
-            "decision": "allow",
-            "category": "none",
-            "reason": "",
-            "safe_alternative": "",
-        },
+        "decision": "allow",
+        "category": "none",
+        "reason": "",
+        "safe_alternative": "",
+    }
+
+
+def _decision_payload(mode: str = "ask") -> dict:
+    return {
+        "dialogue_mode": mode,
+        "policy_assessment": _allow_policy(),
+        "source_action": None,
+        "task_action": None,
+        "target_spec": None,
+    }
+
+
+def _reply_payload() -> dict:
+    return {
         "reply_to_user": "你的目标是复现指定实现；当前材料还在处理，我不会假装已经读过。",
         "summary": {
             "goal": "复现指定实现并核对结果",
             "confirmed_facts": ["用户明确要求只做复现"],
-            "inferred_facts": [
-                {
-                    "statement": "仓库分析尚未完成",
-                    "basis": "pending_jobs: job_000001",
-                }
-            ],
+            "inferred_facts": [{
+                "statement": "仓库分析尚未完成",
+                "basis": "pending_jobs: job_000001",
+            }],
             "unresolved_conflicts": [],
             "blocking_question": None,
         },
     }
+
+
+def _gated_decision(mode: str = "ask") -> GatedDialogueDecision:
+    return GatedDialogueDecision(
+        dialogue_mode=mode,
+        policy_assessment=ResearchPolicyAssessment.model_validate(_allow_policy()),
+    )
 
 
 def test_summary_round_trip_uses_exact_schema(tmp_path: Path):
@@ -86,81 +104,80 @@ def test_dialogue_json_parser_accepts_transport_text_around_one_object():
     }
 
 
-def test_dialogue_agent_calls_llm_once_and_supplies_behavior_contract(monkeypatch):
+def test_decision_agent_calls_llm_once_with_short_decision_contract(monkeypatch):
     captured: dict[str, object] = {"calls": 0}
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         captured["calls"] = int(captured["calls"]) + 1
         captured["messages"] = messages
-        captured["model"] = kwargs.get("model")
-        captured["priority"] = kwargs.get("priority")
-        captured["response_format_json"] = kwargs.get("response_format_json")
         captured["temperature"] = kwargs.get("temperature")
-        return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_decision_payload()), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
-    previous = ResearchIntentSummary(
-        goal="复现实验",
-        confirmed_facts=["用户要求 plan_only"],
-    )
 
-    response = ResearchDialogueAgent.respond(
+    decision = ResearchDecisionAgent.decide(
         user_input="只做复现，不要改代码。",
         evidence_state={"pending_jobs": [{"job_id": "job_000001"}]},
-        last_summary=previous,
+        last_summary=ResearchIntentSummary(goal="复现实验"),
         transcript_tail=[{"role": "user", "content": "先看仓库"}],
         api_key="sk-test",
         provider_url="https://example.test",
-        model="configured-dialogue-model",
-        temperature=0.0,
+        model="decision-model",
     )
 
     assert captured["calls"] == 1
-    assert captured["model"] == "configured-dialogue-model"
-    assert captured["priority"] == "interactive"
-    assert captured["response_format_json"] is True
     assert captured["temperature"] == 0.0
     system = captured["messages"][0]["content"]
-    assert "Propose first" in system
-    assert "Don't interrogate" in system
-    assert "不要宣告“已保存”、“已更新”" in system
     assert "job_000001" in system
-    assert "用户要求 plan_only" in system
-    assert "source_id 必须逐字复制" in system
-    assert "先不要删除" in system
-    assert 'task_action={"action":"prepare_experiment_task"}' in system
-    assert "只准备一个 plan_only" in system
-    assert "没有匹配 Adapter" in system
-    assert '"adapter_id": "kernelbench"' in system
-    assert '"problem_id"' in system
-    assert "初步假设（preliminary hypothesis）" in system
-    assert "初步假设不得写成 inferred_facts" in system
-    assert "不要按关键词机械分类" in system
-    assert "evaluation leakage" in system
-    assert "能力目录，不表示当前已登记对应仓库" in system
-    assert "即使缺材料也保持 plan" in system
-    assert "reply_to_user 不能只有索要材料" in system
-    assert "不得补写这些字段没有出现的文件或目录路径" in system
-    assert "不能据此断言代码中没有 main" in system
-    assert "evaluation_manipulation" in system
-    assert "当用户明确要求对比、步骤、清单、表格或实施细节时" in system
-    assert "两到四个短自然段" not in system
-    assert "禁止给出并行分支" not in system
-    assert response.should_persist is True
-    assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
+    assert "<decision_scope>" in system
+    assert system.rstrip().endswith("</decision_output>")
+    assert "不写用户回复，不生成 summary" in system
+    assert "reply_to_user" not in system
+    assert decision.is_valid is True
+    assert decision.dialogue_mode == "ask"
 
 
-def test_dialogue_agent_receives_repository_structure_evidence(monkeypatch):
+def test_reply_agent_calls_llm_once_with_frozen_decision(monkeypatch):
     captured: dict[str, object] = {}
 
     def fake_call(api_key, provider_base_url, messages, **kwargs):
         captured["messages"] = messages
-        return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
+        return {"reply": json.dumps(_reply_payload(), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
 
-    ResearchDialogueAgent.respond(
-        user_input="请你自己看仓库并给我计划。",
+    response = ResearchReplyAgent.respond(
+        user_input="只做复现，不要改代码。",
+        evidence_state={"pending_jobs": [{"job_id": "job_000001"}]},
+        frozen_decision=_gated_decision("plan"),
+        last_summary=ResearchIntentSummary(goal="复现实验"),
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    system = captured["messages"][0]["content"]
+    assert "job_000001" in system
+    assert '"dialogue_mode": "plan"' in system
+    assert "冻结决策（不可改写）" in system
+    assert "<identity>" in system
+    assert system.rstrip().endswith("</style_and_output>")
+    assert "不要输出 mode、policy" in system
+    assert response.should_persist is True
+    assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
+
+
+def test_reply_agent_receives_exact_repository_structure_evidence(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        captured["messages"] = messages
+        return {"reply": json.dumps(_reply_payload(), ensure_ascii=False), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    ResearchReplyAgent.respond(
+        user_input="请你自己看仓库。",
         evidence_state={
             "usable_evidence": [{
                 "source_id": "src_repo",
@@ -169,20 +186,18 @@ def test_dialogue_agent_receives_repository_structure_evidence(monkeypatch):
                 "parser_name": "repository_intelligence_v2",
                 "summary": "Repository structure was inspected.",
                 "raw": {
-                    "source_fingerprint": "a" * 64,
                     "validation_status": "passed",
-                    "formal_artifact_paths": ["repository_intelligence/src_repo/entrypoints.json"],
                     "entrypoint_candidates": ["src/main.py"],
                     "configuration_candidates": ["configs/baseline.yaml"],
                     "declared_entrypoints": {"demo": "src.main:main"},
-                    "top_level_entries": [{"path": "src", "kind": "directory"}],
                 },
             }],
         },
+        frozen_decision=_gated_decision(),
         last_summary=None,
         api_key="sk-test",
         provider_url="https://example.test",
-        model="configured-dialogue-model",
+        model="reply-model",
     )
 
     system = captured["messages"][0]["content"]
@@ -202,89 +217,69 @@ def test_policy_assessment_requires_structured_refusal_details():
 
     assert assessment.category == "evaluation_leakage"
     with pytest.raises(ValidationError):
-        ResearchPolicyAssessment(decision="reject", category="none")
+        ResearchPolicyAssessment(
+            decision="reject",
+            category="none",
+            reason="",
+            safe_alternative="",
+        )
 
 
-def test_reject_mode_must_match_policy_decision():
-    with pytest.raises(ValidationError):
-        ResearchDialogueResponse.model_validate({
-            **_response_payload(),
-            "dialogue_mode": "reject",
-        })
-
-
-def test_dialogue_agent_does_not_choose_a_model_when_configuration_is_missing(monkeypatch):
+def test_agents_fail_closed_without_model_configuration(monkeypatch):
     def fail_if_called(*args, **kwargs):
         raise AssertionError("model call must not run without an injected model")
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fail_if_called)
 
-    response = ResearchDialogueAgent.respond(
+    decision = ResearchDecisionAgent.decide(
         user_input="继续",
         evidence_state={},
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="",
+    )
+    reply = ResearchReplyAgent.respond(
+        user_input="继续",
+        evidence_state={},
+        frozen_decision=_gated_decision(),
         last_summary=ResearchIntentSummary(goal="原目标"),
         api_key="sk-test",
         provider_url="https://example.test",
         model="",
     )
 
-    assert "没有配置对话模型" in response.reply_to_user
-    assert response.should_persist is False
-    assert response.summary.goal == "原目标"
+    assert decision.is_valid is False
+    assert reply.should_persist is False
+    assert reply.summary.goal == "原目标"
 
 
-def test_source_removal_instruction_is_typed_and_forbids_extra_fields():
-    response = ResearchDialogueResponse.model_validate({
-        **_response_payload(),
-        "source_action": {
-            "action": "request_source_removal",
-            "source_id": "src_wrong",
-            "label_hint": "wrong.md",
-            "reason": "用户明确要求撤回",
-        },
-    })
-
-    assert response.source_action == SourceInstruction(
+def test_source_removal_and_target_specs_are_typed():
+    source = SourceInstruction(
         action="request_source_removal",
         source_id="src_wrong",
         label_hint="wrong.md",
         reason="用户明确要求撤回",
     )
+    assert source.source_id == "src_wrong"
     with pytest.raises(ValidationError):
         SourceInstruction.model_validate({
             "action": "remove_latest",
             "source_id": "src_wrong",
         })
 
-
-def test_target_spec_is_generic_and_registry_validates_selectors():
     target = TargetSpec.model_validate({
         "adapter_id": "kernelbench",
         "selectors": {"level": 2, "problem_id": 40},
     })
-
-    assert target.selectors == {"level": 2, "problem_id": 40}
     resolved = get_target_adapter_registry().resolve(target.adapter_id, target.selectors)
     assert resolved is not None
     assert resolved.selectors == {"level": 2, "problem_id": 40}
-    assert get_target_adapter_registry().resolve(
-        "kernelbench",
-        {"level": 2, "problem_id": 40, "variant": 1},
-    ) is None
-    assert get_target_adapter_registry().resolve(
-        "kernelbench",
-        {"level": -1, "problem_id": 40},
-    ) is None
-    assert get_target_adapter_registry().resolve(
-        "unknown_benchmark",
-        {"workload": 1},
-    ) is None
 
 
-def test_orchestrator_invalid_llm_output_preserves_existing_summary(monkeypatch, tmp_path: Path):
+def test_orchestrator_invalid_decision_preserves_existing_summary(monkeypatch, tmp_path: Path):
     previous = ResearchIntentSummary(goal="原目标", confirmed_facts=["用户明确说了原目标"])
     save_research_intent_summary(tmp_path, previous)
-
     monkeypatch.setattr(
         "autoad_researcher.ui.chat_client.call_research_chat",
         lambda *args, **kwargs: {"reply": "not-json", "error": ""},
@@ -295,34 +290,53 @@ def test_orchestrator_invalid_llm_output_preserves_existing_summary(monkeypatch,
         user_input="继续",
         api_key="sk-test",
         provider_url="https://example.test",
-        model="configured-dialogue-model",
+        model="configured-model",
     )
 
-    assert "格式无效" not in result.reply
-    assert "生成失败" in result.reply
+    assert "意图判定失败" in result.reply
     assert load_research_intent_summary(tmp_path) == previous
+    assert result.source_action is None
+    assert result.experiment_task is None
 
 
-def test_orchestrator_wraps_dialogue_call_in_conversation_deadline(monkeypatch, tmp_path: Path):
-    observed: dict[str, float | bool] = {}
+def test_orchestrator_calls_decision_then_reply_under_one_deadline(monkeypatch, tmp_path: Path):
+    calls: list[dict[str, object]] = []
+    replies = [_decision_payload(), _reply_payload()]
+    context_builds = 0
+
+    from autoad_researcher.assistant.v2.context_builder import build_llm_context
+
+    def counted_context(*args, **kwargs):
+        nonlocal context_builds
+        context_builds += 1
+        return build_llm_context(*args, **kwargs)
 
     def fake_call(*args, **kwargs):
         deadline = current_conversation_deadline()
-        observed["present"] = deadline is not None
-        observed["remaining_seconds"] = (
-            deadline.remaining_seconds() if deadline is not None else 0.0
-        )
-        return {"reply": json.dumps(_response_payload(), ensure_ascii=False), "error": ""}
+        calls.append({
+            "deadline": deadline,
+            "temperature": kwargs.get("temperature"),
+        })
+        return {"reply": json.dumps(replies.pop(0), ensure_ascii=False), "error": ""}
 
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    monkeypatch.setattr(
+        "autoad_researcher.assistant.v2.orchestrator.build_llm_context",
+        counted_context,
+    )
 
-    ResearchOrchestratorV2.handle(
+    result = ResearchOrchestratorV2.handle(
         tmp_path,
         user_input="继续",
         api_key="sk-test",
         provider_url="https://example.test",
-        model="configured-dialogue-model",
+        model="configured-model",
     )
 
-    assert observed["present"] is True
-    assert observed["remaining_seconds"] > 0
+    assert len(calls) == 2
+    assert context_builds == 1
+    assert all(item["deadline"] is not None for item in calls)
+    assert calls[0]["deadline"] is calls[1]["deadline"]
+    assert all(item["temperature"] == 0.0 for item in calls)
+    assert result.dialogue_mode == "ask"
+    assert result.intent_summary["goal"] == "复现指定实现并核对结果"

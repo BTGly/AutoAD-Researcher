@@ -14,6 +14,38 @@ from autoad_researcher.ui.sources import load_source_registry
 from autoad_researcher.worker.main import _run_web_search
 
 
+def _allow_decision(**updates) -> dict:
+    payload = {
+        "dialogue_mode": "ask",
+        "policy_assessment": {
+            "decision": "allow",
+            "category": "none",
+            "reason": "",
+            "safe_alternative": "",
+        },
+        "source_action": None,
+        "task_action": None,
+        "target_spec": None,
+    }
+    payload.update(updates)
+    return payload
+
+
+def _mock_two_call(monkeypatch, decision: dict, reply: dict) -> list[list[dict[str, str]]]:
+    calls: list[list[dict[str, str]]] = []
+    replies = iter([decision, reply])
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        calls.append(messages)
+        return {
+            "reply": json.dumps(next(replies), ensure_ascii=False),
+            "error": "",
+        }
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    return calls
+
+
 def test_natural_language_repo_request_is_not_classified_by_source_service():
     assert classify_input("你先 clone pathcore 的 github 仓库吧") == "general_chat"
     assert classify_input("搜索 MVTec AD 上能迁移到 PatchCore 的方法") == "general_chat"
@@ -23,13 +55,11 @@ def test_orchestrator_does_not_use_llm_to_invent_repo_url(monkeypatch, tmp_path:
     run_dir = tmp_path / "run_repo"
     run_dir.mkdir()
 
-    calls = 0
-
-    def fake_call(api_key, provider_base_url, messages, **kwargs):
-        nonlocal calls
-        calls += 1
-        return {"reply": json.dumps({
-            "reply_to_user": "请给出仓库 URL，我不会猜测具体仓库。",
+    calls = _mock_two_call(
+        monkeypatch,
+        _allow_decision(),
+        {
+            "reply_to_user": "我不会猜测具体仓库。请提供要分析的仓库 URL。",
             "summary": {
                 "goal": "分析用户指定的仓库",
                 "confirmed_facts": ["用户要求 clone PatchCore 仓库"],
@@ -37,9 +67,8 @@ def test_orchestrator_does_not_use_llm_to_invent_repo_url(monkeypatch, tmp_path:
                 "unresolved_conflicts": [],
                 "blocking_question": "请提供要分析的仓库 URL。",
             },
-        }, ensure_ascii=False), "error": ""}
-
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+        },
+    )
 
     result = ResearchOrchestratorV2.handle(
         run_dir,
@@ -55,7 +84,7 @@ def test_orchestrator_does_not_use_llm_to_invent_repo_url(monkeypatch, tmp_path:
     assert result.created_jobs == []
     assert load_pipeline_jobs(run_dir) == []
     assert load_source_registry(run_dir)["sources"] == []
-    assert calls == 1
+    assert len(calls) == 2
 
 
 def test_orchestrator_treats_mirror_url_as_repository_source_without_llm(tmp_path: Path):
@@ -124,12 +153,10 @@ def test_orchestrator_does_not_create_web_search_from_dialogue_llm(monkeypatch, 
     run_dir = tmp_path / "run_search"
     run_dir.mkdir()
 
-    calls = 0
-
-    def fake_call(api_key, provider_base_url, messages, **kwargs):
-        nonlocal calls
-        calls += 1
-        return {"reply": json.dumps({
+    calls = _mock_two_call(
+        monkeypatch,
+        _allow_decision(),
+        {
             "reply_to_user": "可以先明确检索范围，再登记找到的材料。",
             "summary": {
                 "goal": "寻找提升 PatchCore AUROC 的材料",
@@ -138,9 +165,8 @@ def test_orchestrator_does_not_create_web_search_from_dialogue_llm(monkeypatch, 
                 "unresolved_conflicts": [],
                 "blocking_question": None,
             },
-        }, ensure_ascii=False), "error": ""}
-
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+        },
+    )
 
     result = ResearchOrchestratorV2.handle(
         run_dir,
@@ -153,34 +179,26 @@ def test_orchestrator_does_not_create_web_search_from_dialogue_llm(monkeypatch, 
     assert result.reply_kind == "answer"
     assert result.created_jobs == []
     assert load_pipeline_jobs(run_dir) == []
-    assert calls == 1
+    assert len(calls) == 2
 
 
 def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_bare_github"
     run_dir.mkdir()
-    calls: list[list[dict[str, str]]] = []
-
-    def fake_call(api_key, provider_base_url, messages, **kwargs):
-        calls.append(messages)
-        return {
-            "reply": json.dumps(
-                {
-                    "reply_to_user": "仓库材料尚在处理；分析完成后我会基于证据继续对齐研究目标。",
-                    "summary": {
-                        "goal": "分析用户提供的代码仓库",
-                        "confirmed_facts": ["用户提供了 https://github.com/example/repository"],
-                        "inferred_facts": [],
-                        "unresolved_conflicts": [],
-                        "blocking_question": None,
-                    },
-                },
-                ensure_ascii=False,
-            ),
-            "error": "",
-        }
-
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    calls = _mock_two_call(
+        monkeypatch,
+        _allow_decision(),
+        {
+            "reply_to_user": "仓库材料尚在处理；分析完成后我会基于证据继续对齐研究目标。",
+            "summary": {
+                "goal": "分析用户提供的代码仓库",
+                "confirmed_facts": ["用户提供了 https://github.com/example/repository"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    )
 
     result = ResearchOrchestratorV2.handle(
         run_dir,
@@ -196,7 +214,7 @@ def test_orchestrator_routes_bare_github_url_to_repo_and_continues_dialogue(monk
     registry = load_source_registry(run_dir)
     assert registry["sources"][0]["user_label"] == "https://github.com/example/repository"
     assert [job["job_type"] for job in result.created_jobs] == ["git_clone", "repo_summarize"]
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("target_expression", [
@@ -214,33 +232,26 @@ def test_orchestrator_queues_typed_repository_target_from_natural_expression(
 ):
     run_dir = tmp_path / "run_target"
     run_dir.mkdir()
-    calls = 0
-
-    def fake_call(api_key, provider_base_url, messages, **kwargs):
-        nonlocal calls
-        calls += 1
-        return {
-            "reply": json.dumps(
-                {
-                    "reply_to_user": "我会先读取指定任务文件，再基于该文件内容分析。",
-                    "summary": {
-                        "goal": "分析 KernelBench 指定任务",
-                        "confirmed_facts": [f"用户指定 {target_expression}"],
-                        "inferred_facts": [],
-                        "unresolved_conflicts": [],
-                        "blocking_question": None,
-                    },
-                    "target_spec": {
-                        "adapter_id": "kernelbench",
-                        "selectors": {"level": 2, "problem_id": 40},
-                    },
-                },
-                ensure_ascii=False,
-            ),
-            "error": "",
-        }
-
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    calls = _mock_two_call(
+        monkeypatch,
+        _allow_decision(
+            dialogue_mode="plan",
+            target_spec={
+                "adapter_id": "kernelbench",
+                "selectors": {"level": 2, "problem_id": 40},
+            },
+        ),
+        {
+            "reply_to_user": "我会先读取指定任务文件，再基于该文件内容分析。",
+            "summary": {
+                "goal": "分析 KernelBench 指定任务",
+                "confirmed_facts": [f"用户指定 {target_expression}"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    )
 
     result = ResearchOrchestratorV2.handle(
         run_dir,
@@ -253,7 +264,7 @@ def test_orchestrator_queues_typed_repository_target_from_natural_expression(
         model="configured-dialogue-model",
     )
 
-    assert calls == 1
+    assert len(calls) == 2
     assert [job["job_type"] for job in result.created_jobs] == [
         "git_clone",
         "repo_summarize",
@@ -270,21 +281,18 @@ def test_orchestrator_queues_typed_repository_target_from_natural_expression(
 def test_exact_selector_text_without_typed_target_does_not_queue_analysis(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_no_typed_target"
     run_dir.mkdir()
-    monkeypatch.setattr(
-        "autoad_researcher.ui.chat_client.call_research_chat",
-        lambda *args, **kwargs: {
-            "reply": json.dumps({
-                "reply_to_user": "还不能确定目标。",
-                "summary": {
-                    "goal": "分析 KernelBench",
-                    "confirmed_facts": ["用户写了 level=2、problem_id=40"],
-                    "inferred_facts": [],
-                    "unresolved_conflicts": [],
-                    "blocking_question": None,
-                },
-                "target_spec": None,
-            }, ensure_ascii=False),
-            "error": "",
+    _mock_two_call(
+        monkeypatch,
+        _allow_decision(dialogue_mode="plan"),
+        {
+            "reply_to_user": "还不能确定目标。",
+            "summary": {
+                "goal": "分析 KernelBench",
+                "confirmed_facts": ["用户写了 level=2、problem_id=40"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
         },
     )
 
@@ -358,29 +366,25 @@ def test_orchestrator_returns_confirmable_typed_removal_without_deleting(monkeyp
         summary="wrong material",
     )
 
-    def fake_call(api_key, provider_base_url, messages, **kwargs):
-        assert "src_wrong" in messages[0]["content"]
-        return {
-            "reply": json.dumps({
-                "reply_to_user": "你明确要求撤回 wrong.md；删除前需要确认。",
-                "summary": {
-                    "goal": "",
-                    "confirmed_facts": ["用户明确要求撤回 wrong.md"],
-                    "inferred_facts": [],
-                    "unresolved_conflicts": [],
-                    "blocking_question": None,
-                },
-                "source_action": {
-                    "action": "request_source_removal",
-                    "source_id": "src_wrong",
-                    "label_hint": "wrong.md",
-                    "reason": "用户明确要求撤回",
-                },
-            }, ensure_ascii=False),
-            "error": "",
-        }
-
-    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    calls = _mock_two_call(
+        monkeypatch,
+        _allow_decision(source_action={
+            "action": "request_source_removal",
+            "source_id": "src_wrong",
+            "label_hint": "wrong.md",
+            "reason": "用户明确要求撤回",
+        }),
+        {
+            "reply_to_user": "你明确要求撤回 wrong.md；删除前需要确认。",
+            "summary": {
+                "goal": "",
+                "confirmed_facts": ["用户明确要求撤回 wrong.md"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    )
 
     result = ResearchOrchestratorV2.handle(
         run_dir,
@@ -391,6 +395,7 @@ def test_orchestrator_returns_confirmable_typed_removal_without_deleting(monkeyp
     )
 
     assert result.reply_kind == "answer"
+    assert "src_wrong" in calls[0][0]["content"]
     assert result.source_action == {
         "action": "request_source_removal",
         "source_id": "src_wrong",
@@ -406,28 +411,23 @@ def test_orchestrator_rejects_removal_action_for_unknown_source(monkeypatch, tmp
     run_dir = tmp_path / "run_unknown_remove"
     run_dir.mkdir()
 
-    monkeypatch.setattr(
-        "autoad_researcher.ui.chat_client.call_research_chat",
-        lambda *args, **kwargs: {
-            "reply": json.dumps({
-                **{
-                    "reply_to_user": "无法定位要删除的材料。",
-                    "summary": {
-                        "goal": "",
-                        "confirmed_facts": [],
-                        "inferred_facts": [],
-                        "unresolved_conflicts": [],
-                        "blocking_question": None,
-                    },
-                },
-                "source_action": {
-                    "action": "request_source_removal",
-                    "source_id": "src_invented",
-                    "label_hint": "",
-                    "reason": "",
-                },
-            }, ensure_ascii=False),
-            "error": "",
+    _mock_two_call(
+        monkeypatch,
+        _allow_decision(source_action={
+            "action": "request_source_removal",
+            "source_id": "src_invented",
+            "label_hint": "",
+            "reason": "",
+        }),
+        {
+            "reply_to_user": "无法定位要删除的材料。",
+            "summary": {
+                "goal": "",
+                "confirmed_facts": [],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
         },
     )
 

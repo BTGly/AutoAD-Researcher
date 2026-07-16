@@ -16,6 +16,7 @@ FORBIDDEN_V1_MODULES = [
 V2_PRODUCTION_MODULES = [
     "autoad_researcher.server.routes.chat",
     "autoad_researcher.assistant.v2.orchestrator",
+    "autoad_researcher.assistant.v2.dialogue_gate",
     "autoad_researcher.assistant.v2.research_dialogue_agent",
 ]
 

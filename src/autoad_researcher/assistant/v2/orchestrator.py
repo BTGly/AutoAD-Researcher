@@ -1,4 +1,4 @@
-"""Single-call V2 research dialogue orchestrator."""
+"""Two-call V2 research dialogue orchestrator with a deterministic gate."""
 
 from __future__ import annotations
 
@@ -9,11 +9,14 @@ from typing import Any
 
 from autoad_researcher.assistant.llm_runtime import with_conversation_deadline
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
+from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueMode,
-    ResearchDialogueAgent,
-    ResearchDialogueResponse,
+    GatedDialogueDecision,
+    ResearchDecisionAgent,
+    ResearchReplyAgent,
+    ResearchReplyResponse,
     SourceInstruction,
     TargetSpec,
 )
@@ -48,7 +51,7 @@ class OrchestratorResult:
 
 
 class ResearchOrchestratorV2:
-    """Run deterministic material intake, then one research dialogue call."""
+    """Build context once, decide, gate, then generate the user reply."""
 
     @classmethod
     @with_conversation_deadline
@@ -62,7 +65,7 @@ class ResearchOrchestratorV2:
         api_key: str = "",
         provider_url: str = "",
         model: str = "",
-        temperature: float = 0.3,
+        temperature: float = 0.0,
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> OrchestratorResult:
         user_input = user_input.strip()
@@ -82,13 +85,14 @@ class ResearchOrchestratorV2:
                 source_plan,
             )
         context = build_llm_context(run_dir, transcript_tail=transcript_tail)
-        context["registered_sources"] = _registered_source_context(run_dir)
+        registered_sources = _registered_source_context(run_dir)
+        context["registered_sources"] = registered_sources
         context["current_turn_material_actions"] = {
             "created_sources": created_sources,
             "created_jobs": created_jobs,
         }
         previous = load_research_intent_summary(run_dir)
-        dialogue = ResearchDialogueAgent.respond(
+        candidate = ResearchDecisionAgent.decide(
             user_input=user_input,
             evidence_state=context,
             last_summary=previous,
@@ -97,18 +101,56 @@ class ResearchOrchestratorV2:
             provider_url=provider_url,
             model=model,
             temperature=temperature,
+        )
+        decision = DialogueGate.validate(
+            candidate,
+            run_dir=run_dir,
+            registered_sources=registered_sources,
+        )
+        if not candidate.is_valid:
+            if not api_key:
+                failure_reply = "当前没有可用的对话模型连接，材料任务仍可在后台处理。"
+            elif not model.strip():
+                failure_reply = "当前没有配置对话模型，材料任务仍可在后台处理。"
+            else:
+                failure_reply = "这轮意图判定失败了，请重试。"
+            if on_reply_delta is not None:
+                on_reply_delta(failure_reply)
+            return OrchestratorResult(
+                reply=failure_reply,
+                created_sources=created_sources,
+                created_jobs=created_jobs,
+                evidence_used=context.get("usable_evidence", []),
+                answerability=context.get("answerability", {}),
+                intent_summary=(
+                    (previous or ResearchIntentSummary()).model_dump(mode="json")
+                ),
+                dialogue_mode=decision.dialogue_mode,
+                policy_assessment=decision.policy_assessment.model_dump(mode="json"),
+            )
+
+        reply_response = ResearchReplyAgent.respond(
+            user_input=user_input,
+            evidence_state=context,
+            frozen_decision=decision,
+            last_summary=previous,
+            transcript_tail=transcript_tail,
+            api_key=api_key,
+            provider_url=provider_url,
+            model=model,
+            temperature=temperature,
             on_reply_delta=None,
         )
-        if dialogue.should_persist:
-            save_research_intent_summary(run_dir, dialogue.summary)
+        if reply_response.should_persist:
+            save_research_intent_summary(run_dir, reply_response.summary)
         actions_allowed = (
-            dialogue.should_persist
-            and dialogue.policy_assessment.decision == "allow"
-            and dialogue.dialogue_mode in {"ask", "plan"}
+            reply_response.should_persist
+            and decision.policy_assessment.decision == "allow"
+            and decision.dialogue_mode in {"ask", "plan"}
         )
         target_job = _queue_repository_target_spec(
             run_dir,
-            dialogue.target_spec if actions_allowed else None,
+            decision.target_spec if actions_allowed else None,
             created_sources=created_sources,
             created_jobs=created_jobs,
         )
@@ -116,14 +158,12 @@ class ResearchOrchestratorV2:
             created_jobs.append(target_job)
         source_action = _validate_source_action(
             run_dir,
-            dialogue.source_action if actions_allowed else None,
+            decision.source_action if actions_allowed else None,
         )
         experiment_task = None
-        if (
-            dialogue.dialogue_mode == "plan"
-            and dialogue.task_action is not None
-            and dialogue.source_action is None
-            and actions_allowed
+        if actions_allowed and DialogueGate.task_action_allowed(
+            decision,
+            reply_response.summary,
         ):
             try:
                 experiment_task = TaskBridge.build_experiment_task(
@@ -134,7 +174,7 @@ class ResearchOrchestratorV2:
             except (FileExistsError, ValueError):
                 experiment_task = None
 
-        reply = _validated_dialogue_reply(run_dir, dialogue.dialogue_mode, dialogue)
+        reply = _validated_dialogue_reply(decision, reply_response)
         if on_reply_delta is not None:
             on_reply_delta(reply)
         return OrchestratorResult(
@@ -143,26 +183,25 @@ class ResearchOrchestratorV2:
             created_jobs=created_jobs,
             evidence_used=context.get("usable_evidence", []),
             answerability=context.get("answerability", {}),
-            intent_summary=dialogue.summary.model_dump(mode="json"),
+            intent_summary=reply_response.summary.model_dump(mode="json"),
             source_action=(
                 source_action.model_dump(mode="json")
                 if source_action is not None
                 else None
             ),
             experiment_task=experiment_task,
-            dialogue_mode=dialogue.dialogue_mode,
-            policy_assessment=dialogue.policy_assessment.model_dump(mode="json"),
+            dialogue_mode=decision.dialogue_mode,
+            policy_assessment=decision.policy_assessment.model_dump(mode="json"),
         )
 
 
 def _validated_dialogue_reply(
-    run_dir: Path,
-    mode: DialogueMode,
-    dialogue: ResearchDialogueResponse,
+    decision: GatedDialogueDecision,
+    reply_response: ResearchReplyResponse,
 ) -> str:
-    if mode != "act_request":
-        return dialogue.visible_reply()
-    if not (run_dir / "input_task.yaml").is_file():
+    if decision.dialogue_mode != "act_request":
+        return reply_response.visible_reply()
+    if decision.execution_gate == "blocked_missing_contract":
         return (
             "我不能开始修改代码或运行实验：当前没有已确认的 input_task.yaml，"
             "自然语言中的“刚才确认”不能替代真实确认记录。请先完成研究任务准备与确认。"

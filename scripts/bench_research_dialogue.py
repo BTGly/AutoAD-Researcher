@@ -1090,8 +1090,13 @@ def build_run_manifest(
     created_at: str | None = None,
 ) -> SemanticRunManifest:
     selector = PromptSelector()
-    profile = selector.research_dialogue_profile()
-    rendered_prompt = selector.build_research_dialogue_prompt()
+    decision_profile = selector.research_decision_profile()
+    reply_profile = selector.research_reply_profile()
+    rendered_prompt = (
+        selector.build_research_decision_prompt()
+        + "\n\n"
+        + selector.build_research_reply_prompt()
+    )
     provider_host = urlparse(provider_url).hostname
     if not provider_host:
         raise ValueError("DEEPSEEK_BASE_URL must contain an explicit hostname")
@@ -1110,8 +1115,8 @@ def build_run_manifest(
         judge_model=judge_model,
         judge_independent=judge_model != dialogue_model,
         provider_host=provider_host.lower(),
-        prompt_id=profile.prompt_id,
-        prompt_version=profile.prompt_version,
+        prompt_id=f"{decision_profile.prompt_id}+{reply_profile.prompt_id}",
+        prompt_version=f"{decision_profile.prompt_version}+{reply_profile.prompt_version}",
         prompt_sha256=_sha256_text(rendered_prompt),
         corpus_sha256=_sha256_file(corpus_path),
         dialogue_temperature=dialogue_temperature,
@@ -1184,7 +1189,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         default=os.environ.get("AUTOAD_DIALOGUE_MODEL", "deepseek-v4-flash"),
-        help="Production dialogue model used by ResearchDialogueAgent.",
+        help="Production model used by the Decision and Reply Agents.",
     )
     parser.add_argument(
         "--judge-model",

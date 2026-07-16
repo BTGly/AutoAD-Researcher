@@ -53,6 +53,17 @@ def _ready_summary() -> ResearchIntentSummary:
     )
 
 
+def _mock_two_call(monkeypatch, decision: dict, reply: dict) -> None:
+    replies = iter([decision, reply])
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {
+            "reply": json.dumps(next(replies), ensure_ascii=False),
+            "error": "",
+        },
+    )
+
+
 def test_task_bridge_prepares_then_confirms_exact_pipeline_input(tmp_path: Path):
     run_dir = tmp_path / "run_task_bridge"
     run_dir.mkdir()
@@ -135,23 +146,22 @@ def test_orchestrator_typed_task_action_only_prepares_plan_only_input(monkeypatc
     run_dir = tmp_path / "run_task_action"
     run_dir.mkdir()
 
-    monkeypatch.setattr(
-        "autoad_researcher.ui.chat_client.call_research_chat",
-        lambda *args, **kwargs: {
-            "reply": json.dumps({
-                "dialogue_mode": "plan",
-                "reply_to_user": "目标已对齐，可以准备 plan_only 实验输入供你确认。",
-                "summary": {
-                    "goal": "比较候选方法",
-                    "confirmed_facts": ["用户要求 plan_only"],
-                    "inferred_facts": [],
-                    "unresolved_conflicts": [],
-                    "blocking_question": None,
-                },
-                "source_action": None,
-                "task_action": {"action": "prepare_experiment_task"},
-            }, ensure_ascii=False),
-            "error": "",
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "plan",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "task_action": "prepare_experiment_task",
+        },
+        {
+            "reply_to_user": "目标已对齐，可以准备 plan_only 实验输入供你确认。",
+            "summary": {
+                "goal": "比较候选方法",
+                "confirmed_facts": ["用户要求 plan_only"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
         },
     )
 
@@ -176,26 +186,25 @@ def test_orchestrator_reject_mode_drops_all_candidate_actions(monkeypatch, tmp_p
     run_dir.mkdir()
     save_research_intent_summary(run_dir, _ready_summary())
 
-    monkeypatch.setattr(
-        "autoad_researcher.ui.chat_client.call_research_chat",
-        lambda *args, **kwargs: {
-            "reply": json.dumps({
-                "dialogue_mode": "reject",
-                "policy_assessment": {
-                    "decision": "reject",
-                    "category": "evaluation_leakage",
-                    "reason": "正式测试 mask 不能成为训练信号。",
-                    "safe_alternative": "使用独立 validation split。",
-                },
-                "reply_to_user": "我不能把正式测试 mask 加进训练损失。",
-                "summary": _ready_summary().model_dump(mode="json"),
-                "task_action": {"action": "prepare_experiment_task"},
-                "target_spec": {
-                    "adapter_id": "kernelbench",
-                    "selectors": {"level": 2, "problem_id": 40},
-                },
-            }, ensure_ascii=False),
-            "error": "",
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "plan",
+            "policy_assessment": {
+                "decision": "reject",
+                "category": "evaluation_leakage",
+                "reason": "正式测试 mask 不能成为训练信号。",
+                "safe_alternative": "使用独立 validation split。",
+            },
+            "task_action": "prepare_experiment_task",
+            "target_spec": {
+                "adapter_id": "kernelbench",
+                "selectors": {"level": 2, "problem_id": 40},
+            },
+        },
+        {
+            "reply_to_user": "我不能把正式测试 mask 加进训练损失。",
+            "summary": _ready_summary().model_dump(mode="json"),
         },
     )
 
@@ -221,22 +230,22 @@ def test_orchestrator_act_request_is_explicitly_blocked_without_confirmed_task(
     run_dir = tmp_path / "run_act_blocked"
     run_dir.mkdir()
 
-    monkeypatch.setattr(
-        "autoad_researcher.ui.chat_client.call_research_chat",
-        lambda *args, **kwargs: {
-            "reply": json.dumps({
-                "dialogue_mode": "act_request",
-                "reply_to_user": "开始执行。",
-                "summary": {
-                    "goal": "执行实验",
-                    "confirmed_facts": ["用户要求执行"],
-                    "inferred_facts": [],
-                    "unresolved_conflicts": [],
-                    "blocking_question": None,
-                },
-                "task_action": {"action": "prepare_experiment_task"},
-            }, ensure_ascii=False),
-            "error": "",
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "act_request",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "task_action": "prepare_experiment_task",
+        },
+        {
+            "reply_to_user": "开始执行。",
+            "summary": {
+                "goal": "执行实验",
+                "confirmed_facts": ["用户要求执行"],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
         },
     )
 

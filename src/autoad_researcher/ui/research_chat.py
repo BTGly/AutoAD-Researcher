@@ -1,7 +1,8 @@
 """DEPRECATED — V1 legacy Research Chat entry point.
 
 V2 production uses ``server.routes.chat`` → ``ResearchOrchestratorV2`` →
-``ResearchDialogueAgent``. Keyword-based intent routing is intentional in this
+``ResearchDecisionAgent`` → ``DialogueGate`` → ``ResearchReplyAgent``.
+Keyword-based intent routing is intentional in this
 V1 design and must not be extended or used for new features.
 
 This module and its four keyword-token tables (``_PARSE_ACTION_TOKENS``,

@@ -1,0 +1,248 @@
+from pathlib import Path
+
+from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
+from autoad_researcher.assistant.v2.research_dialogue_agent import (
+    DialogueDecision,
+    ResearchPolicyAssessment,
+    SourceInstruction,
+    TargetSpec,
+)
+from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
+
+
+def _allow_policy() -> ResearchPolicyAssessment:
+    return ResearchPolicyAssessment(
+        decision="allow",
+        category="none",
+        reason="",
+        safe_alternative="",
+    )
+
+
+def _valid(decision: DialogueDecision) -> DialogueDecision:
+    decision._is_valid = True
+    return decision
+
+
+def test_gate_forces_reject_policy_and_removes_all_actions(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        policy_assessment=ResearchPolicyAssessment(
+            decision="reject",
+            category="evaluation_leakage",
+            reason="test labels enter training",
+            safe_alternative="use validation labels",
+        ),
+        source_action=SourceInstruction(
+            action="request_source_removal",
+            source_id="src_repo",
+        ),
+        task_action="prepare_experiment_task",
+        target_spec=TargetSpec(
+            adapter_id="kernelbench",
+            selectors={"level": 2, "problem_id": 40},
+        ),
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[{"source_id": "src_repo"}],
+    )
+
+    assert gated.dialogue_mode == "reject"
+    assert gated.source_action is None
+    assert gated.task_action is None
+    assert gated.target_spec is None
+
+
+def test_gate_checks_contract_state_for_act_request(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act_request",
+        policy_assessment=_allow_policy(),
+    ))
+
+    missing = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+    (tmp_path / "input_task.yaml").write_text("run_id: run_demo\n", encoding="utf-8")
+    present = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert missing.execution_gate == "blocked_missing_contract"
+    assert present.execution_gate == "blocked_dialogue_only"
+
+
+def test_gate_validates_source_id_and_adapter_selectors(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        policy_assessment=_allow_policy(),
+        source_action=SourceInstruction(
+            action="request_source_removal",
+            source_id="src_missing",
+        ),
+        target_spec=TargetSpec(
+            adapter_id="kernelbench",
+            selectors={"level": 2},
+        ),
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[{"source_id": "src_repo"}],
+    )
+
+    assert gated.source_action is None
+    assert gated.target_spec is None
+    assert "unregistered_source_action_removed" in gated.gate_notes
+    assert "invalid_target_spec_removed" in gated.gate_notes
+
+
+def test_gate_keeps_valid_source_or_target_candidate(tmp_path: Path):
+    source = _valid(DialogueDecision(
+        dialogue_mode="ask",
+        policy_assessment=_allow_policy(),
+        source_action=SourceInstruction(
+            action="request_source_removal",
+            source_id="src_repo",
+        ),
+    ))
+    target = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        policy_assessment=_allow_policy(),
+        target_spec=TargetSpec(
+            adapter_id="kernelbench",
+            selectors={"level": 2, "problem_id": 40},
+        ),
+    ))
+
+    gated_source = DialogueGate.validate(
+        source,
+        run_dir=tmp_path,
+        registered_sources=[{"source_id": "src_repo"}],
+    )
+    gated_target = DialogueGate.validate(
+        target,
+        run_dir=tmp_path,
+        registered_sources=[{"source_id": "src_repo"}],
+    )
+
+    assert gated_source.source_action == source.source_action
+    assert gated_target.target_spec == target.target_spec
+
+
+def test_task_action_requires_plan_goal_and_no_blocker(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        policy_assessment=_allow_policy(),
+        task_action="prepare_experiment_task",
+    ))
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert DialogueGate.task_action_allowed(
+        gated,
+        ResearchIntentSummary(goal="复现实验", blocking_question=None),
+    ) is True
+    assert DialogueGate.task_action_allowed(
+        gated,
+        ResearchIntentSummary(goal="", blocking_question=None),
+    ) is False
+    assert DialogueGate.task_action_allowed(
+        gated,
+        ResearchIntentSummary(goal="复现实验", blocking_question="缺少数据"),
+    ) is False
+
+
+def test_invalid_semantic_decision_cannot_produce_actions(tmp_path: Path):
+    decision = DialogueDecision(
+        dialogue_mode="plan",
+        policy_assessment=_allow_policy(),
+        task_action="prepare_experiment_task",
+        target_spec=TargetSpec(
+            adapter_id="kernelbench",
+            selectors={"level": 2, "problem_id": 40},
+        ),
+    )
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[{"source_id": "src_repo"}],
+    )
+
+    assert gated.task_action is None
+    assert gated.target_spec is None
+
+
+def test_allow_policy_cannot_use_reject_mode_or_retain_actions(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="reject",
+        policy_assessment=_allow_policy(),
+        task_action="prepare_experiment_task",
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert gated.dialogue_mode == "ask"
+    assert gated.task_action is None
+    assert "reject_mode_without_reject_policy_removed" in gated.gate_notes
+
+
+def test_source_action_is_mutually_exclusive_with_other_actions(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        policy_assessment=_allow_policy(),
+        source_action=SourceInstruction(
+            action="request_source_removal",
+            source_id="src_repo",
+        ),
+        task_action="prepare_experiment_task",
+        target_spec=TargetSpec(
+            adapter_id="kernelbench",
+            selectors={"level": 2, "problem_id": 40},
+        ),
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[{"source_id": "src_repo"}],
+    )
+
+    assert gated.source_action is not None
+    assert gated.task_action is None
+    assert gated.target_spec is None
+
+
+def test_duplicate_pending_task_action_is_removed(tmp_path: Path):
+    pending = tmp_path / "task_bridge" / "pending_experiment_task.json"
+    pending.parent.mkdir(parents=True)
+    pending.write_text("{}\n", encoding="utf-8")
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        policy_assessment=_allow_policy(),
+        task_action="prepare_experiment_task",
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert gated.task_action is None
+    assert "duplicate_task_action_removed" in gated.gate_notes

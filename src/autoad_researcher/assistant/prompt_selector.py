@@ -34,7 +34,9 @@ _MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = {
 MODE_TO_STAGE: dict[AssistantMode, AssistantStage] = _MODE_TO_STAGE
 
 RESEARCH_TASK_DRAFT_PROMPT_ID = "assistant.research_task_draft.v1"
-RESEARCH_DIALOGUE_PROMPT_ID = "assistant.research_dialogue.v3"
+RESEARCH_DECISION_PROMPT_ID = "assistant.research_decision.v1"
+RESEARCH_REPLY_PROMPT_ID = "assistant.research_reply.v1"
+RESEARCH_DIALOGUE_PROMPT_ID = RESEARCH_REPLY_PROMPT_ID
 
 _RESEARCH_CHAT_MODE_TO_PROMPT: dict[str, str] = {
     "intent_clarification": "assistant.material_alignment.v1",
@@ -80,10 +82,22 @@ class PromptSelector:
         return self.build_system_prompt_for_mode("task_confirmation")
 
     def research_dialogue_profile(self):
-        return self._registry.require(RESEARCH_DIALOGUE_PROMPT_ID)
+        return self.research_reply_profile()
 
     def build_research_dialogue_prompt(self) -> str:
-        return self._registry.build_system_prompt(RESEARCH_DIALOGUE_PROMPT_ID)
+        return self.build_research_reply_prompt()
+
+    def research_decision_profile(self):
+        return self._registry.require(RESEARCH_DECISION_PROMPT_ID)
+
+    def build_research_decision_prompt(self) -> str:
+        return self._registry.build_system_prompt(RESEARCH_DECISION_PROMPT_ID)
+
+    def research_reply_profile(self):
+        return self._registry.require(RESEARCH_REPLY_PROMPT_ID)
+
+    def build_research_reply_prompt(self) -> str:
+        return self._registry.build_system_prompt(RESEARCH_REPLY_PROMPT_ID)
 
     def select_prompt_id(self, mode: AssistantMode) -> str:
         return self.prompt_id_for_mode(mode)

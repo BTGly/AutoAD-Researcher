@@ -1,4 +1,4 @@
-"""Single-call research dialogue and summary agent."""
+"""Two-call research decision and reply agents with shared context."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
@@ -27,7 +27,7 @@ class SourceInstruction(BaseModel):
 
 
 class TargetSpec(BaseModel):
-    """Semantic benchmark selector validated by a deterministic adapter."""
+    """Semantic benchmark selector proposed for deterministic validation."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -36,6 +36,7 @@ class TargetSpec(BaseModel):
 
 
 DialogueMode = Literal["ask", "plan", "act_request", "reject"]
+TaskActionProposal = Literal["prepare_experiment_task"]
 PolicyCategory = Literal[
     "none",
     "evaluation_leakage",
@@ -44,17 +45,22 @@ PolicyCategory = Literal[
     "evidence_destruction",
     "unsafe_operation",
 ]
+ExecutionGate = Literal[
+    "not_requested",
+    "blocked_missing_contract",
+    "blocked_dialogue_only",
+]
 
 
 class ResearchPolicyAssessment(BaseModel):
-    """Semantic research-policy decision proposed by the dialogue model."""
+    """Semantic research-policy proposal from the Decision Agent."""
 
     model_config = ConfigDict(extra="forbid")
 
-    decision: Literal["allow", "reject"] = "allow"
-    category: PolicyCategory = "none"
-    reason: str = ""
-    safe_alternative: str = ""
+    decision: Literal["allow", "reject"]
+    category: PolicyCategory
+    reason: str
+    safe_alternative: str
 
     @model_validator(mode="after")
     def _validate_decision(self) -> "ResearchPolicyAssessment":
@@ -73,46 +79,59 @@ class ResearchPolicyAssessment(BaseModel):
         return self
 
 
-class ResearchDialogueResponse(BaseModel):
-    """Schema-bound result of one research dialogue turn."""
+class DialogueDecision(BaseModel):
+    """Small semantic proposal: mode, policy, and candidate actions only."""
 
     model_config = ConfigDict(extra="forbid")
 
-    dialogue_mode: DialogueMode = "ask"
-    policy_assessment: ResearchPolicyAssessment = Field(
-        default_factory=ResearchPolicyAssessment,
-    )
-    reply_to_user: str = Field(min_length=1)
-    summary: ResearchIntentSummary
+    dialogue_mode: DialogueMode
+    policy_assessment: ResearchPolicyAssessment
+    source_action: SourceInstruction | None = None
+    task_action: TaskActionProposal | None = None
+    target_spec: TargetSpec | None = None
+    _is_valid: bool = PrivateAttr(default=False)
+
+    @property
+    def is_valid(self) -> bool:
+        return self._is_valid
+
+
+class GatedDialogueDecision(BaseModel):
+    """Decision after deterministic state, identifier, and permission checks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dialogue_mode: DialogueMode
+    policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
     task_action: TaskInstruction | None = None
     target_spec: TargetSpec | None = None
-    _should_persist: bool = PrivateAttr(default=False)
+    execution_gate: ExecutionGate = "not_requested"
+    gate_notes: list[str] = Field(default_factory=list)
 
-    @model_validator(mode="after")
-    def _validate_mode_policy(self) -> "ResearchDialogueResponse":
-        rejected = self.policy_assessment.decision == "reject"
-        if rejected != (self.dialogue_mode == "reject"):
-            raise ValueError("dialogue_mode=reject must match policy_assessment.decision=reject")
-        return self
+
+class ResearchReplyResponse(BaseModel):
+    """Natural-language reply and complete summary from the Reply Agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply_to_user: str = Field(min_length=1)
+    summary: ResearchIntentSummary
+    _should_persist: bool = PrivateAttr(default=False)
 
     @property
     def should_persist(self) -> bool:
         return self._should_persist
 
     def visible_reply(self) -> str:
-        reply = self.reply_to_user.strip()
-        question = (self.summary.blocking_question or "").strip()
-        if question and question not in reply:
-            return f"{reply}\n\n{question}"
-        return reply
+        return self.reply_to_user.strip()
 
 
-class ResearchDialogueAgent:
-    """Produce the user reply and complete next summary in one LLM call."""
+class ResearchDecisionAgent:
+    """Classify semantics and propose candidate actions in one small LLM call."""
 
     @classmethod
-    def respond(
+    def decide(
         cls,
         *,
         user_input: str,
@@ -122,20 +141,10 @@ class ResearchDialogueAgent:
         api_key: str = "",
         provider_url: str = "",
         model: str = "",
-        temperature: float = 0.3,
-        on_reply_delta: Callable[[str], None] | None = None,
-    ) -> ResearchDialogueResponse:
-        if not api_key:
-            return ResearchDialogueResponse(
-                reply_to_user="当前没有可用的对话模型连接，材料任务仍可在后台处理。",
-                summary=last_summary or ResearchIntentSummary(),
-            )
-        if not model.strip():
-            return ResearchDialogueResponse(
-                reply_to_user="当前没有配置对话模型，材料任务仍可在后台处理。",
-                summary=last_summary or ResearchIntentSummary(),
-            )
-
+        temperature: float = 0.0,
+    ) -> DialogueDecision:
+        if not api_key or not model.strip():
+            return _fallback_decision()
         messages = cls.build_messages(
             user_input=user_input,
             evidence_state=evidence_state,
@@ -156,17 +165,90 @@ class ResearchDialogueAgent:
         )
         payload = _parse_json_object(str(result.get("reply") or ""))
         if result.get("error") or payload is None:
-            return ResearchDialogueResponse(
-                reply_to_user="这轮回复生成失败了，请重试。",
-                summary=last_summary or ResearchIntentSummary(),
-            )
+            return _fallback_decision()
         try:
-            response = ResearchDialogueResponse.model_validate(payload)
-        except Exception:
-            return ResearchDialogueResponse(
-                reply_to_user="这轮回复格式无效，请重试。",
-                summary=last_summary or ResearchIntentSummary(),
+            decision = DialogueDecision.model_validate(payload)
+        except ValidationError:
+            return _fallback_decision()
+        decision._is_valid = True
+        return decision
+
+    @classmethod
+    def build_messages(
+        cls,
+        *,
+        user_input: str,
+        evidence_state: dict[str, Any],
+        last_summary: ResearchIntentSummary | None,
+        transcript_tail: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, str]]:
+        runtime_context = _runtime_context(
+            evidence_state=evidence_state,
+            last_summary=last_summary,
+            transcript_tail=transcript_tail,
+            include_adapters=True,
+        )
+        contract = PromptSelector().build_research_decision_prompt()
+        return [
+            {"role": "system", "content": runtime_context + "\n\n" + contract},
+            {"role": "user", "content": user_input},
+        ]
+
+
+class ResearchReplyAgent:
+    """Write the user reply and complete summary from one frozen decision."""
+
+    @classmethod
+    def respond(
+        cls,
+        *,
+        user_input: str,
+        evidence_state: dict[str, Any],
+        frozen_decision: GatedDialogueDecision,
+        last_summary: ResearchIntentSummary | None,
+        transcript_tail: list[dict[str, Any]] | None = None,
+        api_key: str = "",
+        provider_url: str = "",
+        model: str = "",
+        temperature: float = 0.0,
+        on_reply_delta: Callable[[str], None] | None = None,
+    ) -> ResearchReplyResponse:
+        if not api_key:
+            return _fallback_reply(
+                last_summary,
+                "当前没有可用的对话模型连接，材料任务仍可在后台处理。",
             )
+        if not model.strip():
+            return _fallback_reply(
+                last_summary,
+                "当前没有配置对话模型，材料任务仍可在后台处理。",
+            )
+        messages = cls.build_messages(
+            user_input=user_input,
+            evidence_state=evidence_state,
+            frozen_decision=frozen_decision,
+            last_summary=last_summary,
+            transcript_tail=transcript_tail,
+        )
+        from autoad_researcher.ui.chat_client import call_research_chat
+
+        result = call_research_chat(
+            api_key,
+            provider_url,
+            messages,
+            model=model,
+            timeout_s=30,
+            priority="interactive",
+            response_format_json=True,
+            temperature=temperature,
+        )
+        payload = _parse_json_object(str(result.get("reply") or ""))
+        if result.get("error") or payload is None:
+            return _fallback_reply(last_summary, "这轮回复生成失败了，请重试。")
+        try:
+            response = ResearchReplyResponse.model_validate(payload)
+        except ValidationError:
+            return _fallback_reply(last_summary, "这轮回复格式无效，请重试。")
         response._should_persist = True
         if on_reply_delta is not None:
             on_reply_delta(response.visible_reply())
@@ -178,29 +260,85 @@ class ResearchDialogueAgent:
         *,
         user_input: str,
         evidence_state: dict[str, Any],
+        frozen_decision: GatedDialogueDecision,
         last_summary: ResearchIntentSummary | None,
         transcript_tail: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, str]]:
-        evidence_summary = _json_text(_compact_evidence_state(evidence_state))
-        previous = _json_text(
-            (last_summary or ResearchIntentSummary()).model_dump(mode="json")
+        runtime_context = _runtime_context(
+            evidence_state=evidence_state,
+            last_summary=last_summary,
+            transcript_tail=transcript_tail,
+            include_adapters=False,
         )
-        recent_dialogue = _json_text(_clean_transcript(transcript_tail))
-        target_adapters = _json_text(get_target_adapter_registry().prompt_catalog())
-        behavior_contract = PromptSelector().build_research_dialogue_prompt()
-        runtime_context = f"""本轮上下文：
-当前可用材料：{evidence_summary}
-上一轮研究摘要：{previous}
-最近对话：{recent_dialogue}
-系统支持的仓库目标 Adapter（能力目录，不表示当前已登记对应仓库）：{target_adapters}"""
-        system = behavior_contract.rstrip() + "\n\n" + runtime_context
+        frozen = _json_text(frozen_decision.model_dump(mode="json"))
+        contract = PromptSelector().build_research_reply_prompt()
+        system = (
+            runtime_context
+            + f"\n冻结决策（不可改写）：{frozen}\n\n"
+            + contract
+        )
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_input},
         ]
 
 
-def _clean_transcript(transcript_tail: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+def _fallback_decision() -> DialogueDecision:
+    return DialogueDecision(
+        dialogue_mode="ask",
+        policy_assessment=_allow_policy_assessment(),
+    )
+
+
+def _fallback_reply(
+    last_summary: ResearchIntentSummary | None,
+    message: str,
+) -> ResearchReplyResponse:
+    return ResearchReplyResponse(
+        reply_to_user=message,
+        summary=last_summary or ResearchIntentSummary(),
+    )
+
+
+def _allow_policy_assessment() -> ResearchPolicyAssessment:
+    return ResearchPolicyAssessment(
+        decision="allow",
+        category="none",
+        reason="",
+        safe_alternative="",
+    )
+
+
+def _runtime_context(
+    *,
+    evidence_state: dict[str, Any],
+    last_summary: ResearchIntentSummary | None,
+    transcript_tail: list[dict[str, Any]] | None,
+    include_adapters: bool,
+) -> str:
+    evidence = _json_text(_compact_evidence_state(evidence_state))
+    previous = _json_text(
+        (last_summary or ResearchIntentSummary()).model_dump(mode="json")
+    )
+    recent = _json_text(_clean_transcript(transcript_tail))
+    lines = [
+        "本轮上下文：",
+        f"当前可用材料：{evidence}",
+        f"上一轮研究摘要：{previous}",
+        f"最近对话：{recent}",
+    ]
+    if include_adapters:
+        adapters = _json_text(get_target_adapter_registry().prompt_catalog())
+        lines.append(
+            "系统支持的仓库目标 Adapter（能力目录，不表示当前已登记对应仓库）："
+            + adapters
+        )
+    return "\n".join(lines)
+
+
+def _clean_transcript(
+    transcript_tail: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
     cleaned: list[dict[str, str]] = []
     for item in (transcript_tail or [])[-8:]:
         role = item.get("role")
@@ -266,20 +404,21 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     if fenced:
         stripped = fenced.group(1).strip()
     try:
-        payload = json.loads(stripped)
+        parsed = json.loads(stripped)
+        return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
-        decoder = json.JSONDecoder()
-        for index, character in enumerate(stripped):
-            if character != "{":
-                continue
-            try:
-                payload, _end = decoder.raw_decode(stripped[index:])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                return payload
-        return None
-    return payload if isinstance(payload, dict) else None
+        pass
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(stripped):
+        if character != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def _json_text(value: Any) -> str:

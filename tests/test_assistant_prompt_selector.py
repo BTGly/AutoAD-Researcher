@@ -9,7 +9,9 @@ from autoad_researcher.assistant.prompt_selector import (
     MODE_TO_PROMPT_ID,
     MODE_TO_STAGE,
     PromptSelector,
+    RESEARCH_DECISION_PROMPT_ID,
     RESEARCH_DIALOGUE_PROMPT_ID,
+    RESEARCH_REPLY_PROMPT_ID,
     RESEARCH_CHAT_MODE_TO_PROMPT_ID,
     RESEARCH_TASK_DRAFT_PROMPT_ID,
 )
@@ -85,11 +87,16 @@ def test_research_task_draft_prompt_is_schema_bound():
 def test_selector_returns_registered_research_dialogue_prompt():
     selector = PromptSelector()
 
+    assert selector.research_decision_profile().prompt_id == RESEARCH_DECISION_PROMPT_ID
+    assert selector.research_reply_profile().prompt_id == RESEARCH_REPLY_PROMPT_ID
     assert selector.research_dialogue_profile().prompt_id == RESEARCH_DIALOGUE_PROMPT_ID
-    rendered = selector.build_research_dialogue_prompt()
-    assert "AutoAD Assistant global invariants" in rendered
-    assert "AutoAD Research Assistant" in rendered
-    assert "ResearchDialogueContext" not in rendered
+    decision = selector.build_research_decision_prompt()
+    reply = selector.build_research_reply_prompt()
+    assert "AutoAD Assistant global invariants" in decision
+    assert "Research Decision Agent" in decision
+    assert "AutoAD Assistant global invariants" in reply
+    assert "Research Reply Agent" in reply
+    assert selector.build_research_dialogue_prompt() == reply
 
 
 def test_selector_rejects_unsupported_mode_at_runtime():
