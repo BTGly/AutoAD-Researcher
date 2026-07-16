@@ -30,20 +30,39 @@ class ResourceBudgetBuildError(Exception):
 
 
 def build_resolution_plans(
-    stage35_input,
+    planning_input,
     matrix: ExperimentMatrix,
     protocol_fingerprint: str,
     plans_id: str = "",
 ) -> ExperimentalResolutionPlans:
     resolutions = []
-    for vi in stage35_input.variants:
-        for u in vi.experiment_resolvable:
+    matrix_entries: dict[tuple[str | None, str], list[str]] = {}
+    for entry in matrix.entries:
+        matrix_entries.setdefault((entry.variant_id, entry.stage), []).append(entry.entry_id)
+    for dimension in planning_input.resolvable_dimensions:
+        targets = matrix_entries.get((dimension.variant_id, dimension.verification_stage))
+        if not targets:
             raise ResolutionPlanBuildError(
-                "Structured resolution criteria are required before compiling "
-                f"experiment_resolvable dimension {vi.variant.variant_id}:"
-                f"{u.dimension.value}. Free-text acceptance_criterion is not "
-                "converted into a placeholder criterion."
+                "resolution dimension has no matching matrix entry: "
+                f"{dimension.variant_id}:{dimension.verification_stage}"
             )
+        resolutions.append({
+            "unresolved_dimension_id": compute_unresolved_dimension_id(
+                dimension.variant_id,
+                dimension.dimension,
+                dimension.observation_source,
+            ),
+            "dimension": dimension.dimension,
+            "variant_id": dimension.variant_id,
+            "verification_stage": dimension.verification_stage,
+            "target_entry_ids": targets,
+            "observable": dimension.observable,
+            "observation_source": dimension.observation_source,
+            "acceptance_criterion": dimension.acceptance_criterion,
+            "rejection_criterion": dimension.rejection_criterion,
+            "result_on_accept": "resolved_compatible",
+            "result_on_reject": "resolved_incompatible" if dimension.rejection_criterion else None,
+        })
 
     return ExperimentalResolutionPlans(
         plans_id=plans_id or _rp_id(),

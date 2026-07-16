@@ -1,7 +1,4 @@
-"""Step 1: SharedExperimentProtocol builder.
-
-Assembles the 3.5-internal protocol from adapter output and planning inputs.
-"""
+"""SharedExperimentProtocol builder."""
 
 import hashlib
 import json
@@ -11,14 +8,12 @@ from autoad_researcher.schemas.experiment_planning import (
     InterfaceConstraint,
     PlanningInputRefs,
     SharedExperimentProtocol,
-    Stage35Input,
     SupplementalEvaluationRefs,
 )
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
 
 def build_shared_protocol(
-    stage35_input: Stage35Input,
     planning_input_refs: PlanningInputRefs,
     supplemental_refs: SupplementalEvaluationRefs,
     evaluation_protocol_ref: ArtifactReferenceV2,

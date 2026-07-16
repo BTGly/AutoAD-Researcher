@@ -6,7 +6,6 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.core.run_id import run_dir_path
-from autoad_researcher.experiment.adapter_34 import Stage34InputAdapter
 from autoad_researcher.experiment.builders import (
     build_guard_policy,
     build_resolution_plans,
@@ -23,6 +22,7 @@ from autoad_researcher.schemas.experiment_planning import (
     BaselineExecutionPolicy,
     EntryResourceEstimate,
     ExperimentPlanValidationReport,
+    ExperimentPlanningInput,
     ExperimentPlannerHandoff,
     InterfaceConstraint,
     MatrixEntry,
@@ -32,7 +32,6 @@ from autoad_researcher.schemas.experiment_planning import (
     SharedExperimentProtocol,
     SupplementalEvaluationRefs,
 )
-from autoad_researcher.schemas.transfer_design import IdeaTransferDesignHandoff
 
 
 class StageResourceEstimateInput(BaseModel):
@@ -78,12 +77,12 @@ class StageResourceEstimateProfile(BaseModel):
 
 
 class ExperimentPlannerRequest(BaseModel):
-    """All user/system-confirmed inputs needed to run Step 3.5."""
+    """All confirmed inputs needed to generate an experiment plan."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
-    handoff: IdeaTransferDesignHandoff
-    source_handoff_sha256: str
+    planning_input: ExperimentPlanningInput
+    source_input_sha256: str
     planning_input_refs: PlanningInputRefs
     supplemental_refs: SupplementalEvaluationRefs
     evaluation_protocol_ref: ArtifactReferenceV2
@@ -114,21 +113,18 @@ class ExperimentPlannerResult(BaseModel):
 
 
 class ExperimentPlanner:
-    """Run 3.4 handoff → 3.5 planning artifacts → 3.6 handoff."""
+    """Compile a confirmed, source-neutral input into planning artifacts."""
 
     def __init__(self, runs_root: str | Path = "runs") -> None:
         self._runs_root = Path(runs_root)
-        self._adapter = Stage34InputAdapter()
 
     def run(self, request: ExperimentPlannerRequest) -> ExperimentPlannerResult:
-        run_id = request.handoff.run_id
+        run_id = request.planning_input.run_id
         run_dir = run_dir_path(self._runs_root, run_id)
         artifact_dir = run_dir / "experiment_planning"
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        stage35_input = self._adapter.load(request.handoff)
         protocol = build_shared_protocol(
-            stage35_input=stage35_input,
             planning_input_refs=request.planning_input_refs,
             supplemental_refs=request.supplemental_refs,
             evaluation_protocol_ref=request.evaluation_protocol_ref,
@@ -152,10 +148,10 @@ class ExperimentPlanner:
             multiple_variant_policy="descriptive_only",
             decision_rules=request.decision_rules,
         )
-        specs = build_trial_specs(stage35_input, protocol.protocol_fingerprint)
+        specs = build_trial_specs(request.planning_input, protocol.protocol_fingerprint)
         matrix = build_matrix(protocol, specs)
         resolution_plans = build_resolution_plans(
-            stage35_input,
+            request.planning_input,
             matrix,
             protocol.protocol_fingerprint,
         )
@@ -199,7 +195,7 @@ class ExperimentPlanner:
         handoff = emit_handoff(
             emit_paths,
             run_id=run_id,
-            source_sha256=request.source_handoff_sha256,
+            source_sha256=request.source_input_sha256,
         )
         handoff_path = artifact_dir / "experiment_planner_handoff.json"
         _write_model(handoff_path, handoff)

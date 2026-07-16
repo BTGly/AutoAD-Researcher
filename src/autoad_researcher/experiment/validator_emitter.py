@@ -174,7 +174,7 @@ def emit_handoff(
     run_id: str,
     source_sha256: str,
 ) -> ExperimentPlannerHandoff:
-    """Generate 3.5 → 3.6 handoff after all gates pass."""
+    """Generate a validated plan bundle after all gates pass."""
 
     # Gate 1: validation report exists and passed
     report = ExperimentPlanValidationReport.model_validate_json(
@@ -263,11 +263,11 @@ def emit_handoff(
     return ExperimentPlannerHandoff(
         schema_version=1,
         run_id=run_id,
-        source_handoff_sha256=source_sha256,
+        source_input_sha256=source_sha256,
         artifact_manifest=manifest,
         selected_variant_ids=selected_variant_ids,
         validation_report_sha256=validation_report_sha,
-        next_stage="3.6_patch_planner",
+        next_stage="awaiting_implementation_approval",
     )
 
 

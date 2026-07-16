@@ -14,8 +14,7 @@ from autoad_researcher.core.stage_result import StageResult
 class AgentHarness(ABC):
     """Agent 执行内核抽象接口。
 
-    AutoAD Core 通过此接口调用 harness backend，
-    不感知具体是 SimplePipelineHarness 还是 DeepAgentsHarness。
+    原型控制面通过此接口调用受限 harness backend。
     """
 
     def __init__(self, runs_root: str | Path = "runs") -> None:

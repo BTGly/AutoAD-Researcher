@@ -27,8 +27,8 @@ Do not start the next development step until the current one is pushed.
 ## Verification Rules
 
 - Always use `bash scripts/verify.sh`; do not substitute partial tests.
-- The gate checks: structure, schemas, core imports, CLI, benchmark config/preflight/
-  environment lock, pytest (1931 tests), log index integrity.
+- The gate checks: structure, schemas, retained-service imports, CLI, benchmark
+  config/preflight/environment lock, pytest, and log index integrity.
 - Dev dependencies via `uv sync --extra dev` (or use the gate which handles this).
 - GitHub Actions Node.js warnings are not failures.
 
@@ -53,12 +53,10 @@ Entry: `ResearchOrchestratorV2.handle()` in `assistant/v2/orchestrator.py`.
 - V2 routes: `server/routes/{chat,runs,sources,evidence,jobs,intent_summary,artifacts,ws,experiment_config,report_route}.py`
 - V2 assistant modules: `assistant/v2/{orchestrator,research_dialogue_agent,research_intent_summary,source_actions,context_builder,...}.py`
 
-**V1 (CLI pipeline)** — deterministic planning pipeline via `autoad` CLI.
-- Entry: `autoad_researcher.cli:main`  → configures `cli.py` 12 subcommands
-- Subcommands: `smoke`, `repository-intelligence`, `paper-intelligence`, `research-context`,
-  `transfer-design`, `experiment-plan`, `patch-plan`, `patch-apply`, `runner-execute`,
-  `results-analysis`, `final-report`, `stage3-acceptance`
-- Smoke: `uv run autoad smoke --run-id run_demo`
+**Material-intelligence CLI** — read-only source and paper analysis via `autoad`.
+- Entry: `autoad_researcher.cli:main`.
+- Supported subcommands: `repository-intelligence`, `paper-intelligence`, and
+  `research-context`. The removed Stage 3 / transfer / code-agent chain has no CLI surface.
 
 **State**: SQLite + JSONL under `runs/{run_id}/`. Streamlit is legacy/removed surface.
 
@@ -82,12 +80,12 @@ cd frontend && npm run dev     # http://localhost:5173
 cd frontend && npm run build   # output → frontend/dist/
 
 # Tests (dev extra required)
-uv run --extra dev pytest                              # all 1931 tests
+uv run --extra dev pytest                              # all project tests
 uv run --extra dev pytest -k test_intent_contract      # single file
 
-# CLI smoke
-uv run autoad smoke --run-id run_demo
-uv run autoad smoke --run-id run_demo --json
+# Read-only CLI checks
+uv run autoad repository-intelligence --run-id run_demo --local-path /path/to/repository
+uv run autoad research-context --run-id run_demo --json
 
 # Docker
 bash scripts/docker-up.sh        # or docker compose -f docker/docker-compose.yml up --build

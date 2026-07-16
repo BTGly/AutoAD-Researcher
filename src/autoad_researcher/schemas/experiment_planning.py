@@ -1,11 +1,11 @@
-"""Step 3.5 — Multi-variant Experiment Planner schemas.
+"""Deterministic multi-variant experiment-planning schemas.
 
 All Pydantic models defined in strict dependency order (no ``from __future__
 import annotations``).  Back-references use forward-reference strings where
 needed for discriminated unions.
 
-Schema owner: Step 3.5 Multi-variant Experiment Planner.
-Consumer:   Step 3.6 Patch Planner + CommandRequirements.
+Schema owner: the experiment-planning library.
+Consumer: the intent-alignment control plane and a future approved executor.
 """
 
 from datetime import datetime
@@ -523,10 +523,10 @@ class VariantTrialSpec(BaseModel):
     idea_id: str
 
     primary_hook_id: str
-    hook_bindings: list  # HookBinding from schemas/transfer_design.py
-    interface_deltas: list  # InterfaceContractDelta
-    regime_changes: list  # RegimeChange
-    state_changes: list  # StateChangeDescription
+    hook_bindings: list[dict[str, object]] = Field(default_factory=list)
+    interface_deltas: list[dict[str, object]] = Field(default_factory=list)
+    regime_changes: list[dict[str, object]] = Field(default_factory=list)
+    state_changes: list[dict[str, object]] = Field(default_factory=list)
     adapter_required: bool
     new_dependencies: list[str]
     risk_level: Literal["low", "medium", "high"]
@@ -714,7 +714,7 @@ class ExperimentalResolutionPlan(BaseModel):
 
 
 class ExperimentalResolutionPlans(BaseModel):
-    """将 3.4 的未解决问题编译为可执行的验证步骤。"""
+    """将已声明的未解决问题编译为可执行的验证步骤。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -990,52 +990,69 @@ class ArtifactManifest(BaseModel):
 
 
 class ExperimentPlannerHandoff(BaseModel):
-    """3.5 → 3.6 handoff。SHA-only 引用。"""
+    """Validated plan bundle awaiting an explicitly approved implementation step."""
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1]
     run_id: str
-    source_handoff_sha256: str
+    source_input_sha256: str
     artifact_manifest: ArtifactManifest
     selected_variant_ids: list[str]
     validation_report_sha256: str
-    next_stage: Literal["3.6_patch_planner"]
+    next_stage: Literal["awaiting_implementation_approval"]
 
 
 # ---------------------------------------------------------------------------
-# 10. Adapter internal types — 3.4 → 3.5 输入
+# 10. Source-independent planning input
 # ---------------------------------------------------------------------------
 
-# Import 3.4 sealed types at the end to avoid circular dependency during
-# module-level resolution (these are only used by schemas defined below).
 
-from autoad_researcher.schemas.transfer_design import (  # noqa: E402
-    IdeaContract,
-    IdeaTransferAnalysis,
-    ImplementationVariant,
-    TransferConstraint,
-    UnresolvedDimension,
-    VariantRiskReport,
-    VariantTransferAnalysis,
-)
+class ExperimentVariantInput(BaseModel):
+    """One user-confirmed candidate to include in an experiment matrix.
+
+    This is deliberately independent of the removed paper-to-code transfer
+    pipeline: an intent-alignment agent, a human, or another approved source
+    can provide the same compact contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    variant_id: str = Field(pattern=IdentifierPattern)
+    variant_label: str = Field(min_length=1)
+    idea_id: str = Field(pattern=IdentifierPattern)
+    primary_hook_id: str = Field(min_length=1)
+    hook_bindings: list[dict[str, object]] = Field(default_factory=list)
+    interface_deltas: list[dict[str, object]] = Field(default_factory=list)
+    regime_changes: list[dict[str, object]] = Field(default_factory=list)
+    state_changes: list[dict[str, object]] = Field(default_factory=list)
+    preparation_phase: PreparationPhase = PreparationPhase.NONE
+    adapter_required: bool = False
+    new_dependencies: list[str] = Field(default_factory=list)
+    risk_level: Literal["low", "medium", "high"] = "medium"
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
-class Stage35VariantInput(BaseModel):
-    """Adapter 输出的单个 variant 输入。"""
+class ExperimentResolvableDimension(BaseModel):
+    """A concrete uncertainty that the plan may resolve by measurement."""
 
-    variant: ImplementationVariant
-    transfer_analysis: VariantTransferAnalysis
-    risk_report: VariantRiskReport
-    experiment_resolvable: list[UnresolvedDimension]
+    model_config = ConfigDict(extra="forbid")
+
+    variant_id: str = Field(pattern=IdentifierPattern)
+    dimension: str = Field(min_length=1)
+    verification_stage: Literal["fit", "smoke", "full"]
+    observable: str = Field(min_length=1)
+    observation_source: str = Field(min_length=1)
+    acceptance_criterion: ResolutionCriterion
+    rejection_criterion: ResolutionCriterion | None = None
 
 
-class Stage35Input(BaseModel):
-    """3.4 → 3.5 adapter 输出。"""
+class ExperimentPlanningInput(BaseModel):
+    """Confirmed, source-neutral input for deterministic planning."""
 
-    run_id: str
-    confirmed_idea: IdeaContract
-    transfer_analysis: IdeaTransferAnalysis
-    transfer_constraints: list[TransferConstraint]
-    variants: list[Stage35VariantInput]
-    nonblocking_warnings: list[UnresolvedDimension]
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(pattern=IdentifierPattern)
+    variants: list[ExperimentVariantInput] = Field(min_length=1, max_length=3)
+    resolvable_dimensions: list[ExperimentResolvableDimension] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

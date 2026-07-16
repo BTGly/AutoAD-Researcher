@@ -20,7 +20,6 @@ echo "[verify] checking project structure..."
 test -d scripts
 test -f scripts/verify.sh
 test -f scripts/verify_and_push.sh
-test -f scripts/verify_hitl_artifacts.py
 test -f .github/workflows/verify.yml
 test -f .gitignore
 
@@ -41,98 +40,60 @@ echo "[verify] checking Python syntax..."
 
 echo "[verify] checking AutoAD schemas..."
 "$UV_BIN" run python - <<'PY'
-from autoad_researcher.schemas import ExperimentPlan, PatchPlan
+from autoad_researcher.schemas import (
+    ExperimentPlanningInput,
+    ExperimentVariantInput,
+    Stage3Approval,
+)
 
-ExperimentPlan.model_validate(
+ExperimentPlanningInput.model_validate(
     {
-        "experiment_goal": "smoke",
-        "baseline": "PatchCore",
-        "dataset": "MVTec AD",
-        "categories": ["bottle"],
-        "metrics": ["image-level AUROC"],
-        "control_group": "baseline",
-        "experiment_group": "experiment",
-        "resource_budget": "single GPU",
-        "risks": ["implementation risk"],
-        "extra_field": {"kept": True},
+        "run_id": "run_verify",
+        "variants": [
+            ExperimentVariantInput(
+                variant_id="variant_a",
+                variant_label="Variant A",
+                idea_id="idea_a",
+                primary_hook_id="hook_a",
+                risk_level="low",
+            )
+        ],
     }
 )
-PatchPlan.model_validate(
+Stage3Approval.model_validate(
     {
-        "target_repo": "example",
-        "files_to_inspect": ["README.md"],
-        "files_to_modify": ["README.md"],
-        "planned_changes": ["add note"],
-        "expected_risks": ["none"],
-        "requires_approval": True,
-        "extra_field": {"kept": True},
+        "run_id": "run_verify",
+        "decision_type": "patch_approval",
+        "confirmed_by_user": True,
+        "created_at": "2026-01-01T00:00:00Z",
     }
 )
 print("[verify] schemas ok.")
 PY
 
-echo "[verify] checking core imports..."
+echo "[verify] checking retained service imports..."
 "$UV_BIN" run python - <<'PY'
-from autoad_researcher.clarifiers import (
-    IntentClarifierBackend,
-    RuleBasedIntentClarifierBackend,
+from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
+from autoad_researcher.experiment import ExperimentPlanner
+from autoad_researcher.paper_intelligence.orchestrator import PaperIntelligenceOrchestrator
+from autoad_researcher.pipeline.approval_gates import (
+    require_patch_approval,
+    require_run_approval,
 )
-from autoad_researcher.core import (
-    ArtifactStore,
-    EventStore,
-    IdeaGenerator,
-    IdeaSourceRouter,
-    InputIntake,
-    IntentClarifier,
-    PipelineController,
-    PipelineResult,
-    StageResult,
+from autoad_researcher.repository_intelligence.cli_runner import (
+    run_local_repository_intelligence,
 )
-from autoad_researcher.ideation import (
-    DirectIdeaBackend,
-    IdeaGenerationBackend,
-)
-from autoad_researcher.core import PaperReader, RepositoryReader
-from autoad_researcher.harness.simple_pipeline import SimplePipelineHarness
-from autoad_researcher.readers import (
-    StaticPaperReaderBackend,
-    StaticRepositoryReaderBackend,
-)
-from autoad_researcher.schemas import (
-    ClarificationContext,
-    ClarificationQuestion,
-    ClarifiedTask,
-    EvidenceReference,
-    IdeaCandidate,
-    IdeaContext,
-    IdeaGenerationResult,
-    IdeaRouteDecision,
-    InputTask,
-    KnownFact,
-    PaperSummary,
-    RepositorySummary,
-    SourceEntry,
-    SourceManifest,
-)
+from autoad_researcher.runner import execute_experiment_attempt
+from autoad_researcher.server.main import app
 
-store = ArtifactStore(runs_root="runs")
-events = EventStore(runs_root="runs")
-stage = StageResult(
-    run_id="run_demo",
-    stage="experiment_planning",
-    status="success",
-    artifacts=["experiment_plan.json"],
-)
-pipeline = PipelineResult(
-    run_id="run_demo",
-    status="success",
-    stages=[stage],
-)
-controller = PipelineController(
-    harness=SimplePipelineHarness(runs_root="runs"),
-    runs_root="runs",
-)
-print("[verify] core import ok.")
+assert ResearchOrchestratorV2
+assert ExperimentPlanner
+assert PaperIntelligenceOrchestrator
+assert require_patch_approval and require_run_approval
+assert run_local_repository_intelligence
+assert execute_experiment_attempt
+assert app
+print("[verify] retained service imports ok.")
 PY
 
 echo "[verify] checking fixture JSON..."
@@ -238,8 +199,6 @@ test -f src/autoad_researcher/analysis/metrics.py
 test -f src/autoad_researcher/analysis/reproducibility.py
 test -f src/autoad_researcher/supervisor/validity.py
 test -f src/autoad_researcher/benchmarks/patchcore_attempt.py
-test -f evidence/experiments/internal_patchcore_mvtec_bottle_v1/readiness_report.json
-test -f docs/milestones/3.0D-real-attempt-readiness.md
 test -f src/autoad_researcher/environments/models.py
 test -f src/autoad_researcher/environments/policy.py
 test -f src/autoad_researcher/environments/io.py
@@ -275,21 +234,6 @@ PY
 
 echo "[verify] running pytest..."
 "$UV_BIN" run --extra dev pytest -q
-
-echo "[verify] checking 3.0D readiness evidence..."
-"$UV_BIN" run python - <<'PY'
-import json
-from pathlib import Path
-
-path = Path("evidence/experiments/internal_patchcore_mvtec_bottle_v1/readiness_report.json")
-data = json.loads(path.read_text(encoding="utf-8"))
-assert data["schema_version"] == 1
-assert data["case_id"] == "internal_patchcore_mvtec_bottle_v1"
-assert data["status"] in {"ready", "blocked"}
-assert isinstance(data["checks"], list) and data["checks"]
-assert not data.get("can_execute_attempt_01"), "attempt_01 must not be marked executable without real preflight evidence"
-print("[verify] 3.0D readiness evidence ok.")
-PY
 
 echo "[verify] checking development log..."
 test -f notes/development-log.md

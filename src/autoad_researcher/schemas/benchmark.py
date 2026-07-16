@@ -1,7 +1,7 @@
 """Internal Benchmark schemas — 锁定的内部工程基准定义。
 
 仅用于 Repository Reader、Runner、Metrics、Validity 和 CI 回归。
-不得被 InputIntake、IntentClarifier、IdeaGenerator 或真实用户 CLI 读取。
+不得被真实用户 CLI 或对话式意图对齐入口读取。
 """
 
 import re

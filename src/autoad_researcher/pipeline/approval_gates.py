@@ -13,7 +13,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.schemas.approvals import Stage3Approval
-from autoad_researcher.schemas.stage3_acceptance import Stage3AcceptanceStageRecord
 
 GateStage = Literal["patch_applicator", "runner_execute"]
 GateName = Literal["patch_approval", "run_approval"]
@@ -39,6 +38,20 @@ class ApprovalGateReport(BaseModel):
     checked_at: str
 
 
+class ApprovalGateBlock(BaseModel):
+    """Minimal structured outcome for a blocked approval check.
+
+    Kept local to the reusable gate so it does not depend on the deleted
+    Stage 3 acceptance-chain schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: GateStage
+    status: Literal["blocked"] = "blocked"
+    blocked_reason: str
+
+
 class ApprovalGateResult(BaseModel):
     """Return value for approval gate helpers."""
 
@@ -46,7 +59,7 @@ class ApprovalGateResult(BaseModel):
 
     passed: bool
     report: ApprovalGateReport
-    blocked_record: Stage3AcceptanceStageRecord | None = None
+    blocked_record: ApprovalGateBlock | None = None
 
 
 def require_patch_approval(run_id: str, run_dir: Path, stage_dir: Path) -> ApprovalGateResult:
@@ -165,7 +178,7 @@ def _blocked(
         checked_at=_now(),
     )
     _write_report(stage_dir, report)
-    record = Stage3AcceptanceStageRecord(
+    record = ApprovalGateBlock(
         stage=stage,
         status="blocked",
         blocked_reason=blocked_reason,

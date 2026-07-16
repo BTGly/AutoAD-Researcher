@@ -869,7 +869,7 @@ def test_handoff_construction():
     h = ExperimentPlannerHandoff(
         schema_version=1,
         run_id="run_001",
-        source_handoff_sha256="a" * 64,
+        source_input_sha256="a" * 64,
         artifact_manifest=ArtifactManifest(
             entries=[
                 ManifestEntry(
@@ -881,9 +881,9 @@ def test_handoff_construction():
         ),
         selected_variant_ids=["var_A"],
         validation_report_sha256="b" * 64,
-        next_stage="3.6_patch_planner",
+        next_stage="awaiting_implementation_approval",
     )
-    assert h.next_stage == "3.6_patch_planner"
+    assert h.next_stage == "awaiting_implementation_approval"
 
 
 # ---------------------------------------------------------------------------

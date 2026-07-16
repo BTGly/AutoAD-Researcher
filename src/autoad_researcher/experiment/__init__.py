@@ -4,12 +4,6 @@ Business-logic builders, validators, and emitter live here.
 All Pydantic models live in ``schemas/experiment_planning.py`` (repo convention).
 """
 
-from autoad_researcher.experiment.adapter_34 import (
-    Stage34HandoffError,
-    Stage34InputAdapter,
-    compute_unresolved_dimension_id,
-    derive_preparation_phase,
-)
 from autoad_researcher.experiment.builders import (
     ResourceBudgetBuildError,
     ResolutionPlanBuildError,
@@ -43,8 +37,6 @@ __all__ = [
     "MatrixBuildError",
     "ResourceBudgetBuildError",
     "ResolutionPlanBuildError",
-    "Stage34HandoffError",
-    "Stage34InputAdapter",
     "ExperimentPlanner",
     "ExperimentPlannerRequest",
     "ExperimentPlannerResult",
@@ -57,8 +49,6 @@ __all__ = [
     "build_shared_protocol",
     "build_stat_plan",
     "build_trial_specs",
-    "compute_unresolved_dimension_id",
-    "derive_preparation_phase",
     "emit_handoff",
     "validate_decision_rule_coverage",
     "validate_plan",
