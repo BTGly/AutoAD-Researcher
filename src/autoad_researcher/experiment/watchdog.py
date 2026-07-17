@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
+
+_NON_FINITE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:nan|[+-]?inf(?:inity)?)(?![A-Za-z0-9_])", re.IGNORECASE
+)
 
 
 class AttemptHealthEvent(BaseModel):
@@ -34,7 +39,7 @@ class RuntimeWatchdog:
         lower = stderr.lower()
         if "cuda out of memory" in lower:
             events.append(_event("OOM_DETECTED", current, stderr))
-        if "nan" in lower or "inf" in lower:
+        if _NON_FINITE_PATTERN.search(stderr):
             events.append(_event("NAN_OR_INF", current, stderr))
         heartbeat = _read_timestamp(attempt_dir / "heartbeat.json")
         if heartbeat is not None and (current - heartbeat).total_seconds() > self.heartbeat_interval_seconds * 2:
