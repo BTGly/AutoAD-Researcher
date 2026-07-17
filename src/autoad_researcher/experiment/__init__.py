@@ -60,5 +60,6 @@ from autoad_researcher.experiment.attempt import ExperimentAttempt
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.gpu import GpuAllocator, ResourceLease
+from autoad_researcher.experiment.watchdog import RuntimeWatchdog
 
-__all__ = ["ExperimentAttempt", "ExperimentAttemptService", "ExperimentAttemptStore", "GpuAllocator", "ResourceLease"]
+__all__ = ["ExperimentAttempt", "ExperimentAttemptService", "ExperimentAttemptStore", "GpuAllocator", "ResourceLease", "RuntimeWatchdog"]

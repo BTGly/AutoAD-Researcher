@@ -15,6 +15,7 @@ from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.gpu import GpuAllocator, GpuUnavailableError
+from autoad_researcher.experiment.watchdog import RuntimeWatchdog
 from autoad_researcher.runner import ExperimentExecutionResult, OutputManifest, OutputManifestEntry
 
 _PROCESSES: dict[tuple[str, str], subprocess.Popen[str]] = {}
@@ -71,6 +72,14 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
     if attempt.runtime_status not in {"STARTING", "RUNNING", "TERMINATING"}:
         return AttemptObservation(terminal=attempt.runtime_status in {"COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED", "LOST"}, succeeded=attempt.runtime_status == "COMPLETED")
     output_dir = run_dir / "attempts" / attempt.attempt_id
+    health_events = RuntimeWatchdog().inspect(output_dir, pid=attempt.pid)
+    event_names = {event.event for event in health_events}
+    if "OOM_DETECTED" in event_names:
+        _kill_process_group(attempt.process_group_id)
+        return _finalize_failure(run_dir, attempt, "OOM", "RuntimeWatchdog detected CUDA out of memory")
+    if "NAN_OR_INF" in event_names:
+        _kill_process_group(attempt.process_group_id)
+        return _finalize_failure(run_dir, attempt, "NAN_OR_INF", "RuntimeWatchdog detected NaN or Inf")
     process = _PROCESSES.get((str(run_dir.resolve()), attempt.attempt_id))
     if attempt.cancel_requested_at:
         _kill_process_group(attempt.process_group_id)
