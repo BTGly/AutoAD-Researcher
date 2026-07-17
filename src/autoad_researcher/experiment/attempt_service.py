@@ -56,6 +56,13 @@ class ExperimentAttemptService:
         max_retries: int = 0,
         required_device_count: int = 0,
         required_vram_mb: int = 0,
+        termination_grace_seconds: int = 30,
+        checkpoint_watch_path: str | None = None,
+        checkpoint_stall_seconds: int | None = None,
+        evaluation_contract_ref: str | None = None,
+        evaluation_contract_sha256: str | None = None,
+        protected_artifact_report_ref: str | None = None,
+        protected_artifact_report_sha256: str | None = None,
     ) -> ExperimentAttemptStartResult:
         session = self._require_executable_session(run_dir, session_id, job_type)
         now = _utc_now()
@@ -72,6 +79,13 @@ class ExperimentAttemptService:
             max_retries=max_retries,
             required_device_count=required_device_count,
             required_vram_mb=required_vram_mb,
+            termination_grace_seconds=termination_grace_seconds,
+            checkpoint_watch_path=checkpoint_watch_path,
+            checkpoint_stall_seconds=checkpoint_stall_seconds,
+            evaluation_contract_ref=evaluation_contract_ref,
+            evaluation_contract_sha256=evaluation_contract_sha256,
+            protected_artifact_report_ref=protected_artifact_report_ref,
+            protected_artifact_report_sha256=protected_artifact_report_sha256,
             created_at=now,
             updated_at=now,
         )

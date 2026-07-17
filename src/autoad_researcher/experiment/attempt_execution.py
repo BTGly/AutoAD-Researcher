@@ -16,7 +16,7 @@ from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.gpu import GpuAllocator, GpuUnavailableError
 from autoad_researcher.experiment.watchdog import RuntimeWatchdog
-from autoad_researcher.experiment.failure_classifier import classify_or_load
+from autoad_researcher.experiment.failure_classifier import FailureClassification, classify_or_load
 from autoad_researcher.experiment.finalizer import finalize_attempt
 from autoad_researcher.experiment.retry_policy import RetryPolicy
 from autoad_researcher.experiment.health_diagnosis import HealthDiagnosisAgent
@@ -87,6 +87,9 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
     if "NAN_OR_INF" in event_names:
         _begin_or_escalate_termination(run_dir, attempt, "NAN_OR_INF")
         return AttemptObservation(terminal=False)
+    if "CHECKPOINT_STALLED" in event_names:
+        _begin_or_escalate_termination(run_dir, attempt, "CHECKPOINT_STALLED")
+        return AttemptObservation(terminal=False)
     process = _PROCESSES.get((str(run_dir.resolve()), attempt.attempt_id))
     if attempt.cancel_requested_at:
         if attempt.termination_requested_at is None:
@@ -142,14 +145,20 @@ def _finalize_failure(run_dir: Path, attempt, code: str, message: str, *, runtim
 def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime_status: str) -> AttemptObservation:
     store = ExperimentAttemptStore()
     final = store.finish(run_dir, attempt_id=attempt.attempt_id, runtime_status=runtime_status, failure_code=result.failure_code, execution_result_ref=f"attempts/{attempt.attempt_id}/execution_result.json")
-    if runtime_status != "COMPLETED": classify_or_load(run_dir / "attempts" / attempt.attempt_id)
+    classification: FailureClassification | None = None
+    if runtime_status != "COMPLETED":
+        classification = classify_or_load(run_dir / "attempts" / attempt.attempt_id)
     finalize_attempt(run_dir / "attempts" / attempt.attempt_id, attempt_id=attempt.attempt_id, runtime_status=runtime_status, run_dir=run_dir, evaluation_contract_ref=attempt.evaluation_contract_ref, evaluation_contract_sha256=attempt.evaluation_contract_sha256, protected_artifact_report_ref=attempt.protected_artifact_report_ref, protected_artifact_report_sha256=attempt.protected_artifact_report_sha256)
-    if RetryPolicy().should_retry(final):
+    if RetryPolicy().should_retry(final, classification):
         from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
         ExperimentAttemptService().create_retry(run_dir, attempt_id=final.attempt_id)
-    elif final.failure_code in {None, "UNKNOWN_RUN_FAILURE"}:
+    elif classification is not None:
         events = _health_event_names(run_dir / "attempts" / attempt.attempt_id / "health_events.jsonl")
-        diagnosis = HealthDiagnosisAgent().diagnose(failure_code=final.failure_code, health_events=events)
+        diagnosis = HealthDiagnosisAgent().diagnose(
+            failure_code=classification.failure_code,
+            health_events=events,
+            evidence_conflict=_health_evidence_conflicts(events),
+        )
         if diagnosis is not None:
             _write_json(run_dir / "attempts" / attempt.attempt_id / "health_diagnosis.json", diagnosis.model_dump(mode="json"))
     if attempt.resource_lease_id:
@@ -185,6 +194,11 @@ def _timed_out(output_dir: Path, timeout: int) -> bool:
 
 def _pid_alive(pid: int | None) -> bool:
     if pid is None: return False
+    stat_path = Path(f"/proc/{pid}/stat")
+    if stat_path.is_file():
+        try:
+            if stat_path.read_text(encoding="utf-8").split()[2] == "Z": return False
+        except (IndexError, OSError): pass
     try: os.kill(pid, 0)
     except OSError: return False
     return True
@@ -229,3 +243,6 @@ def _health_event_names(path: Path) -> list[str]:
         try: names.append(str(json.loads(line).get("event")))
         except json.JSONDecodeError: continue
     return names
+
+def _health_evidence_conflicts(events: list[str]) -> bool:
+    return "OOM_DETECTED" in events and "NAN_OR_INF" in events

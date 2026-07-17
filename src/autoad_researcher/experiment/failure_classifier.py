@@ -33,7 +33,13 @@ class FailureClassification(BaseModel):
     retryable: bool
 
 
-_DEFAULT = ["oom_error", "cuda_runtime_error", "cudnn_error", "disk_full", "nan_or_inf", "python_import_error", "metrics_missing", "unknown_run_failure"]
+_DEFAULT = ["execution_failure", "oom_error", "cuda_runtime_error", "cudnn_error", "disk_full", "nan_or_inf", "python_import_error", "metrics_missing", "unknown_run_failure"]
+_RETRYABLE_EXECUTION_FAILURES = {
+    "WORKER_LOST",
+    "TEMPORARY_GPU_UNAVAILABLE",
+    "TRANSIENT_IO_ERROR",
+    "PROCESS_SPAWN_FAILED",
+}
 
 
 def classify_or_load(attempt_dir: Path, config: FailureClassifierConfig | None = None) -> FailureClassification:
@@ -42,6 +48,10 @@ def classify_or_load(attempt_dir: Path, config: FailureClassifierConfig | None =
     config = config or FailureClassifierConfig()
     enabled = config.enabled_detectors or _DEFAULT
     enabled = [name for name in enabled if name not in config.disabled_detectors]
+    execution = _read_json(attempt_dir / "execution_result.json")
+    raw_failure_code = execution.get("failure_code") if isinstance(execution.get("failure_code"), str) else None
+    if "execution_failure" in enabled and raw_failure_code in _RETRYABLE_EXECUTION_FAILURES:
+        return _write(path, FailureClassification(profile=config.profile, enabled_detectors=enabled, matched_detector="execution_failure", failure_code=raw_failure_code, attempt_category="run_failed", retryable=True))
     stderr = _read(attempt_dir / "stderr.log").lower()
     events = _read(attempt_dir / "health_events.jsonl").lower()
     result = _read(attempt_dir / "execution_result.json").lower()
@@ -61,6 +71,12 @@ def classify_or_load(attempt_dir: Path, config: FailureClassifierConfig | None =
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+def _read_json(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return value if isinstance(value, dict) else {}
 def _write(path: Path, value: FailureClassification) -> FailureClassification:
     path.write_text(json.dumps(value.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return value

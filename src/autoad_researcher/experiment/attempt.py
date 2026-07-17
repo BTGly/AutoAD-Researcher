@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -89,4 +90,10 @@ class ExperimentAttempt(BaseModel):
             raise ValueError("retry_exhausted requires a terminal failed runtime status")
         if self.resource_lease_id is not None and self.required_device_count == 0:
             raise ValueError("ResourceLease requires a positive device request")
+        if self.checkpoint_watch_path is not None:
+            checkpoint_path = PurePosixPath(self.checkpoint_watch_path)
+            if checkpoint_path.is_absolute() or any(part == ".." for part in checkpoint_path.parts):
+                raise ValueError("checkpoint_watch_path must stay within the Attempt artifact directory")
+        if (self.checkpoint_watch_path is None) != (self.checkpoint_stall_seconds is None):
+            raise ValueError("checkpoint watch path and stall interval must be configured together")
         return self

@@ -248,6 +248,31 @@ def test_gpu_capacity_failure_finalizes_attempt_without_starting_training(tmp_pa
     assert load_pipeline_jobs(run_dir)[0]["status"] == "failed"
 
 
+def test_transient_classification_automatically_queues_one_bounded_retry(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_automatic_retry"
+    session_id = _ready_session(run_dir)
+    plan = _plan().model_copy(update={"program": "/definitely/not/an/executable"})
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:auto-retry",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+        max_retries=1,
+    )
+    assert _process_pending_jobs(run_dir) == 1
+    parent = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert parent is not None and parent.failure_code == "PROCESS_SPAWN_FAILED"
+    jobs = load_pipeline_jobs(run_dir)
+    assert len(jobs) == 2
+    retry = ExperimentAttemptStore().load(run_dir, "attempt_000002")
+    assert retry is not None
+    assert retry.retry_of == parent.attempt_id
+    assert retry.retry_count == 1
+
+
 def test_popen_attempt_does_not_block_worker_and_can_be_cancelled(tmp_path: Path):
     run_dir = tmp_path / "run_attempt_cancel"
     session_id = _ready_session(run_dir)
@@ -273,3 +298,84 @@ def test_popen_attempt_does_not_block_worker_and_can_be_cancelled(tmp_path: Path
     cancelled = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
     assert cancelled is not None and cancelled.runtime_status == "CANCELLED"
     assert load_pipeline_jobs(run_dir)[0]["status"] == "failed"
+
+
+def test_termination_escalates_from_term_to_kill_for_process_ignoring_term(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_termination_escalation"
+    session_id = _ready_session(run_dir)
+    plan = _plan(
+        command=(
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, lambda *_: None)\n"
+            "while True: time.sleep(0.01)"
+        )
+    )
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:termination-escalation",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+        termination_grace_seconds=1,
+    )
+    assert _process_pending_jobs(run_dir) == 1
+    ExperimentAttemptStore().request_cancel(run_dir, attempt_id=started.attempt.attempt_id)
+    _process_pending_jobs(run_dir)
+    terminating = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert terminating is not None
+    assert terminating.runtime_status == "TERMINATING"
+    assert terminating.termination_reason == "USER_CANCELLED"
+    assert terminating.termination_requested_at is not None
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
+    final = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert final is not None and final.runtime_status == "CANCELLED"
+
+
+def test_worker_restart_keeps_observing_persisted_process(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_worker_restart"
+    session_id = _ready_session(run_dir)
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:worker-restart",
+        command_plan=_plan(command="import time\ntime.sleep(5)"),
+        input_refs=_refs(_plan(command="import time\ntime.sleep(5)")),
+        job_timeout_sec=60,
+    )
+    assert _process_pending_jobs(run_dir) == 1
+    import autoad_researcher.experiment.attempt_execution as execution
+
+    execution._PROCESSES.clear()
+    assert _process_pending_jobs(run_dir) == 0
+    recovered = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert recovered is not None and recovered.runtime_status == "RUNNING"
+    ExperimentAttemptStore().request_cancel(run_dir, attempt_id=started.attempt.attempt_id)
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
+
+
+def test_checkpoint_stall_is_explicitly_configured_and_stops_attempt(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_checkpoint_stall"
+    session_id = _ready_session(run_dir)
+    plan = _plan(command="from pathlib import Path\nimport time\nPath('checkpoint.json').write_text('{}')\ntime.sleep(5)")
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:checkpoint-stall",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+        checkpoint_watch_path="checkpoint.json",
+        checkpoint_stall_seconds=1,
+    )
+    assert _process_pending_jobs(run_dir) == 1
+    time.sleep(1.1)
+    _process_pending_jobs(run_dir)
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
+    events = (run_dir / "attempts" / started.attempt.attempt_id / "health_events.jsonl").read_text(encoding="utf-8")
+    final = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert "CHECKPOINT_STALLED" in events
+    assert final is not None and final.failure_code == "CHECKPOINT_STALLED"
