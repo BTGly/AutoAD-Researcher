@@ -300,22 +300,232 @@ recommended_tree_action
 
 ---
 
-## 7. Champion 与 DecisionEngine
+## 7. Champion 晋升系统
 
-ChampionStore 保存：
+### 7.1 三层分离架构
+
+命令（Command）、事务（Transaction）、审计事件（Event）三层分离：
 
 ```text
-candidate_id
-commit
-metric summary
-resource summary
-validity
-B_dev evidence
-B_test evidence
-promoted_at
+Command Layer      → Coordinator 工具接口，V1 仅暴露单一命令
+Transaction Layer  → 可恢复的两阶段提交协议，保证原子性
+Event Layer        → 不可变审计日志，记录已发生事实
 ```
 
-DecisionEngine 先执行确定性 gate：
+### 7.2 CandidateRegistry — 不可变候选快照
+
+每次 `PROMOTE_AND_MERGE` 候选晋升前，先写入不可变 `CandidateSnapshot`：
+
+```python
+class CandidateSnapshot(BaseModel):
+    candidate_id: str
+    evaluation_contract_hash: str
+    idea_id: str
+    attempt_id: str
+    source_commit: str
+    patch_sha256: str
+    metrics_ref: str
+    resource_ref: str
+    b_dev_evidence_ref: str
+    b_test_evidence_ref: str | None
+    created_at: str
+```
+
+存储布局：
+
+```text
+champions/
+├── candidates/
+│   ├── candidate_001.json
+│   └── candidate_002.json
+├── champion_events.jsonl
+├── current_by_contract.json
+└── transactions/
+    ├── tx_<id>.json
+    └── ...
+```
+
+### 7.3 ChampionEvent — 审计事件
+
+```python
+class ChampionEventType(str, Enum):
+    PROMOTED_AND_MERGED = "promoted_and_merged"
+    ROLLED_BACK = "rolled_back"
+
+    # 仅 schema 预留，V1 Validator 禁止生成
+    PROMOTED = "promoted"
+    MERGED = "merged"
+
+
+class ChampionEvent(BaseModel):
+    event_id: str
+    transaction_id: str
+    event_type: ChampionEventType
+
+    evaluation_contract_hash: str
+    candidate_id: str
+    previous_candidate_id: str | None
+
+    source_branch: str | None
+    source_commit: str | None
+
+    trunk_commit_before: str
+    trunk_commit_after: str
+    merge_commit: str | None
+    revert_commit: str | None
+
+    approval_ref: str
+    reverts_event_id: str | None = None
+
+    created_at: datetime
+```
+
+关键字段说明：
+
+- `previous_candidate_id`：回滚时知道恢复谁
+- `trunk_commit_before`：乐观并发检查
+- `trunk_commit_after`：恢复时判断 Git 操作是否已完成
+- `merge_commit`：`git merge --no-ff` 产生的独立 merge commit，用于可审计回滚
+- `reverts_event_id`：明确 ROLLBACK 对应哪次晋升
+
+### 7.4 PromotionTransaction — 可恢复事务协议
+
+```python
+class PromotionTransactionStatus(str, Enum):
+    PREPARED = "prepared"
+    GIT_APPLIED = "git_applied"
+    COMMITTED = "committed"
+    ROLLED_BACK = "rolled_back"
+    FAILED = "failed"
+
+
+class PromotionTransaction(BaseModel):
+    transaction_id: str
+    command_type: Literal["promote_and_merge", "rollback"]
+
+    evaluation_contract_hash: str
+    candidate_id: str
+    approval_ref: str
+
+    expected_current_candidate_id: str | None
+    expected_trunk_commit: str
+
+    resulting_trunk_commit: str | None = None
+    event_id: str | None = None
+
+    status: PromotionTransactionStatus
+    created_at: datetime
+    updated_at: datetime
+```
+
+**V1 提交顺序：**
+
+```text
+1. 获取 evaluation_contract_hash 对应的 champion lock
+
+2. 重新验证：
+   - candidate 存在
+   - B_test 已通过
+   - guardrail 通过
+   - protected hash 完好
+   - current champion 未变化
+   - trunk HEAD 等于 expected_trunk_commit
+
+3. 写 PromotionTransaction(status=PREPARED)
+
+4. git merge --no-ff <candidate-branch>
+   → 记录 resulting_trunk_commit
+   → transaction → GIT_APPLIED
+
+5. 写不可变 CandidateSnapshot
+
+6. 追加 ChampionEvent(PROMOTED_AND_MERGED)
+
+7. 原子替换 current_by_contract.json 中的指针
+   （写临时文件 → fsync → os.replace()，不直接覆盖）
+
+8. transaction → COMMITTED
+
+9. 释放 lock
+```
+
+**崩溃恢复规则：**
+
+| Transaction 状态 | trunk HEAD 状态 | 恢复动作 |
+|---|---|---|
+| `PREPARED` | == expected_trunk_commit | 安全重做 |
+| `PREPARED` | ≠ expected_trunk_commit | 标记 CONFLICT，禁止自动继续 |
+| `GIT_APPLIED` | == resulting_trunk_commit | 补写 Snapshot + Event + pointer → COMMITTED |
+| `GIT_APPLIED` | ≠ resulting_trunk_commit | 拒绝自动恢复 |
+| `COMMITTED` | 任意 | 幂等，直接返回已有 Event |
+
+**Git merge 策略：** 始终 `git merge --no-ff <candidate-branch>` 产生独立 merge commit，避免无法区分的 fast-forward。
+
+**ROLLBACK 机制：** 不使用 `git reset --hard`（会丢失后续 trunk 提交），而是：
+
+```text
+git revert -m 1 <merge_commit>  →  产生 revert_commit
+恢复 current champion pointer → previous_candidate_id
+追加 ChampionEvent(ROLLED_BACK, reverts_event_id=原事件ID)
+```
+
+### 7.5 PromotionApproval — 审批决议独立存储
+
+```python
+class PromotionApproval(BaseModel):
+    approval_id: str
+    candidate_id: str
+    mode: Literal["human", "automatic"]
+    decision: Literal["approved", "rejected"]
+    policy_snapshot_ref: str
+    approved_by: str | None
+    created_at: datetime
+```
+
+`promote_and_merge_candidate` 必须引用 `approval_id`，不能自行判断"似乎已批准"。
+
+### 7.6 批准策略
+
+**默认必须人工确认**（以下任一条件触发 HITL）：
+
+```text
+首次 promotion
+noise floor 尚未 LOCKED
+seed 数不足
+delta ≤ 2 × noise_floor
+存在任何 guardrail 接近阈值
+资源预算剩余 < 10%
+B_test 类别表现方向冲突
+用户未显式开启 auto_approve
+```
+
+**自动批准的必要条件**（全部满足方可 auto-approve）：
+
+```text
+用户显式启用 auto_approve
+B_test 通过
+Candidate 为 SCIENTIFICALLY_EVALUABLE
+EvaluationContract hash 一致
+protected hash 完好
+noise floor 已 LOCKED
+满足最低 seed 数
+主指标提升 > auto_approve_noise_multiplier × noise_floor
+所有 guardrail 通过
+无类别发生严重回归
+预算足够继续至少一次最小确认实验
+```
+
+默认：
+
+```python
+auto_approve_noise_multiplier = 2.0
+```
+
+"同一 Contract 连续 3 次 promotion 均获人工批准" → UI **建议**用户启用 auto_approve，系统不自作主张切换。
+
+### 7.7 DecisionEngine
+
+先执行确定性 gate：
 
 ```text
 invalid
@@ -331,7 +541,8 @@ B_dev improves sufficiently
 → candidate
 
 B_test gate passes
-→ champion
+→ 进入 PromotionPolicy → HITL 或 auto-approve
+→ PROMOTE_AND_MERGE 原子事务
 ```
 
 Coordinator 负责语义动作：
@@ -345,6 +556,14 @@ prune
 continue
 stop proposal
 ```
+
+### 7.8 Execution Mode 映射
+
+| Mode | Experiment execution | Promotion / merge |
+|---|---|---|
+| `plan_only` | 禁止 | 禁止 |
+| `approve_each_step` | 每个 Attempt 前确认 | 每次确认 |
+| `agent_assisted_after_approval` | 初始计划批准后自动执行 | 默认仍确认；用户显式启用 auto-approve 后可自动 |
 
 ---
 
@@ -405,13 +624,18 @@ execution = COMPLETED
 - category；
 - deterministic summary。
 
-### PR 05D：DecisionEngine / ChampionStore
+### PR 05D：DecisionEngine / CandidateRegistry
 
-- candidate；
-- confirm；
-- promote；
-- reject；
-- B_test gate。
+- CandidateSnapshot schema；
+- ChampionEvent schema；
+- PromotionTransaction schema；
+- Transaction 两阶段提交协议（PREPARED → GIT_APPLIED → COMMITTED）；
+- 崩溃恢复逻辑（PREPARED/GIT_APPLIED/COMMITTED 三种恢复路径）；
+- current_by_contract.json 原子写入（临时文件 → fsync → os.replace）；
+- B_test gate；
+- PromotionPolicy（HITL 与 auto-approve 规则）；
+- PromotionApproval 独立存储；
+- rollback 机制（git revert -m 1 → pointer 恢复 → ROLLED_BACK 事件）。
 
 ### PR 05E：Reflection
 
@@ -454,12 +678,21 @@ improve/noise/regress
 
 ### 10.4 Champion 测试
 
-- B_dev improve；
-- guardrail fail；
-- B_test fail；
-- B_test pass；
-- resource budget fail；
-- duplicate candidate。
+- B_dev improve → 进入 candidate 但不触发晋升；
+- guardrail fail → no promote；
+- B_test fail → no promote；
+- B_test pass → 进入 PromotionPolicy → HITL 或 auto-approve；
+- resource budget fail → HITL 停等；
+- duplicate candidate → 拒绝；
+- Git merge 成功、pointer 写入前崩溃 → 恢复后补提交；
+- pointer 更新失败 → current champion 不产生错误指向；
+- 同一 transaction_id 重放 → 不重复 merge；
+- trunk HEAD 变化 → promotion conflict；
+- B_test 缺失 → 拒绝；
+- approval 缺失 → 拒绝；
+- PROMOTE_ONLY / MERGE_ONLY 在 V1 中 → 拒绝（Validator 拦截）；
+- rollback → 创建 revert commit，不 reset history；
+- rollback → pointer 恢复 previous candidate。
 
 ### 10.5 Reflection 测试
 
@@ -474,6 +707,10 @@ improve/noise/regress
 - 不可信指标不能进入科研结论；
 - B_test 不参与常规 ideation；
 - noise 内变化不被当作 SOTA；
-- Champion 有可验证 lineage；
+- Champion 有可验证 lineage（CandidateSnapshot + ChampionEvent 追溯）；
+- PromotionTransaction 在任意阶段崩溃后可安全恢复；
+- 同一 transaction_id 重放幂等，不重复 merge、不重复追加事件；
+- `promote_and_merge_candidate` 必须引用 valid `approval_ref`；
+- V1 中 `PROMOTE_ONLY` / `MERGE_ONLY` 被 Validator 拒绝；
 - 每个决策区分事实、推断、置信度；
 - 失败实验能够影响后续 ideation。

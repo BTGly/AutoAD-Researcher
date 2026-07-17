@@ -55,6 +55,8 @@ tree_request_prune
 tree_mark_status
 tree_frontier
 tree_search
+promote_and_merge_candidate   # V1 唯一晋升工具，见 06 7.4
+rollback_champion             # V1 回滚工具
 ```
 
 mutation 要求：
@@ -113,7 +115,7 @@ prompt/model version
 工具分类：
   read-only（可并行调用）: tree_view, compare_attempts, record_finding
   mutation（串行，写状态）: tree_add_node, tree_update_node, tree_prune, tree_propagate
-  execution（创建子任务）: run_executor, merge_candidate
+  execution（创建子任务）: run_executor, promote_and_merge_candidate
   HITL（人工介入）: request_user_decision
 ```
 
@@ -126,7 +128,8 @@ prompt/model version
 | `tree_propagate` | `node_id` | 变异 | node 已有有效结果；只向祖先追加 insight |
 | `run_executor` | `node_id`, `attempt_spec`, `skip_eval=false` | 执行 | node READY；无活跃 Attempt；预算通过；EvaluationContract + protected_hashes 已冻结 |
 | `compare_attempts` | `candidate_attempt_id`, `baseline_attempt_id?` | 只读 | 两者均为 SCIENTIFICALLY_EVALUABLE；EvaluationContract hash 一致 |
-| `merge_candidate` | `node_id`, `source_branch` | 变异 | 禁止 main/master；B_test 已通过；protected hash 未变；trunk clean |
+| `promote_and_merge_candidate` | `candidate_id`, `approval_ref`, `expected_trunk_commit`, `expected_current_candidate_id` | 执行 | B_test 通过；EvaluationContract hash 一致；protected hash 完好；PromotionPolicy 已批准；trunk clean；HEAD 等于 expected_trunk_commit；candidate 未被撤销；无未完成的同 contract promotion transaction |
+| `rollback_champion` | `event_id`, `approval_ref`, `expected_trunk_commit` | 变异 | event_id 存在且为 PROMOTED_AND_MERGED 类型；approval_ref valid |
 | `record_finding` | `kind`, `about`, `note`, `evidence_refs` | 追加 | append-only；引用必须存在 |
 | `request_user_decision` | `question`, `options`, `reason` | HITL | 仅审批模式/预算冲突/无法自动解决的歧义可调用 |
 
@@ -138,11 +141,21 @@ run_executor:
   执行后再次检查
   不匹配 → PROTOCOL_VIOLATED
 
-merge_candidate:
+promote_and_merge_candidate:
   不能由 Coordinator 直接 git merge
-  必须由确定性 MergeService 执行
-  强制重新跑 B_test
-  通过后才合并
+  必须由确定性 PromotionService 执行
+  必须通过 PromotionTransaction 两阶段提交
+  （PREPARED → git merge --no-ff → GIT_APPLIED → Snapshot + Event + pointer → COMMITTED）
+  必须引用 valid approval_ref（来自 HITL 或 PromotionPolicy auto-approve）
+```
+
+**回滚机制：**
+
+```text
+rollback_champion:
+  使用 git revert -m 1 <merge_commit>，不使用 git reset --hard
+  恢复 current champion pointer → previous_candidate_id
+  追加 ChampionEvent(ROLLED_BACK, reverts_event_id=原事件ID)
 ```
 
 **Agent 工具只是"提出请求"。** 真正的状态变更由后端的 Store/Service 完成。

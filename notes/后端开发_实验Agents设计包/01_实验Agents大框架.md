@@ -131,8 +131,9 @@
 ┌───────────────────────────────────────────────────────────────┐
 │ Scientific Validity and Memory                                │
 │                                                               │
-│ EvaluationContract / InterventionContract                     │
-│ IdeaTree / CognitiveCommitLedger / ChampionStore              │
+ │ EvaluationContract / InterventionContract                     │
+│ IdeaTree / CognitiveCommitLedger                              │
+│ CandidateRegistry / ChampionEventLog / PromotionTransaction   │
 │ NoiseFloor / ValidityGate / DecisionEngine                    │
 │ ConvergenceMonitor / StrategyOverlay                          │
 │ BatchSupervisor / BatchFailurePolicy                          │
@@ -161,7 +162,7 @@ evaluation_contract
 environment_snapshot_ref
 budget
 status
-current_champion
+current_champion_pointer  # 指向 CandidateSnapshot.candidate_id
 idea_tree_revision
 prompt_profile_version
 ```
@@ -767,7 +768,15 @@ runs/<run_id>/experiment/<session_id>/
 │       ├── validity.json
 │       ├── outcome_card.json
 │       └── reflection.json
-├── champion.json
+├── champions/
+│   ├── candidates/
+│   │   ├── candidate_001.json
+│   │   └── candidate_002.json
+│   ├── champion_events.jsonl
+│   ├── current_by_contract.json
+│   └── transactions/
+│       ├── tx_<id>.json
+│       └── ...
 ├── jobs.jsonl
 ├── events.jsonl
 └── trajectory.jsonl
