@@ -89,6 +89,8 @@ def _process_pending_jobs(run_dir: Path) -> int:
             continue
         if job.get("status") not in ("queued",):
             continue
+        if _job_not_before(job) is not None and _job_not_before(job) > datetime.now(timezone.utc):
+            continue
 
         job_id = job.get("job_id", "unknown")
         job_type = job.get("job_type", "")
@@ -148,6 +150,11 @@ def _process_pending_jobs(run_dir: Path) -> int:
 
                 outputs = prepare_environment_for_job(run_dir, job)
                 success = True
+            elif job_type in {"experiment_baseline", "experiment_attempt", "experiment_confirmatory"}:
+                from autoad_researcher.experiment.attempt_execution import execute_attempt_job
+
+                outputs = execute_attempt_job(run_dir, job)
+                success = True
             else:
                 fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
                 append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
@@ -173,6 +180,19 @@ def _process_pending_jobs(run_dir: Path) -> int:
         processed += 1
 
     return processed
+
+
+def _job_not_before(job: dict[str, Any]) -> datetime | None:
+    payload = job.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("not_before"), str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(payload["not_before"])
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def _run_web_search(run_dir: Path, job: dict[str, Any]) -> bool:

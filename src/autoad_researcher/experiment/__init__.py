@@ -54,3 +54,10 @@ __all__ = [
     "validate_plan",
     "validate_stat_plan",
 ]
+"""Experiment control-plane contracts and durable stores."""
+
+from autoad_researcher.experiment.attempt import ExperimentAttempt
+from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
+from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+
+__all__ = ["ExperimentAttempt", "ExperimentAttemptService", "ExperimentAttemptStore"]

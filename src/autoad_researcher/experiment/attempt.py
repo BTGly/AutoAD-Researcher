@@ -1,0 +1,78 @@
+"""Durable runtime state for one queued experiment attempt."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from autoad_researcher.runner.models import ExperimentCommandPlan, ExperimentInputRefs
+
+AttemptPurpose = Literal[
+    "baseline",
+    "exploration",
+    "confirmation",
+    "noise_calibration",
+    "repair",
+]
+AttemptRuntimeStatus = Literal[
+    "QUEUED",
+    "STARTING",
+    "RUNNING",
+    "TERMINATING",
+    "COMPLETED",
+    "FAILED",
+    "TIMED_OUT",
+    "CANCELLED",
+    "LOST",
+]
+AttemptJobType = Literal[
+    "experiment_baseline",
+    "experiment_attempt",
+    "experiment_confirmatory",
+]
+
+
+class ExperimentAttempt(BaseModel):
+    """The authority for an experiment process, separate from PipelineJob."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    attempt_id: str = Field(pattern=r"^attempt_[0-9]{6}$")
+    run_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
+    job_type: AttemptJobType
+    pipeline_job_id: str | None = Field(default=None, pattern=r"^job_[0-9]{6}$")
+    attempt_purpose: AttemptPurpose
+    command_plan: ExperimentCommandPlan
+    input_refs: ExperimentInputRefs
+    runtime_status: AttemptRuntimeStatus = "QUEUED"
+    pid: int | None = Field(default=None, gt=0)
+    process_group_id: int | None = Field(default=None, gt=0)
+    heartbeat_at: str | None = None
+    cancel_requested_at: str | None = None
+    job_timeout_sec: int = Field(gt=0)
+    retry_of: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
+    retry_count: int = Field(default=0, ge=0)
+    max_retries: int = Field(default=0, ge=0)
+    retry_not_before: str | None = None
+    failure_code: str | None = None
+    retry_exhausted: bool = False
+    execution_result_ref: str | None = None
+    created_at: str
+    updated_at: str
+    revision: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_retry_lineage(self):
+        if self.retry_of is None and self.retry_count != 0:
+            raise ValueError("root Attempt must have retry_count=0")
+        if self.retry_of is not None and self.retry_count < 1:
+            raise ValueError("retried Attempt must have retry_count >= 1")
+        if self.retry_count > self.max_retries:
+            raise ValueError("retry_count must not exceed max_retries")
+        if self.retry_exhausted and self.runtime_status not in {"FAILED", "TIMED_OUT", "LOST"}:
+            raise ValueError("retry_exhausted requires a terminal failed runtime status")
+        return self
