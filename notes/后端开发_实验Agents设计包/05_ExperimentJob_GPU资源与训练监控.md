@@ -717,13 +717,25 @@ Batch 创建时冻结成员集合：
 }
 ```
 
-`integrate_outcome()` 只做：
+`integrate_outcome()` 在锁内更新 decision group（防止两个 Attempt 同时结束时的丢失更新）：
 
 ```python
-completed_ids >= expected_attempt_ids
+# lock → load group → add attempt → check → create job → write group
+expected = set(group.expected_attempt_ids)
+terminal = set(group.terminal_attempt_ids)
+group_complete = expected.issubset(terminal)
+
+if group_complete:
+    create_or_get_pipeline_job(
+        job_type="coordinator_decision",
+        idempotency_key=f"coordinator_decision:{group.decision_group_id}:{group.integration_revision}",
+        ...
+    )
 ```
 
 terminal 包括 `completed / failed / cancelled / invalid`——否则一个失败 Attempt 会导致 batch 永远等不到"全部成功"。
+
+`create_or_get_pipeline_job()` 只防重复 Job——decision group 的 `outcome_refs` 并发更新需要同一把文件锁保护。
 
 同一 decision group 内所有 Attempt 完成前，只记录结果不调 Coordinator。完成后创建一次 decision Job：
 

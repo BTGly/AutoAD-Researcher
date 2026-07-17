@@ -240,7 +240,20 @@ def create_or_get_pipeline_job(run_dir, *, idempotency_key, job_type, payload):
 
 当前 `_next_event_id()` 与 PipelineJob 同类竞争——在锁外读文件求 max ID + 1。使用同款锁修复（或改用 UUID4，但现有 `load_events_since(last_id: int)` 依赖单调整数）。
 
-权威输入是已确认的 `input_task.yaml`，不是 `summary.json`：
+### 3.5 传给 Session 的参数
+
+confirmed draft 中 `input_task` 是权威数据源；`input_task.yaml` 是派生物化文件：
+
+```text
+confirmed draft.input_task
+= 科研任务的权威数据与 task_hash 来源
+
+input_task.yaml
+= 下游 Pipeline 的兼容性物化文件
+
+task_ref
+= 指向该物化文件，便于现有流程读取
+```
 
 ```python
 session_store.create_or_get(
@@ -266,23 +279,17 @@ session_store.create_or_get(
 ```text
 summary_sha256       — 确认草案未过期
 task_hash            — ExperimentSession 幂等身份
-authorization_hash   — execution_mode + approval/policy revision
 ```
 
-`task_hash` 直接从 confirmed draft 计算（confirmed draft 是 write-ahead 权威记录，YAML 是可重建派生产物）：
+`task_hash` 直接从 confirmed draft 计算（仓库已有 `canonical_sha256()` 处理 key 排序、紧凑 JSON、UTF-8、exclude_none）：
 
 ```python
-task_hash = sha256(
-    canonical_json(
-        confirmed_task.input_task.model_dump(
-            mode="json",
-            exclude_none=True,
-        )
-    )
-)
+from autoad_researcher.benchmarks.hashing import canonical_sha256
+
+task_hash = canonical_sha256(confirmed_task.input_task)
 ```
 
-这样权威记录、幂等身份和恢复协议完全一致。YAML 只负责 Pipeline 兼容输入，不参与身份定义。
+不重新实现第二套 canonical JSON。confirmed draft 是 authority-record——YAML 只负责 Pipeline 兼容输入，不参与身份定义。
 
 `execution_mode` 不进入 `task_hash`：同一个科研任务从 `approve_each_step` 改为 `agent_assisted_after_approval` 不应识别为不同任务。但执行模式变化不能静默覆盖——应追加授权修订记录。
 
@@ -404,6 +411,11 @@ environment_status
 environment_snapshot_ref
 baseline_status
 budget
+readiness_status
+readiness_blockers
+environment_revision
+authorization
+authorization_revision
 created_at
 updated_at
 revision
