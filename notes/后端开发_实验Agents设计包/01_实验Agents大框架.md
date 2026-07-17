@@ -433,6 +433,22 @@ MockTaskRunner         ← 测试用，不调 LLM
 - 每个 Agent 的 config 都在 spec 里声明，可审计；
 - 不扩展角色方法式大 ABC。
 
+### 6.2 DeepAgents 正式 smoke test
+
+> 仓库已有 `deepagents>=0.6.10,<0.7` 依赖、`DeepAgentsHarness` 和 Spike 验证。
+> 冲刺第 1 天必须完成一次正式 runtime smoke，验证框架可接入主流程。
+
+```text
+create_deep_agent(model, tools=[read_file, write_json, think], system_prompt=...)
+→ Agent 读取固定 Context Pack
+→ 调用一个受控工具（写 JSON artifact）
+→ 输出匹配目标 Pydantic schema
+→ DeepAgents checkpoint → save
+→ 重启后恢复 checkpoint → 恢复成功
+```
+
+通过后不再讨论 DeepAgents 技术选型，直接锁定使用。
+
 ---
 
 ## 7. 环境准备
@@ -759,29 +775,21 @@ runs/<run_id>/experiment/<session_id>/
 
 ---
 
-## 15. 第一版开发边界
+## 15. 完整版开发边界（9 天冲刺范围）
 
-第一版必须具备：
+### 必须具备
 
-- V2→实验接线（PR-001A）
-- Session；
-- Environment 接线和真实 probe；
-- baseline；
-- worktree；
-- ExecutorAgent；
-- Experiment Job；
-- timeout / heartbeat / Sentinel；
-- protected hash；
-- implementation activation evidence；
-- comparable evaluation；
-- noise-aware result；
-- 扁平但可演化的 Idea Tree；
-- 持久 Research Coordinator；
-- Compact Cycle；
-- CognitiveCommit；
-- 至少两轮真实迭代。
+```text
+P1 入口打通 — TaskBridge unlock → ExperimentStarter → Session
+P2 环境+基线 — Environment 接线 + baseline + EvaluationContract + protected hash
+P3 执行闭环 — git worktree + ExecutorAgent + SEARCH/REPLACE(3次修复) + Experiment Job + 失败分类
+P4 认知闭环 — ResearchCoordinator + IdeaTree + ObservationSnapshot + CognitiveCommit + Compact Cycle
+P5 验证闭环 — NoiseFloor + DecisionEngine + KEEP-WHY + champion + B_test gate + Reflection
+```
 
-第一版不要求：
+P6-P8 用于测试、故障注入、真实 GPU 运行、封板，不引入新组件。
+
+### 明确不需要的
 
 - 多机调度；
 - K8s；
@@ -789,5 +797,13 @@ runs/<run_id>/experiment/<session_id>/
 - 复杂树搜索算法；
 - 多团队 Agent；
 - 跨 Session 自动 prompt 自修改；
+- 通用 activation verifier（TrustedProbeRunner、ActivationVerifier）；
+- 通用 Agent 效果评价体系（decision_quality_score 等）；
+- 8 态 CycleJournal 状态机；
+- 第二套 Queue、Store 或 Agent Runtime；
+- 自研 DeepAgents/LangGraph 替代品；
+- 多 GPU DDP/torchrun；
+- FTS5/BM25 长期记忆系统；
+- 完整 StuckDetector（仅做 step signature 轻量版）。
 - 自动论文和最终报告 Agent；
 - 前端实验交互。
