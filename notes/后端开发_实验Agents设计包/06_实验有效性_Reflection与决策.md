@@ -84,22 +84,20 @@ CANCELLED
 LOST
 ```
 
-### 3.2 ImplementationStatus
+### 3.2 实现有效性（第一版——布尔 Gate）
+
+去掉 VERIFIED/UNVERIFIED/INVALID 三级枚举，改为四个独立布尔 check：
 
 ```text
-VERIFIED
-UNVERIFIED
-INVALID
+patch_applied   (patch.diff 非空 + allowed_paths 内 + protected SHA256 未变)
+smoke_passed    (smoke / import exit code == 0)
+metrics_parsed  (metrics.json 存在且符合 schema)
+protocol_intact (evaluation contract 未变化：数据集/split/metric 实现 hash)
 ```
 
-依据：
+不称为 ACTIVATION_VERIFIED。不宣称「代码已按假设生效」。只说「当前 patch 在当前协议下产生了该指标结果」。
 
-- patch；
-- protected paths；
-- activation evidence；
-- smoke；
-- target parameter；
-- expected module。
+后续反复出现「代码改了但实际没走通」的假阳性后，在具体 Adapter 中加 domain check，不做通用 activation verification。
 
 ### 3.3 EvaluationStatus
 
@@ -137,7 +135,7 @@ INCONCLUSIVE
 ```python
 class AttemptCategory(str, Enum):
     SCIENTIFICALLY_EVALUABLE = "evaluable"   # 正常结束 + metrics 可解析 + 协议完好
-    INFRA_FAILED = "infra_failed"             # OOM/NaN/timeout/crash → 不比较，可重试
+    RUN_FAILED = "run_failed"             # OOM/NaN/timeout/crash → 不比较，由 failure_code 决定重试
     PROTOCOL_VIOLATED = "protocol_violated"   # 改 protected 文件/split/metric → 排除不重试
 ```
 
@@ -148,7 +146,7 @@ IMPROVEMENT | NO_EFFECT | REGRESSION | INCONCLUSIVE
 
 对于 OOM 的 Attempt：
 ```json
-{ "attempt_category": "infra_failed", "failure_code": "OOM", "scientific_effect": null, "retryable": true }
+{ "attempt_category": "run_failed", "failure_code": "OOM", "scientific_effect": null, "retryable": false }
 ```
 
 不需要 5 级 EvidenceDisposition 或 5 级 OperationalDisposition。
@@ -333,8 +331,12 @@ stop proposal
 底层规则：
 
 ```text
-COMPLETED + VERIFIED + COMPARABLE
-→ scientifically evaluable
+execution = COMPLETED
++ patch_applied = true
++ smoke_passed = true
++ metrics_parsed = true
++ protocol_intact = true
+→ AttemptCategory.SCIENTIFICALLY_EVALUABLE
 ```
 
 低分表示：
@@ -345,12 +347,12 @@ COMPLETED + VERIFIED + COMPARABLE
 
 > 假设被彻底反驳。
 
-如果实现为 UNVERIFIED：
+如果 patch 未应用或 smoke 失败：
 
 - 不用于 prune 科学方向；
-- 优先 repair 或补 activation evidence。
+- 优先标记为 repair，不消耗新 GPU attempt。
 
-如果多次 VERIFIED 实现均回归：
+如果多次 patch/smoke/metrics 均通过但持续回归：
 
 - Coordinator 可提高“假设不受支持”的置信度；
 - 仍保留 evidence 和替代解释。
@@ -370,10 +372,7 @@ COMPLETED + VERIFIED + COMPARABLE
 ### PR 05B：Validity
 
 - execution；
-- implementation；
-- evaluation；
-- output manifest；
-- activation evidence 接入。
+- implementation（patch_applied / smoke_passed / metrics_parsed）；
 
 ### PR 05C：NoiseFloor / OutcomeCard
 
