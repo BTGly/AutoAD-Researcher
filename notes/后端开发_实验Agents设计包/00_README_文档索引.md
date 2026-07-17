@@ -49,7 +49,7 @@
 | MiMo `stableStringify` | `[PORT-PENDING-LICENSE]` | TypeScript → Python 改写，确认许可证后再落地 |
 | Arbor | `[REFER]` | Idea Tree、Coordinator/Executor 切分、B_dev/B_test |
 | AI-Scientist | `[REFER]` | 模板实验和 subprocess 循环 |
-| Claude Code internals | `[REFER]` | 工具生命周期、上下文分层、错误恢复模式 |
+| Claude Code internals | `[REIMPL]` | 工具注册表模式（Tool/inputSchema/call）、权限模型（allow/ask/deny）、会话恢复（hydrate/findUnresolved）、文件状态缓存 |
 | aider SEARCH/REPLACE | `[REIMPL]` | 根据三个策略自行实现，不复制 AGPL 主体 |
 | DVC experiment refs/apply | `[REFER]` | Candidate branch lifecycle、promotion apply、实验复现 |
 | Optuna FrozenTrial + JournalStorage | `[REFER]` | immutable candidate、champion selection、追加式 promotion journal |

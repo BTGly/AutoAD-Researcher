@@ -68,7 +68,7 @@
 | "I am done" sentinel | AI-Scientist | Coordinator Stop Proposal | `[REFER]` |
 | FORBIDDEN / PREFERRED directions | AutoSOTA | Session ResearchPrior | `[REFER]` |
 | prompt + code + archive sandwich | AI-Scientist | Coordinator ContextPack | `[REFER]` |
-| 子 Agent = 同一引擎换配置 | DeepAgents / Claude Code 模式 | AgentFactory | `[REFER]` |
+| 子 Agent = 同一引擎换配置 | DeepAgents / Claude Code 模式 | AgentFactory | `[REIMPL]` |
 
 ### 2.3 复用边界
 
@@ -80,7 +80,8 @@
 - `[REIMPL]`：AutoSOTA SHA256 guard、aider SEARCH/REPLACE 策略；
 - `[PORT-PENDING-LICENSE]`：MiMo `stableStringify`；
 - `[ADAPT-LATER]`：OpenHands 5-mode StuckDetector；
-- `[REFER]`：Arbor、AI-Scientist、Claude Code internals、autoresearch、AutoScientists、mini-swe-agent、Anomalib。
+- `[REIMPL]`：Claude Code internals（工具注册表、权限模型、会话恢复、文件状态缓存）；
+- `[REFER]`：Arbor、AI-Scientist、autoresearch、AutoScientists、mini-swe-agent、Anomalib。
 - 不复制外部项目的完整源码仓；
 - 不引入第二套任务队列；
 - 不将 GPU 进程生命周期交给 Agent；
