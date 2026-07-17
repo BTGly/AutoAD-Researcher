@@ -270,7 +270,7 @@ session_store.create_or_get(
 
 因此 Session 先创建为 `CREATED`，随后由环境准备流程通过 RepositoryProbe 和 Adapter 补齐 repository target、baseline entrypoint、dataset binding 和 evaluation protocol。不应因用户未精确指定 entrypoint 就拒绝创建 Session。
 
-### 3.5 task_hash 计算规则
+### 3.6 task_hash 计算规则
 
 当前 `task_id` 基于 `summary.json` 的 SHA 生成，适合检测"摘要确认前是否被修改"，但不应直接作为实验 Session 的最终任务身份。
 
@@ -293,7 +293,7 @@ task_hash = canonical_sha256(confirmed_task.input_task)
 
 `execution_mode` 不进入 `task_hash`：同一个科研任务从 `approve_each_step` 改为 `agent_assisted_after_approval` 不应识别为不同任务。但执行模式变化不能静默覆盖——应追加授权修订记录。
 
-### 3.5 Readiness 状态（独立字段）
+### 3.7 Readiness 状态（独立字段）
 
 Session 主状态不承载 readiness 的子状态。新增独立字段：
 
@@ -311,7 +311,7 @@ Session CREATED + readiness=unresolved
 
 不新增 Session 主状态 `READINESS_PENDING` / `READINESS_BLOCKED`。
 
-### 3.6 Authorization 事件（复用 events.jsonl）
+### 3.8 Authorization 事件（复用 events.jsonl）
 
 不新建 `authorization_events.jsonl`。仓库已有 `runs/{run_id}/events/events.jsonl` 和统一 `append_event()`。权限变更时在此写：
 
@@ -336,7 +336,7 @@ events.jsonl
 
 Starter 首次创建 Session 时复制初始授权；之后的 changed/revoked 只更新 Session 当前值并追加 Event，不回写历史 confirmed draft。
 
-### 3.7 不完整事实不应阻止 Session 创建
+### 3.9 不完整事实不应阻止 Session 创建
 
 当前 TaskBridge 不保证 baseline、dataset 或 repository_ref 全部已确定。测试也明确接受这些字段为空。因此 Starter 不应要求所有执行事实完整后才创建 Session。
 
@@ -357,7 +357,7 @@ ENVIRONMENT_PENDING
 
 `repository_ref` 缺失不等于 Starter 失败。多个可执行仓库且无法确定目标时进入 `readiness blocked`，不能随便选择 `source_ids[0]`。
 
-### 3.7 OutcomeCard → Coordinator 触发
+### 3.10 OutcomeCard → Coordinator 触发
 
 详见计划 04 §12。由 Worker 中的确定性函数 `integrate_outcome()` 完成，按 decision_group_id 聚合：
 
@@ -372,7 +372,7 @@ ENVIRONMENT_PENDING
 
 如果 V1 暂时使用文件轮询，必须保存 `last_integrated_attempt_id` 和 `last_integrated_outcome_hash`，否则 Worker 重启后可能重复建立 decision boundary。
 
-### 3.6 验收标准（001A 完整版）
+### 3.11 验收标准（001A 完整版）
 
 除了已有检查项（agent-assisted 启动、plan-only 不变、同 task_hash 不重复），还需覆盖：
 
@@ -389,7 +389,7 @@ ENVIRONMENT_PENDING
 | 9 | Event 至少包含：`experiment.start_requested`、`experiment.session.created/reused`、`experiment.environment_prepare.queued` |
 | 10 | Worker 重启后仍能继续（Job 可重复 claim） |
 
-### 3.1 ExperimentSession schema
+### 3.12 ExperimentSession schema
 
 新增：
 
@@ -435,11 +435,11 @@ FAILED
 CANCELLED
 ```
 
-### 3.2 ExperimentStarter（接口详见 PR-001A）
+### 3.13 ExperimentStarter（接口详见 PR-001A）
 
 `ExperimentStarter.on_task_confirmed(run_dir, confirmed_task)` — 幂等 create_or_get Session + 幂等 create_or_get environment Job。由 confirm route 直接调用；不通过中间 Job。支持恢复三种半完成状态。
 
-### 3.3 Job 类型
+### 3.14 Job 类型
 
 增加：
 
@@ -449,7 +449,7 @@ experiment_environment_prepare  — 环境准备（idempotency_key: environment_
 
 Worker 重复 claim 时不可重复创建。环境安装和 probe 在后台 Worker Job 中执行。
 
-### 3.4 Probe 层
+### 3.15 Probe 层
 
 新增：
 
@@ -479,7 +479,7 @@ environments/context_collector.py
 - 保存 stdout/stderr；
 - 对 secret 做脱敏。
 
-### 3.5 EnvironmentPlan provider
+### 3.16 EnvironmentPlan provider
 
 优先级：
 
@@ -492,7 +492,7 @@ environments/context_collector.py
 
 LLM 只能输出结构化 EnvironmentPlan，不能直接执行。
 
-### 3.6 Observed snapshot
+### 3.17 Observed snapshot
 
 新增观察值构建函数：
 
