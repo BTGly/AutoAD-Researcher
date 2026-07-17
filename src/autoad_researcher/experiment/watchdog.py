@@ -32,7 +32,7 @@ class RuntimeWatchdog:
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.stdout_stall_seconds = stdout_stall_seconds
 
-    def inspect(self, attempt_dir: Path, *, pid: int | None, now: datetime | None = None) -> list[AttemptHealthEvent]:
+    def inspect(self, attempt_dir: Path, *, pid: int | None, checkpoint_path: Path | None = None, checkpoint_stall_seconds: int | None = None, now: datetime | None = None) -> list[AttemptHealthEvent]:
         current = now or datetime.now(timezone.utc)
         events: list[AttemptHealthEvent] = []
         stderr = _tail(attempt_dir / "stderr.log")
@@ -47,6 +47,8 @@ class RuntimeWatchdog:
         stdout = attempt_dir / "stdout.log"
         if stdout.is_file() and (current.timestamp() - stdout.stat().st_mtime) > self.stdout_stall_seconds:
             events.append(_event("STDOUT_STALLED", current))
+        if checkpoint_path is not None and checkpoint_stall_seconds is not None and checkpoint_path.is_file() and (current.timestamp() - checkpoint_path.stat().st_mtime) > checkpoint_stall_seconds:
+            events.append(_event("CHECKPOINT_STALLED", current))
         if pid is not None and not _pid_alive(pid):
             events.append(_event("PROCESS_DEAD", current))
         return _append_new_events(attempt_dir / "health_events.jsonl", events)

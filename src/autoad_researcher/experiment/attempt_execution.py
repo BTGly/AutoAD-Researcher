@@ -18,6 +18,8 @@ from autoad_researcher.experiment.gpu import GpuAllocator, GpuUnavailableError
 from autoad_researcher.experiment.watchdog import RuntimeWatchdog
 from autoad_researcher.experiment.failure_classifier import classify_or_load
 from autoad_researcher.experiment.finalizer import finalize_attempt
+from autoad_researcher.experiment.retry_policy import RetryPolicy
+from autoad_researcher.experiment.health_diagnosis import HealthDiagnosisAgent
 from autoad_researcher.runner.models import ExperimentExecutionResult, OutputManifestEntry
 
 _PROCESSES: dict[tuple[str, str], subprocess.Popen[str]] = {}
@@ -74,21 +76,26 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
     if attempt.runtime_status not in {"STARTING", "RUNNING", "TERMINATING"}:
         return AttemptObservation(terminal=attempt.runtime_status in {"COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED", "LOST"}, succeeded=attempt.runtime_status == "COMPLETED")
     output_dir = run_dir / "attempts" / attempt.attempt_id
-    health_events = RuntimeWatchdog().inspect(output_dir, pid=attempt.pid)
+    if attempt.termination_requested_at and attempt.termination_reason:
+        _begin_or_escalate_termination(run_dir, attempt, attempt.termination_reason)
+    checkpoint = output_dir / attempt.checkpoint_watch_path if attempt.checkpoint_watch_path else None
+    health_events = RuntimeWatchdog().inspect(output_dir, pid=attempt.pid, checkpoint_path=checkpoint, checkpoint_stall_seconds=attempt.checkpoint_stall_seconds)
     event_names = {event.event for event in health_events}
     if "OOM_DETECTED" in event_names:
-        _kill_process_group(attempt.process_group_id)
-        return _finalize_failure(run_dir, attempt, "OOM", "RuntimeWatchdog detected CUDA out of memory")
+        _begin_or_escalate_termination(run_dir, attempt, "OOM")
+        return AttemptObservation(terminal=False)
     if "NAN_OR_INF" in event_names:
-        _kill_process_group(attempt.process_group_id)
-        return _finalize_failure(run_dir, attempt, "NAN_OR_INF", "RuntimeWatchdog detected NaN or Inf")
+        _begin_or_escalate_termination(run_dir, attempt, "NAN_OR_INF")
+        return AttemptObservation(terminal=False)
     process = _PROCESSES.get((str(run_dir.resolve()), attempt.attempt_id))
     if attempt.cancel_requested_at:
-        _kill_process_group(attempt.process_group_id)
-        return _finalize_failure(run_dir, attempt, "USER_CANCELLED", "user cancellation requested", runtime_status="CANCELLED")
+        if attempt.termination_requested_at is None:
+            _begin_or_escalate_termination(run_dir, attempt, "USER_CANCELLED")
+            return AttemptObservation(terminal=False)
     if _timed_out(output_dir, attempt.job_timeout_sec):
-        _kill_process_group(attempt.process_group_id)
-        return _finalize_failure(run_dir, attempt, "RUN_TIMEOUT", "experiment command timed out", runtime_status="TIMED_OUT", timed_out=True)
+        if attempt.termination_requested_at is None:
+            _begin_or_escalate_termination(run_dir, attempt, "RUN_TIMEOUT")
+            return AttemptObservation(terminal=False)
     if process is not None:
         code = process.poll()
         if code is None:
@@ -96,6 +103,9 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
             _write_heartbeat(output_dir, attempt, "running")
             return AttemptObservation(terminal=False)
         _PROCESSES.pop((str(run_dir.resolve()), attempt.attempt_id), None)
+        if attempt.termination_reason:
+            status = "CANCELLED" if attempt.termination_reason == "USER_CANCELLED" else "TIMED_OUT" if attempt.termination_reason == "RUN_TIMEOUT" else "FAILED"
+            return _finalize_failure(run_dir, attempt, attempt.termination_reason, "process terminated by runtime policy", runtime_status=status, exit_code=code, timed_out=status == "TIMED_OUT")
         return _finalize_exit(run_dir, attempt, code)
     if _pid_alive(attempt.pid):
         ExperimentAttemptStore().heartbeat(run_dir, attempt_id=attempt.attempt_id)
@@ -134,6 +144,14 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
     final = store.finish(run_dir, attempt_id=attempt.attempt_id, runtime_status=runtime_status, failure_code=result.failure_code, execution_result_ref=f"attempts/{attempt.attempt_id}/execution_result.json")
     if runtime_status != "COMPLETED": classify_or_load(run_dir / "attempts" / attempt.attempt_id)
     finalize_attempt(run_dir / "attempts" / attempt.attempt_id, attempt_id=attempt.attempt_id, runtime_status=runtime_status)
+    if RetryPolicy().should_retry(final):
+        from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
+        ExperimentAttemptService().create_retry(run_dir, attempt_id=final.attempt_id)
+    elif final.failure_code in {None, "UNKNOWN_RUN_FAILURE"}:
+        events = _health_event_names(run_dir / "attempts" / attempt.attempt_id / "health_events.jsonl")
+        diagnosis = HealthDiagnosisAgent().diagnose(failure_code=final.failure_code, health_events=events)
+        if diagnosis is not None:
+            _write_json(run_dir / "attempts" / attempt.attempt_id / "health_diagnosis.json", diagnosis.model_dump(mode="json"))
     if attempt.resource_lease_id:
         try: GpuAllocator().release(run_dir, lease_id=attempt.resource_lease_id, worker_id=_worker_id())
         except (FileNotFoundError, ValueError): pass
@@ -177,6 +195,18 @@ def _kill_process_group(process_group_id: int | None) -> None:
     try: os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError: return
 
+def _begin_or_escalate_termination(run_dir: Path, attempt, reason: str) -> None:
+    current = datetime.now(timezone.utc)
+    if attempt.termination_requested_at is None:
+        updated = ExperimentAttemptStore().request_termination(run_dir, attempt_id=attempt.attempt_id, reason=reason)
+        _kill_process_group(updated.process_group_id)
+        return
+    requested = datetime.fromisoformat(attempt.termination_requested_at)
+    if (current - requested.astimezone(timezone.utc)).total_seconds() >= attempt.termination_grace_seconds:
+        if attempt.process_group_id is not None:
+            try: os.killpg(attempt.process_group_id, signal.SIGKILL)
+            except ProcessLookupError: pass
+
 
 def _write_heartbeat(output_dir: Path, attempt, status: str) -> None:
     _write_json(output_dir / "heartbeat.json", {"pid": attempt.pid, "status": status, "step": None, "epoch": None, "loss": None, "last_metric": None, "timestamp": _utc_now()})
@@ -191,3 +221,11 @@ def _worker_id() -> str: return f"worker-{os.uname().nodename}-{os.getpid()}"
 def _utc_now() -> str: return datetime.now(timezone.utc).isoformat()
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+def _health_event_names(path: Path) -> list[str]:
+    if not path.is_file(): return []
+    names = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try: names.append(str(json.loads(line).get("event")))
+        except json.JSONDecodeError: continue
+    return names

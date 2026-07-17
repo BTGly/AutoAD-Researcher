@@ -56,6 +56,11 @@ class ExperimentAttempt(BaseModel):
     process_group_id: int | None = Field(default=None, gt=0)
     heartbeat_at: str | None = None
     cancel_requested_at: str | None = None
+    termination_requested_at: str | None = None
+    termination_reason: str | None = None
+    termination_grace_seconds: int = Field(default=30, gt=0)
+    checkpoint_watch_path: str | None = None
+    checkpoint_stall_seconds: int | None = Field(default=None, gt=0)
     job_timeout_sec: int = Field(gt=0)
     retry_of: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
     retry_count: int = Field(default=0, ge=0)
@@ -64,6 +69,10 @@ class ExperimentAttempt(BaseModel):
     failure_code: str | None = None
     retry_exhausted: bool = False
     execution_result_ref: str | None = None
+    evaluation_contract_ref: str | None = None
+    evaluation_contract_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    protected_artifact_report_ref: str | None = None
+    protected_artifact_report_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     created_at: str
     updated_at: str
     revision: int = Field(default=0, ge=0)

@@ -19,7 +19,7 @@ from autoad_researcher.worker.main import _process_pending_jobs
 
 
 def _poll_until_terminal(run_dir: Path, attempt_id: str) -> None:
-    for _ in range(20):
+    for _ in range(100):
         attempt = ExperimentAttemptStore().load(run_dir, attempt_id)
         if attempt is not None and attempt.runtime_status in {"COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED", "LOST"}:
             return

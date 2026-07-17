@@ -29,3 +29,11 @@ def test_watchdog_nonfinite_detection_ignores_info_and_inference(tmp_path: Path)
     assert "NAN_OR_INF" not in {event.event for event in RuntimeWatchdog().inspect(tmp_path, pid=None)}
     (tmp_path / "stderr.log").write_text("loss=nan; tensor=-inf\n", encoding="utf-8")
     assert "NAN_OR_INF" in {event.event for event in RuntimeWatchdog().inspect(tmp_path, pid=None)}
+
+def test_watchdog_detects_only_explicit_checkpoint_watch_path(tmp_path: Path):
+    now = datetime(2026, 7, 17, tzinfo=timezone.utc)
+    checkpoint = tmp_path / "checkpoint.pt"; checkpoint.write_text("x", encoding="utf-8")
+    import os
+    os.utime(checkpoint, (now.timestamp() - 100, now.timestamp() - 100))
+    events = RuntimeWatchdog().inspect(tmp_path, pid=None, checkpoint_path=checkpoint, checkpoint_stall_seconds=30, now=now)
+    assert "CHECKPOINT_STALLED" in {event.event for event in events}

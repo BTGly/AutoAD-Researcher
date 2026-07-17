@@ -94,6 +94,13 @@ class ExperimentAttemptStore:
 
         return self._update(run_dir, attempt_id, mutate)
 
+    def request_termination(self, run_dir: Path, *, attempt_id: str, reason: str) -> ExperimentAttempt:
+        def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
+            if attempt.runtime_status not in {"STARTING", "RUNNING", "TERMINATING"}:
+                raise ValueError("only active Attempts may be terminated")
+            return attempt.model_copy(update={"runtime_status": "TERMINATING", "termination_requested_at": attempt.termination_requested_at or _utc_now(), "termination_reason": attempt.termination_reason or reason})
+        return self._update(run_dir, attempt_id, mutate)
+
     def finish(
         self,
         run_dir: Path,
