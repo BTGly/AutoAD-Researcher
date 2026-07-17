@@ -8,21 +8,24 @@ LLM 不实时盯训练。
 
 ---
 
-## 2. Job 设计
+## 2. Job 设计（双层状态）
 
-建议类型：
+### 2.1 PipelineJob 层（4 状态，与现有系统共用）
+
+现有 `PipelineJob.status` **保持不变**，实验 Job 不破坏全局兼容性：
 
 ```text
-experiment_baseline
-experiment_attempt
-experiment_confirmatory
+queued / running / completed / failed
 ```
 
-Job 状态：
+PipelineJob 只负责队列生命周期。
+
+### 2.2 ExperimentAttempt 层（7 状态 + 运行时扩展）
+
+新增独立 `runtime_status`，只用于实验 Attempt 的进程生命周期：
 
 ```text
 QUEUED
-WAITING_FOR_RESOURCE
 STARTING
 RUNNING
 TERMINATING
@@ -33,15 +36,78 @@ CANCELLED
 LOST
 ```
 
-Job 需要：
+### 2.3 Attempt 运行时字段（新增）
 
-- idempotency；
-- lease；
-- heartbeat；
-- retry policy；
-- worker ownership；
-- event；
-- artifact refs。
+```text
+pid
+process_group_id
+heartbeat_at
+cancel_requested_at
+job_timeout_sec
+retry_of
+retry_count
+max_retries
+failure_code
+retry_exhausted
+```
+
+`runtime_status = FAILED` + `retry_exhausted = true` 即表示死信，不需要额外 `dead` 状态。
+
+### 2.4 Heartbeat
+
+Worker 每 10 秒原子更新 `attempts/<id>/heartbeat.json`：
+
+```json
+{
+  "pid": 12345,
+  "status": "running",
+  "step": 320,
+  "epoch": 4,
+  "loss": 0.173,
+  "last_metric": 0.912,
+  "timestamp": "..."
+}
+```
+
+无法提取 step/loss 时允许 `null`，但 PID 和 timestamp 必须存在。
+
+### 2.5 Cancel 协议
+
+```text
+cancel_requested_at 被设置
+→ Worker 发 SIGTERM 给 process group
+→ 等 30 秒
+→ 仍存活则 SIGKILL
+→ runtime_status = CANCELLED
+```
+
+### 2.6 Retry Lineage
+
+```text
+attempt_002.retry_of = attempt_001
+```
+
+旧 Attempt 不重新打开。退避：
+
+```python
+delay_seconds = min(60, 5 * (2 ** retry_count))
+```
+
+### 2.7 三层超时（9 天内实现，不做四层沙箱）
+
+```text
+job_timeout_sec       — 整个 Attempt 硬上限
+command_timeout_sec   — 单个命令超时
+max_agent_steps       — Agent 循环步数上限 / wall_time_limit
+```
+
+### 2.8 建议 Job 类型（同原有）
+
+```text
+experiment_baseline
+experiment_attempt
+experiment_confirmatory
+```
 
 ---
 
@@ -399,3 +465,85 @@ fixture 脚本：
 - timeout、NaN、OOM、hang 有确定性结果；
 - 所有日志增量可用；
 - 资源和输出有 manifest。
+
+---
+
+## 10. FailurePolicy 表
+
+> failure_code → AttemptCategory → 自动动作。这是第一版必须固定的策略，否则重试行为会在不同 Worker 中各自实现。
+
+| failure_code | AttemptCategory | 自动动作 |
+|-------------|-----------------|---------|
+| `WORKER_LOST` | RUN_FAILED | 原配置自动重试，最多 2 次 |
+| `TEMPORARY_GPU_UNAVAILABLE` | RUN_FAILED | 指数退避后自动重试 |
+| `TRANSIENT_IO_ERROR` | RUN_FAILED | 自动重试 1 次 |
+| `PROCESS_SPAWN_FAILED` | RUN_FAILED | 自动重试 1 次；再次失败归档 |
+| `OOM` | RUN_FAILED | InterventionContract 允许减 batch 时自动修复重试 1 次，否则交 Coordinator |
+| `TIMEOUT_WITH_PROGRESS` | RUN_FAILED | 预算允许时提高 timeout 重试 1 次 |
+| `TIMEOUT_NO_PROGRESS` | RUN_FAILED | 不自动重试，交 Coordinator |
+| `NAN_OR_INF` | RUN_FAILED | 不作为纯 infra 重试；交 Executor repair 或 Coordinator |
+| `METRICS_MISSING` | RUN_FAILED | 不重复原命令；交 Executor 检查输出逻辑 |
+| `IMPORT_OR_SYNTAX_ERROR` | RUN_FAILED | 有界 repair，不消耗完整实验重试 |
+| `USER_CANCELLED` | RUN_FAILED | 不重试 |
+| `PROTECTED_ARTIFACT_CHANGED` | PROTOCOL_VIOLATED | 排除，不重试 |
+| `EVALUATION_CONTRACT_CHANGED` | PROTOCOL_VIOLATED | 排除，不重试 |
+| `PATCH_OUT_OF_SCOPE` | PROTOCOL_VIOLATED | 排除，不重试 |
+| 正常结束且指标可解析 | SCIENTIFICALLY_EVALUABLE | 进入 DecisionEngine |
+
+**关键原则：** 自动重试 ≠ 重新让 Coordinator 做科研决策。只对明确的瞬时运行失败自动重试。
+OOM、NaN、timeout 这类可能与方案有关的错误，不能一律当作基础设施故障清除。
+
+---
+
+## 11. 三阶段 Artifact 写入（不同组件写不同 Artifact）
+
+> OutcomeCard 只有一个写入口，不是 Worker/Sentinel/Coordinator 三方争写。
+
+### 运行前
+
+RetryPolicy 检查历史 Attempt：
+- 是否已成功
+- 是否 protocol violated
+- 是否达到 retry 上限
+- 是否值得重试
+
+不写 OutcomeCard。
+
+### 运行中
+
+Sentinel 发现异常（OOM / NaN / heartbeat stale / timeout / process lost）追加：
+
+```text
+attempts/<id>/health_events.jsonl
+```
+
+每行一条：
+
+```json
+{"event": "OOM", "timestamp": "...", "stderr_snippet": "CUDA out of memory"}
+```
+
+然后要求 Worker 终止或标记进程。
+
+Sentinel 不写 OutcomeCard。
+
+### 进程结束后
+
+**唯一的`AttemptFinalizer`** 写 `outcome_card.json`。它综合：
+
+- execution result
+- health events
+- metrics
+- protected hash 对比
+- EvaluationContract 校验
+- failure code
+
+### Coordinator 读取后
+
+Coordinator 不修改 OutcomeCard，只写：
+
+```text
+decision.json          — KEEP / DISCARD / CONFIRM
+cognitive_commit.jsonl — 科研决策记录
+IdeaTree mutation      — 更新节点状态/insight
+```

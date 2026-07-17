@@ -104,7 +104,50 @@ prompt/model version
 - 只能通过受控工具修改 Idea Tree；
 - output 最终必须符合 `CycleDecision`。
 
-### 3.4 Compact Cycle
+### 3.4 Coordinator Tool Contract
+
+> **Coordinator 工具是 ResearchCoordinator 与 IdeaTreeStore、AttemptStore、ExperimentWorker、
+> DecisionEngine、Git/Worktree 之间的接口合同。必须提前定义。**
+
+```text
+工具分类：
+  read-only（可并行调用）: tree_view, compare_attempts, record_finding
+  mutation（串行，写状态）: tree_add_node, tree_update_node, tree_prune, tree_propagate
+  execution（创建子任务）: run_executor, merge_candidate
+  HITL（人工介入）: request_user_decision
+```
+
+| 工具 | 输入 | 类型 | 安全门槛 |
+|------|------|------|----------|
+| `tree_view` | `format`（compact/full/node/pending/constraints）, `node_id?` | 只读 | 限制输出大小；node_id 存在 |
+| `tree_add_node` | `parent_id`, `mechanism`, `hypothesis`, `observable`, `grounding`, `expected_cost` | 变异 | parent 存在；深度 ≤ 3；禁止重复；预算允许 |
+| `tree_update_node` | `node_id`, `status?`, `insight?`, `evidence_refs?` | 变异 | node 存在；运行后的 hypothesis/mechanism 不可原地改写 |
+| `tree_prune` | `node_id`, `reason` | 变异 | reason 必填；不能 prune root、running node、champion |
+| `tree_propagate` | `node_id` | 变异 | node 已有有效结果；只向祖先追加 insight |
+| `run_executor` | `node_id`, `attempt_spec`, `skip_eval=false` | 执行 | node READY；无活跃 Attempt；预算通过；EvaluationContract + protected_hashes 已冻结 |
+| `compare_attempts` | `candidate_attempt_id`, `baseline_attempt_id?` | 只读 | 两者均为 SCIENTIFICALLY_EVALUABLE；EvaluationContract hash 一致 |
+| `merge_candidate` | `node_id`, `source_branch` | 变异 | 禁止 main/master；B_test 已通过；protected hash 未变；trunk clean |
+| `record_finding` | `kind`, `about`, `note`, `evidence_refs` | 追加 | append-only；引用必须存在 |
+| `request_user_decision` | `question`, `options`, `reason` | HITL | 仅审批模式/预算冲突/无法自动解决的歧义可调用 |
+
+**两道硬规则（不由 Agent 控制）：**
+
+```text
+run_executor:
+  执行前检查 protected_hashes.json
+  执行后再次检查
+  不匹配 → PROTOCOL_VIOLATED
+
+merge_candidate:
+  不能由 Coordinator 直接 git merge
+  必须由确定性 MergeService 执行
+  强制重新跑 B_test
+  通过后才合并
+```
+
+**Agent 工具只是"提出请求"。** 真正的状态变更由后端的 Store/Service 完成。
+
+### 3.5 Compact Cycle
 
 输入：
 
@@ -125,7 +168,7 @@ BudgetSnapshot
 CycleDecision
 ```
 
-### 3.5 Exploratory Cycle
+### 3.6 Exploratory Cycle
 
 允许调用：
 
@@ -146,7 +189,7 @@ high-value result
 novel literature needed
 ```
 
-### 3.6 IdeaExplorerAgent
+### 3.7 IdeaExplorerAgent
 
 临时运行，输入累积状态包，输出多个差异化候选：
 

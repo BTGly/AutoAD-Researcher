@@ -64,31 +64,44 @@ DeepAgents 配置：
 - attempt 内保留短期 checkpoint；
 - attempt 结束销毁。
 
-### 3.3 SEARCH/REPLACE 策略（直接复用 aider）
+### 3.3 SEARCH/REPLACE 策略（自行实现，参考 aider 算法模式）
 
-> **来源：** `/root/autodl-tmp/repos/aider/aider/coders/search_replace.py`（757 行）。
-> 不复写——直接复用 aider 的 `flexible_search_and_replace()` 和 `RelativeIndenter`。
+> aider 生产代码的实际策略链（`search_replace.py`）仅 3 个简单策略，共约 100 行。
+> RelativeIndenter、git cherry-pick O/S/R、diff-match-patch 只在 benchmark 中使用，生产路径不用。
 
-#### 3.3.1 四层策略栈（来自 aider line 565-577）
+#### 3.3.1 三个策略（按优先级尝试）
 
-```python
-# 从精确到模糊：任一成功即返回
-strategies = [
-    (exact_match,       [no_preprocess, strip_blank_lines, normalize_whitespace]),
-    (relative_indent,   [no_preprocess]),  # aider 的 RelativeIndenter
-    (git_cherry_pick,   [no_preprocess]),  # git merge engine
-    (diff_match_patch,  [no_preprocess]),  # Google dmp 行级回退
-]
+```text
+1. perfect_replace          — 按完整行精确匹配，必须只匹配一次
+2. missing_leading_whitespace — 只容忍统一的左侧缩进差异，不忽略行内空格
+3. try_dotdotdots           — 匹配 before ... after 锚点，锚点组合必须唯一
 ```
 
-**关键细节（来自 aider）：**
+#### perfect_replace（精确行匹配）
 
-| 层 | 机制 | 文件:行号 |
-|----|------|----------|
-| **Exact match** | 最便宜的字面匹配，3 种预处理组合 | `search_replace.py:565-577` |
-| **RelativeIndenter** | 将绝对缩进转为相对缩进（第行相对前行），解决 LLM 的缩进重排问题 | `search_replace.py:18-171` |
-| **Git cherry-pick** | O→S→R commits，cherry-pick R 到 O。利用 Git 的 merge engine 处理冲突 | `search_replace.py:448-482` |
-| **DMP lines** | Google diff-match-patch，阈值 0.8 | `editblock_coder.py:293` |
+```text
+seg.segments = whole_lines[0].split(SEARCH)
+if len(seg.segments) != 2:  → 0 次或多次匹配，拒绝
+# 精确行级替换
+```
+
+#### missing_leading_whitespace（左空白容错）
+
+```text
+计算 SEARCH 和 REPLACE 中所有非空行的最小公共缩进
+min_indent > 0 → 从两侧削减该缩进
+对消除空白后的内容做 lstrip() 匹配
+要求所有行的空白偏移完全一致
+```
+
+#### try_dotdotdots（省略号锚点支持）
+
+```text
+以 `...\n` 分割 SEARCH 块
+验证 `before` 和 `after` 锚点片段在原文中各只出现一次
+确保顺序一致且不跨越多个候选区
+中间内容替换为 REPLACE 块
+```
 
 #### 3.3.2 Pre-edit dirty_commit（来自 aider `base_coder.py` line 2411-2423）
 
