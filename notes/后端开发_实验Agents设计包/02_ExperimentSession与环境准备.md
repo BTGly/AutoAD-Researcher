@@ -143,7 +143,7 @@ SessionStore.create_or_get(task_hash)          ← 幂等
   ↓
 JobStore.create_or_get(                        ← 幂等
     job_type=experiment_environment_prepare,
-    idempotency_key=environment_prepare:{session_id}
+    idempotency_key=environment_prepare:{session_id}:r0
 )
   ↓
 返回 confirmed task + session_id + job 摘要
@@ -220,8 +220,9 @@ def create_or_get_pipeline_job(run_dir, *, idempotency_key, job_type, payload):
         jobs = _load_jobs_unlocked(run_dir)
         existing = _find_by_key(jobs, idempotency_key)
         if existing:
-            if existing["job_type"] != job_type:
-                raise Conflict("same key, different type")
+            if (existing["job_type"] != job_type
+                    or existing["payload"] != payload):
+                raise Conflict("same idempotency key, different job identity")
             return existing, False
 
         job_id = _next_id_from_loaded(jobs)
@@ -256,7 +257,7 @@ session_store.create_or_get(
 
 因此 Session 先创建为 `CREATED`，随后由环境准备流程通过 RepositoryProbe 和 Adapter 补齐 repository target、baseline entrypoint、dataset binding 和 evaluation protocol。不应因用户未精确指定 entrypoint 就拒绝创建 Session。
 
-### 3.3 task_hash 计算规则
+### 3.5 task_hash 计算规则
 
 当前 `task_id` 基于 `summary.json` 的 SHA 生成，适合检测"摘要确认前是否被修改"，但不应直接作为实验 Session 的最终任务身份。
 
@@ -268,17 +269,20 @@ task_hash            — ExperimentSession 幂等身份
 authorization_hash   — execution_mode + approval/policy revision
 ```
 
-`task_hash` 根据确认后 `input_task.yaml` 的规范化内容计算：
+`task_hash` 直接从 confirmed draft 计算（confirmed draft 是 write-ahead 权威记录，YAML 是可重建派生产物）：
 
 ```python
 task_hash = sha256(
     canonical_json(
-        InputTask.model_validate_yaml(input_task_yaml).model_dump()
+        confirmed_task.input_task.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
     )
 )
 ```
 
-不要直接 hash YAML 原始文本（字段顺序、空行或序列化格式变化可能产生不同 hash）。
+这样权威记录、幂等身份和恢复协议完全一致。YAML 只负责 Pipeline 兼容输入，不参与身份定义。
 
 `execution_mode` 不进入 `task_hash`：同一个科研任务从 `approve_each_step` 改为 `agent_assisted_after_approval` 不应识别为不同任务。但执行模式变化不能静默覆盖——应追加授权修订记录。
 
@@ -310,7 +314,20 @@ experiment.authorization.changed
 experiment.authorization.revoked
 ```
 
-权威当前值放在 `confirmed draft` 或 `ExperimentSession.authorization`——`events.jsonl` 只做历史审计。
+权威位置（三层，各有职责）：
+
+```text
+confirmed draft
+= 初次用户确认，不可变历史记录
+
+ExperimentSession.authorization
+= Session 创建后的当前有效权限（Starter 创建时从 confirmed draft 复制初始值）
+
+events.jsonl
+= 权限变化历史（之后的 changed/revoked 追加，不回写 confirmed draft）
+```
+
+Starter 首次创建 Session 时复制初始授权；之后的 changed/revoked 只更新 Session 当前值并追加 Event，不回写历史 confirmed draft。
 
 ### 3.7 不完整事实不应阻止 Session 创建
 
@@ -415,7 +432,7 @@ CANCELLED
 增加：
 
 ```text
-experiment_environment_prepare  — 环境准备（idempotency_key: environment_prepare:{session_id}）
+experiment_environment_prepare  — 环境准备（idempotency_key: environment_prepare:{session_id}:r{n}）
 ```
 
 Worker 重复 claim 时不可重复创建。环境安装和 probe 在后台 Worker Job 中执行。
