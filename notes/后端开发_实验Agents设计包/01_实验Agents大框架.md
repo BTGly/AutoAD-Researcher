@@ -378,30 +378,67 @@ idea 提交并写入 CognitiveCommit 后：
 
 ## 6. Agent 角色与组件
 
-最终设计：**1 个持久 Coordinator + 5 个按需临时专业 Agent + 若干确定性组件**。所有 LLM 角色通过同一 `AgentFactory → create_deep_agent()` 创建，不是 6 套独立系统。
+运行时拓扑：**1 个持久 ResearchCoordinator + 0～N 个按需 Specialist invocation**。所有 LLM 角色通过同一 `AgentFactory → create_deep_agent()` 创建，不是 6 套独立系统。
 
-### 6.1 LLM Runtime Roles（6 个）
+参考 Anthropic 多 Agent Research 系统：lead agent 动态创建 subagents，数量取决于当前问题；subagents 独立探索后只向 lead agent 返回压缩结果。研究过程是动态、路径依赖的，不适合固定硬编码流程。
 
-| Agent | 生命周期 | 主要职责 | 独立理由 |
+### 6.1 LLM Specialist Profile Catalog（当前定义 6 个）
+
+这 6 个是**当前已识别出的专业能力边界**，不是永远不得增减的组织架构。
+
+| Specialist | 生命周期 | 主要职责 | 独立理由 |
 |---|---|---|---|
-| **ResearchCoordinator** | Session 持久 | 连续决策、ideation、reflection、strategy shift | 唯一持久决策者，拥有读写科研状态权限 |
+| **ResearchCoordinator** | Session 持久 | 常规决策、压缩状态 ideation/reflection | 唯一持久决策者，拥有读写科研状态权限 |
 | **IdeaExplorerAgent** | 按需临时 | 深度文献/仓库发散 ideation，跨 research axis 探索 | 长上下文（论文/仓库），探索预算独立 |
 | **ReviewerAgent** | 高成本/高风险时临时 | 假设可证伪性、重复性、泄漏、成本评审 | **独立第二视角**，避免 Coordinator 自我确认偏差 |
 | **ExecutorAgent** | 每个 attempt 临时 | 修改代码、有界修复、实现日志 | 写 worktree 权限，生命周期和失败边界完全不同 |
 | **ReflectionAgent** | 矛盾/高价值结果时临时 | KEEP-WHY、失败机制、衍生假设、多 seed 协调 | 指标与机制分析上下文独立 |
-| **HealthDiagnosisAgent** | UNKNOWN 异常事件触发 | 对压缩健康证据作语义诊断（仅 classifier 返回 UNKNOWN 时） | 日志/运行证据领域与科研上下文完全不同 |
+| **HealthDiagnosisAgent** | 证据模糊/冲突时触发 | 模糊、未知、新型或矛盾的运行异常根因分析 | 日志/运行证据领域与科研上下文完全不同 |
 
-### 6.2 Coordinator Skills（通过 Profile 切换）
+### 6.2 Coordinator ↔ Specialist 委派模型
+
+Coordinator 完成**常规、压缩、低成本**认知工作；Specialist 处理**会污染主上下文、需要独立视角、需要专用工具或需要更大推理预算**的任务。
+
+**委派不依赖硬规则**（如 `if seed_conflicts >= 2: call_reflection_agent()`），而是 Coordinator 综合以下结构化因素判断：
+
+```text
+context_volume          — 当前上下文是否已接近容量上限
+task_complexity         — 所需推理链的预计深度
+independence_required   — 是否需要独立第二视角（如 review）
+specialized_tools_required — 是否需要专用工具（如 repo search）
+permission_difference   — 是否需要不同权限边界
+uncertainty             — Coordinator 自身置信度
+expected_information_gain — 增加这次调用的预期价值
+cost                    — 预算约束
+```
+
+只有权限和安全边界采用硬规则；是否需要更深认知由 Coordinator 做上下文感知的委派判断。
+
+**典型委派场景：**
+
+| 场景 | Coordinator 做的事 | 委派给 Specialist |
+|---|---|---|
+| 普通结果 | 直接生成 CycleDecision | — |
+| 多 seed / category 冲突 | 读结果摘要 | ReflectionAgent 协调冲突 |
+| 普通局部 idea | 直接从 champion 衍生 | — |
+| 深读多篇论文和仓库 | 读摘要 | IdeaExplorerAgent 发散探索 |
+| 高成本实验提案 | 读 proposal | ReviewerAgent 独立审查 |
+| 确定性分类清晰的故障 | 跑 FailurePolicy | — |
+| 证据模糊/冲突的运行异常 | 读分类结果 | HealthDiagnosisAgent 根因分析 |
+
+### 6.3 Coordinator Skills（通过 Profile 切换）
 
 这些不是独立 Agent，是 Coordinator 在不同模式下加载的 SKILL.md：
 
 ```text
-strategy-recovery    → 停滞时选新探索策略
-failure-diagnosis    → UNKNOWN 错误初步排查（简单 case）
-batch-review         → 连续低价值实验时批量审视
+strategy-recovery          → 停滞时，结合 ConvergenceAlert 决定是否切换探索策略
+failure-response-planning  → 根据已分类的故障决定科研流程动作（retry / repair / archive / probe / child idea）
+batch-review               → 连续低价值实验时批量审视方向
 ```
 
-### 6.3 Deterministic Components（非 LLM）
+> **注意区分：** `failure-response-planning` Skill 做科研流程决策（"这个故障后下一步怎么走"），HealthDiagnosisAgent 做运行根因诊断（"这个故障到底是什么原因"）。两者职责不同，不争夺入口。
+
+### 6.4 Deterministic Components（非 LLM）
 
 | 组件 | 类型 | 职责 |
 |---|---|---|
@@ -411,10 +448,26 @@ batch-review         → 连续低价值实验时批量审视
 | AttemptFinalizer | 确定性写入 | OutcomeCard 综合 |
 | DecisionEngine | 确定性 Gate | 指标/guardrail 判定 KEEP/DISCARD |
 | PromotionJournal | 持久化事务 | DVC experiment apply + Git merge + Optuna JournalStorage |
-| StrategySelector | 确定性选择器 | 按 ConvergenceAlert 匹配 SKILL.md |
+| StrategySelector | 确定性过滤排序 | 只过滤和排序当前可用的 strategy skills；不决定使用哪个 skill（由 Coordinator 选择） |
 | BudgetPolicy / StopPolicy | 确定性策略 | GPU 小时、attempt 上限、wall time |
 
-> **已删除：StrategyDiagnosticAgent** — 其职责（解释停滞、选策略）由 ConvergenceMonitor → ConvergenceAlert → Coordinator + StrategySelector 替代，不需要独立 LLM。
+> **已删除：StrategyDiagnosticAgent** — 其职责由 ConvergenceMonitor → ConvergenceAlert → Coordinator + StrategySelector 替代。StrategySelector 只过滤排序，Coordinator 根据 alert + 科研历史选择 skill。
+
+**HealthDiagnosisAgent 触发条件**（非硬编码 `failure_code == UNKNOWN`）：
+- 分类器 confidence 低
+- 多个证据相互冲突
+- 已知 FailureCode 与实际状态不一致
+- 重复恢复失败
+- 出现未覆盖的新型 evidence
+
+流程：
+```text
+Runtime evidence
+→ PostRunFailureClassifier
+→ 若分类清楚：FailurePolicy
+→ 若证据模糊/冲突：HealthDiagnosisAgent
+→ HealthPolicy
+```
 
 所有 LLM Agent 均通过统一 `create_deep_agent(config)` 工厂创建，但使用不同：
 
