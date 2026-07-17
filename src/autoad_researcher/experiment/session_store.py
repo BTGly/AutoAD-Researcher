@@ -14,6 +14,8 @@ from autoad_researcher.experiment.session import (
     ExecutionMode,
     ExperimentAuthorization,
     ExperimentSession,
+    ReadinessStatus,
+    SessionStatus,
 )
 
 SESSIONS_DIR = "experiments/sessions"
@@ -97,6 +99,42 @@ class ExperimentSessionStore:
         if not path.is_file():
             return None
         return ExperimentSession.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def update_environment_state(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        status: SessionStatus,
+        environment_status: str,
+        readiness_status: ReadinessStatus | None = None,
+        readiness_blockers: list[str] | None = None,
+        repository_ref: str | None = None,
+        environment_snapshot_ref: str | None = None,
+    ) -> ExperimentSession:
+        """Persist one monotonic control-plane transition and its evidence refs."""
+        path = self._session_path(run_dir, session_id)
+        with self._lock(run_dir):
+            if not path.is_file():
+                raise FileNotFoundError("experiment session not found")
+            session = ExperimentSession.model_validate_json(path.read_text(encoding="utf-8"))
+            updates: dict[str, Any] = {
+                "status": status,
+                "environment_status": environment_status,
+                "updated_at": _utc_now(),
+                "revision": session.revision + 1,
+            }
+            if readiness_status is not None:
+                updates["readiness_status"] = readiness_status
+            if readiness_blockers is not None:
+                updates["readiness_blockers"] = readiness_blockers
+            if repository_ref is not None:
+                updates["repository_ref"] = repository_ref
+            if environment_snapshot_ref is not None:
+                updates["environment_snapshot_ref"] = environment_snapshot_ref
+            updated = session.model_copy(update=updates)
+            self._write_unlocked(path, updated)
+            return updated
 
     @staticmethod
     def _session_path(run_dir: Path, session_id: str) -> Path:

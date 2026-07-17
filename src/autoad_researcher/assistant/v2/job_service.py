@@ -9,7 +9,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -236,6 +236,55 @@ def fail_pipeline_job(run_dir: Path, job_id: str, *, error: str) -> dict[str, An
                 _write_jobs_unlocked(run_dir, jobs)
                 return j
     return None
+
+
+def requeue_stale_running_jobs(
+    run_dir: Path,
+    *,
+    stale_after_seconds: int = 300,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Return abandoned running Jobs to queued state after their recovery lease.
+
+    A fresh Worker never claims an active Job immediately.  It only repairs a
+    Job whose persisted ``started_at`` has exceeded this bounded lease.
+    """
+    if stale_after_seconds < 0:
+        raise ValueError("stale_after_seconds must be non-negative")
+    current = now or datetime.now(timezone.utc)
+    stale_before = current - timedelta(seconds=stale_after_seconds)
+    recovered: list[dict[str, Any]] = []
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        changed = False
+        for job in jobs:
+            if job.get("status") != "running":
+                continue
+            started_at = _parse_datetime(job.get("started_at"))
+            if started_at is not None and started_at > stale_before:
+                continue
+            job["status"] = "queued"
+            job["started_at"] = None
+            job["completed_at"] = None
+            job["error"] = None
+            job["recovery_count"] = int(job.get("recovery_count", 0)) + 1
+            recovered.append(dict(job))
+            changed = True
+        if changed:
+            _write_jobs_unlocked(run_dir, jobs)
+    return recovered
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def _write_jobs_unlocked(run_dir: Path, jobs: list[dict[str, Any]]) -> None:

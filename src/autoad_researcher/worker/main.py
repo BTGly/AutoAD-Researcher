@@ -69,6 +69,16 @@ def _process_pending_jobs(run_dir: Path) -> int:
 
     jobs = json.loads("[" + ",".join(path.read_text(encoding="utf-8").strip().replace("}\n{", "},{").splitlines()) + "]") if False else []
 
+    from autoad_researcher.assistant.v2.job_service import requeue_stale_running_jobs
+    from autoad_researcher.assistant.v2.event_service import append_event
+
+    recovered = requeue_stale_running_jobs(run_dir)
+    for recovered_job in recovered:
+        append_event(
+            run_dir,
+            "job.requeued_after_worker_recovery",
+            {"job_id": recovered_job.get("job_id", ""), "job_type": recovered_job.get("job_type", "")},
+        )
     processed = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -133,6 +143,11 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 success, outputs = _run_paper_summarize(run_dir, job)
             elif job_type in {"repo_analyze", "repo_summarize"}:
                 success, outputs = _run_repo_analyze(run_dir, job)
+            elif job_type == "experiment_environment_prepare":
+                from autoad_researcher.environments.prepare import prepare_environment_for_job
+
+                outputs = prepare_environment_for_job(run_dir, job)
+                success = True
             else:
                 fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
                 append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})

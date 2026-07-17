@@ -50,6 +50,10 @@ from autoad_researcher.environments.policy import (
     evaluate_environment_plan_policy,
     validate_environment_plan_policy,
 )
+from autoad_researcher.environments.prepare import (
+    EnvironmentPreparationError,
+    prepare_environment_for_job,
+)
 from autoad_researcher.environments.result import CommandStepResult, EnvironmentBuildResult
 from autoad_researcher.environments.revision import (
     EnvironmentAttemptOutcome,
@@ -83,6 +87,7 @@ __all__ = [
     "HostProbe",
     "EnvironmentPlanPolicyError",
     "EnvironmentPlanPolicyReport",
+    "EnvironmentPreparationError",
     "CommandExecutionOutput",
     "CommandStepResult",
     "CondaAdapter",
@@ -122,6 +127,7 @@ __all__ = [
     "snapshot_from_plan",
     "probe_host",
     "probe_repository",
+    "prepare_environment_for_job",
     "validate_environment",
     "validate_environment_plan_policy",
     "write_environment_plan",
