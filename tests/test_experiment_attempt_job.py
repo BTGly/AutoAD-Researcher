@@ -232,6 +232,7 @@ def test_hung_process_reaches_timeout_termination_path(tmp_path: Path):
     final = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
     assert final is not None and final.runtime_status == "TIMED_OUT"
     assert final.failure_code == "RUN_TIMEOUT"
+    assert not (run_dir / "attempts" / started.attempt.attempt_id / "health_diagnosis.json").exists()
 
 
 def test_failed_attempt_retry_has_lineage_backoff_and_new_job(tmp_path: Path):
