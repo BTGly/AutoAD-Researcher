@@ -18,7 +18,7 @@ from autoad_researcher.experiment.gpu import GpuAllocator, GpuUnavailableError
 from autoad_researcher.experiment.watchdog import RuntimeWatchdog
 from autoad_researcher.experiment.failure_classifier import classify_or_load
 from autoad_researcher.experiment.finalizer import finalize_attempt
-from autoad_researcher.runner import ExperimentExecutionResult, OutputManifest, OutputManifestEntry
+from autoad_researcher.runner.models import ExperimentExecutionResult, OutputManifestEntry
 
 _PROCESSES: dict[tuple[str, str], subprocess.Popen[str]] = {}
 

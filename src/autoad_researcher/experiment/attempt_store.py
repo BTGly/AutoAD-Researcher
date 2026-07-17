@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autoad_researcher.experiment.attempt import AttemptRuntimeStatus, ExperimentAttempt
-from autoad_researcher.runner.executor import experiment_command_sha256
 
 ATTEMPTS_DIR = "experiments/attempts"
 
@@ -137,6 +136,8 @@ class ExperimentAttemptStore:
         attempt_id: str,
         created_at: str,
     ) -> ExperimentAttempt:
+        from autoad_researcher.runner.executor import experiment_command_sha256
+
         with self._lock(run_dir):
             parent = self._load_required_unlocked(run_dir, attempt_id)
             if parent.runtime_status not in {"FAILED", "TIMED_OUT", "LOST"}:
