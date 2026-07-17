@@ -34,11 +34,13 @@ class FailureClassification(BaseModel):
 
 
 _DEFAULT = ["execution_failure", "oom_error", "cuda_runtime_error", "cudnn_error", "disk_full", "nan_or_inf", "python_import_error", "metrics_missing", "unknown_run_failure"]
-_RETRYABLE_EXECUTION_FAILURES = {
-    "WORKER_LOST",
-    "TEMPORARY_GPU_UNAVAILABLE",
-    "TRANSIENT_IO_ERROR",
-    "PROCESS_SPAWN_FAILED",
+_STRUCTURED_EXECUTION_FAILURES = {
+    "WORKER_LOST": True,
+    "TEMPORARY_GPU_UNAVAILABLE": True,
+    "TRANSIENT_IO_ERROR": True,
+    "PROCESS_SPAWN_FAILED": True,
+    "DISK_FULL": False,
+    "PROTECTED_ARTIFACT_CHANGED": False,
 }
 
 
@@ -50,8 +52,8 @@ def classify_or_load(attempt_dir: Path, config: FailureClassifierConfig | None =
     enabled = [name for name in enabled if name not in config.disabled_detectors]
     execution = _read_json(attempt_dir / "execution_result.json")
     raw_failure_code = execution.get("failure_code") if isinstance(execution.get("failure_code"), str) else None
-    if "execution_failure" in enabled and raw_failure_code in _RETRYABLE_EXECUTION_FAILURES:
-        return _write(path, FailureClassification(profile=config.profile, enabled_detectors=enabled, matched_detector="execution_failure", failure_code=raw_failure_code, attempt_category="run_failed", retryable=True))
+    if "execution_failure" in enabled and raw_failure_code in _STRUCTURED_EXECUTION_FAILURES:
+        return _write(path, FailureClassification(profile=config.profile, enabled_detectors=enabled, matched_detector="execution_failure", failure_code=raw_failure_code, attempt_category="run_failed", retryable=_STRUCTURED_EXECUTION_FAILURES[raw_failure_code]))
     stderr = _read(attempt_dir / "stderr.log").lower()
     events = _read(attempt_dir / "health_events.jsonl").lower()
     result = _read(attempt_dir / "execution_result.json").lower()

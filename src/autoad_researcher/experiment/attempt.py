@@ -96,4 +96,10 @@ class ExperimentAttempt(BaseModel):
                 raise ValueError("checkpoint_watch_path must stay within the Attempt artifact directory")
         if (self.checkpoint_watch_path is None) != (self.checkpoint_stall_seconds is None):
             raise ValueError("checkpoint watch path and stall interval must be configured together")
+        if (self.evaluation_contract_ref is None) != (self.evaluation_contract_sha256 is None):
+            raise ValueError("evaluation contract reference and SHA-256 must be configured together")
+        if (self.protected_artifact_report_ref is None) != (self.protected_artifact_report_sha256 is None):
+            raise ValueError("protected hash reference and SHA-256 must be configured together")
+        if (self.evaluation_contract_ref is None) != (self.protected_artifact_report_ref is None):
+            raise ValueError("evaluation contract and protected hashes must be configured together")
         return self

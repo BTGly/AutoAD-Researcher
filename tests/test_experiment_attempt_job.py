@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -110,6 +111,41 @@ def test_attempt_replay_creates_one_attempt_and_one_pipeline_job(tmp_path: Path)
     assert len(load_pipeline_jobs(run_dir)) == 1
 
 
+def test_attempt_creation_freezes_protocol_references_in_its_identity(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_protocol_identity"
+    session_id = _ready_session(run_dir)
+    plan = _plan()
+    result = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:protocol-identity",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+        evaluation_contract_ref="contract.json",
+        evaluation_contract_sha256="a" * 64,
+        protected_artifact_report_ref="protected_hashes.json",
+        protected_artifact_report_sha256="b" * 64,
+    )
+    assert result.attempt.evaluation_contract_ref == "contract.json"
+    assert result.attempt.protected_artifact_report_ref == "protected_hashes.json"
+    with pytest.raises(ValueError, match="different Attempt identity"):
+        ExperimentAttemptService().create_or_get_attempt(
+            run_dir,
+            session_id=session_id,
+            job_type="experiment_baseline",
+            idempotency_key="baseline:protocol-identity",
+            command_plan=plan,
+            input_refs=_refs(plan),
+            job_timeout_sec=60,
+            evaluation_contract_ref="contract.json",
+            evaluation_contract_sha256="c" * 64,
+            protected_artifact_report_ref="protected_hashes.json",
+            protected_artifact_report_sha256="b" * 64,
+        )
+
+
 def test_two_workers_only_one_claims_attempt_job(tmp_path: Path):
     run_dir = tmp_path / "run_attempt_claim"
     session_id = _ready_session(run_dir)
@@ -149,10 +185,53 @@ def test_worker_dispatches_fixture_command_and_finalizes_attempt(tmp_path: Path)
     assert finished.runtime_status == "COMPLETED"
     assert finished.execution_result_ref == "attempts/attempt_000001/execution_result.json"
     assert (run_dir / "attempts" / "attempt_000001" / "metrics.json").is_file()
+    assert not (run_dir / "attempts" / "attempt_000001" / "health_diagnosis.json").exists()
     assert load_pipeline_jobs(run_dir)[0]["status"] == "completed"
     assert "experiment.attempt.finalized" in {
         event["type"] for event in load_events_since(run_dir)
     }
+
+
+def test_zero_exit_without_expected_output_is_not_scientifically_evaluable(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_missing_output"
+    session_id = _ready_session(run_dir)
+    plan = _plan(command="pass")
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:missing-output",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+    )
+    assert _process_pending_jobs(run_dir) == 1
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
+    final = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    outcome = json.loads((run_dir / "attempts" / started.attempt.attempt_id / "outcome_card.json").read_text(encoding="utf-8"))
+    assert final is not None and final.failure_code == "RUN_EXPECTED_OUTPUT_MISSING"
+    assert outcome["attempt_category"] == "run_failed"
+
+
+def test_hung_process_reaches_timeout_termination_path(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_timeout"
+    session_id = _ready_session(run_dir)
+    plan = _plan(command="import time\ntime.sleep(5)")
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:timeout",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=1,
+    )
+    assert _process_pending_jobs(run_dir) == 1
+    time.sleep(1.1)
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
+    final = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert final is not None and final.runtime_status == "TIMED_OUT"
+    assert final.failure_code == "RUN_TIMEOUT"
 
 
 def test_failed_attempt_retry_has_lineage_backoff_and_new_job(tmp_path: Path):
@@ -359,7 +438,7 @@ def test_worker_restart_keeps_observing_persisted_process(tmp_path: Path):
 def test_checkpoint_stall_is_explicitly_configured_and_stops_attempt(tmp_path: Path):
     run_dir = tmp_path / "run_attempt_checkpoint_stall"
     session_id = _ready_session(run_dir)
-    plan = _plan(command="from pathlib import Path\nimport time\nPath('checkpoint.json').write_text('{}')\ntime.sleep(5)")
+    plan = _plan(command="from pathlib import Path\nimport time\nPath('checkpoint.json').write_text('{}')\nwhile True:\n print('stdout remains active', flush=True)\n time.sleep(0.02)")
     started = ExperimentAttemptService().create_or_get_attempt(
         run_dir,
         session_id=session_id,
