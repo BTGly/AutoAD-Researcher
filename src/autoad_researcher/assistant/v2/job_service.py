@@ -243,6 +243,7 @@ def requeue_stale_running_jobs(
     *,
     stale_after_seconds: int = 300,
     now: datetime | None = None,
+    excluded_job_types: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return abandoned running Jobs to queued state after their recovery lease.
 
@@ -259,6 +260,8 @@ def requeue_stale_running_jobs(
         changed = False
         for job in jobs:
             if job.get("status") != "running":
+                continue
+            if job.get("job_type") in (excluded_job_types or set()):
                 continue
             started_at = _parse_datetime(job.get("started_at"))
             if started_at is not None and started_at > stale_before:

@@ -69,6 +69,32 @@ class ExperimentAttemptStore:
 
         return self._update(run_dir, attempt_id, mutate)
 
+    def mark_running(self, run_dir: Path, *, attempt_id: str, pid: int, process_group_id: int) -> ExperimentAttempt:
+        def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
+            if attempt.runtime_status not in {"STARTING", "RUNNING"}:
+                raise ValueError("Attempt cannot enter RUNNING from its current runtime status")
+            return attempt.model_copy(
+                update={"runtime_status": "RUNNING", "pid": pid, "process_group_id": process_group_id, "heartbeat_at": _utc_now()}
+            )
+
+        return self._update(run_dir, attempt_id, mutate)
+
+    def heartbeat(self, run_dir: Path, *, attempt_id: str) -> ExperimentAttempt:
+        def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
+            if attempt.runtime_status not in {"STARTING", "RUNNING", "TERMINATING"}:
+                raise ValueError("only active Attempts may heartbeat")
+            return attempt.model_copy(update={"heartbeat_at": _utc_now()})
+
+        return self._update(run_dir, attempt_id, mutate)
+
+    def request_cancel(self, run_dir: Path, *, attempt_id: str) -> ExperimentAttempt:
+        def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
+            if attempt.runtime_status not in {"QUEUED", "STARTING", "RUNNING", "TERMINATING"}:
+                raise ValueError("only active Attempts may be cancelled")
+            return attempt.model_copy(update={"cancel_requested_at": attempt.cancel_requested_at or _utc_now(), "runtime_status": "TERMINATING"})
+
+        return self._update(run_dir, attempt_id, mutate)
+
     def finish(
         self,
         run_dir: Path,

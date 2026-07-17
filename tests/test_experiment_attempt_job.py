@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,16 @@ from autoad_researcher.experiment.gpu import GpuUnavailableError
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.runner import ExperimentCommandPlan, ExperimentInputRefs, experiment_command_sha256
 from autoad_researcher.worker.main import _process_pending_jobs
+
+
+def _poll_until_terminal(run_dir: Path, attempt_id: str) -> None:
+    for _ in range(20):
+        attempt = ExperimentAttemptStore().load(run_dir, attempt_id)
+        if attempt is not None and attempt.runtime_status in {"COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED", "LOST"}:
+            return
+        time.sleep(0.02)
+        _process_pending_jobs(run_dir)
+    raise AssertionError("Attempt did not reach a terminal state")
 
 
 def _ready_session(run_dir: Path) -> str:
@@ -132,6 +143,7 @@ def test_worker_dispatches_fixture_command_and_finalizes_attempt(tmp_path: Path)
     )
 
     assert _process_pending_jobs(run_dir) == 1
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
     finished = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
     assert finished is not None
     assert finished.runtime_status == "COMPLETED"
@@ -159,6 +171,7 @@ def test_failed_attempt_retry_has_lineage_backoff_and_new_job(tmp_path: Path):
         max_retries=1,
     )
     assert _process_pending_jobs(run_dir) == 1
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
 
     retry = service.create_retry(run_dir, attempt_id=started.attempt.attempt_id)
     assert retry.attempt.retry_of == started.attempt.attempt_id
@@ -232,4 +245,31 @@ def test_gpu_capacity_failure_finalizes_attempt_without_starting_training(tmp_pa
     assert attempt is not None
     assert attempt.runtime_status == "FAILED"
     assert attempt.failure_code == "TEMPORARY_GPU_UNAVAILABLE"
+    assert load_pipeline_jobs(run_dir)[0]["status"] == "failed"
+
+
+def test_popen_attempt_does_not_block_worker_and_can_be_cancelled(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_cancel"
+    session_id = _ready_session(run_dir)
+    plan = _plan(command="import time\ntime.sleep(5)")
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:cancel",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+    )
+
+    started_at = time.monotonic()
+    assert _process_pending_jobs(run_dir) == 1
+    assert time.monotonic() - started_at < 1
+    active = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert active is not None and active.runtime_status == "RUNNING"
+    assert active.pid is not None and active.process_group_id is not None
+    ExperimentAttemptStore().request_cancel(run_dir, attempt_id=started.attempt.attempt_id)
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
+    cancelled = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert cancelled is not None and cancelled.runtime_status == "CANCELLED"
     assert load_pipeline_jobs(run_dir)[0]["status"] == "failed"

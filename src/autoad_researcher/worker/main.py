@@ -72,7 +72,8 @@ def _process_pending_jobs(run_dir: Path) -> int:
     from autoad_researcher.assistant.v2.job_service import requeue_stale_running_jobs
     from autoad_researcher.assistant.v2.event_service import append_event
 
-    recovered = requeue_stale_running_jobs(run_dir)
+    experiment_job_types = {"experiment_baseline", "experiment_attempt", "experiment_confirmatory"}
+    recovered = requeue_stale_running_jobs(run_dir, excluded_job_types=experiment_job_types)
     for recovered_job in recovered:
         append_event(
             run_dir,
@@ -80,6 +81,26 @@ def _process_pending_jobs(run_dir: Path) -> int:
             {"job_id": recovered_job.get("job_id", ""), "job_type": recovered_job.get("job_type", "")},
         )
     processed = 0
+    from autoad_researcher.assistant.v2.job_service import complete_pipeline_job, fail_pipeline_job
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            running_job = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if running_job.get("status") != "running" or running_job.get("job_type") not in experiment_job_types:
+            continue
+        from autoad_researcher.experiment.attempt_execution import observe_attempt_job
+
+        observation = observe_attempt_job(run_dir, running_job)
+        if not observation.terminal:
+            continue
+        if observation.succeeded:
+            complete_pipeline_job(run_dir, running_job["job_id"], outputs=observation.outputs or [])
+            append_event(run_dir, "job.completed", {"job_id": running_job["job_id"], "outputs": observation.outputs or []})
+        else:
+            fail_pipeline_job(run_dir, running_job["job_id"], error=observation.error or "experiment attempt failed")
+            append_event(run_dir, "job.failed", {"job_id": running_job["job_id"], "error": observation.error or "experiment attempt failed"})
+        processed += 1
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -150,11 +171,17 @@ def _process_pending_jobs(run_dir: Path) -> int:
 
                 outputs = prepare_environment_for_job(run_dir, job)
                 success = True
-            elif job_type in {"experiment_baseline", "experiment_attempt", "experiment_confirmatory"}:
-                from autoad_researcher.experiment.attempt_execution import execute_attempt_job
+            elif job_type in experiment_job_types:
+                from autoad_researcher.experiment.attempt_execution import start_attempt_job
 
-                outputs = execute_attempt_job(run_dir, job)
-                success = True
+                observation = start_attempt_job(run_dir, job)
+                if not observation.terminal:
+                    processed += 1
+                    continue
+                outputs = observation.outputs or []
+                success = observation.succeeded
+                if not success:
+                    raise RuntimeError(observation.error or "experiment attempt failed")
             else:
                 fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
                 append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
