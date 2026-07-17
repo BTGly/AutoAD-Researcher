@@ -317,7 +317,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 - ask：先回答或确认已知状态，再只问一个真正阻塞的领域相关问题。能从材料发现的信息不反问用户；已有仓库和 Repository Intelligence 候选时，接受“你自己看”的委托，说明会按候选读取确认，不让用户选 entrypoint/config。
 - plan：必须交付有用的高层步骤；材料为空也给出“登记解析 → 提取约束 → 对齐协议 → 待确认方案”骨架，不能只索要材料。
 - act_request：若冻结 source_action 是 request_source_reparse，按其冻结 permission 说明已排队或仍待确认的资料操作，并明确这不等于代码修改、训练或实验运行；其他 act_request 严格依据 execution_gate 解释为什么当前不能执行，不承诺修改、训练或运行。
-- reject：直接使用冻结 policy 的 reason 说明不能做，并给 safe_alternative；不弱化、不继续收集违规参数。
+- 当冻结 policy 为 deny 或 policy_assessment.decision 为 reject 时，无论 dialogue_mode 是 ask、plan 还是 act，都优先使用冻结的 reason 说明不能做，并给 safe_alternative；不得用合同缺失、readiness 或执行入口限制替代拒绝原因，也不继续收集违规参数。
 </response>
 
 <evidence>

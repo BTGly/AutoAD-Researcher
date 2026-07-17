@@ -102,6 +102,7 @@ class ResearchOrchestratorV2:
         }
         previous = load_research_intent_summary(run_dir)
         candidate = ResearchDecisionAgent.decide(
+            run_dir=run_dir,
             user_input=user_input,
             evidence_state=context,
             last_summary=previous,
@@ -232,6 +233,11 @@ def _validated_dialogue_reply(
     decision: GatedDialogueDecision,
     reply_response: ResearchReplyResponse,
 ) -> str:
+    assessment = decision.policy_assessment
+    if decision.policy == "deny" or assessment.decision == "reject":
+        if reply_response.should_persist:
+            return reply_response.visible_reply()
+        return _policy_fallback(assessment.reason, assessment.safe_alternative)
     if decision.dialogue_mode != "act" or decision.source_action is not None:
         return reply_response.visible_reply()
     if decision.execution_gate == "blocked_missing_contract":
@@ -243,6 +249,14 @@ def _validated_dialogue_reply(
         "我已识别到执行请求，但当前 V2 对话入口只支持研究对齐和 plan_only 任务准备，"
         "不能在这里修改代码或运行实验。已确认的任务记录会保留，执行仍需独立的授权与 readiness gate。"
     )
+
+
+def _policy_fallback(reason: str, safe_alternative: str) -> str:
+    resolved_reason = reason.strip() or "该请求违反科研有效性或执行安全边界。"
+    resolved_alternative = safe_alternative.strip()
+    if not resolved_alternative:
+        return resolved_reason
+    return f"{resolved_reason}\n\n可行替代：{resolved_alternative}"
 
 
 def _registered_source_context(run_dir: Path) -> list[dict[str, str]]:

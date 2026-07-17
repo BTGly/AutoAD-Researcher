@@ -45,6 +45,23 @@ def _decision_payload(mode: str = "ask") -> dict:
     }
 
 
+def _rejected_decision_payload(category: str, reason: str, alternative: str) -> dict:
+    return {
+        "dialogue_mode": "act",
+        "action_scope": "code",
+        "policy": "deny",
+        "policy_assessment": {
+            "decision": "reject",
+            "category": category,
+            "reason": reason,
+            "safe_alternative": alternative,
+        },
+        "source_action": None,
+        "task_action": None,
+        "target_spec": None,
+    }
+
+
 def _reply_payload() -> dict:
     return {
         "reply_to_user": "你的目标是复现指定实现；当前材料还在处理，我不会假装已经读过。",
@@ -135,6 +152,111 @@ def test_decision_agent_calls_llm_once_with_short_decision_contract(monkeypatch)
     assert "reply_to_user" not in system
     assert decision.is_valid is True
     assert decision.dialogue_mode == "ask"
+
+
+def test_decision_agent_repairs_invalid_json_once(monkeypatch):
+    captured: list[dict[str, object]] = []
+    replies = ["not-json", json.dumps(_decision_payload())]
+
+    def fake_call(api_key, provider_base_url, messages, **kwargs):
+        captured.append({"messages": messages, "temperature": kwargs.get("temperature")})
+        return {"reply": replies.pop(0), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    decision = ResearchDecisionAgent.decide(
+        user_input="继续",
+        evidence_state={},
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="decision-model",
+    )
+
+    assert decision.is_valid is True
+    assert len(captured) == 2
+    assert captured[1]["temperature"] == 0.0
+    repair_instruction = captured[1]["messages"][-1]["content"]
+    assert "json_parse_error" in repair_instruction
+    assert "保持上一轮的语义判断不变" in repair_instruction
+
+
+def test_decision_agent_repairs_schema_error_and_records_redacted_diagnostic(monkeypatch, tmp_path: Path):
+    invalid = _decision_payload()
+    invalid.pop("policy_assessment")
+    replies = [json.dumps(invalid), json.dumps(_decision_payload())]
+
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": replies.pop(0), "error": ""},
+    )
+
+    decision = ResearchDecisionAgent.decide(
+        run_dir=tmp_path,
+        user_input="继续",
+        evidence_state={},
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="decision-model",
+    )
+
+    event = json.loads((tmp_path / "events" / "events.jsonl").read_text(encoding="utf-8"))
+    payload = event["payload"]
+    assert decision.is_valid is True
+    assert event["type"] == "assistant.decision_repair"
+    assert payload["outcome"] == "succeeded"
+    assert payload["failure_kind"] == "schema_validation_error"
+    assert payload["validation_errors"] == [{"path": "policy_assessment", "type": "missing"}]
+    assert payload["raw_output_length"] == len(json.dumps(invalid))
+    assert len(payload["raw_output_sha256"]) == 64
+    assert "raw_output" not in payload
+
+
+def test_decision_agent_fails_closed_after_one_invalid_repair(monkeypatch):
+    calls = 0
+
+    def fake_call(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {"reply": "not-json", "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    decision = ResearchDecisionAgent.decide(
+        user_input="继续",
+        evidence_state={},
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="decision-model",
+    )
+
+    assert calls == 2
+    assert decision.is_valid is False
+
+
+def test_decision_agent_does_not_repair_provider_error(monkeypatch):
+    calls = 0
+
+    def fake_call(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {"reply": "", "error": "provider unavailable"}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    decision = ResearchDecisionAgent.decide(
+        user_input="继续",
+        evidence_state={},
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="decision-model",
+    )
+
+    assert calls == 1
+    assert decision.is_valid is False
 
 
 def test_reply_agent_calls_llm_once_with_frozen_decision(monkeypatch):
@@ -298,6 +420,87 @@ def test_orchestrator_invalid_decision_preserves_existing_summary(monkeypatch, t
     assert result.source_action is None
     assert result.experiment_task is None
     assert not (tmp_path / "assistant" / "v2_dialogue_transitions.jsonl").exists()
+
+
+@pytest.mark.parametrize(
+    ("category", "reason", "alternative"),
+    [
+        (
+            "evaluation_manipulation",
+            "修改正式评估脚本会破坏比较的可比性。",
+            "保持评估协议冻结，只比较允许变化的模型或配置。",
+        ),
+        (
+            "evaluation_leakage",
+            "测试集 ground-truth mask 进入训练会污染独立评估。",
+            "只使用训练集或独立 validation split 中允许的监督信息。",
+        ),
+    ],
+)
+def test_orchestrator_policy_deny_precedes_missing_contract(
+    monkeypatch,
+    tmp_path: Path,
+    category: str,
+    reason: str,
+    alternative: str,
+):
+    reply = _reply_payload()
+    reply["reply_to_user"] = f"{reason}\n\n可行替代：{alternative}"
+    replies = [_rejected_decision_payload(category, reason, alternative), reply]
+
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(replies.pop(0), ensure_ascii=False), "error": ""},
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        tmp_path,
+        user_input="现在开始执行这个请求。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-model",
+    )
+
+    assert reason in result.reply
+    assert alternative in result.reply
+    assert "input_task.yaml" not in result.reply
+    assert "合同未确认" not in result.reply
+    assert result.policy == "deny"
+    assert result.source_action is None
+    assert result.experiment_task is None
+
+
+def test_orchestrator_policy_deny_uses_fallback_when_reply_is_invalid(monkeypatch, tmp_path: Path):
+    reason = "该请求会破坏正式评估的可比性。"
+    alternative = "保持评估协议冻结，并比较允许变化的模型。"
+    replies = [
+        _rejected_decision_payload("evaluation_manipulation", reason, alternative),
+        "not-json",
+    ]
+
+    def fake_call(*args, **kwargs):
+        reply = replies.pop(0)
+        return {
+            "reply": json.dumps(reply, ensure_ascii=False) if isinstance(reply, dict) else reply,
+            "error": "",
+        }
+
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        fake_call,
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        tmp_path,
+        user_input="现在开始执行这个请求。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-model",
+    )
+
+    assert reason in result.reply
+    assert alternative in result.reply
+    assert "input_task.yaml" not in result.reply
 
 
 def test_orchestrator_calls_decision_then_reply_under_one_deadline(monkeypatch, tmp_path: Path):

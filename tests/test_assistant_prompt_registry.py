@@ -144,6 +144,8 @@ def test_research_decision_and_reply_profiles_split_production_contract():
     assert "dialogue_mode" in reply.io.forbidden_outputs
     assert "<identity>" in reply.system_prompt
     assert "evidence-closed" in reply.system_prompt
+    assert "冻结 policy 为 deny" in reply.system_prompt
+    assert "不得用合同缺失、readiness 或执行入口限制替代拒绝原因" in reply.system_prompt
     assert "preliminary hypothesis" not in reply.system_prompt
 
 
