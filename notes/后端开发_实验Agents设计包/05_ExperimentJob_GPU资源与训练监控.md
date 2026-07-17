@@ -328,14 +328,29 @@ enabled_detectors 显式提供 → 只启用指定 detector
 provider_401_auth           → AgentRuntime / ModelCallPolicy
 provider_402_balance        → AgentRuntime / ModelCallPolicy
 provider_429_quota           → AgentRuntime / ModelCallPolicy
-empty_transcript             → RuntimeWatchdog（进程无输出即 LOST）
+empty_transcript             → RuntimeWatchdog（进程无输出不直接判定 LOST；LOST 必须由 PID 不存在、process group 不存在或 worker lease 丢失确定）
 no_agent_progress            → ExecutorProgressGuard
 patch_bytes_threshold        → PatchGate
 agent_turn_limit             → CognitiveBudget
-tool_call_format_error       → CognitiveTaskRunner
+tool_call_format_error       → DeepAgents structured-output / tool error handling
 ```
 
-#### 5.2.4 Detector 顺序（first match wins）
+#### 5.2.4 Detector 顺序与证据优先级
+
+失败分类严格按以下优先级（从可验证结构到 fallback）：
+
+```text
+1. 结构化 runtime event（exit_code, signal, metrics schema）
+2. process exit code / signal
+3. framework adapter 捕获的异常类型
+4. output/metrics schema 验证
+5. stderr regex fallback（仅作为最后手段，不作为主要真源）
+6. UNKNOWN → HealthDiagnosisAgent
+```
+
+Regex detector 保留但只能作为 fallback，不能成为主要真源。
+
+#### 5.2.5 Detector 顺序（first match wins）
 
 ```text
 1. PROTECTED_ARTIFACT_CHANGED

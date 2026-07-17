@@ -21,7 +21,6 @@ allowed_paths
 forbidden_paths
 allowed_parameters
 evaluation_invariants
-expected_activation_evidence
 max_repairs
 time_budget
 ```
@@ -109,7 +108,7 @@ min_indent > 0 → 从两侧削减该缩进
 在 ExecutorAgent 开始修改前:
   1. 如果 worktree 有未提交 change → git add -A && git commit -m "safety: pre-edit checkpoint"
   2. 执行 SEARCH/REPLACE
-  3. 如果 smoke/validation 失败 → git reset --hard HEAD~1（回滚到 checkpoint）
+   3. 如果 smoke/validation 失败 → git reset --hard HEAD（回退到未修改状态）
 ```
 
 #### 3.3.3 错误反射（来自 aider `base_coder.py` line 2305-2316）
@@ -128,7 +127,7 @@ min_indent > 0 → 从两侧削减该缩进
 pre-edit dirty_commit
   → inspect
   → propose edit
-  → apply (4层策略栈)
+  → apply（3层策略栈）
   → diff validate
   → syntax/import/smoke
   → metrics parsed
@@ -137,7 +136,7 @@ pre-edit dirty_commit
 
 ### 3.4 有界修复与 Gate
 
-#### 3.4.1 PreApplyPatchGate — 修复前验证
+#### 3.4.1 PreApplyPatchGate — 修复前验证（仅确定性检查）
 
 ExecutorAgent 的每次 SEARCH/REPLACE 在应用前必须经过 `PreApplyPatchGate`：
 
@@ -148,22 +147,28 @@ ExecutorAgent 的每次 SEARCH/REPLACE 在应用前必须经过 `PreApplyPatchGa
   NO → REPAIR_REJECTED_HARD
 检查: 是否越出 worktree 范围？
   YES → REPAIR_REJECTED_HARD
-检查: Patch 是否改变了预期外的算法机制（如修改了 loss function、改变了模型架构）？
-  YES → SEMANTIC_DEVIATION
+检查: patch 是否非空？
+  NO → REPAIR_REJECTED_HARD
+检查: 文件语法/import/smoke 是否通过？
+  NO → 触发 bounded repair
 ```
 
-#### 3.4.2 PostApplyDiffGuard — 修复后验证
+语义一致性不做代码级硬门。Executor 输出 `implementation_summary`（changed_symbols, possible_contract_deviation, confidence），Coordinator 根据 `InterventionContract + diff summary` 决定：继续、要求修订、或创建 child Idea。
+
+参考：OpenCode `/tools/permissions` 的模式 —— 只检查文件范围、路径白名单、protected SHA 和语法合法性。
+
+#### 3.4.2 PostApplyDiffGuard — 修复后验证（仅确定性检查）
 
 ```text
 检查: 实际 diff 是否匹配 proposed patch？
   NO → ROLLBACK（git checkout 回退）
 检查: protected_paths SHA256 是否变化？
   YES → ROLLBACK + REPAIR_REJECTED_HARD
-检查: 修改范围是否超出 InterventionContract 定义的边界？
-  YES → SEMANTIC_DEVIATION
 ```
 
-#### 3.4.3 硬策略违规 vs 语义偏移（明确区分）
+语义一致性不在此层判断。Executor 附加输出 `possible_contract_deviation + confidence`，由 Coordinator 决策。
+
+#### 3.4.3 硬策略违规（仅确定性检查）
 
 **硬策略违规（Hard Policy Violation）：**
 
@@ -174,21 +179,12 @@ ExecutorAgent 的每次 SEARCH/REPLACE 在应用前必须经过 `PreApplyPatchGa
 - 第一次误触 → 拒绝当前 patch，返回结构化错误，剩余 repair 预算允许时重试
 - 同一类别违规重复 ≥ 2 次 → `implementation_failed`
 
-**语义偏移（Semantic Deviation）：**
-
-- 文件路径合法，但改了 loss / mechanism / training objective
-- 越出了 InterventionContract 的范围
-
-**处理：** 立即停止 Attempt 内修复，返回 `SEMANTIC_DEVIATION`，由 Coordinator 决定是否创建 child Idea。
-
-#### 3.4.4 允许的修复类型
+#### 3.4.3 允许的修复类型
 
 ```text
 syntax_error
 import_error
 shape_error
-parameter_not_applied
-hook_not_activated
 parser_error
 smoke_failure
 bounded_oom_adjustment
@@ -212,28 +208,9 @@ validation_result
 implementation_failed
 ```
 
-### 3.5 Semantic Deviation
+### 3.5 ImplementationStatus（简化版）
 
-如果必须改变：
-
-- mechanism；
-- target module 家族；
-- loss/objective；
-- 未授权参数；
-- evaluation protocol；
-- dataset split；
-
-Executor 返回：
-
-```text
-SEMANTIC_DEVIATION
-```
-
-不继续修改。Coordinator 决定 child Idea。
-
-### 3.6 ImplementationStatus（简化版）
-
-第一版不引入 activation evidence verification。遵循 Arbor 的「产生指标 = 实验有效」原则，只做三层确定性检查：
+遵循 Arbor 的「产生指标 = 实验有效」原则，只做三层确定性检查：
 
 ```text
 PATCH_APPLIED → patch 非空 + 在 allowed_paths 内 + protected SHA256 未变

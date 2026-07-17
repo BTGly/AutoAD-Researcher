@@ -133,9 +133,9 @@
 │                                                               │
  │ EvaluationContract / InterventionContract                     │
 │ IdeaTree / CognitiveCommitLedger                              │
-│ CandidateRegistry / ChampionEventLog / PromotionTransaction   │
+│ CandidateRegistry / ChampionEventLog / PromotionJournal        │
 │ NoiseFloor / ValidityGate / DecisionEngine                    │
-│ ConvergenceMonitor / StrategyOverlay                          │
+│ ConvergenceMonitor / StrategySelector                          │
 │ BatchSupervisor / BatchFailurePolicy                          │
 │ PreApplyPatchGate / PostApplyDiffGuard                        │
 │ NoiseCalibrationPolicy / LaunchProfile                        │
@@ -398,50 +398,39 @@ idea 提交并写入 CognitiveCommit 后：
 - output schema；
 - token/cost/wall limits。
 
-### 6.1 CognitiveTaskRunner — 隔离 DeepAgents 依赖
+### 6.1 AgentFactory — 复用 DeepAgents SubAgentMiddleware
 
-Coordinator 不直接调用 `create_deep_agent()`，而是通过一层薄接口：
+**FINAL DISPOSITION: CognitiveTaskRunner 已删除。** 直接使用 DeepAgents 的声明式 Agent 模式：
 
 ```python
-class CognitiveTaskRunner(Protocol):
-    """薄接口——隔离业务逻辑与 DeepAgents 框架。"""
-    def invoke(self, spec: AgentTaskSpec) -> AgentTaskResult: ...
+from deepagents import create_deep_agent, SubAgent
 
-@dataclass
-class AgentTaskSpec:
-    role: str                    # "idea_explorer" | "reviewer" | "executor" | "reflection"
-    prompt_profile: str          # prompt template name
-    input_artifact_refs: list[str]  # artifact paths 引用
-    output_schema: type[BaseModel]
-    tool_profile: list[str]
-    permission_profile: str
-    model_profile: str
-    token_budget: int
-    wall_time_budget_sec: int
-    trace_context: dict
+class AgentFactory:
+    """声明式 Agent 配置工厂，不新增第二套 TaskRunner 抽象。"""
+
+    @staticmethod
+    def create_coordinator_sub_agent(role: str, profile: str) -> SubAgent:
+        return SubAgent(
+            name=role,
+            description=f"AutoAD {role} sub-agent",
+            system_prompt=profile,
+            tools=["tree_view", "tree_add_node", "tree_prune", "cognitive_ledger_read"],
+            middleware=["permissions", "summarization", "budget", "trace"],
+        )
 ```
 
-然后：
+Coordinator 直接调用 `create_deep_agent()`，不通过中间层：
 
 ```text
-DeepAgentsTaskRunner  ← 负责将 AgentTaskSpec 翻译为 create_deep_agent(...) 的配置
-MockTaskRunner         ← 测试用，不调 LLM
+AgentProfile (声明式配置)
+→ AgentFactory (配置工厂)
+→ create_deep_agent() (DeepAgents 标准入口)
+→ SubAgentMiddleware (权限/摘要/预算/追踪)
 ```
 
-业务模块只知道：
+参考：DeepAgents `create_deep_agent` + `SubAgentMiddleware` + 声明式 `SubAgent` + checkpointer + response_schema。
 
-```text
-请执行 idea_exploration 认知任务
-请执行 code_implementation 认知任务
-请执行 result_reflection 认知任务
-```
-
-而不知道 DeepAgents 的内部实现。好处：
-- 测试时可以 mock；
-- 换模型/框架时只改 runner；
-- 统一 tracing；
-- 每个 Agent 的 config 都在 spec 里声明，可审计；
-- 不扩展角色方法式大 ABC。
+测试时使用 DeepAgents 内置的 `FakeChatModel` mock，不需要 MockTaskRunner。
 
 ---
 
@@ -674,28 +663,65 @@ B_dev 用于探索，B_test 只用于 champion 合并或最终确认。
 
 ## 12. 收敛与策略调整
 
-ConvergenceMonitor 计算：
+### 12.1 ConvergenceMonitor — Arbor 滑动窗口
 
-- 连续无提升；
-- 最近窗口 KEEP 率；
-- idea 语义重复率；
-- research axis 集中度；
-- implementation failure rate；
-- invalid attempt rate；
-- budget burn；
-- champion stagnation。
+参考 Arbor 的 `compute_velocity()` 和 `find_exhausted_parents()`：
 
-StrategyDiagnosticAgent 输出建议。
+```python
+class ConvergenceConfig(BaseModel):
+    """可配置的滑动窗口参数，默认值来自 Arbor。"""
+    window_size: int = 5
+    warn_windows: int = 1
+    paradigm_shift_windows: int = 2
+    stop_windows: int = 3
+    noise_units_for_progress: float = 1.0
 
-策略变更由确定性 StrategyPolicy 应用为 `session-scoped prompt overlay`，要求：
+class ConvergenceMonitor:
+    """确定性滑动窗口收敛检测。"""
+    def compute(self) -> ConvergenceStatus: ...
+```
 
-- 只追加；
-- 不改 objective/evaluation/protected rules；
-- 版本化；
-- 记录来源；
-- 可回滚；
-- 可设置 TTL；
-- 写 `prompt_changes.jsonl`。
+状态信号（参考 Arbor）：
+
+- `velocity`：最近 window 内 champion IMPROVEMENT 次数
+- `parent_exhaustion`：某个 research axis 已无有效子节点
+- `warn`：连续 1 个窗口无提升
+- `paradigm_shift`：连续 2 个窗口无提升
+- `stop`：连续 3 个窗口无提升
+
+阈值可配置，不作为全局硬规则。端到端测试改用：
+
+```text
+patch_applied
+smoke_passed
+metrics_parsed
+protocol_intact
+```
+
+（替代已删除的旧 VERIFIED/UNVERIFIED 模型。）
+
+### 12.2 StrategySelector + SkillsMiddleware
+
+**FINAL DISPOSITION: StrategyPolicy/StrategyOverlay 已删除。** 替换为：
+
+```text
+StrategyDiagnosticAgent
+→ 推荐 strategy_skill_ids
+→ StrategySelector 做确定性筛选（当前激活 skill、适用范围、生效周期、审批状态、安全约束）
+→ DeepAgents SkillsMiddleware 渐进加载 SKILL.md
+```
+
+保留的确定性部分：
+
+- 哪些 skill 当前激活；
+- 适用范围；
+- 生效周期；
+- 谁批准；
+- 是否影响安全约束。
+
+不再实现 prompt overlay 管理器。
+
+参考：DeepAgents `SkillsMiddleware` + `SKILL.md` 渐进加载。
 
 ---
 

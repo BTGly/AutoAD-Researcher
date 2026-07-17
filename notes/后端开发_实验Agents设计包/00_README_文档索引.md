@@ -28,6 +28,19 @@
 
 ### 本轮复用矩阵
 
+**"参考优先"设计原则：不确定的开发操作，先查看参考仓库中成熟项目的做法，再决定如何开发。** 每个组件必须标注 Reference / Reuse level / Upstream source / Adapted behavior / AutoAD divergence / Why divergence is necessary。
+
+复用等级按 `[COPY] / [PORT] / [ADAPT] / [REIMPL] / [REFER] / [COMPOSED]` 六级分级：
+
+| 等级 | 含义 | 要求 |
+|------|------|------|
+| `[COPY]` | 直接复制 | 许可证兼容 + 接口适合 + vendor 并保留 LICENSE/NOTICE |
+| `[PORT]` | 语言移植 | 小函数跨语言改写，保留算法语义 |
+| `[ADAPT]` | 适配改造 | 保留核心算法，适配 AutoAD 数据模型 |
+| `[REIMPL]` | 独立实现 | 按公开行为重新实现，不复制源码 |
+| `[REFER]` | 架构参考 | 只参考设计模式，自研实现 |
+| `[COMPOSED]` | 组合模式 | 由多个成熟模式组合，无单一可复制上游。需满足：组件尽量小、有故障注入测试、有恢复/回退、不承担语义推断、不新增第二套状态真源 |
+
 | 来源 | 等级 | 本轮动作 |
 |------|------|----------|
 | AutoSOTA SHA guard | `[REIMPL]` | 根据 `cli_guide.md` 和已观察到的 Python 移植行为独立实现 ProtectedArtifactGuard |
@@ -38,6 +51,9 @@
 | AI-Scientist | `[REFER]` | 模板实验和 subprocess 循环 |
 | Claude Code internals | `[REFER]` | 工具生命周期、上下文分层、错误恢复模式 |
 | aider SEARCH/REPLACE | `[REIMPL]` | 根据三个策略自行实现，不复制 AGPL 主体 |
+| DVC experiment refs/apply | `[REFER]` | Candidate branch lifecycle、promotion apply、实验复现 |
+| Optuna FrozenTrial + JournalStorage | `[REFER]` | immutable candidate、champion selection、追加式 promotion journal |
+| `[COMPOSED]` PromotionJournal | — | = DVC experiment apply + Git merge refs + Optuna JournalStorage，组合多个成熟模式，无单一可复制上游实现 |
 
 ## 文档列表
 

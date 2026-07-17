@@ -388,32 +388,54 @@ class ChampionEvent(BaseModel):
 - `merge_commit`：`git merge --no-ff` 产生的独立 merge commit，用于可审计回滚
 - `reverts_event_id`：明确 ROLLBACK 对应哪次晋升
 
-### 7.4 PromotionTransaction — 可恢复事务协议
+### 7.4 PromotionJournal — 可恢复 promotion journal
+
+`[COMPOSED]` = DVC experiment apply + Git ref/merge workflow + Optuna JournalStorage。
+
+参考：
+- DVC `experiment apply`（实验先保存为独立 Git-backed experiment，指标/参数绑定 commit，compare + apply）
+- Optuna `JournalStorage`（追加式存储，FrozenTrial，best_trial 指针）
+- Arbor `git merge --no-ff` + `git revert`
+- Git 标准 worktree/branch merge
+
+**核心时序（修正后）：**
+
+```text
+B_dev 通过成为 candidate
+→ 立即写不可变 CandidateSnapshot
+
+B_test 通过并审批
+→ PromotionJournal PREPARED
+→ git merge --no-ff
+→ ChampionEvent
+→ update champion pointer
+→ COMMITTED
+```
+
+`CandidateSnapshot` 在晋升前创建（不是 merge 后），promotion 只引用已存在的不可变 candidate。
 
 ```python
-class PromotionTransactionStatus(str, Enum):
+class PromotionJournalStatus(str, Enum):
     PREPARED = "prepared"
-    GIT_APPLIED = "git_applied"
     COMMITTED = "committed"
     ROLLED_BACK = "rolled_back"
     FAILED = "failed"
 
 
-class PromotionTransaction(BaseModel):
-    transaction_id: str
-    command_type: Literal["promote_and_merge", "rollback"]
-
-    evaluation_contract_hash: str
+class PromotionJournal(BaseModel):
+    """可恢复的 write-ahead promotion journal。
+    
+    这不是传统两阶段提交协议 —— 没有多个 participant prepare/vote。
+    是单协调者的 write-ahead journal + Git merge + append-only event。
+    """
+    journal_id: str
     candidate_id: str
-    approval_ref: str
-
-    expected_current_candidate_id: str | None
-    expected_trunk_commit: str
-
+    candidate_snapshot_ref: str  # 引用已存在的不可变 CandidateSnapshot
+    
+    expected_trunk_commit: str  # 乐观并发检查
     resulting_trunk_commit: str | None = None
-    event_id: str | None = None
-
-    status: PromotionTransactionStatus
+    
+    status: PromotionJournalStatus
     created_at: datetime
     updated_at: datetime
 ```
@@ -421,42 +443,36 @@ class PromotionTransaction(BaseModel):
 **V1 提交顺序：**
 
 ```text
-1. 获取 evaluation_contract_hash 对应的 champion lock
+1. B_dev 通过 → 立即写不可变 CandidateSnapshot（§7.3）
 
-2. 重新验证：
-   - candidate 存在
-   - B_test 已通过
-   - guardrail 通过
-   - protected hash 完好
+2. B_test 通过 + 审批 → 获取 champion lock
+
+3. 重新验证：
+   - candidate 存在 + B_test 已通过
+   - guardrail 通过 + protected hash 完好
    - current champion 未变化
    - trunk HEAD 等于 expected_trunk_commit
 
-3. 写 PromotionTransaction(status=PREPARED)
+4. 写 PromotionJournal(status=PREPARED)
 
-4. git merge --no-ff <candidate-branch>
+5. git merge --no-ff <candidate-branch>
    → 记录 resulting_trunk_commit
-   → transaction → GIT_APPLIED
-
-5. 写不可变 CandidateSnapshot
 
 6. 追加 ChampionEvent(PROMOTED_AND_MERGED)
 
 7. 原子替换 current_by_contract.json 中的指针
-   （写临时文件 → fsync → os.replace()，不直接覆盖）
 
-8. transaction → COMMITTED
+8. journal → COMMITTED
 
 9. 释放 lock
 ```
 
 **崩溃恢复规则：**
 
-| Transaction 状态 | trunk HEAD 状态 | 恢复动作 |
+| Journal 状态 | trunk HEAD 状态 | 恢复动作 |
 |---|---|---|
-| `PREPARED` | == expected_trunk_commit | 安全重做 |
+| `PREPARED` | == expected_trunk_commit | 安全重做（从 step 5）|
 | `PREPARED` | ≠ expected_trunk_commit | 标记 CONFLICT，禁止自动继续 |
-| `GIT_APPLIED` | == resulting_trunk_commit | 补写 Snapshot + Event + pointer → COMMITTED |
-| `GIT_APPLIED` | ≠ resulting_trunk_commit | 拒绝自动恢复 |
 | `COMMITTED` | 任意 | 幂等，直接返回已有 Event |
 
 **Git merge 策略：** 始终 `git merge --no-ff <candidate-branch>` 产生独立 merge commit，避免无法区分的 fast-forward。
