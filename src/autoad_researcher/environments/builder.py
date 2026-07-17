@@ -13,7 +13,6 @@ from autoad_researcher.environments.executor import (
 from autoad_researcher.environments.models import EnvironmentPlan
 from autoad_researcher.environments.policy import validate_environment_plan_policy
 from autoad_researcher.environments.result import EnvironmentBuildResult
-from autoad_researcher.environments.snapshot import snapshot_from_plan
 
 
 def run_environment_build_steps(
@@ -54,14 +53,6 @@ def run_environment_build_steps(
 
     finished_at = datetime.now(timezone.utc)
     status = "failed" if failure_code else "success"
-    snapshot_path = None
-    if status == "success":
-        snapshot = snapshot_from_plan(plan)
-        snapshot_path = "snapshot.json"
-        _write_json(
-            build_dir / snapshot_path,
-            snapshot.model_dump(mode="json", exclude_none=True),
-        )
     build_result = EnvironmentBuildResult(
         schema_version=1,
         run_id=plan.run_id,
@@ -71,7 +62,7 @@ def run_environment_build_steps(
         adapter=adapter.kind,
         environment_path=plan.target.environment_path,
         step_results=step_results,
-        snapshot_path=snapshot_path,
+        snapshot_path=None,
         validation_report_path=None,
         failure_code=failure_code,
         failure_message=failure_message,

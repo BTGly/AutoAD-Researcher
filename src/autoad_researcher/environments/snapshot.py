@@ -1,11 +1,14 @@
 """Environment snapshot contracts and stable hashing."""
 
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.environments.models import EnvironmentPlan
+from autoad_researcher.environments.result import EnvironmentBuildResult
+from autoad_researcher.environments.validation import ValidationReport
 
 
 class InstalledPackage(BaseModel):
@@ -42,6 +45,11 @@ class EnvironmentSnapshot(BaseModel):
     platform: str = Field(min_length=1)
     accelerator: AcceleratorSnapshot | None = None
     repository_fingerprint: str | None = None
+    environment_path: str | None = None
+    package_inventory_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    repository_commit: str | None = None
+    validation_report_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    project_smoke_evidence: list[dict[str, Any]] = Field(default_factory=list)
     environment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -80,6 +88,75 @@ def snapshot_from_plan(
         "platform": platform,
         "accelerator": accelerator.model_dump(mode="json", exclude_none=True) if accelerator else None,
         "repository_fingerprint": repository_fingerprint,
+        "environment_path": None,
+        "package_inventory_sha256": None,
+        "repository_commit": None,
+        "validation_report_sha256": None,
+        "project_smoke_evidence": [],
+    }
+    payload["environment_sha256"] = environment_snapshot_sha256(payload)
+    return EnvironmentSnapshot.model_validate(payload)
+
+
+def build_observed_environment_snapshot(
+    plan: EnvironmentPlan,
+    build_result: EnvironmentBuildResult,
+    validation_context,
+    validation_report: ValidationReport,
+) -> EnvironmentSnapshot:
+    """Build the final snapshot from executed artifacts, never plan declarations.
+
+    ``plan`` is retained only for the stable environment kind/package-manager
+    vocabulary; runtime, packages, repository identity, GPU and validation are
+    read from the collector/report produced after the build.
+    """
+    if build_result.status != "success":
+        raise ValueError("observed snapshot requires a successful build")
+    if validation_report.status != "passed":
+        raise ValueError("observed snapshot requires a passed validation report")
+    context = validation_context.context
+    runtime_versions = dict(context.runtime_versions)
+    packages = [
+        InstalledPackage(name=name, version=version)
+        for name, version in sorted(context.packages.items())
+    ]
+    accelerator = None
+    if context.gpu_available:
+        accelerator = AcceleratorSnapshot(
+            kind="cuda",
+            devices=[
+                str(item.get("name"))
+                for item in validation_context.gpu_capability
+                if isinstance(item, dict) and item.get("name")
+            ],
+            runtime_version=runtime_versions.get("cuda"),
+        )
+    smoke_evidence = [
+        {
+            "validation_id": result.validation_id,
+            "status": result.status,
+            "code": result.code,
+            "artifact_paths": result.artifact_paths,
+        }
+        for result in validation_report.results
+        if result.kind == "project_smoke"
+    ]
+    environment_path = str(Path(validation_context.python_executable).resolve().parent.parent)
+    payload = {
+        "schema_version": 1,
+        "environment_kind": build_result.adapter,
+        "runtime_versions": runtime_versions,
+        "package_manager": _package_manager_for_kind(build_result.adapter),
+        "package_manager_version": None,
+        "packages": [package.model_dump(mode="json", exclude_none=True) for package in packages],
+        "platform": runtime_versions.get("platform", "unknown"),
+        "accelerator": accelerator.model_dump(mode="json", exclude_none=True) if accelerator else None,
+        "repository_fingerprint": validation_context.repository_fingerprint,
+        "environment_path": environment_path,
+        "package_inventory_sha256": validation_context.package_inventory_sha256,
+        "repository_commit": validation_context.repository_commit,
+        "validation_report_sha256": validation_report.report_sha256,
+        "project_smoke_evidence": smoke_evidence,
     }
     payload["environment_sha256"] = environment_snapshot_sha256(payload)
     return EnvironmentSnapshot.model_validate(payload)

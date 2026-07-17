@@ -30,6 +30,7 @@ class CollectedValidationContext(BaseModel):
     package_inventory_sha256: str
     command_results: list[ProbeCommandResult]
     repository_commit: str | None = None
+    repository_fingerprint: str | None = None
     gpu_capability: list[dict[str, str]] = []
 
 
@@ -56,7 +57,11 @@ def collect_validation_context(
     runtime_versions = payload.get("runtime_versions")
     torch = payload.get("torch") if isinstance(payload.get("torch"), dict) else {}
     context = ValidationContext(
-        runtime_versions={str(key): str(value) for key, value in (runtime_versions or {}).items()},
+        runtime_versions={
+            **{str(key): str(value) for key, value in (runtime_versions or {}).items()},
+            **({"torch": str(torch["version"])} if torch.get("version") else {}),
+            **({"cuda": str(torch["cuda_runtime"])} if torch.get("cuda_runtime") else {}),
+        },
         packages={str(key): str(value) for key, value in packages.items()},
         importable_modules=[str(item) for item in importable] if isinstance(importable, list) else [],
         existing_files=_existing_files(repository_probe),
@@ -70,6 +75,7 @@ def collect_validation_context(
         package_inventory_sha256=canonical_sha256({"packages": context.packages}),
         command_results=[command],
         repository_commit=repository_probe.repository_commit if repository_probe else None,
+        repository_fingerprint=repository_probe.repository_fingerprint if repository_probe else None,
         gpu_capability=list(torch.get("gpu_capability", [])) if isinstance(torch.get("gpu_capability"), list) else [],
     )
     write_validation_context(output_dir / "validation_context.json", collected)

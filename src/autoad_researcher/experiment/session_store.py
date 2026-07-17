@@ -136,6 +136,35 @@ class ExperimentSessionStore:
             self._write_unlocked(path, updated)
             return updated
 
+    def advance_environment_revision(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        expected_revision: int,
+    ) -> ExperimentSession:
+        """Move a failed environment attempt to its one-step child revision."""
+        path = self._session_path(run_dir, session_id)
+        with self._lock(run_dir):
+            if not path.is_file():
+                raise FileNotFoundError("experiment session not found")
+            session = ExperimentSession.model_validate_json(path.read_text(encoding="utf-8"))
+            if session.environment_revision != expected_revision:
+                raise ValueError("Session environment revision changed during recovery")
+            updated = session.model_copy(
+                update={
+                    "environment_revision": expected_revision + 1,
+                    "status": "ENVIRONMENT_PENDING",
+                    "environment_status": "pending",
+                    "readiness_status": "resolving",
+                    "readiness_blockers": [],
+                    "updated_at": _utc_now(),
+                    "revision": session.revision + 1,
+                },
+            )
+            self._write_unlocked(path, updated)
+            return updated
+
     @staticmethod
     def _session_path(run_dir: Path, session_id: str) -> Path:
         return run_dir / SESSIONS_DIR / f"{session_id}.json"

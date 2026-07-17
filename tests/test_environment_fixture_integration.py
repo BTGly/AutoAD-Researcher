@@ -36,7 +36,7 @@ def test_cpu_uv_fixture_builds_and_validates_offline(tmp_path: Path):
     )
 
     assert build.status == "success"
-    assert (tmp_path / "build" / "snapshot.json").is_file()
+    assert build.snapshot_path is None
     assert validation.status == "passed"
 
 

@@ -46,10 +46,8 @@ def test_build_steps_success_writes_evidence(tmp_path: Path):
     data = json.loads((tmp_path / "build_result.json").read_text(encoding="utf-8"))
     assert data["status"] == "success"
     assert data["adapter"] == "python_uv_venv"
-    assert data["snapshot_path"] == "snapshot.json"
-    snapshot = json.loads((tmp_path / "snapshot.json").read_text(encoding="utf-8"))
-    assert snapshot["environment_kind"] == "python_uv_venv"
-    assert snapshot["environment_sha256"]
+    assert data.get("snapshot_path") is None
+    assert not (tmp_path / "snapshot.json").exists()
 
 
 def test_build_steps_stop_after_first_failure(tmp_path: Path):

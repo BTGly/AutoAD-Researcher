@@ -66,6 +66,7 @@ from autoad_researcher.environments.snapshot import (
     AcceleratorSnapshot,
     EnvironmentSnapshot,
     InstalledPackage,
+    build_observed_environment_snapshot,
     environment_snapshot_sha256,
     snapshot_from_plan,
 )
@@ -115,6 +116,7 @@ __all__ = [
     "ValidationStep",
     "VERIFIERS",
     "build_revision_context",
+    "build_observed_environment_snapshot",
     "collect_validation_context",
     "environment_plan_sha256",
     "environment_snapshot_sha256",

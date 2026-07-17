@@ -29,6 +29,8 @@ from autoad_researcher.environments.probe import (
     write_probe,
 )
 from autoad_researcher.environments.result import ResolvedCommand
+from autoad_researcher.environments.revision import build_revision_context
+from autoad_researcher.environments.snapshot import build_observed_environment_snapshot
 from autoad_researcher.environments.validation import validate_environment
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 
@@ -50,6 +52,9 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
         raise EnvironmentPreparationError("environment job revision does not match Session")
 
     environment_dir = run_dir / "environment"
+    plan: EnvironmentPlan | None = None
+    build = None
+    report = None
     try:
         store.update_environment_state(
             run_dir,
@@ -128,7 +133,15 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
         report_path = environment_dir / f"validation_report_r{revision}.json"
         _write_json(report_path, report.model_dump(mode="json"))
         if report.status != "passed":
-            raise EnvironmentPreparationError("environment validation failed")
+            failed_codes = [
+                result.code for result in report.results
+                if result.status == "failed"
+            ]
+            detail = failed_codes[0] if failed_codes else "ENV_VALIDATION_FAILED"
+            raise EnvironmentPreparationError(f"environment validation failed: {detail}")
+        snapshot = build_observed_environment_snapshot(plan, build, context, report)
+        snapshot_path = environment_dir / "snapshot.json"
+        _write_json(snapshot_path, snapshot.model_dump(mode="json", exclude_none=True))
         store.update_environment_state(
             run_dir,
             session_id=session_id,
@@ -136,6 +149,7 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
             environment_status="ready",
             readiness_status="ready",
             readiness_blockers=[],
+            environment_snapshot_ref="environment/snapshot.json",
         )
         return _relative_outputs(
             run_dir,
@@ -146,8 +160,21 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
             build_dir / "build_result.json",
             context_path,
             report_path,
+            snapshot_path,
         )
-    except EnvironmentPreparationError:
+    except EnvironmentPreparationError as exc:
+        revision_outputs = _schedule_revision_if_available(
+            run_dir,
+            payload=payload,
+            session_id=session_id,
+            revision=revision,
+            plan=plan,
+            build_result=build,
+            validation_report=report,
+            environment_dir=environment_dir,
+        )
+        if revision_outputs is not None:
+            return revision_outputs
         store.update_environment_state(
             run_dir,
             session_id=session_id,
@@ -156,7 +183,7 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
             readiness_status="blocked",
             readiness_blockers=["environment preparation failed; inspect environment artifacts"],
         )
-        raise
+        raise exc
     except Exception as exc:
         store.update_environment_state(
             run_dir,
@@ -167,6 +194,81 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
             readiness_blockers=["environment preparation failed; inspect environment artifacts"],
         )
         raise EnvironmentPreparationError(str(exc)) from exc
+
+
+def _schedule_revision_if_available(
+    run_dir: Path,
+    *,
+    payload: dict[str, Any],
+    session_id: str,
+    revision: int,
+    plan: EnvironmentPlan | None,
+    build_result,
+    validation_report,
+    environment_dir: Path,
+) -> list[str] | None:
+    if plan is None:
+        return None
+    context = build_revision_context(
+        plan,
+        build_result=build_result,
+        validation_report=validation_report,
+    )
+    context_path = environment_dir / f"revision_context_r{revision}.json"
+    _write_json(context_path, context.model_dump(mode="json"))
+    candidates = payload.get("revision_plans")
+    if not isinstance(candidates, list) or revision >= plan.permissions.max_revision_count:
+        return None
+    next_plan = next(
+        (
+            EnvironmentPlan.model_validate(candidate)
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("revision") == revision + 1
+        ),
+        None,
+    )
+    if next_plan is None:
+        return None
+    if next_plan.parent_plan_id != plan.plan_id or next_plan.run_id != plan.run_id:
+        raise EnvironmentPreparationError("revised plan does not continue failed plan lineage")
+    session = ExperimentSessionStore().advance_environment_revision(
+        run_dir,
+        session_id=session_id,
+        expected_revision=revision,
+    )
+    from autoad_researcher.assistant.v2.event_service import append_event
+    from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
+
+    remaining = [
+        candidate for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("revision", -1) > next_plan.revision
+    ]
+    next_job, created = create_or_get_pipeline_job(
+        run_dir,
+        source_id=session_id,
+        job_type="experiment_environment_prepare",
+        idempotency_key=f"environment_prepare:{session_id}:r{next_plan.revision}",
+        evidence_role="experiment_environment_prepare",
+        payload={
+            "session_id": session_id,
+            "task_ref": str(payload.get("task_ref") or "input_task.yaml"),
+            "environment_revision": next_plan.revision,
+            "environment_plan": next_plan.model_dump(mode="json"),
+            "revision_plans": remaining,
+        },
+    )
+    if created:
+        append_event(
+            run_dir,
+            "experiment.environment_prepare.revision_queued",
+            {
+                "session_id": session_id,
+                "parent_revision": revision,
+                "revision": next_plan.revision,
+                "job_id": next_job["job_id"],
+            },
+        )
+    return _relative_outputs(run_dir, context_path)
 
 
 def _load_or_build_plan(
