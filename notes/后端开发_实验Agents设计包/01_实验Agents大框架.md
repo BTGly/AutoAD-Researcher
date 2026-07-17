@@ -376,18 +376,45 @@ idea 提交并写入 CognitiveCommit 后：
 
 ---
 
-## 6. Agent 角色
+## 6. Agent 角色与组件
 
-| 组件 | 生命周期 | 主要职责 | 不负责 |
+最终设计：**1 个持久 Coordinator + 5 个按需临时专业 Agent + 若干确定性组件**。所有 LLM 角色通过同一 `AgentFactory → create_deep_agent()` 创建，不是 6 套独立系统。
+
+### 6.1 LLM Runtime Roles（6 个）
+
+| Agent | 生命周期 | 主要职责 | 独立理由 |
 |---|---|---|---|
-| ResearchCoordinator | Session 内持久 | 连续研究决策与 ideation | GPU 进程、直接改权威状态文件 |
-| IdeaExplorerAgent | 按需临时 | 深度发散、文献驱动 ideation | 常规每轮决策 |
-| ReviewerAgent | 高成本/高风险时临时 | 假设可证伪性、重复性、泄漏和成本评审 | 硬权限校验 |
-| ExecutorAgent | 每个 attempt 临时；attempt 内可保留短期上下文 | 修改代码、有界修复、实现日志 | 长训练监控、最终科学裁决 |
-| ReflectionAgent | 矛盾或高价值结果时临时 | KEEP-WHY、失败机制、衍生假设 | 指标真实性验证 |
-| HealthDiagnosisAgent | 未知异常事件触发 | 对压缩健康证据作语义诊断 | 周期性实时盯训练 |
-| StrategyDiagnosticAgent | 停滞事件触发 | 解释探索停滞、提出策略 overlay | 直接改基础 prompt |
-| ConvergenceMonitor | 持续确定性代码 | 无提升、重复率、预算、KEEP 率 | 科学原因解释 |
+| **ResearchCoordinator** | Session 持久 | 连续决策、ideation、reflection、strategy shift | 唯一持久决策者，拥有读写科研状态权限 |
+| **IdeaExplorerAgent** | 按需临时 | 深度文献/仓库发散 ideation，跨 research axis 探索 | 长上下文（论文/仓库），探索预算独立 |
+| **ReviewerAgent** | 高成本/高风险时临时 | 假设可证伪性、重复性、泄漏、成本评审 | **独立第二视角**，避免 Coordinator 自我确认偏差 |
+| **ExecutorAgent** | 每个 attempt 临时 | 修改代码、有界修复、实现日志 | 写 worktree 权限，生命周期和失败边界完全不同 |
+| **ReflectionAgent** | 矛盾/高价值结果时临时 | KEEP-WHY、失败机制、衍生假设、多 seed 协调 | 指标与机制分析上下文独立 |
+| **HealthDiagnosisAgent** | UNKNOWN 异常事件触发 | 对压缩健康证据作语义诊断（仅 classifier 返回 UNKNOWN 时） | 日志/运行证据领域与科研上下文完全不同 |
+
+### 6.2 Coordinator Skills（通过 Profile 切换）
+
+这些不是独立 Agent，是 Coordinator 在不同模式下加载的 SKILL.md：
+
+```text
+strategy-recovery    → 停滞时选新探索策略
+failure-diagnosis    → UNKNOWN 错误初步排查（简单 case）
+batch-review         → 连续低价值实验时批量审视
+```
+
+### 6.3 Deterministic Components（非 LLM）
+
+| 组件 | 类型 | 职责 |
+|---|---|---|
+| ConvergenceMonitor | 确定性 Python 组件 | 滑动窗口、velocity、parent exhaustion、收敛信号 |
+| RuntimeWatchdog | 确定性运行监控 | PID/process group 存活、stale heartbeat、KILL |
+| PostRunFailureClassifier | 规则/证据分类 | 结构化 event → exit code → adapter exception → schema → stderr fallback → UNKNOWN |
+| AttemptFinalizer | 确定性写入 | OutcomeCard 综合 |
+| DecisionEngine | 确定性 Gate | 指标/guardrail 判定 KEEP/DISCARD |
+| PromotionJournal | 持久化事务 | DVC experiment apply + Git merge + Optuna JournalStorage |
+| StrategySelector | 确定性选择器 | 按 ConvergenceAlert 匹配 SKILL.md |
+| BudgetPolicy / StopPolicy | 确定性策略 | GPU 小时、attempt 上限、wall time |
+
+> **已删除：StrategyDiagnosticAgent** — 其职责（解释停滞、选策略）由 ConvergenceMonitor → ConvergenceAlert → Coordinator + StrategySelector 替代，不需要独立 LLM。
 
 所有 LLM Agent 均通过统一 `create_deep_agent(config)` 工厂创建，但使用不同：
 
@@ -399,7 +426,7 @@ idea 提交并写入 CognitiveCommit 后：
 - output schema；
 - token/cost/wall limits。
 
-### 6.1 AgentFactory — 复用 DeepAgents SubAgentMiddleware
+### 6.4 AgentFactory — 复用 DeepAgents SubAgentMiddleware
 
 **FINAL DISPOSITION: CognitiveTaskRunner 已删除。** 直接使用 DeepAgents 的声明式 Agent 模式：
 
