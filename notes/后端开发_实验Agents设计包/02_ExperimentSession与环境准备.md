@@ -87,11 +87,36 @@ input_task.yaml 写成功
 
 | 文件 | 改动 |
 |------|------|
-| `assistant/v2/task_bridge.py` `ExperimentTaskDraft` | `execution_mode` 扩展为 `Literal["plan_only", "approve_each_step", "agent_assisted_after_approval"]` |
-| `assistant/v2/task_bridge.py` | 新增 `confirm_or_load_existing(task_id)` —— 首次写文件，重复调用时检查 hash 一致后复用已确认 draft |
-| `assistant/v2/orchestrator.py` `handle()` | `task_action_allowed()` 不强制阻塞 agent-assisted 模式 |
-| `server/routes/runs.py` confirm 端点 | `TaskBridge.confirm_or_load_existing()` → 若 `execution_mode != "plan_only"` → `ExperimentStarter.on_task_confirmed()` |
-| **新增** `assistant/v2/experiment/starter.py` | `ExperimentStarter.on_task_confirmed()`：幂等 create_or_get Session + 幂等 create_or_get environment Job |
+| `assistant/v2/task_bridge.py` | `ExperimentTaskDraft.execution_mode` 扩展为 `Literal["plan_only", "approve_each_step", "agent_assisted_after_approval"]` |
+| `assistant/v2/task_bridge.py` | 新增 `confirm_or_load_existing()` — **先写 confirmed draft（权威确认记录），再物化 YAML/report** |
+| `server/routes/runs.py` confirm 端点 | 新增 `ConfirmExperimentTaskRequest(execution_mode)` — 用户明确选择执行模式 |
+| `server/routes/runs.py` confirm 端点 | 返回 `ExperimentTaskConfirmationResult` — 含 session_id + environment_job_id + disposition |
+| **新增** `assistant/v2/experiment/starter.py` | `ExperimentStarter`：幂等 create_or_get Session + 幂等 create_or_get environment Job |
+| `assistant/v2/job_service.py` | 新增 `idempotency_key` 字段 + `create_or_get_pipeline_job()` — **锁内完成 load → 查 key → 分配 job_id → 写入** |
+
+**核心修正——写入顺序（vs 当前真实代码）：**
+
+当前代码先写 `input_task.yaml`，后写 `pending_experiment_task → confirmed`。如果中间崩溃，`input_task.yaml` 存在但 `pending_task` 仍是 pending——重试被 `FileExistsError` 锁死。
+
+**改为：** 先写包含完整 `InputTask` payload 的 confirmed draft（权威确认记录），再物化 `input_task.yaml`。confirmed draft 是持久化的 write-ahead record——YAML 和 source report 可从它重建。
+
+```text
+1. 验证 pending draft + 当前 summary SHA256
+2. 生成 confirmed draft（execution_mode + confirmed_at + summary_sha256 + task_id + 完整 InputTask）
+3. 原子写 confirmed draft                     ← 持久化提交点
+4. 从 confirmed draft 派生 input_task.yaml
+5. 从 confirmed draft 派生 source report
+```
+
+恢复时兼容所有合法半状态：
+
+```text
+confirmed draft 存在、YAML 缺失 → 重建 YAML
+confirmed draft 存在、report 缺失 → 重建 report
+三个都存在                  → 一致性校验后复用
+内容冲突                    → 409，不覆盖
+兼容旧顺序：draft=pending 但 YAML 存在 → 读取 YAML，视为等同于 draft 内的 InputTask → 补写 confirmed draft
+```
 
 **不需要新增的：**
 
@@ -137,44 +162,82 @@ JobStore.create_or_get(                        ← 幂等
 | PipelineJobStore | 环境准备 Job 的 create_or_get |
 | Worker | 真正 probe / build / validate——HTTP 请求不参与 |
 
-### 3.1 幂等恢复语义
+### 3.1 幂等恢复语义（修正后的 reconcile 协议）
 
 `confirm_or_load_existing`：
 
 ```text
 首次调用：
-  → 写 input_task.yaml
-  → 写 source report
-  → 更新 pending draft → confirmed
+  → 生成 confirmed draft（execution_mode + confirmed_at + 完整 InputTask）
+  → 原子写 confirmed draft                    ← 权威提交点
+  → 从 confirmed draft 派生 input_task.yaml
+  → 从 confirmed draft 派生 source report
 
-重复调用：
-  → 检查 source report.task_id 匹配
-  → 检查 summary_sha256 / task_hash 一致
-  → 读取已确认 draft
-  → 继续调用 Starter（安全重放）
+重复调用（全状态兼容）：
+  → confirmed draft 存在、YAML 缺失 → 从 draft 重建 YAML
+  → confirmed draft 存在、report 缺失 → 从 draft 重建 report
+  → 三个都存在 → 校阅 consistency 后复用
+  → draft=pending 但 YAML 存在(旧顺序遗留) → 读 YAML 补写 confirmed draft
+  → 内容冲突 → 409, don't overwrite
 ```
 
-不报 `input_task.yaml already exists`。
+`ExperimentStarter.on_task_confirmed` 三种 disposition：
 
-`ExperimentStarter.on_task_confirmed` 恢复三种半完成状态：
+| 半状态 | 恢复动作 | disposition |
+|--------|----------|-------------|
+| Session + Job 都没有 | 创建 Session → 创建 Job | `created` |
+| 有 Session，没有 Job | 补建 Job | `repaired` |
+| Session 和 Job 都存在 | 返回复用 | `reused` |
+| execution_mode == plan_only | 不调用 Starter | `plan_only` |
 
-```text
-Session 不存在 → 创建
-Session 已存在 → 复用
+### 3.2 Confirm API 请求与响应
 
-环境 Job 不存在 → 补建
-环境 Job 已存在 → 复用
+```python
+class ConfirmExperimentTaskRequest(BaseModel):
+    execution_mode: Literal[
+        "plan_only",
+        "approve_each_step",
+        "agent_assisted_after_approval",
+    ]
+
+class ExperimentTaskConfirmationResult(BaseModel):
+    task: ExperimentTaskDraft
+    session_id: str | None = None
+    session_status: str | None = None
+    environment_job_id: str | None = None
+    disposition: Literal["plan_only", "created", "repaired", "reused"]
 ```
 
-| 半状态 | 恢复动作 |
-|---|---|
-| 只有 input_task，没有 Session | 创建 Session → 创建 Job |
-| 有 Session，没有环境 Job | 补建 Job |
-| Session 和 Job 都存在 | 返回 reused |
+**execution_mode 由用户在 confirm 请求中明确选择，不由 LLM 或 Orchestrator 自行提升。** 对话在 Plan Mode 中生成 task draft；执行授权发生在确认端点。
 
-不需要跨文件事务，不需要额外队列。
+### 3.3 PipelineJob create_or_get（修复并发竞争）
 
-### 3.2 传给 Session 的参数
+当前 `_generate_job_id()` 在文件锁外执行——存在竞争条件。改为在锁内完成全部：
+
+```python
+def create_or_get_pipeline_job(run_dir, *, idempotency_key, job_type, payload):
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        existing = _find_by_key(jobs, idempotency_key)
+        if existing:
+            if existing["job_type"] != job_type:
+                raise Conflict("same key, different type")
+            return existing, False
+
+        job_id = _next_id_from_loaded(jobs)
+        job = { "job_id": job_id, ..., "idempotency_key": idempotency_key }
+        jobs.append(job)
+        _write_jobs_unlocked(run_dir, jobs)
+        return job, True
+```
+
+五个动作在同一把锁内：load → 查 key → 检查冲突 → 分配 job_id → 写入。
+
+**环境 Job 的 idempotency_key 包含 revision：** `environment_prepare:{session_id}:r{n}` —— 同一 revision 重放复用，新 revision 可建新 Job。
+
+### 3.4 EventService 并发 ID 修复
+
+当前 `_next_event_id()` 与 PipelineJob 同类竞争——在锁外读文件求 max ID + 1。使用同款锁修复（或改用 UUID4，但现有 `load_events_since(last_id: int)` 依赖单调整数）。
 
 权威输入是已确认的 `input_task.yaml`，不是 `summary.json`：
 
@@ -219,7 +282,37 @@ task_hash = sha256(
 
 `execution_mode` 不进入 `task_hash`：同一个科研任务从 `approve_each_step` 改为 `agent_assisted_after_approval` 不应识别为不同任务。但执行模式变化不能静默覆盖——应追加授权修订记录。
 
-### 3.4 不完整事实不应阻止 Session 创建
+### 3.5 Readiness 状态（独立字段）
+
+Session 主状态不承载 readiness 的子状态。新增独立字段：
+
+```python
+readiness_status: Literal["unresolved", "resolving", "ready", "blocked"]
+```
+
+与其他 Session 主状态解耦：
+
+```text
+Session CREATED + readiness=unresolved
+  → 每个缺失字段给出具体 blocking reason
+  → 阻断升级为 ENVIRONMENT_PENDING
+```
+
+不新增 Session 主状态 `READINESS_PENDING` / `READINESS_BLOCKED`。
+
+### 3.6 Authorization 事件（复用 events.jsonl）
+
+不新建 `authorization_events.jsonl`。仓库已有 `runs/{run_id}/events/events.jsonl` 和统一 `append_event()`。权限变更时在此写：
+
+```text
+experiment.authorization.confirmed
+experiment.authorization.changed
+experiment.authorization.revoked
+```
+
+权威当前值放在 `confirmed draft` 或 `ExperimentSession.authorization`——`events.jsonl` 只做历史审计。
+
+### 3.7 不完整事实不应阻止 Session 创建
 
 当前 TaskBridge 不保证 baseline、dataset 或 repository_ref 全部已确定。测试也明确接受这些字段为空。因此 Starter 不应要求所有执行事实完整后才创建 Session。
 
@@ -240,25 +333,16 @@ ENVIRONMENT_PENDING
 
 `repository_ref` 缺失不等于 Starter 失败。多个可执行仓库且无法确定目标时进入 `readiness blocked`，不能随便选择 `source_ids[0]`。
 
-### 3.5 OutcomeCard → Coordinator 触发（第二个隐含接头）
+### 3.7 OutcomeCard → Coordinator 触发
 
-当前设计中，AttemptFinalizer 写 OutcomeCard 后 Coordinator 如何触发是隐式的。明确如下：
+详见计划 04 §12。由 Worker 中的确定性函数 `integrate_outcome()` 完成，按 decision_group_id 聚合：
 
 ```text
-AttemptFinalizer 原子写 outcome_card.json
-  ↓
-追加 attempt.finalized Event
-  ↓
-ResultIntegrationService 消费 Event
-  ↓
-按 attempt_id + outcome_hash 幂等整合
-  ↓
-写 ResultIntegrationEvent
-  ↓
-创建 coordinator_decision Job
-  ↓
-Coordinator Compact Cycle
+单 Attempt: decision_group_id = attempt_id
+便宜 batch: decision_group_id = batch_id
 ```
+
+同一 decision group 内所有 Attempt 完成前，只记录结果不调 Coordinator。完成后创建一次 `coordinator_decision` Job。
 
 幂等键：`integrate:{attempt_id}:{outcome_card_hash}`
 

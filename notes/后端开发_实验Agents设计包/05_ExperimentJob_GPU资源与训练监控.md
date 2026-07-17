@@ -101,7 +101,23 @@ command_timeout_sec   — 单个命令超时
 max_agent_steps       — Agent 循环步数上限 / wall_time_limit
 ```
 
-### 2.8 建议 Job 类型（同原有）
+### 2.9 Attempt Purpose（流程语义，非死板分类器）
+
+attempt_purpose 不由 Agent 推断，由创建 Attempt 的调用路径确定：
+
+| 调用路径 | purpose | counts_toward_convergence |
+|----------|---------|--------------------------|
+| BaselineRunner | `baseline` | ❌ |
+| Coordinator DISPATCH | `exploration` | ✅ |
+| 补 seed / B_test | `confirmation` | ❌ |
+| NoiseEstimator 多 seed | `noise_calibration` | ❌ |
+| Executor bounded fix | `repair` | ❌ |
+
+convergence 只统计 `attempt_purpose == exploration && SCIENTIFICALLY_EVALUABLE`。
+
+```python
+attempt_purpose: Literal["baseline", "exploration", "confirmation", "noise_calibration", "repair"]
+```
 
 ```text
 experiment_baseline
@@ -677,4 +693,35 @@ Coordinator 不修改 OutcomeCard，只写：
 decision.json          — KEEP / DISCARD / CONFIRM
 cognitive_commit.jsonl — 科研决策记录
 IdeaTree mutation      — 更新节点状态/insight
+```
+
+---
+
+## 12. ResultIntegration → Coordinator decision Job
+
+Worker 中的确定性函数 `integrate_outcome()` 完成触发，不需要常驻 ResultIntegrationService。
+
+### Decision group 聚合
+
+```text
+单 Attempt: decision_group_id = attempt_id
+便宜 batch: decision_group_id = batch_id
+```
+
+同一 decision group 内所有 Attempt 完成前，只记录结果不调 Coordinator。完成后创建一次 decision Job：
+
+```text
+coordinator_decision:{decision_group_id}:{integration_revision}
+```
+
+payload：
+
+```python
+CoordinatorDecisionJobPayload:
+    session_id
+    decision_group_id
+    trigger_kind            # single / batch
+    outcome_refs            # OutcomeCard 引用列表
+    tree_revision
+    idempotency_key
 ```
