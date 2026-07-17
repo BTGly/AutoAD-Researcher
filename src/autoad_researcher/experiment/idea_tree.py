@@ -41,6 +41,10 @@ class IdeaNode(BaseModel):
     mechanism: str | None = None
     hypothesis: str | None = None
     observable: str | None = None
+    research_axis: str | None = None
+    minimal_intervention: str | None = None
+    falsification: str | None = None
+    relationship_to_previous_ideas: str | None = None
     grounding: list[str] = Field(default_factory=list)
     expected_cost: ExpectedCost = "unknown"
     intervention_contract_ref: str | None = None
@@ -86,6 +90,10 @@ class IdeaTreeMutation(BaseModel):
     mechanism: str | None = None
     hypothesis: str | None = None
     observable: str | None = None
+    research_axis: str | None = None
+    minimal_intervention: str | None = None
+    falsification: str | None = None
+    relationship_to_previous_ideas: str | None = None
     grounding: list[str] = Field(default_factory=list)
     expected_cost: ExpectedCost | None = None
     reason: str | None = None
@@ -101,12 +109,12 @@ class IdeaTreeMutation(BaseModel):
         elif self.kind == "prune":
             if not self.node_id or not self.reason or not self.reason.strip():
                 raise ValueError("prune mutation requires node_id and reason")
-            if any(value is not None for value in (self.parent_id, self.mechanism, self.hypothesis, self.observable, self.expected_cost, self.status)):
+            if any(value is not None for value in (self.parent_id, self.mechanism, self.hypothesis, self.observable, self.research_axis, self.minimal_intervention, self.falsification, self.relationship_to_previous_ideas, self.expected_cost, self.status)):
                 raise ValueError("prune mutation contains unrelated fields")
         elif self.kind == "mark_status":
             if not self.node_id or self.status is None:
                 raise ValueError("mark_status mutation requires node_id and status")
-            if any(value is not None for value in (self.parent_id, self.mechanism, self.hypothesis, self.observable, self.expected_cost, self.reason)):
+            if any(value is not None for value in (self.parent_id, self.mechanism, self.hypothesis, self.observable, self.research_axis, self.minimal_intervention, self.falsification, self.relationship_to_previous_ideas, self.expected_cost, self.reason)):
                 raise ValueError("mark_status mutation contains unrelated fields")
         return self
 
@@ -285,6 +293,10 @@ class IdeaTreeStore:
                 mechanism=mutation.mechanism,
                 hypothesis=mutation.hypothesis,
                 observable=mutation.observable,
+                research_axis=mutation.research_axis,
+                minimal_intervention=mutation.minimal_intervention,
+                falsification=mutation.falsification,
+                relationship_to_previous_ideas=mutation.relationship_to_previous_ideas,
                 grounding=mutation.grounding,
                 expected_cost=mutation.expected_cost or "unknown",
                 created_at=now,

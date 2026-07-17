@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+from autoad_researcher.experiment.cognitive_budget import CognitiveBudget, CognitiveBudgetCheck, CognitiveBudgetStore, CognitiveUsage, new_usage
 from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCommitStore, ObservationSnapshot
 from autoad_researcher.experiment.idea_tree import IdeaTree, IdeaTreeMutation, IdeaTreeStore
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
@@ -123,6 +124,67 @@ class CompactCycleResult(BaseModel):
     prune: ContextPruneResult | None = None
 
 
+class ExploratoryTrigger(BaseModel):
+    """Structured evidence for spending the larger exploratory budget."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["conflict", "stagnation", "low_confidence", "large_pivot", "high_value_result", "novel_literature_needed"]
+    rationale: str = Field(min_length=1)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class IdeaCandidate(BaseModel):
+    """One differentiated exploratory proposal, before later Coordinator selection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mechanism: str = Field(min_length=1)
+    hypothesis: str = Field(min_length=1)
+    observable: str = Field(min_length=1)
+    research_axis: str = Field(min_length=1)
+    minimal_intervention: str = Field(min_length=1)
+    falsification: str = Field(min_length=1)
+    expected_cost: Literal["unknown", "low", "medium", "high"]
+    relationship_to_previous_ideas: str = Field(min_length=1)
+    grounding: list[str] = Field(default_factory=list)
+
+
+class IdeaExplorerResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[IdeaCandidate] = Field(min_length=2)
+
+    @model_validator(mode="after")
+    def _validate_distinct_candidates(self):
+        identities = {(item.mechanism, item.hypothesis) for item in self.candidates}
+        if len(identities) != len(self.candidates):
+            raise ValueError("IdeaExplorer candidates must be distinct")
+        return self
+
+
+class IdeaExplorerInvocation(BaseModel):
+    """Explorer output plus provider-reported, recordable consumption."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    result: IdeaExplorerResult
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    wall_seconds: float = Field(ge=0)
+
+
+class ExploratoryCycleResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    disposition: Literal["explored", "fallback_compact"]
+    context_pack: ContextPack
+    candidates: list[IdeaCandidate] = Field(default_factory=list)
+    tree: IdeaTree | None = None
+    budget_check: CognitiveBudgetCheck
+    fallback_reason: str | None = None
+
+
 class CoordinatorToolContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_dir: Path
@@ -204,6 +266,10 @@ class CoordinatorContextBuilder:
             "mechanism": node.mechanism,
             "hypothesis": node.hypothesis,
             "observable": node.observable,
+            "research_axis": node.research_axis,
+            "minimal_intervention": node.minimal_intervention,
+            "falsification": node.falsification,
+            "relationship_to_previous_ideas": node.relationship_to_previous_ideas,
             "expected_cost": node.expected_cost,
             "attempt_refs": node.attempt_refs,
             "evidence_refs": node.evidence_refs,
@@ -331,6 +397,108 @@ class CompactCycleService:
             )
         append_event(run_dir, "experiment.coordinator.compact_cycle.committed", {"session_id": session_id, "cycle_id": cycle_id, "commit_id": commit.commit_id, "tree_revision": tree.revision, "context_sha256": context.context_sha256})
         return CompactCycleResult(context_pack=context, decision=decision, tree=tree, commit=commit, prune=prune)
+
+
+class IdeaExplorerAgentFactory:
+    """Create only the temporary specialist through the established DeepAgents factory."""
+
+    def create(self, *, model):
+        from deepagents import create_deep_agent
+
+        return create_deep_agent(
+            model=model,
+            system_prompt=(
+                "You are the AutoAD IdeaExplorer. Read the supplied accumulated ContextPack and "
+                "return multiple differentiated IdeaCandidate proposals. Do not execute shell commands, "
+                "modify Git, or persist files directly."
+            ),
+            response_format=IdeaExplorerResult,
+        )
+
+
+class ExploratoryCycleService:
+    """Spend an explicitly admitted specialist call, or deterministically fall back."""
+
+    def __init__(self, *, context_builder: CoordinatorContextBuilder | None = None, tree_store: IdeaTreeStore | None = None, budget_store: CognitiveBudgetStore | None = None):
+        self._contexts = context_builder or CoordinatorContextBuilder()
+        self._trees = tree_store or IdeaTreeStore()
+        self._budget = budget_store or CognitiveBudgetStore()
+
+    def run(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        cycle_id: str,
+        parent_id: str,
+        triggers: Sequence[ExploratoryTrigger],
+        budget: CognitiveBudget,
+        expected_input_tokens: int,
+        expected_output_tokens: int,
+        expected_wall_seconds: float,
+        explorer: Callable[[ContextPack, Sequence[ExploratoryTrigger]], IdeaExplorerInvocation | dict[str, Any]],
+    ) -> ExploratoryCycleResult:
+        if not triggers:
+            raise ValueError("Exploratory Cycle requires at least one structured trigger")
+        context = self._contexts.build(run_dir, session_id=session_id)
+        projected = new_usage(
+            cycle_id=cycle_id,
+            cycle_kind="exploratory",
+            role="idea_explorer",
+            input_tokens=expected_input_tokens,
+            output_tokens=expected_output_tokens,
+            wall_seconds=expected_wall_seconds,
+        )
+        preflight = self._budget.preflight(run_dir, session_id=session_id, budget=budget, candidate=projected)
+        if not preflight.allowed:
+            return self._fallback(run_dir, session_id=session_id, cycle_id=cycle_id, context=context, check=preflight, reason="CognitiveBudget preflight rejected exploratory call")
+        invocation = IdeaExplorerInvocation.model_validate(explorer(context, triggers))
+        actual = new_usage(
+            cycle_id=cycle_id,
+            cycle_kind="exploratory",
+            role="idea_explorer",
+            input_tokens=invocation.input_tokens,
+            output_tokens=invocation.output_tokens,
+            wall_seconds=invocation.wall_seconds,
+        )
+        actual_check = self._budget.append(run_dir, session_id=session_id, budget=budget, usage=actual)
+        if not actual_check.allowed:
+            return self._fallback(run_dir, session_id=session_id, cycle_id=cycle_id, context=context, check=actual_check, reason="CognitiveBudget actual usage exceeded the exploratory limit")
+        tree = self._trees.apply_mutations(
+            run_dir,
+            session_id=session_id,
+            expected_revision=context.tree_revision,
+            idempotency_key=f"exploratory:{cycle_id}:candidates",
+            mutations=[
+                IdeaTreeMutation(
+                    kind="add_child",
+                    parent_id=parent_id,
+                    mechanism=candidate.mechanism,
+                    hypothesis=candidate.hypothesis,
+                    observable=candidate.observable,
+                    research_axis=candidate.research_axis,
+                    minimal_intervention=candidate.minimal_intervention,
+                    falsification=candidate.falsification,
+                    relationship_to_previous_ideas=candidate.relationship_to_previous_ideas,
+                    grounding=candidate.grounding,
+                    expected_cost=candidate.expected_cost,
+                )
+                for candidate in invocation.result.candidates
+            ],
+        )
+        append_event(run_dir, "experiment.coordinator.exploratory_cycle.committed", {
+            "session_id": session_id,
+            "cycle_id": cycle_id,
+            "tree_revision": tree.revision,
+            "trigger_kinds": [trigger.kind for trigger in triggers],
+            "candidate_count": len(invocation.result.candidates),
+        })
+        return ExploratoryCycleResult(disposition="explored", context_pack=context, candidates=invocation.result.candidates, tree=tree, budget_check=actual_check)
+
+    @staticmethod
+    def _fallback(run_dir: Path, *, session_id: str, cycle_id: str, context: ContextPack, check: CognitiveBudgetCheck, reason: str) -> ExploratoryCycleResult:
+        append_event(run_dir, "experiment.coordinator.exploratory_cycle.fallback", {"session_id": session_id, "cycle_id": cycle_id, "context_sha256": context.context_sha256, "reason": reason, "exceeded_limits": check.exceeded_limits})
+        return ExploratoryCycleResult(disposition="fallback_compact", context_pack=context, budget_check=check, fallback_reason=reason)
 
 
 class CoordinatorAgentFactory:
