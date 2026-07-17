@@ -143,7 +143,7 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
     store = ExperimentAttemptStore()
     final = store.finish(run_dir, attempt_id=attempt.attempt_id, runtime_status=runtime_status, failure_code=result.failure_code, execution_result_ref=f"attempts/{attempt.attempt_id}/execution_result.json")
     if runtime_status != "COMPLETED": classify_or_load(run_dir / "attempts" / attempt.attempt_id)
-    finalize_attempt(run_dir / "attempts" / attempt.attempt_id, attempt_id=attempt.attempt_id, runtime_status=runtime_status)
+    finalize_attempt(run_dir / "attempts" / attempt.attempt_id, attempt_id=attempt.attempt_id, runtime_status=runtime_status, run_dir=run_dir, evaluation_contract_ref=attempt.evaluation_contract_ref, evaluation_contract_sha256=attempt.evaluation_contract_sha256, protected_artifact_report_ref=attempt.protected_artifact_report_ref, protected_artifact_report_sha256=attempt.protected_artifact_report_sha256)
     if RetryPolicy().should_retry(final):
         from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
         ExperimentAttemptService().create_retry(run_dir, attempt_id=final.attempt_id)

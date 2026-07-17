@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from pydantic import BaseModel, ConfigDict
 from autoad_researcher.experiment.failure_classifier import classify_or_load
+from autoad_researcher.benchmarks.hashing import sha256_file
+from autoad_researcher.schemas.benchmark import BenchmarkEvaluationContract
 
 class OutcomeCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -20,8 +22,11 @@ class OutcomeCard(BaseModel):
     health_events_ref: str | None = None
     failure_classification_ref: str | None = None
     metrics: dict[str, Any] | None = None
+    evaluation_contract_ref: str | None = None
+    protected_artifact_report_ref: str | None = None
+    protocol_valid: bool = True
 
-def finalize_attempt(attempt_dir: Path, *, attempt_id: str, runtime_status: str) -> OutcomeCard:
+def finalize_attempt(attempt_dir: Path, *, attempt_id: str, runtime_status: str, run_dir: Path | None = None, evaluation_contract_ref: str | None = None, evaluation_contract_sha256: str | None = None, protected_artifact_report_ref: str | None = None, protected_artifact_report_sha256: str | None = None) -> OutcomeCard:
     path = attempt_dir / "outcome_card.json"
     with _outcome_lock(attempt_dir):
         if path.is_file(): return OutcomeCard.model_validate_json(path.read_text(encoding="utf-8"))
@@ -29,10 +34,12 @@ def finalize_attempt(attempt_dir: Path, *, attempt_id: str, runtime_status: str)
         metrics = _metrics(attempt_dir / "metrics.json")
         if not failed and metrics is None:
             failed = True
+        protocol_valid = _validate_protocol_refs(run_dir, evaluation_contract_ref, evaluation_contract_sha256, protected_artifact_report_ref, protected_artifact_report_sha256)
+        if not protocol_valid: failed = True
         classification_ref = None
         if failed:
             classify_or_load(attempt_dir); classification_ref = "failure_classification.json"
-        card = OutcomeCard(attempt_id=attempt_id, runtime_status=runtime_status, attempt_category="run_failed" if failed else "scientifically_evaluable", execution_result_ref="execution_result.json", health_events_ref="health_events.jsonl" if (attempt_dir / "health_events.jsonl").is_file() else None, failure_classification_ref=classification_ref, metrics=metrics)
+        card = OutcomeCard(attempt_id=attempt_id, runtime_status=runtime_status, attempt_category="protocol_violated" if not protocol_valid else "run_failed" if failed else "scientifically_evaluable", execution_result_ref="execution_result.json", health_events_ref="health_events.jsonl" if (attempt_dir / "health_events.jsonl").is_file() else None, failure_classification_ref=classification_ref, metrics=metrics, evaluation_contract_ref=evaluation_contract_ref, protected_artifact_report_ref=protected_artifact_report_ref, protocol_valid=protocol_valid)
         temporary = path.with_suffix(".json.tmp")
         with temporary.open("w", encoding="utf-8") as handle:
             handle.write(json.dumps(card.model_dump(mode="json", exclude_none=True), ensure_ascii=False, indent=2, sort_keys=True)+"\n")
@@ -44,6 +51,22 @@ def _metrics(path: Path) -> dict[str, Any] | None:
     try: value=json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError: return None
     return value if isinstance(value, dict) else None
+
+def _validate_protocol_refs(run_dir: Path | None, contract_ref: str | None, contract_sha: str | None, protected_ref: str | None, protected_sha: str | None) -> bool:
+    if run_dir is None: return contract_ref is None and protected_ref is None
+    if (contract_ref is None) != (contract_sha is None) or (protected_ref is None) != (protected_sha is None): return False
+    if contract_ref is not None:
+        path = _resolve_ref(run_dir, contract_ref)
+        if path is None or not path.is_file() or sha256_file(path) != contract_sha: return False
+        try: BenchmarkEvaluationContract.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception: return False
+    if protected_ref is not None:
+        path = _resolve_ref(run_dir, protected_ref)
+        if path is None or not path.is_file() or sha256_file(path) != protected_sha: return False
+    return True
+def _resolve_ref(run_dir: Path, ref: str) -> Path | None:
+    path = (run_dir / ref).resolve()
+    return path if path.is_relative_to(run_dir.resolve()) else None
 
 @contextmanager
 def _outcome_lock(attempt_dir: Path, timeout: float = 5.0):
