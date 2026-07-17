@@ -11,6 +11,7 @@ from autoad_researcher.assistant.v2.event_service import load_events_since
 from autoad_researcher.assistant.v2.job_service import claim_pipeline_job, load_pipeline_jobs
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+from autoad_researcher.experiment.gpu import GpuUnavailableError
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.runner import ExperimentCommandPlan, ExperimentInputRefs, experiment_command_sha256
 from autoad_researcher.worker.main import _process_pending_jobs
@@ -200,3 +201,35 @@ def test_plan_only_session_cannot_create_attempt(tmp_path: Path):
             input_refs=_refs(plan),
             job_timeout_sec=60,
         )
+
+
+def test_gpu_capacity_failure_finalizes_attempt_without_starting_training(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_attempt_gpu_unavailable"
+    session_id = _ready_session(run_dir)
+    plan = _plan()
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:gpu-unavailable",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+        required_device_count=1,
+        required_vram_mb=10_000,
+    )
+
+    class UnavailableAllocator:
+        def allocate(self, *args, **kwargs):
+            raise GpuUnavailableError("TEMPORARY_GPU_UNAVAILABLE: fixture")
+
+    import autoad_researcher.experiment.gpu as gpu_module
+
+    monkeypatch.setattr(gpu_module, "GpuAllocator", UnavailableAllocator)
+    assert _process_pending_jobs(run_dir) == 1
+
+    attempt = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert attempt is not None
+    assert attempt.runtime_status == "FAILED"
+    assert attempt.failure_code == "TEMPORARY_GPU_UNAVAILABLE"
+    assert load_pipeline_jobs(run_dir)[0]["status"] == "failed"

@@ -54,6 +54,8 @@ class ExperimentAttemptService:
         input_refs: ExperimentInputRefs,
         job_timeout_sec: int,
         max_retries: int = 0,
+        required_device_count: int = 0,
+        required_vram_mb: int = 0,
     ) -> ExperimentAttemptStartResult:
         session = self._require_executable_session(run_dir, session_id, job_type)
         now = _utc_now()
@@ -68,6 +70,8 @@ class ExperimentAttemptService:
             input_refs=input_refs,
             job_timeout_sec=job_timeout_sec,
             max_retries=max_retries,
+            required_device_count=required_device_count,
+            required_vram_mb=required_vram_mb,
             created_at=now,
             updated_at=now,
         )

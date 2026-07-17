@@ -59,5 +59,6 @@ __all__ = [
 from autoad_researcher.experiment.attempt import ExperimentAttempt
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+from autoad_researcher.experiment.gpu import GpuAllocator, ResourceLease
 
-__all__ = ["ExperimentAttempt", "ExperimentAttemptService", "ExperimentAttemptStore"]
+__all__ = ["ExperimentAttempt", "ExperimentAttemptService", "ExperimentAttemptStore", "GpuAllocator", "ResourceLease"]

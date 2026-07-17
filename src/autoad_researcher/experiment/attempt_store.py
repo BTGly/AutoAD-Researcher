@@ -59,6 +59,16 @@ class ExperimentAttemptStore:
 
         return self._update(run_dir, attempt_id, mutate)
 
+    def bind_resource_lease(self, run_dir: Path, *, attempt_id: str, lease_id: str) -> ExperimentAttempt:
+        def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
+            if attempt.required_device_count == 0:
+                raise ValueError("Attempt did not request GPU resources")
+            if attempt.resource_lease_id is not None and attempt.resource_lease_id != lease_id:
+                raise ValueError("Attempt is already bound to another ResourceLease")
+            return attempt.model_copy(update={"resource_lease_id": lease_id})
+
+        return self._update(run_dir, attempt_id, mutate)
+
     def finish(
         self,
         run_dir: Path,
@@ -132,6 +142,7 @@ class ExperimentAttemptStore:
                     "runtime_status": "QUEUED",
                     "pid": None,
                     "process_group_id": None,
+                    "resource_lease_id": None,
                     "heartbeat_at": None,
                     "cancel_requested_at": None,
                     "retry_of": parent.attempt_id,
@@ -161,6 +172,8 @@ class ExperimentAttemptStore:
             "input_refs": attempt.input_refs.model_dump(mode="json"),
             "job_timeout_sec": attempt.job_timeout_sec,
             "max_retries": attempt.max_retries,
+            "required_device_count": attempt.required_device_count,
+            "required_vram_mb": attempt.required_vram_mb,
             "retry_of": attempt.retry_of,
             "retry_count": attempt.retry_count,
         }

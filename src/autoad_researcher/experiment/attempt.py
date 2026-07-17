@@ -48,6 +48,9 @@ class ExperimentAttempt(BaseModel):
     attempt_purpose: AttemptPurpose
     command_plan: ExperimentCommandPlan
     input_refs: ExperimentInputRefs
+    required_device_count: int = Field(default=0, ge=0)
+    required_vram_mb: int = Field(default=0, ge=0)
+    resource_lease_id: str | None = Field(default=None, pattern=r"^lease_[0-9]{6}$")
     runtime_status: AttemptRuntimeStatus = "QUEUED"
     pid: int | None = Field(default=None, gt=0)
     process_group_id: int | None = Field(default=None, gt=0)
@@ -75,4 +78,6 @@ class ExperimentAttempt(BaseModel):
             raise ValueError("retry_count must not exceed max_retries")
         if self.retry_exhausted and self.runtime_status not in {"FAILED", "TIMED_OUT", "LOST"}:
             raise ValueError("retry_exhausted requires a terminal failed runtime status")
+        if self.resource_lease_id is not None and self.required_device_count == 0:
+            raise ValueError("ResourceLease requires a positive device request")
         return self
