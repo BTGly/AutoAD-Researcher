@@ -20,6 +20,11 @@ from autoad_researcher.environments.executor import (
     ResolvedCommand,
     execute_resolved_command,
 )
+from autoad_researcher.environments.context_collector import (
+    CollectedValidationContext,
+    collect_validation_context,
+    write_validation_context,
+)
 from autoad_researcher.environments.models import (
     CommandStep,
     EnvironmentPermissions,
@@ -29,6 +34,14 @@ from autoad_researcher.environments.models import (
     EvidenceReference,
     PlanAssumption,
     ValidationStep,
+)
+from autoad_researcher.environments.probe import (
+    HostProbe,
+    ProbeCommandResult,
+    RepositoryProbe,
+    probe_host,
+    probe_repository,
+    write_probe,
 )
 from autoad_researcher.environments.policy import (
     EnvironmentPlanPolicyError,
@@ -62,10 +75,12 @@ from autoad_researcher.environments.validation import (
 
 __all__ = [
     "CommandStep",
+    "CollectedValidationContext",
     "EnvironmentPermissions",
     "EnvironmentPlan",
     "EnvironmentPlanRevision",
     "EnvironmentTarget",
+    "HostProbe",
     "EnvironmentPlanPolicyError",
     "EnvironmentPlanPolicyReport",
     "CommandExecutionOutput",
@@ -84,8 +99,10 @@ __all__ = [
     "InstalledPackage",
     "PipVenvAdapter",
     "PlanAssumption",
+    "ProbeCommandResult",
     "PolicyViolation",
     "ResolvedCommand",
+    "RepositoryProbe",
     "UvVenvAdapter",
     "ValidationContext",
     "ValidationReport",
@@ -93,6 +110,7 @@ __all__ = [
     "ValidationStep",
     "VERIFIERS",
     "build_revision_context",
+    "collect_validation_context",
     "environment_plan_sha256",
     "environment_snapshot_sha256",
     "execute_resolved_command",
@@ -102,7 +120,11 @@ __all__ = [
     "run_environment_build_steps",
     "run_bounded_revision_loop",
     "snapshot_from_plan",
+    "probe_host",
+    "probe_repository",
     "validate_environment",
     "validate_environment_plan_policy",
     "write_environment_plan",
+    "write_probe",
+    "write_validation_context",
 ]
