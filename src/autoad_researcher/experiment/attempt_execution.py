@@ -16,6 +16,7 @@ from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.gpu import GpuAllocator, GpuUnavailableError
 from autoad_researcher.experiment.watchdog import RuntimeWatchdog
+from autoad_researcher.experiment.failure_classifier import classify_or_load
 from autoad_researcher.runner import ExperimentExecutionResult, OutputManifest, OutputManifestEntry
 
 _PROCESSES: dict[tuple[str, str], subprocess.Popen[str]] = {}
@@ -130,6 +131,7 @@ def _finalize_failure(run_dir: Path, attempt, code: str, message: str, *, runtim
 def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime_status: str) -> AttemptObservation:
     store = ExperimentAttemptStore()
     final = store.finish(run_dir, attempt_id=attempt.attempt_id, runtime_status=runtime_status, failure_code=result.failure_code, execution_result_ref=f"attempts/{attempt.attempt_id}/execution_result.json")
+    if runtime_status != "COMPLETED": classify_or_load(run_dir / "attempts" / attempt.attempt_id)
     if attempt.resource_lease_id:
         try: GpuAllocator().release(run_dir, lease_id=attempt.resource_lease_id, worker_id=_worker_id())
         except (FileNotFoundError, ValueError): pass
