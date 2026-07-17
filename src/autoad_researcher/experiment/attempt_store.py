@@ -59,6 +59,25 @@ class ExperimentAttemptStore:
             lambda attempt: self._ensure_pipeline_job(attempt, pipeline_job_id),
         )
 
+    def reconnect_pipeline_job(
+        self,
+        run_dir: Path,
+        *,
+        attempt_id: str,
+        missing_pipeline_job_id: str | None,
+        pipeline_job_id: str,
+    ) -> ExperimentAttempt:
+        """Repair only a binding proven absent from the durable Job store."""
+
+        def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
+            if attempt.pipeline_job_id == pipeline_job_id:
+                return attempt
+            if attempt.pipeline_job_id != missing_pipeline_job_id:
+                raise ValueError("Attempt PipelineJob binding changed during recovery")
+            return attempt.model_copy(update={"pipeline_job_id": pipeline_job_id})
+
+        return self._update(run_dir, attempt_id, mutate)
+
     def mark_starting(self, run_dir: Path, *, attempt_id: str, pipeline_job_id: str) -> ExperimentAttempt:
         def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
             if attempt.pipeline_job_id != pipeline_job_id:
