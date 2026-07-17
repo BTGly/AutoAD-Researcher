@@ -35,6 +35,17 @@ class ExperimentAttemptStore:
             return None
         return ExperimentAttempt.model_validate_json(path.read_text(encoding="utf-8"))
 
+    def list_for_session(self, run_dir: Path, *, session_id: str) -> list[ExperimentAttempt]:
+        """Return the durable Attempts for one Session in stable ID order."""
+        directory = run_dir / ATTEMPTS_DIR
+        if not directory.is_dir():
+            return []
+        attempts = [
+            ExperimentAttempt.model_validate_json(path.read_text(encoding="utf-8"))
+            for path in sorted(directory.glob("attempt_*.json"))
+        ]
+        return [attempt for attempt in attempts if attempt.session_id == session_id]
+
     def bind_pipeline_job(
         self,
         run_dir: Path,

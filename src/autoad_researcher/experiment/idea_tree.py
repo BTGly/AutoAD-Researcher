@@ -75,6 +75,42 @@ class IdeaMutationReceipt(BaseModel):
     applied_revision: int = Field(ge=1)
 
 
+class IdeaTreeMutation(BaseModel):
+    """A validated tree change submitted as one Coordinator decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["add_child", "prune", "mark_status"]
+    parent_id: str | None = Field(default=None, pattern=r"^idea_[0-9]{6}$")
+    node_id: str | None = Field(default=None, pattern=r"^idea_[0-9]{6}$")
+    mechanism: str | None = None
+    hypothesis: str | None = None
+    observable: str | None = None
+    grounding: list[str] = Field(default_factory=list)
+    expected_cost: ExpectedCost | None = None
+    reason: str | None = None
+    status: IdeaNodeStatus | None = None
+
+    @model_validator(mode="after")
+    def _validate_kind_shape(self):
+        if self.kind == "add_child":
+            if not all((self.parent_id, self.mechanism, self.hypothesis, self.observable, self.expected_cost)):
+                raise ValueError("add_child mutation requires parent, mechanism, hypothesis, observable, and expected cost")
+            if self.node_id is not None or self.reason is not None or self.status is not None:
+                raise ValueError("add_child mutation contains unrelated fields")
+        elif self.kind == "prune":
+            if not self.node_id or not self.reason or not self.reason.strip():
+                raise ValueError("prune mutation requires node_id and reason")
+            if any(value is not None for value in (self.parent_id, self.mechanism, self.hypothesis, self.observable, self.expected_cost, self.status)):
+                raise ValueError("prune mutation contains unrelated fields")
+        elif self.kind == "mark_status":
+            if not self.node_id or self.status is None:
+                raise ValueError("mark_status mutation requires node_id and status")
+            if any(value is not None for value in (self.parent_id, self.mechanism, self.hypothesis, self.observable, self.expected_cost, self.reason)):
+                raise ValueError("mark_status mutation contains unrelated fields")
+        return self
+
+
 class IdeaTree(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal[1] = 1
@@ -193,6 +229,91 @@ class IdeaTreeStore:
             now = _utc_now()
             return _replace_node(tree, node_id, lambda current: current.model_copy(update={"status": "PRUNED", "insights": [*current.insights, IdeaInsight(text=reason, kind="observation", created_at=now)], "updated_at": now}))
         return self._mutate(run_dir, session_id=session_id, expected_revision=expected_revision, idempotency_key=idempotency_key, mutation="request_prune", payload=payload, mutate=mutate)
+
+    def apply_mutations(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        expected_revision: int,
+        idempotency_key: str,
+        mutations: list[IdeaTreeMutation],
+    ) -> IdeaTree:
+        """Validate and persist a complete decision's tree changes in one write.
+
+        A CycleDecision may contain several related mutations.  Applying them
+        through the ordinary single-mutation APIs would allow a crash to expose
+        a partial decision; this method keeps their revision and idempotency
+        boundary together.
+        """
+        if not mutations:
+            raise ValueError("at least one IdeaTree mutation is required")
+        payload = {"mutations": [item.model_dump(mode="json") for item in mutations]}
+
+        def mutate(tree: IdeaTree) -> IdeaTree:
+            changed = tree
+            for item in mutations:
+                changed = self._apply_mutation_unchecked(changed, item)
+            return changed
+
+        return self._mutate(
+            run_dir,
+            session_id=session_id,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            mutation="apply_mutations",
+            payload=payload,
+            mutate=mutate,
+        )
+
+    @staticmethod
+    def _apply_mutation_unchecked(tree: IdeaTree, mutation: IdeaTreeMutation) -> IdeaTree:
+        now = _utc_now()
+        if mutation.kind == "add_child":
+            parent = tree.node(mutation.parent_id or "")
+            if parent.status in {"PRUNED", "MERGED"}:
+                raise ValueError("cannot add a child below a pruned or merged IdeaNode")
+            if parent.depth >= 3:
+                raise ValueError("IdeaTree maximum depth is 3")
+            if any(node.parent_id == parent.node_id and node.mechanism == mutation.mechanism and node.hypothesis == mutation.hypothesis for node in tree.nodes):
+                raise ValueError("duplicate IdeaNode under the same parent")
+            child_id = _next_node_id(tree)
+            child = IdeaNode(
+                node_id=child_id,
+                parent_id=parent.node_id,
+                depth=parent.depth + 1,
+                mechanism=mutation.mechanism,
+                hypothesis=mutation.hypothesis,
+                observable=mutation.observable,
+                grounding=mutation.grounding,
+                expected_cost=mutation.expected_cost or "unknown",
+                created_at=now,
+                updated_at=now,
+            )
+            nodes = [
+                node.model_copy(update={"children": [*node.children, child_id], "updated_at": now})
+                if node.node_id == parent.node_id else node
+                for node in tree.nodes
+            ]
+            return tree.model_copy(update={"nodes": [*nodes, child]})
+        if mutation.kind == "prune":
+            node = tree.node(mutation.node_id or "")
+            if node.is_root or node.status in {"RUNNING", "MERGED"}:
+                raise ValueError("IdeaTree root, running node, and merged node cannot be pruned")
+            return _replace_node(
+                tree,
+                node.node_id,
+                lambda current: current.model_copy(update={
+                    "status": "PRUNED",
+                    "insights": [*current.insights, IdeaInsight(text=mutation.reason or "", kind="observation", created_at=now)],
+                    "updated_at": now,
+                }),
+            )
+        node = tree.node(mutation.node_id or "")
+        status = mutation.status
+        if node.is_root or status not in _ALLOWED_TRANSITIONS[node.status]:
+            raise ValueError("illegal IdeaNode status transition")
+        return _replace_node(tree, node.node_id, lambda current: current.model_copy(update={"status": status, "updated_at": now}))
 
     def _append_ref(self, run_dir: Path, session_id: str, expected_revision: int, idempotency_key: str, mutation: str, node_id: str, value: str, field: Literal["attempt_refs", "evidence_refs", "cognitive_commit_refs"]) -> IdeaTree:
         payload = {"node_id": node_id, field: value}
