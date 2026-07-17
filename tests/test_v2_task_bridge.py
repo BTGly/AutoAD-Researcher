@@ -101,7 +101,11 @@ def test_task_bridge_prepares_then_confirms_exact_pipeline_input(tmp_path: Path)
     assert draft.evidence_refs == ["repo/artifacts/repo_summary.json"]
     assert not (run_dir / "input_task.yaml").exists()
 
-    confirmed = TaskBridge.confirm_experiment_task(run_dir, task_id=draft.task_id)
+    confirmed = TaskBridge.confirm_experiment_task(
+        run_dir,
+        task_id=draft.task_id,
+        execution_mode="plan_only",
+    )
 
     assert confirmed.status == "confirmed"
     data = yaml.safe_load((run_dir / "input_task.yaml").read_text(encoding="utf-8"))
@@ -137,7 +141,11 @@ def test_task_bridge_rejects_confirmation_after_summary_changes(tmp_path: Path):
     save_research_intent_summary(run_dir, ResearchIntentSummary(goal="用户改了目标"))
 
     with pytest.raises(ValueError, match="summary changed"):
-        TaskBridge.confirm_experiment_task(run_dir, task_id=draft.task_id)
+        TaskBridge.confirm_experiment_task(
+            run_dir,
+            task_id=draft.task_id,
+            execution_mode="plan_only",
+        )
 
     assert not (run_dir / "input_task.yaml").exists()
 

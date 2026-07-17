@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import re
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -19,6 +21,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     load_research_intent_summary,
 )
 from autoad_researcher.core.run_id import validate_run_id
+from autoad_researcher.experiment.session import ExecutionMode
 from autoad_researcher.schemas.intake import InputTask
 from autoad_researcher.ui.sources import load_source_registry
 
@@ -47,7 +50,7 @@ class ExperimentTaskDraft(BaseModel):
     task_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     status: Literal["pending_confirmation", "confirmed"] = "pending_confirmation"
-    execution_mode: Literal["plan_only"] = "plan_only"
+    execution_mode: ExecutionMode = "plan_only"
     input_task: InputTask
     evidence_refs: list[str] = Field(default_factory=list)
     summary_sha256: str = Field(min_length=64, max_length=64)
@@ -66,6 +69,18 @@ class ExperimentTaskSourceReport(BaseModel):
     created_output: Literal["input_task.yaml"] = "input_task.yaml"
     evidence_refs: list[str] = Field(default_factory=list)
     confirmed_at: str
+
+
+class ExperimentTaskConfirmationResult(BaseModel):
+    """Confirm response with optional experiment-control-plane references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task: ExperimentTaskDraft
+    session_id: str | None = None
+    session_status: str | None = None
+    environment_job_id: str | None = None
+    disposition: Literal["plan_only", "created", "repaired", "reused"]
 
 
 class TaskBridge:
@@ -111,48 +126,58 @@ class TaskBridge:
         return draft
 
     @classmethod
+    def confirm_or_load_existing(
+        cls,
+        run_dir: Path,
+        *,
+        task_id: str,
+        execution_mode: ExecutionMode,
+    ) -> ExperimentTaskDraft:
+        run_id = _validate_run_dir(run_dir)
+        with _confirm_lock(run_dir):
+            draft = _load_pending_task(run_dir)
+            if draft.task_id != task_id:
+                raise ValueError("task_id does not match pending experiment task")
+
+            if draft.status == "pending_confirmation":
+                summary = load_research_intent_summary(run_dir)
+                if summary is None or _summary_sha256(summary) != draft.summary_sha256:
+                    raise ValueError("research summary changed after task preparation")
+                _validate_existing_input_task(run_dir, draft)
+                confirmed = draft.model_copy(
+                    update={
+                        "status": "confirmed",
+                        "execution_mode": execution_mode,
+                        "confirmed_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                # The confirmed draft is the durable write-ahead record. All
+                # materialized files below can be reconstructed from it.
+                _write_json_atomic(
+                    run_dir / BRIDGE_DIR / PENDING_TASK_FILE,
+                    confirmed.model_dump(mode="json"),
+                )
+            else:
+                confirmed = draft
+
+            _materialize_input_task(run_dir, confirmed)
+            _materialize_source_report(run_dir, run_id, confirmed)
+            return confirmed
+
+    @classmethod
     def confirm_experiment_task(
         cls,
         run_dir: Path,
         *,
         task_id: str,
+        execution_mode: ExecutionMode,
     ) -> ExperimentTaskDraft:
-        run_id = _validate_run_dir(run_dir)
-        output_path = run_dir / INPUT_TASK_FILE
-        if output_path.exists():
-            raise FileExistsError("input_task.yaml already exists")
-        draft = _load_pending_task(run_dir)
-        if draft.task_id != task_id:
-            raise ValueError("task_id does not match pending experiment task")
-        summary = load_research_intent_summary(run_dir)
-        if summary is None or _summary_sha256(summary) != draft.summary_sha256:
-            raise ValueError("research summary changed after task preparation")
-
-        output_text = yaml.safe_dump(
-            draft.input_task.model_dump(mode="json", exclude_none=True),
-            allow_unicode=True,
-            sort_keys=False,
-        )
-        _reject_secret_like_text(output_text)
-        _write_text_atomic(output_path, output_text)
-        confirmed_at = datetime.now(timezone.utc).isoformat()
-        confirmed = draft.model_copy(update={"status": "confirmed", "confirmed_at": confirmed_at})
-        report = ExperimentTaskSourceReport(
-            run_id=run_id,
+        """Backward-compatible name for the reconcile-style confirmation API."""
+        return cls.confirm_or_load_existing(
+            run_dir,
             task_id=task_id,
-            source_sha256=draft.summary_sha256,
-            evidence_refs=draft.evidence_refs,
-            confirmed_at=confirmed_at,
+            execution_mode=execution_mode,
         )
-        _write_json_atomic(
-            run_dir / BRIDGE_DIR / TASK_REPORT_FILE,
-            report.model_dump(mode="json"),
-        )
-        _write_json_atomic(
-            run_dir / BRIDGE_DIR / PENDING_TASK_FILE,
-            confirmed.model_dump(mode="json"),
-        )
-        return confirmed
 
 
 def _validate_run_dir(run_dir: Path) -> str:
@@ -214,6 +239,62 @@ def _load_pending_task(run_dir: Path) -> ExperimentTaskDraft:
     return ExperimentTaskDraft.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+def _materialize_input_task(run_dir: Path, confirmed: ExperimentTaskDraft) -> None:
+    output_path = run_dir / INPUT_TASK_FILE
+    output_text = yaml.safe_dump(
+        confirmed.input_task.model_dump(mode="json", exclude_none=True),
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    _reject_secret_like_text(output_text)
+    if output_path.exists():
+        _validate_existing_input_task(run_dir, confirmed)
+        return
+    _write_text_atomic(output_path, output_text)
+
+
+def _validate_existing_input_task(run_dir: Path, draft: ExperimentTaskDraft) -> None:
+    path = run_dir / INPUT_TASK_FILE
+    if not path.exists():
+        return
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        existing = InputTask.model_validate(data)
+    except Exception as exc:
+        raise ValueError("existing input_task.yaml is invalid") from exc
+    if existing.model_dump(mode="json", exclude_none=True) != draft.input_task.model_dump(
+        mode="json",
+        exclude_none=True,
+    ):
+        raise ValueError("existing input_task.yaml conflicts with confirmed task")
+
+
+def _materialize_source_report(
+    run_dir: Path,
+    run_id: str,
+    confirmed: ExperimentTaskDraft,
+) -> None:
+    if confirmed.confirmed_at is None:
+        raise ValueError("confirmed task is missing confirmed_at")
+    report = ExperimentTaskSourceReport(
+        run_id=run_id,
+        task_id=confirmed.task_id,
+        source_sha256=confirmed.summary_sha256,
+        evidence_refs=confirmed.evidence_refs,
+        confirmed_at=confirmed.confirmed_at,
+    )
+    path = run_dir / BRIDGE_DIR / TASK_REPORT_FILE
+    if path.exists():
+        try:
+            existing = ExperimentTaskSourceReport.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ValueError("existing experiment task source report is invalid") from exc
+        if existing != report:
+            raise ValueError("existing experiment task source report conflicts with confirmed task")
+        return
+    _write_json_atomic(path, report.model_dump(mode="json"))
+
+
 def _reject_secret_like_text(text: str) -> None:
     if _SECRET_LIKE_RE.search(text):
         raise ValueError("secret-like content forbidden")
@@ -236,3 +317,27 @@ def _write_text_atomic(path: Path, text: str) -> None:
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+
+
+@contextmanager
+def _confirm_lock(run_dir: Path, timeout: float = 5.0):
+    lock_path = run_dir / BRIDGE_DIR / ".confirm.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    fd = None
+    while time.monotonic() < deadline:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            time.sleep(0.05)
+    if fd is None:
+        raise TimeoutError(f"Could not acquire confirm lock for {run_dir} within {timeout}s")
+    try:
+        yield
+    finally:
+        os.close(fd)
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass

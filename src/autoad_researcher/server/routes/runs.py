@@ -2,13 +2,17 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.core.run_id import run_dir_path
-from autoad_researcher.assistant.v2.task_bridge import ExperimentTaskDraft, TaskBridge
+from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
+from autoad_researcher.assistant.v2.task_bridge import (
+    ExperimentTaskConfirmationResult,
+    TaskBridge,
+)
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
 from autoad_researcher.task_workspace.task_profile import (
@@ -56,6 +60,16 @@ class TranscriptItem(BaseModel):
     role: str
     content: str
     created_at: str | None = None
+
+
+class ConfirmExperimentTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_mode: Literal[
+        "plan_only",
+        "approve_each_step",
+        "agent_assisted_after_approval",
+    ]
 
 
 @router.get("", response_model=list[RunInfo])
@@ -149,12 +163,34 @@ async def get_run_transcript(run_id: str):
 
 @router.post(
     "/{run_id}/experiment-task/{task_id}/confirm",
-    response_model=ExperimentTaskDraft,
+    response_model=ExperimentTaskConfirmationResult,
 )
-async def confirm_experiment_task(run_id: str, task_id: str):
+async def confirm_experiment_task(
+    run_id: str,
+    task_id: str,
+    request: ConfirmExperimentTaskRequest,
+):
     run_dir = _existing_run_dir(run_id)
     try:
-        return TaskBridge.confirm_experiment_task(run_dir, task_id=task_id)
+        task = TaskBridge.confirm_or_load_existing(
+            run_dir,
+            task_id=task_id,
+            execution_mode=request.execution_mode,
+        )
+        if request.execution_mode == "plan_only":
+            return ExperimentTaskConfirmationResult(task=task, disposition="plan_only")
+        started = ExperimentStarter().on_task_confirmed(
+            run_dir,
+            task,
+            execution_mode=request.execution_mode,
+        )
+        return ExperimentTaskConfirmationResult(
+            task=task,
+            session_id=started.session.session_id,
+            session_status=started.session.status,
+            environment_job_id=str(started.environment_job["job_id"]),
+            disposition=started.disposition,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (FileExistsError, ValueError) as exc:

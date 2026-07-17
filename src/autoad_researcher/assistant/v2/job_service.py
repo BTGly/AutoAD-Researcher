@@ -40,7 +40,10 @@ def _jobs_path(run_dir: Path) -> Path:
 
 
 def _generate_job_id(run_dir: Path) -> str:
-    existing = load_pipeline_jobs(run_dir)
+    return _next_id_from_loaded(load_pipeline_jobs(run_dir))
+
+
+def _next_id_from_loaded(existing: list[dict[str, Any]]) -> str:
     max_n = 0
     for j in existing:
         jid = j.get("job_id", "")
@@ -53,6 +56,10 @@ def _generate_job_id(run_dir: Path) -> str:
 
 
 def load_pipeline_jobs(run_dir: Path) -> list[dict[str, Any]]:
+    return _load_jobs_unlocked(run_dir)
+
+
+def _load_jobs_unlocked(run_dir: Path) -> list[dict[str, Any]]:
     path = _jobs_path(run_dir)
     if not path.is_file():
         return []
@@ -74,8 +81,86 @@ def append_pipeline_job(
     evidence_role: str = "",
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    job = {
-        "job_id": _generate_job_id(run_dir),
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        job = _new_pipeline_job(
+            jobs,
+            source_id=source_id,
+            job_type=job_type,
+            evidence_role=evidence_role,
+            payload=payload,
+            idempotency_key=None,
+        )
+        jobs.append(job)
+        _write_jobs_unlocked(run_dir, jobs)
+    return job
+
+
+def create_or_get_pipeline_job(
+    run_dir: Path,
+    *,
+    source_id: str,
+    job_type: str,
+    idempotency_key: str,
+    evidence_role: str = "",
+    payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Create one durable job for an idempotency key, or return the existing one.
+
+    All identity checks and ID allocation occur while holding the jobs lock so a
+    concurrent replay cannot allocate a second Job for the same command.
+    """
+    if not idempotency_key.strip():
+        raise ValueError("idempotency_key is required")
+    normalized_payload = payload or {}
+    resolved_role = evidence_role or JOB_TYPES.get(job_type, "candidate_source_only")
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        existing = next(
+            (job for job in jobs if job.get("idempotency_key") == idempotency_key),
+            None,
+        )
+        if existing is not None:
+            identity = {
+                "source_id": source_id,
+                "job_type": job_type,
+                "evidence_role": resolved_role,
+                "payload": normalized_payload,
+            }
+            existing_identity = {
+                "source_id": existing.get("source_id", ""),
+                "job_type": existing.get("job_type"),
+                "evidence_role": existing.get("evidence_role", ""),
+                "payload": existing.get("payload", {}),
+            }
+            if existing_identity != identity:
+                raise ValueError("same idempotency key, different job identity")
+            return existing, False
+
+        job = _new_pipeline_job(
+            jobs,
+            source_id=source_id,
+            job_type=job_type,
+            evidence_role=resolved_role,
+            payload=normalized_payload,
+            idempotency_key=idempotency_key,
+        )
+        jobs.append(job)
+        _write_jobs_unlocked(run_dir, jobs)
+        return job, True
+
+
+def _new_pipeline_job(
+    jobs: list[dict[str, Any]],
+    *,
+    source_id: str,
+    job_type: str,
+    evidence_role: str,
+    payload: dict[str, Any] | None,
+    idempotency_key: str | None,
+) -> dict[str, Any]:
+    return {
+        "job_id": _next_id_from_loaded(jobs),
         "source_id": source_id,
         "job_type": job_type,
         "status": "queued",
@@ -86,13 +171,8 @@ def append_pipeline_job(
         "outputs": [],
         "error": None,
         "payload": payload or {},
+        "idempotency_key": idempotency_key,
     }
-    path = _jobs_path(run_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _jobs_lock(run_dir):
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(job, ensure_ascii=False) + "\n")
-    return job
 
 
 @contextmanager
@@ -121,44 +201,53 @@ def _jobs_lock(run_dir: Path, timeout: float = 5.0):
 
 def claim_pipeline_job(run_dir: Path, job_id: str) -> dict[str, Any] | None:
     with _jobs_lock(run_dir):
-        jobs = load_pipeline_jobs(run_dir)
+        jobs = _load_jobs_unlocked(run_dir)
         for j in jobs:
             if j["job_id"] == job_id and j.get("status") in ("queued",):
                 j["status"] = "running"
                 j["started_at"] = datetime.now(timezone.utc).isoformat()
-                _write_jobs(run_dir, jobs)
+                _write_jobs_unlocked(run_dir, jobs)
                 return j
     return None
 
 
 def complete_pipeline_job(run_dir: Path, job_id: str, *, outputs: list[str] | None = None) -> dict[str, Any] | None:
     with _jobs_lock(run_dir):
-        jobs = load_pipeline_jobs(run_dir)
+        jobs = _load_jobs_unlocked(run_dir)
         for j in jobs:
             if j["job_id"] == job_id:
                 j["status"] = "completed"
                 j["completed_at"] = datetime.now(timezone.utc).isoformat()
                 if outputs:
                     j["outputs"] = outputs
-                _write_jobs(run_dir, jobs)
+                _write_jobs_unlocked(run_dir, jobs)
                 return j
     return None
 
 
 def fail_pipeline_job(run_dir: Path, job_id: str, *, error: str) -> dict[str, Any] | None:
     with _jobs_lock(run_dir):
-        jobs = load_pipeline_jobs(run_dir)
+        jobs = _load_jobs_unlocked(run_dir)
         for j in jobs:
             if j["job_id"] == job_id:
                 j["status"] = "failed"
                 j["completed_at"] = datetime.now(timezone.utc).isoformat()
                 j["error"] = error
-                _write_jobs(run_dir, jobs)
+                _write_jobs_unlocked(run_dir, jobs)
                 return j
     return None
 
 
-def _write_jobs(run_dir: Path, jobs: list[dict[str, Any]]) -> None:
+def _write_jobs_unlocked(run_dir: Path, jobs: list[dict[str, Any]]) -> None:
     path = _jobs_path(run_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(j, ensure_ascii=False) for j in jobs) + "\n", encoding="utf-8")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write("\n".join(json.dumps(job, ensure_ascii=False) for job in jobs) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise

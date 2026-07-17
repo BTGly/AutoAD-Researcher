@@ -72,12 +72,20 @@ export interface ExperimentTaskDraft {
   task_id: string;
   run_id: string;
   status: 'pending_confirmation' | 'confirmed';
-  execution_mode: 'plan_only';
+  execution_mode: 'plan_only' | 'approve_each_step' | 'agent_assisted_after_approval';
   input_task: PipelineInputTask;
   evidence_refs: string[];
   summary_sha256: string;
   created_at: string;
   confirmed_at: string | null;
+}
+
+export interface ExperimentTaskConfirmationResult {
+  task: ExperimentTaskDraft;
+  session_id: string | null;
+  session_status: string | null;
+  environment_job_id: string | null;
+  disposition: 'plan_only' | 'created' | 'repaired' | 'reused';
 }
 
 export interface JobItem {

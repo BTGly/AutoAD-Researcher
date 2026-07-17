@@ -1,4 +1,9 @@
-import type { ExperimentTaskDraft, SourceInstruction, TaskRun } from './types';
+import type {
+  ExperimentTaskConfirmationResult,
+  ExperimentTaskDraft,
+  SourceInstruction,
+  TaskRun,
+} from './types';
 
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
@@ -55,10 +60,12 @@ export async function sendChat(
 export async function confirmExperimentTask(
   runId: string,
   taskId: string,
-): Promise<ExperimentTaskDraft> {
+  executionMode: ExperimentTaskDraft['execution_mode'],
+): Promise<ExperimentTaskConfirmationResult> {
   const res = await fetch(`/api/runs/${runId}/experiment-task/${taskId}/confirm`, {
     method: 'POST',
     headers: getHeaders(),
+    body: JSON.stringify({ execution_mode: executionMode }),
   });
   if (!res.ok) throw new Error(`Experiment task confirmation error: ${res.status}`);
   return res.json();
