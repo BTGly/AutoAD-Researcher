@@ -28,35 +28,59 @@ protected artifacts (路径列表 + SHA256)
 
 保存 hash。**实验前后检查 protected artifact hash。**
 
-### 2.1 三层 SHA256 防御（直接复用 AutoSOTA）
+### 2.1 三层 SHA256 防御（参考 AutoSOTA 行为，AutoAD 独立实现 `[REIMPL]`）
 
-> **来源：** `/root/autodl-tmp/repos/AutoSOTA/cli_guide.md` lines 735-802；`record_score.sh`。
+> **参考依据：**
+> - AutoSOTA `cli_guide.md` 对 protected artifact、违规退出和成绩丢弃的行为描述；
+> - 私有流水线 `record_score.sh` 的公开使用痕迹（该脚本不属于开源仓库，不可直接复用）；
+> - 实验目录中 Agent 生成的 `record_score.py` 仅作为实现复杂度参考。
+>
+> **约束：**
+> - AutoAD 不依赖 `/tools/record_score.sh`；
+> - 不从 AutoSOTA 私有流水线复制代码；
+> - ProtectedArtifactGuard 是 AutoAD 自有实现。
+
+AutoAD 实现以下四个函数，不照搬 AutoSOTA 的 `record_score` 完整流水线：
+
+```python
+freeze_protected_artifacts(paths) -> ProtectedHashes
+verify_protected_artifacts(snapshot) -> HashVerification
+classify_protocol_violation(verification) -> bool
+invalidate_attempt_metrics(attempt_id, reason) -> None
+```
 
 ```
 第一层 — SOFT（prompt 注入）
-  在 ExecutorAgent 和 Coordinator 的 system prompt 中声明:
-  "永远不修改以下受保护文件: {protected_paths}"
-  "永远不修改 eval 脚本、测试数据、metric 实现"
+   在 ExecutorAgent 和 Coordinator 的 system prompt 中声明:
+   "永远不修改以下受保护文件: {protected_paths}"
+   "永远不修改 eval 脚本、测试数据、metric 实现"
 
 第二层 — CONSEQUENCE WARNING（prompt 注入）
-  "如果你修改了受保护文件:
-   - 实验的 metrics 将被丢弃
-   - 该 attempt 标记为 PROTOCOL VIOLATION
-   - 不会计入 KEEP/DISCARD"
+   "如果你修改了受保护文件:
+    - 实验的 metrics 将被丢弃
+    - 该 attempt 标记为 PROTOCOL VIOLATION
+    - 不会计入 KEEP/DISCARD"
 
 第三层 — HARD SHA256 CHECK（确定性代码）
-  实验前: sha256sum 所有 protected_paths → 写入 protected_hashes.json
-  实验后: 重新计算 sha256sum，与 baseline 对比
-  → 不匹配 → exit code 9 (PROTOCOL VIOLATION)
-  → 该 attempt 的 metrics 被丢弃，不写入 scores.jsonl
-  → 不更新 champion
-  → 在日志中列出被篡改的文件
-  → (可选) git checkout 自动回退改动
+   实验前: sha256sum 所有 protected_paths → 写入 protected_hashes.json
+   实验后: 重新计算 sha256sum，与 baseline 对比
+   → AttemptCategory.PROTOCOL_VIOLATED
+   → 该 attempt 的 metrics 被丢弃，不进入 DecisionEngine
+   → 不更新 champion
+   → 在日志中列出被篡改的文件
 ```
+
+AutoAD 不实现：
+
+- `scores.jsonl` 格式（AutoAD 使用自己的 AttemptStore）；
+- `record_score.sh` 的 Docker 安装路径逻辑；
+- AutoSOTA 特有的 Git tag（如 `_best`）；
+- AutoSOTA 特有的 exit code 9 体系（AutoAD 使用 `failure_code=PROTECTED_ARTIFACT_CHANGED`）。
+- 自动化 `git checkout` 回退（AutoAD 由 worktree 隔离天然防护）。
 
 **三层的关键设计意图（来自 AutoSOTA）：** 前两层让 Agent **少尝试犯规**，节省 token。第三层让犯规尝试**零回报**，促使自我修正。不是只有代码检查——是一个完整的威慑链。
 
-### 2.2 保护什么 vs 不保护什么（来自 AutoSOTA）
+### 2.2 保护什么 vs 不保护什么（参考 AutoSOTA 原则）
 
 | 锁定 | 不锁定 |
 |------|--------|
@@ -66,7 +90,7 @@ protected artifacts (路径列表 + SHA256)
 | held-out 数据 | checkpoint 文件 |
 | dataset split 逻辑 | |
 
-### 2.3 复位机制（来自 AutoSOTA）
+### 2.3 复位机制
 
 删除 `protected_hashes.json` → 重新 baseline。用于合法场景（如用户显式修改了 eval 协议）。
 

@@ -5,11 +5,39 @@
 
 ## 参考覆盖说明
 
-本轮材料中“22 个”指 22 个核心运行、科研自动化、编程、实验和异常检测项目；另有 6 个文档处理与提示词参考项目。因此本设计实际吸收的是：
+本轮材料中"22 个"指 22 个核心运行、科研自动化、编程、实验和异常检测项目；另有 6 个文档处理与提示词参考项目。因此本设计实际吸收的是：
 
 - 22 个核心运行/实验项目；
 - 6 个文档/提示词项目；
 - 合计 28 个参考项。
+
+## 外部参考复用等级
+
+所有外部来源的代码、模式或设计必须按以下五级标签分类，并在各计划文档中标注。禁止笼统使用"直接复用"表述。
+
+| 标签 | 含义 | AutoAD 行为 |
+|------|------|------------|
+| `[COPY]` | 代码可直接纳入 | 保留版权、许可证、来源和必要的最小 import 修改 |
+| `[PORT]` | 小型函数跨语言移植 | 保留算法语义，自行写目标语言版本和测试 |
+| `[ADAPT]` | 算法主体可用，但依赖外部数据模型 | 提取算法，重写 AutoAD 事件/schema 适配层 |
+| `[ADAPT-LATER]` | 同上，但本轮不实现 | 标记延期，主链闭环后再接 |
+| `[REIMPL]` | 只有行为文档或不可复用实现 | 根据公开行为描述独立实现 |
+| `[REFER]` | 仅借鉴架构或设计模式 | 不复制源码，不形成第三方运行时依赖 |
+
+所有外部引用必须记录：`source_repository`、`source_commit`、`source_path`、`license`、`reuse_level`、`autoad_target`、`estimated_effort`、`attribution_required`。禁止使用 `/root/autodl-tmp/...` 作为实现时路径。
+
+### 本轮复用矩阵
+
+| 来源 | 等级 | 本轮动作 |
+|------|------|----------|
+| AutoSOTA SHA guard | `[REIMPL]` | 根据 `cli_guide.md` 和已观察到的 Python 移植行为独立实现 ProtectedArtifactGuard |
+| SWE-Together failure classifier | `[COPY]` / `[ADAPT]` | vendor 原文件 + AutoAD wrapper，仅作为实验后分类器，不作为运行时 watchdog |
+| OpenHands StuckDetector | `[ADAPT-LATER]` | 事件类型耦合明显，主链闭环后再接完整 5-mode |
+| MiMo `stableStringify` | `[PORT-PENDING-LICENSE]` | TypeScript → Python 改写，确认许可证后再落地 |
+| Arbor | `[REFER]` | Idea Tree、Coordinator/Executor 切分、B_dev/B_test |
+| AI-Scientist | `[REFER]` | 模板实验和 subprocess 循环 |
+| Claude Code internals | `[REFER]` | 工具生命周期、上下文分层、错误恢复模式 |
+| aider SEARCH/REPLACE | `[REIMPL]` | 根据三个策略自行实现，不复制 AGPL 主体 |
 
 ## 文档列表
 
@@ -35,7 +63,7 @@
 5. `开发计划04_ExperimentJob_GPU资源与训练监控.md`
    - 实现实验 Job；
    - GPU ResourceLease；
-   - 非阻塞训练进程、heartbeat、Sentinel；
+   - 非阻塞训练进程、heartbeat、RuntimeWatchdog + PostRunFailureClassifier；
    - LLM 仅作事件触发的保底诊断。
 
 6. `开发计划05_实验有效性_Reflection与决策.md`

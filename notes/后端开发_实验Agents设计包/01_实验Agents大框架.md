@@ -39,40 +39,49 @@
 
 ## 2. 参考项目吸收结论
 
-### 2.1 直接吸收的确定性模式
+### 2.1 参考的确定性模式
 
-| 模式 | 参考来源 | AutoAD 落点 |
-|---|---|---|
-| protected artifact SHA256 guard | AutoSOTA | EvaluationContract / ProtectedArtifactGuard |
-| NaN fast fail | autoresearch | 训练脚本适配器 / Sentinel |
-| fixed wall-clock budget | autoresearch | AttemptBudget |
-| stable step signature | MiMo/OpenCode | Job idempotency / ToolCall signature |
-| step/cost/wall 三重限制 | mini-swe-agent | AgentBudget / CognitiveBudget |
-| finally-save | mini-swe-agent | trajectory、attempt、checkpoint 强制落盘 |
-| StuckDetector | software-agent-sdk | Coordinator / Executor 防重复与卡死 |
-| shell=False | AutoAD 现有 Environment / Runner | 所有命令执行 |
-| git worktree | Arbor | 每个代码实验分支 |
-| B_dev/B_test | Arbor | 研究选择与最终验证分离 |
-| noise floor | AutoScientists | ScientificEffect 判断 |
-| correctness gate | AutoLab | Implementation/Evaluation validity |
+| 模式 | 参考来源 | AutoAD 落点 | 复用等级 |
+|------|----------|------------|---------|
+| protected artifact SHA256 guard | AutoSOTA | EvaluationContract / ProtectedArtifactGuard | `[REIMPL]` |
+| NaN fast fail | autoresearch | 训练脚本适配器 / PostRunFailureClassifier | `[REFER]` |
+| fixed wall-clock budget | autoresearch | AttemptBudget | `[REFER]` |
+| stable step signature | MiMo/OpenCode | Job idempotency / ToolCall signature | `[PORT-PENDING-LICENSE]` |
+| step/cost/wall 三重限制 | mini-swe-agent | AgentBudget / CognitiveBudget | `[REFER]` |
+| finally-save | mini-swe-agent | trajectory、attempt、checkpoint 强制落盘 | `[REFER]` |
+| StuckDetector | software-agent-sdk | Coordinator / Executor 防重复与卡死 | `[ADAPT-LATER]` |
+| shell=False | AutoAD 现有 Environment / Runner | 所有命令执行 | — |
+| git worktree | Arbor | 每个代码实验分支 | `[REFER]` |
+| B_dev/B_test | Arbor | 研究选择与最终验证分离 | `[REFER]` |
+| noise floor | AutoScientists | ScientificEffect 判断 | `[REFER]` |
+| correctness gate | AutoLab | Implementation/Evaluation validity | `[REFER]` |
 
-### 2.2 直接吸收的认知模式
+### 2.2 参考的认知模式
 
-| 模式 | 来源 | AutoAD 落点 |
-|---|---|---|
-| OBSERVE→IDEATE→SELECT→DISPATCH→DECIDE | Arbor | Research Coordinator |
-| KEEP-WHY | AutoScientists | Reflection / CognitiveCommit |
-| 由成功属性衍生候选 | AutoScientists / Arbor | 下一轮 IDEATE |
-| Structured critique JSON | AutoFigure | ReflectionResult |
-| best-result tracking | AutoFigure / autoresearch | ChampionStore |
-| “I am done” sentinel | AI-Scientist | Coordinator Stop Proposal |
-| FORBIDDEN / PREFERRED directions | AutoSOTA | Session ResearchPrior |
-| prompt + code + archive sandwich | AI-Scientist | Coordinator ContextPack |
-| 子 Agent = 同一引擎换配置 | DeepAgents / Claude Code 模式 | AgentFactory |
+| 模式 | 来源 | AutoAD 落点 | 复用等级 |
+|------|------|------------|---------|
+| OBSERVE→IDEATE→SELECT→DISPATCH→DECIDE | Arbor | Research Coordinator | `[REFER]` |
+| KEEP-WHY | AutoScientists | Reflection / CognitiveCommit | `[REFER]` |
+| 由成功属性衍生候选 | AutoScientists / Arbor | 下一轮 IDEATE | `[REFER]` |
+| Structured critique JSON | AutoFigure | ReflectionResult | `[REFER]` |
+| best-result tracking | AutoFigure / autoresearch | ChampionStore | `[REFER]` |
+| "I am done" sentinel | AI-Scientist | Coordinator Stop Proposal | `[REFER]` |
+| FORBIDDEN / PREFERRED directions | AutoSOTA | Session ResearchPrior | `[REFER]` |
+| prompt + code + archive sandwich | AI-Scientist | Coordinator ContextPack | `[REFER]` |
+| 子 Agent = 同一引擎换配置 | DeepAgents / Claude Code 模式 | AgentFactory | `[REFER]` |
 
-### 2.3 不直接复制的部分
+### 2.3 复用边界
 
-- 不复制外部项目的完整源码仓，但**直接复用已验证的组件代码**（如 aider 的 SEARCH/REPLACE 策略栈、SWE-Together 的 InfraFailureSentinel、MiMo 的 stableStringify）；
+外部能力按 `[COPY] / [PORT] / [ADAPT] / [REIMPL] / [REFER]` 五级分级，使用前必须在本索引 `00_README.md` 的复用矩阵中完成来源、许可证和复用等级记录。
+
+本轮边界：
+
+- `[COPY]`：SWE-Together `eval_infra_sentinel.py`（Apache-2.0，vendor 并保留 LICENSE/NOTICE）；
+- `[REIMPL]`：AutoSOTA SHA256 guard、aider SEARCH/REPLACE 策略；
+- `[PORT-PENDING-LICENSE]`：MiMo `stableStringify`；
+- `[ADAPT-LATER]`：OpenHands 5-mode StuckDetector；
+- `[REFER]`：Arbor、AI-Scientist、Claude Code internals、autoresearch、AutoScientists、mini-swe-agent、Anomalib。
+- 不复制外部项目的完整源码仓；
 - 不引入第二套任务队列；
 - 不将 GPU 进程生命周期交给 Agent；
 - 不使用固定 20+ Stage 的大管线；
@@ -106,7 +115,7 @@
 │ - observe                     │   │ ExperimentWorker          │
 │ - compare                     │   │ WorktreeManager           │
 │ - reflect                     │   │ GPU ResourceLease         │
-│ - revise hypothesis           │   │ Runner + Sentinel         │
+│ - revise hypothesis           │   │ Runner + RuntimeWatchdog  │
 │ - ideate                      │   │ Metrics/Resource Collector│
 │ - select                      │   │                           │
 │ - dispatch proposal           │   │                           │
@@ -546,7 +555,7 @@ GPU 编号不写死在 EnvironmentSnapshot。
 - heartbeat；
 - SIGTERM 保存。
 
-#### Sentinel
+#### RuntimeWatchdog（运行时守护）
 
 - PID；
 - heartbeat stale；
@@ -557,9 +566,16 @@ GPU 编号不写死在 EnvironmentSnapshot。
 - expected outputs；
 - TERM→KILL。
 
+#### PostRunFailureClassifier（实验后分类）
+
+- 读取 stdout/stderr/exit code/artifacts；
+- detector chain（按 DetectorProfile 启用）；
+- sidecar 缓存；
+- failure classification 输出。
+
 #### HealthDiagnosisAgent
 
-只在 Sentinel 无法分类时事件触发，输出建议，不直接 kill。
+只在 PostRunFailureClassifier 无法分类时事件触发，输出建议，不直接 kill。
 
 ---
 
@@ -770,7 +786,7 @@ runs/<run_id>/experiment/<session_id>/
 - worktree；
 - ExecutorAgent；
 - Experiment Job；
-- timeout / heartbeat / Sentinel；
+- timeout / heartbeat / RuntimeWatchdog + PostRunFailureClassifier；
 - protected hash；
 - implementation activation evidence；
 - comparable evaluation；

@@ -363,3 +363,86 @@ attempt/
 - 实现是否生效有证据；
 - scientific change 不在原 Attempt 内静默发生；
 - baseline/champion 分支始终干净。
+
+---
+
+## 7. 工具调用规范（薄层，不建独立框架）
+
+### 7.1 ToolSpec
+
+工具定义为 `ToolSpec` + handler function（不做 class-per-tool 框架）：
+
+```python
+class ToolSpec(BaseModel):
+    name: str
+    input_model: type[BaseModel]
+    readonly: bool
+    concurrency_safe: bool = False
+    timeout_seconds: float
+    retry_on_timeout: bool = False
+    permission_policy: str  # "allow_all" | "path_check" | "contract_check"
+```
+
+工具是普通函数，通过 `build_tool()` 注册：
+
+```python
+async def tree_add_node(input: TreeAddNodeInput, ctx: ToolContext):
+    ...
+
+build_tool(
+    spec=ToolSpec(name="tree_add_node", input_model=TreeAddNodeInput, ...),
+    handler=tree_add_node,
+)
+```
+
+不实现：每工具一个目录、18 个生命周期方法、UI renderer、Hook manager、自动并发调度器。
+
+### 7.2 三阶段调用管道
+
+```python
+async def execute_tool(spec, raw_input, ctx):
+    # Phase 1: Validate (no I/O)
+    validated = spec.input_model.model_validate(raw_input)
+
+    # Phase 2: Permission
+    decision = permission_check(spec, validated, ctx)
+    if decision != "allow":
+        return ToolError(decision.reason)
+
+    # Phase 3: Execute (I/O) with timeout
+    try:
+        return await asyncio.wait_for(spec.handler(validated, ctx),
+                                      timeout=spec.timeout_seconds)
+    except TimeoutError:
+        if spec.retry_on_timeout:
+            return await asyncio.wait_for(spec.handler(validated, ctx),
+                                          timeout=spec.timeout_seconds)
+        return ToolError("tool_timeout")
+```
+
+不实现：并发安全批处理、自动重试链、多级回退。
+
+### 7.3 双流上下文构建
+
+```python
+# 静态上下文——Session 建立后生成一次，固化到 artifact
+static_context = {
+    "objective": ...,
+    "allowed_paths": ...,
+    "protected_hashes": ...,
+    "evaluation_contract": ...,
+}
+write_artifact("coordinator_static_context.json", static_context)
+
+# 动态上下文——每个 decision boundary 生成
+turn_context = {
+    "tree_frontier": ...,
+    "latest_outcome_cards": ...,
+    "champion": ...,
+    "budget_remaining": ...,
+    "recent_commits": ...,
+}
+write_artifact("coordinator_turn_context.json", turn_context)
+```
+
+静态上下文可做内存缓存加速（如 `functools.lru_cache`），但 artifact 才是恢复时的权威真源。不要使用进程内 LRU 作为 session 间共享的状态来源。

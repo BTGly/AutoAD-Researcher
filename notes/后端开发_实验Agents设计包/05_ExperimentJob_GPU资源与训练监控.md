@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-把真实训练从阻塞式一次调用升级为可恢复、可取消、可监控的持久 Experiment Job，并新增 GPU ResourceLease 和确定性 Sentinel。
+把真实训练从阻塞式一次调用升级为可恢复、可取消、可监控的持久 Experiment Job，并新增 GPU ResourceLease、RuntimeWatchdog 和 PostRunFailureClassifier。
 
 LLM 不实时盯训练。
 
@@ -213,66 +213,15 @@ updated_at
 
 ---
 
-## 5. Sentinel
+## 5. 运行时监控与实验后分类（两个独立组件）
 
-> **直接复用 SWE-Together 的 `eval_infra_sentinel.py` 设计**（`/root/autodl-tmp/repos/SWE-Together/src/eval_infra_sentinel.py`）。
+> **关键修正：** 运行时进程守护（RuntimeWatchdog）与实验后失败分类（PostRunFailureClassifier）是两个职责不同的组件，拆分设计，不混在一个"Sentinel"中。
 
-### 5.1 核心设计原则
+---
 
-- **Gating predicate（来自 SWE-Together line 491）：** 如果训练产生了有意义的输出（patch > 200 字节 / metrics.json 非空），即使 stderr 中有错误，也算 `ok` 而非 `run_failed`。语义："重新跑这个实验不太可能产生不同结果"→不需要重跑。
-- **排除式计分（来自 SWE-Together line 261-273）：** run_failed 的 attempt **不计为 0.0，而是从评分中排除**。这防止基础设施不稳定拖低系统指标。
-- **Sidecar pattern（来自 SWE-Together）：** `trial_infra.json` 写在 attempt 目录里，`classify_or_load()` 优先读缓存，`--skip-existing` 时零开销复用。
+### 5.1 RuntimeWatchdog
 
-### 5.2 Detector Chain（按特异性排序，first match wins）
-
-全部 detector 定义直接复用 SWE-Together 的 `DETECTORS` 列表，按 AutoAD 训练场景调整：
-
-| # | Detector | 触发条件 | verdict |
-|---|----------|----------|---------|
-| 1 | `empty_transcript` | stdout+stderr 为 0 字节 | `run_failed` — Worker 启动了但进程没产生任何输出 |
-| 2 | `oom_error` | stderr 匹配 `CUDA out of memory` / `torch.cuda.OutOfMemoryError` | `run_failed` — 可重试，建议缩减 batch size |
-| 3 | `cuda_error` | stderr 匹配 `CUDA error` / `CUBLAS_STATUS_*` / `cuDNN error` | `run_failed` — GPU 运行时故障 |
-| 4 | `disk_full` | stderr 匹配 `No space left on device` | `run_failed` |
-| 5 | `provider_402_balance` | stderr 匹配 `Insufficient Balance`（API 调用场景） | `run_failed` |
-| 6 | `provider_429_quota` | stderr 匹配 rate limit + quota/exhaustion | `run_failed` |
-| 7 | `provider_401_auth` | stderr 匹配 `Invalid API key` / auth failure | `run_failed` |
-| 8 | `python_import_error` | stderr 匹配 `ModuleNotFoundError`（非目标仓库） | `run_failed` — 环境问题 |
-| 9 | `no_agent_progress` | step ≥ 5，0 次 successful edit，空 patch | `run_failed` — 代码修改未生效（借用 SWE-Together 的 MIN_TURNS_FOR_NO_PROGRESS = 5） |
-
-### 5.3 再分类（来自 SWE-Together 的 rerun policy）
-
-| Rerun-worthy（可重试） | Fair-zero（算 agent 的成绩） |
-|------------------------|----------------------------|
-| oom_error, cuda_error, disk_full | wall_timeout（超时→TIMED_OUT 是硬 cap） |
-| provider_429_quota, provider_401_auth | provider_402_balance（余额不足→不算系统问题） |
-| empty_transcript | NaN/Inf→FAIL_FAST（算训练失败，不计为 infra） |
-| python_import_error（环境问题） | exit 0 但指标全部为 0（可能作弊） |
-
-### 5.6 BatchSupervisor — 批处理中的紧急事件通道
-
-Sentinel 产生紧急事件时**不直接唤醒 Coordinator**。通道是：
-
-```text
-Sentinel
-  → 持久 AttemptHealthEvent (写入 EventStore)
-  → BatchSupervisor
-  → BatchFailurePolicy
-  → 必要时建立 Coordinator decision boundary
-```
-
-不掉头向 Coordinator 推送消息（不通过 WebSocket 或活跃 Agent 的通知）。事件在 EventStore 中持久化，Coordinator 下次到达 decision boundary 时读取。
-
-### 5.7 批次内 variant 的失败耦合关系
-
-每个批量实验需要声明 `coupling`：
-
-| 类型 | 一个 variant OOM 后 |
-|------|-------------------|
-| `independent` | 当前 Attempt 失败，其他 sibling 继续 |
-| `shared_assumption` | 暂停尚未启动的 sibling，已运行的继续 |
-| `gang` | 取消整个批次并释放全部资源 |
-
-### 5.8 确定性 Sentinel 规则
+运行在 Attempt 期间的守护协程，只关心进程生死和基础健康状况。
 
 轮询间隔 15–30 秒，检查：
 
@@ -285,30 +234,195 @@ GPU utilization / memory
 disk
 wall time
 checkpoint mtime（> 周期阈值 → 可能 hang）
-known error patterns（见 5.2 detector chain）
 expected outputs（metrics.json / checkpoint）
 ```
 
 确定性动作：
 
 ```text
-NaN/Inf                          → FAIL_FAST (非 infra)
-OOM                              → FAILURE(OOM) (run_failed, 可重试)
-heartbeat stale + PID dead       → LOST/FAILED
+NaN/Inf                          → FAIL_FAST (health_event)
+OOM                              → OOM_DETECTED (health_event)
+heartbeat stale + PID dead       → WORKER_LOST
 heartbeat stale + PID alive      → SUSPECTED_STALL → grace(30s) → SIGTERM → 等(30s) → SIGKILL
 wall timeout                     → TIMED_OUT
-exit 0 + outputs complete        → COMPLETED
-exit 0 + outputs missing         → INVALID_COMPLETION
-exit 0 + metrics.json 存在       → gating predicate: 算 ok (不是 infra)
-run_failed                     → 排除不计分，可 retry（最多 3 次）
+exit 0 + outputs complete        → COMPLETED (无事件)
+exit 0 + outputs missing         → OUTPUTS_MISSING (health_event)
 ```
 
-### 5.5 排除式计分
+输出：
+
+```text
+attempts/<id>/health_events.jsonl
+```
+
+每行一条：
+
+```json
+{"event": "OOM_DETECTED", "timestamp": "...", "stderr_snippet": "CUDA out of memory"}
+```
+
+RuntimeWatchdog 不写 OutcomeCard，不做失败分类。进程结束后由 AttemptFinalizer 统一综合。
+
+---
+
+### 5.2 PostRunFailureClassifier
+
+实验进程已经结束后运行。参考 SWE-Together 的 `eval_infra_sentinel.py`（`[COPY]`，Apache-2.0，vendor 并保留 LICENSE/NOTICE），
+
+**仅复用：**
+- detector-chain / first-match-wins 模式；
+- `classify_or_load()` sidecar 缓存；
+- rerun-worthy / non-rerun policy；
+- 排除式计分语义。
+
+**不复用：**
+- provider auth/quota/balance detector（coding-agent 特有）；
+- `empty_transcript` / `no_agent_progress` / `patch_bytes_threshold`；
+- Claude Code / OpenCode transcript 解析器（AutoAD 使用不同的 trace 格式）。
+
+#### 5.2.1 DetectorProfile
+
+AutoAD 不原样启用 SWE-Together 全部 DETECTORS。PostRunFailureClassifier 通过 `DetectorProfile` 选择场景适用的检测器。
+
+```python
+class DetectorProfile(str, Enum):
+    GPU_TRAINING = "gpu_training"
+    CODING_AGENT = "coding_agent"
+    CUSTOM = "custom"
+
+class FailureClassifierConfig(BaseModel):
+    profile: DetectorProfile = DetectorProfile.GPU_TRAINING
+    enabled_detectors: list[str] | None = None
+    disabled_detectors: list[str] = []
+```
+
+优先级：
+
+```text
+enabled_detectors 显式提供 → 只启用指定 detector
+否则 → 加载 profile 默认列表 → 再移除 disabled_detectors
+```
+
+#### 5.2.2 GPU_TRAINING 默认启用列表
+
+| Detector | FailureCode | 默认策略 |
+|----------|------------|---------|
+| `oom_error` | `OOM` | 允许缩 batch 时重试一次 |
+| `cuda_runtime_error` | `CUDA_RUNTIME_ERROR` | 瞬时错误可重试 |
+| `cudnn_error` | `CUDNN_ERROR` | 瞬时错误可重试 |
+| `disk_full` | `DISK_FULL` | 不立即重试，先释放空间 |
+| `process_spawn_failed` | `PROCESS_SPAWN_FAILED` | 自动重试 1 次 |
+| `worker_lost` | `WORKER_LOST` | 原配置自动重试 |
+| `stale_heartbeat` | `STALLED` 或 `WORKER_LOST` | 区分 PID 状态后终止重试 |
+| `wall_timeout` | `TIMEOUT_WITH_PROGRESS` / `TIMEOUT_NO_PROGRESS` | 根据是否有 progress 决策 |
+| `nan_or_inf` | `NAN_OR_INF` | 不作为纯 infra 重试，交 Executor 或 Coordinator |
+| `python_import_error` | `IMPORT_OR_SYNTAX_ERROR` | 交 Executor 有界修复 |
+| `metrics_missing` | `METRICS_MISSING` | 检查输出和 parser |
+| `invalid_metrics_schema` | `INVALID_METRICS_SCHEMA` | 检查 parser 配置 |
+
+#### 5.2.3 GPU_TRAINING 默认禁用列表
+
+以下 coding-agent 特定 detector 默认禁用（由其他组件处理）：
+
+```text
+provider_401_auth           → AgentRuntime / ModelCallPolicy
+provider_402_balance        → AgentRuntime / ModelCallPolicy
+provider_429_quota           → AgentRuntime / ModelCallPolicy
+empty_transcript             → RuntimeWatchdog（进程无输出即 LOST）
+no_agent_progress            → ExecutorProgressGuard
+patch_bytes_threshold        → PatchGate
+agent_turn_limit             → CognitiveBudget
+tool_call_format_error       → CognitiveTaskRunner
+```
+
+#### 5.2.4 Detector 顺序（first match wins）
+
+```text
+1. PROTECTED_ARTIFACT_CHANGED
+2. OOM / CUDA_RUNTIME_ERROR / CUDNN_ERROR / DISK_FULL
+3. NAN_OR_INF
+4. IMPORT_OR_SYNTAX_ERROR
+5. METRICS_MISSING / INVALID_METRICS_SCHEMA
+6. UNKNOWN_RUN_FAILURE
+```
+
+越具体的 detector 越靠前。
+
+#### 5.2.5 Sidecar 输出
+
+```json
+{
+  "classifier_version": "autoad-gpu-v1",
+  "profile": "gpu_training",
+  "enabled_detectors": ["oom_error", "cuda_runtime_error", "nan_or_inf"],
+  "matched_detector": "oom_error",
+  "failure_code": "OOM",
+  "attempt_category": "run_failed",
+  "retryable": true
+}
+```
+
+写入 `attempts/<id>/failure_classification.json`。
+
+---
+
+### 5.3 AttemptFinalizer
+
+唯一致力 OutcomeCard 的组件，进程结束后统一综合以下来源：
+
+```text
+execution_result.json     — Worker 写入
+health_events.jsonl        — RuntimeWatchdog 写入
+failure_classification.json — PostRunFailureClassifier 写入
+metrics.json               — 训练输出
+protected_hashes.json      — EvaluationContract SHA 校验
+```
+
+输出 `outcome_card.json` 和 `attempt_category`，供 Coordinator 读取。AttemptFinalizer 不允许分段写入——要么整体成功，要么整体失败。
+
+#### 三阶段 Artifact 写入时序
+
+| 阶段 | 组件 | 写入 |
+|------|------|------|
+| 运行前 | RetryPolicy | 不写 OutcomeCard |
+| 运行中 | RuntimeWatchdog | `health_events.jsonl` |
+| 进程结束 | AttemptFinalizer | `outcome_card.json`（唯一写入口） |
+| Coordinator 读取后 | Coordinator | `decision.json`、`cognitive_commit.jsonl` |
+
+Coordinator 不修改 OutcomeCard，只读。
+
+---
+
+### 5.4 BatchSupervisor — 批处理中的紧急事件通道
+
+RuntimeWatchdog 或 PostRunFailureClassifier 产生事件时**不直接唤醒 Coordinator**。通道是：
+
+```text
+RuntimeWatchdog / PostRunFailureClassifier
+  → 持久 AttemptHealthEvent (写入 EventStore)
+  → BatchSupervisor
+  → BatchFailurePolicy
+  → 必要时建立 Coordinator decision boundary
+```
+
+不掉头向 Coordinator 推送消息（不通过 WebSocket 或活跃 Agent 的通知）。事件在 EventStore 中持久化，Coordinator 下次到达 decision boundary 时读取。
+
+### 5.5 批次内 variant 的失败耦合关系
+
+每个批量实验需要声明 `coupling`：
+
+| 类型 | 一个 variant OOM 后 |
+|------|-------------------|
+| `independent` | 当前 Attempt 失败，其他 sibling 继续 |
+| `shared_assumption` | 暂停尚未启动的 sibling，已运行的继续 |
+| `gang` | 取消整个批次并释放全部资源 |
+
+### 5.6 排除式计分
 
 ```python
 def effective_score(attempt_dir: Path, raw_score: float | None) -> float | None:
-    verdict = classify_attempt(attempt_dir)  # 读 trial_infra.json 或重算
-    if verdict.status == "run_failed":
+    verdict = classify_attempt(attempt_dir)  # 读 failure_classification.json 或重算
+    if verdict.attempt_category == "run_failed":
         return None  # 排除了——不算 0.0
     return raw_score or 0.0
 ```
@@ -321,10 +435,10 @@ def effective_score(attempt_dir: Path, raw_score: float | None) -> float | None:
 
 只在以下事件触发：
 
-- Sentinel 无法分类；
-- heartbeat 正常但 GPU 长期低利用；
-- stderr 新型模式；
-- 重复 retry；
+- PostRunFailureClassifier 无法分类（failure_code = UNKNOWN）；
+- 但 heartbeat 正常且 GPU 长期低利用；
+- stderr 出现新型模式；
+- 重复 retry 仍失败；
 - loss 异常但未达到确定性 stop；
 - process、GPU、文件状态冲突。
 
@@ -395,14 +509,28 @@ checkpoint_manifest.json
 - timeout；
 - restart observation。
 
-### PR 04D：Sentinel
+### PR 04D：RuntimeWatchdog
 
-- heartbeat；
-- error patterns；
+- heartbeat 轮询；
+- PID/process group 验证；
 - TERM/KILL；
-- output completion。
+- stdout growth & checkpoint mtime；
+- health_events.jsonl 写入。
 
-### PR 04E：HealthDiagnosisAgent
+### PR 04E：PostRunFailureClassifier
+
+- FailureClassifierConfig / DetectorProfile；
+- detector chain（GPU_TRAINING profile）；
+- sidecar 缓存；
+- failure_classification.json 写入。
+
+### PR 04F：AttemptFinalizer
+
+- 综合 execution_result + health_events + metrics + SHA 校验；
+- outcome_card.json 输出；
+- 三阶段写入时序保证。
+
+### PR 04G：HealthDiagnosisAgent
 
 - event trigger；
 - compact evidence；
@@ -432,7 +560,7 @@ checkpoint_manifest.json
 - worker crash 后回收；
 - 环境 probe 使用短 lease。
 
-### 9.3 Sentinel 故障注入
+### 9.3 RuntimeWatchdog 故障注入
 
 fixture 脚本：
 
@@ -497,7 +625,7 @@ OOM、NaN、timeout 这类可能与方案有关的错误，不能一律当作基
 
 ## 11. 三阶段 Artifact 写入（不同组件写不同 Artifact）
 
-> OutcomeCard 只有一个写入口，不是 Worker/Sentinel/Coordinator 三方争写。
+> OutcomeCard 只有一个写入口，不是 Worker/RuntimeWatchdog/Coordinator 三方争写。详见 §5.3 AttemptFinalizer 时序。
 
 ### 运行前
 
@@ -511,32 +639,20 @@ RetryPolicy 检查历史 Attempt：
 
 ### 运行中
 
-Sentinel 发现异常（OOM / NaN / heartbeat stale / timeout / process lost）追加：
+RuntimeWatchdog 发现异常追加 `health_events.jsonl`（见 §5.1）。
 
-```text
-attempts/<id>/health_events.jsonl
-```
-
-每行一条：
-
-```json
-{"event": "OOM", "timestamp": "...", "stderr_snippet": "CUDA out of memory"}
-```
-
-然后要求 Worker 终止或标记进程。
-
-Sentinel 不写 OutcomeCard。
+RuntimeWatchdog 不写 OutcomeCard。
 
 ### 进程结束后
 
-**唯一的`AttemptFinalizer`** 写 `outcome_card.json`。它综合：
+AttemptFinalizer 写 `outcome_card.json`（见 §5.3）。它综合：
 
 - execution result
 - health events
+- failure classification
 - metrics
 - protected hash 对比
 - EvaluationContract 校验
-- failure code
 
 ### Coordinator 读取后
 
