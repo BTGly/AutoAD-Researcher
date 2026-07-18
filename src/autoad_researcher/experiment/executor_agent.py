@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from autoad_researcher.experiment.executor_contracts import InterventionContract, WorkspaceSpec
 from autoad_researcher.experiment.patch_protocol import PatchApplyResult, SearchReplaceApplier, SearchReplaceEdit
+from autoad_researcher.experiment.executor_repair import RepairRecord, append_repair_record, classify_repair_failure
 
 
 class ExecutorLimits(BaseModel):
@@ -136,16 +137,30 @@ class ExecutorAgent:
             if self._limits.max_model_calls < 1:
                 summary = ExecutorSummary(status="budget_exhausted", model_calls=0, steps=0, changed_files=[], changed_symbols=[], error="Executor model-call budget exhausted")
                 return summary
-            proposal = ExecutorProposal.model_validate(proposal_provider(tools))
             changed_files: list[str] = []
-            for edit in proposal.edits:
-                result = tools.apply_edit(edit, diff_path=self._artifact_dir / "patch.diff")
-                if result.status == "applied":
-                    changed_files.append(edit.path)
-                elif result.status in {"rejected", "rolled_back"}:
-                    summary = ExecutorSummary(status="implementation_failed", model_calls=1, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence, error=f"{result.decision.code}: {result.decision.detail}")
+            hard_failures = 0
+            proposal: ExecutorProposal | None = None
+            for model_call in range(1, min(self._limits.max_model_calls, self._contract.max_repairs + 1) + 1):
+                proposal = ExecutorProposal.model_validate(proposal_provider(tools))
+                failed = None
+                for edit in proposal.edits:
+                    result = tools.apply_edit(edit, diff_path=self._artifact_dir / "patch.diff")
+                    if result.status == "applied": changed_files.append(edit.path)
+                    elif result.status in {"rejected", "rolled_back"}:
+                        failed = result; break
+                if failed is None:
+                    summary = ExecutorSummary(status="completed", model_calls=model_call, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence)
                     return summary
-            summary = ExecutorSummary(status="completed", model_calls=1, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence)
+                classification = classify_repair_failure(failed.decision.code)
+                if classification == "hard_policy_violation": hard_failures += 1
+                repair_index = model_call
+                if repair_index <= self._contract.max_repairs:
+                    append_repair_record(self._artifact_dir / "repair_log.jsonl", RepairRecord(repair_index=repair_index, trigger=failed.decision.code, classification=classification, patch_ref="patch.diff", validation_result=failed.decision.detail))
+                if hard_failures >= 2 or repair_index >= self._contract.max_repairs:
+                    summary = ExecutorSummary(status="implementation_failed", model_calls=model_call, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence, error=f"{failed.decision.code}: {failed.decision.detail}")
+                    return summary
+            assert proposal is not None
+            summary = ExecutorSummary(status="implementation_failed", model_calls=min(self._limits.max_model_calls, self._contract.max_repairs + 1), steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence, error="repair budget exhausted")
             return summary
         except (RuntimeError, TimeoutError) as exc:
             summary = ExecutorSummary(status="budget_exhausted", model_calls=1 if summary is None else summary.model_calls, steps=tools.steps, changed_files=[], changed_symbols=[], error=str(exc))
