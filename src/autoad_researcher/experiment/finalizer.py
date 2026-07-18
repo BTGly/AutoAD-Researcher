@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.experiment.evaluation_contract import EvaluationContract
 from autoad_researcher.experiment.failure_classifier import classify_or_load
+from autoad_researcher.experiment.validity import ComparisonIdentity, ImplementationEvidence, comparable, scientific_effect
 from autoad_researcher.schemas.benchmark import BenchmarkEvaluationContract
 
 
@@ -68,6 +69,15 @@ class OutcomeCard(BaseModel):
     protected_artifact_validation_ref: str | None = None
     protocol_valid: bool = True
     protocol_errors: list[str] = []
+    execution_status: Literal["COMPLETED", "CRASHED", "TIMEOUT", "CANCELLED", "LOST"]
+    patch_applied: bool | None = None
+    smoke_passed: bool | None = None
+    metrics_parsed: bool
+    protocol_intact: bool
+    evaluation_status: Literal["COMPARABLE", "NON_COMPARABLE"]
+    scientific_effect: Literal["IMPROVEMENT", "NO_EFFECT", "REGRESSION", "INCONCLUSIVE"] | None = None
+    primary_delta: float | None = None
+    guardrail_deltas: dict[str, float] = {}
 
 
 def finalize_attempt(
@@ -80,6 +90,10 @@ def finalize_attempt(
     evaluation_contract_sha256: str | None = None,
     protected_artifact_report_ref: str | None = None,
     protected_artifact_report_sha256: str | None = None,
+    baseline_metrics: dict[str, object] | None = None,
+    candidate_identity: ComparisonIdentity | None = None,
+    baseline_identity: ComparisonIdentity | None = None,
+    implementation_evidence: ImplementationEvidence | None = None,
 ) -> OutcomeCard:
     """Write one immutable card after all deterministic result checks have completed."""
 
@@ -101,6 +115,13 @@ def finalize_attempt(
         )
         if not protocol_valid:
             failed = True
+        evaluation_status = comparable(candidate_identity, baseline_identity)
+        contract = _load_session_contract(run_dir, evaluation_contract_ref, evaluation_contract_sha256)
+        effect, primary_delta, guardrail_deltas = scientific_effect(
+            candidate_metrics=metrics, baseline_metrics=baseline_metrics, contract=contract,
+            evaluation_status=evaluation_status, implementation_evidence=implementation_evidence,
+            metrics_parsed=metrics is not None, protocol_intact=protocol_valid,
+        )
         classification_ref = None
         if failed:
             classify_or_load(attempt_dir)
@@ -124,6 +145,15 @@ def finalize_attempt(
             protected_artifact_validation_ref=validation_ref,
             protocol_valid=protocol_valid,
             protocol_errors=protocol_errors,
+            execution_status={"FAILED": "CRASHED", "TIMED_OUT": "TIMEOUT"}.get(runtime_status, runtime_status),
+            patch_applied=None if implementation_evidence is None else implementation_evidence.patch_applied,
+            smoke_passed=None if implementation_evidence is None else implementation_evidence.smoke_passed,
+            metrics_parsed=metrics is not None,
+            protocol_intact=protocol_valid,
+            evaluation_status=evaluation_status,
+            scientific_effect=effect,
+            primary_delta=primary_delta,
+            guardrail_deltas=guardrail_deltas,
         )
         _write_json_atomic(path, card.model_dump(mode="json", exclude_none=True))
         return card
@@ -200,6 +230,18 @@ def _parse_evaluation_contract(value: object) -> BenchmarkEvaluationContract | E
     if "contract_id" in value:
         return EvaluationContract.model_validate(value)
     return BenchmarkEvaluationContract.model_validate(value)
+
+
+def _load_session_contract(run_dir: Path | None, ref: str | None, sha256: str | None) -> EvaluationContract | None:
+    if run_dir is None or ref is None or sha256 is None:
+        return None
+    path = _resolve_ref(run_dir, ref)
+    if path is None or not path.is_file() or sha256_file(path) != sha256:
+        return None
+    try:
+        return EvaluationContract.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
 def _resolve_ref(run_dir: Path, ref: str) -> Path | None:
