@@ -29,6 +29,7 @@ from autoad_researcher.runner import ExperimentCommandPlan, ExperimentInputRefs,
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", default="07h")
+    parser.add_argument("--seed", type=int, choices=[0, 1, 2], default=0)
     parser.add_argument("--case", default="configs/benchmarks/internal_patchcore_mvtec_bottle_smoke_v1.yaml")
     parser.add_argument("--repo", required=True)
     parser.add_argument("--benchmark-python", required=True)
@@ -69,13 +70,15 @@ def main() -> int:
     session_store.bind_evaluation_contract(run_dir, session_id=session.session_id, evaluation_contract_ref=frozen.ref, evaluation_contract_sha256=frozen.sha256, evaluation_contract_revision=0)
     protected = run_dir / "artifacts" / "07h" / "protected_hashes.json"
     _write(protected, ProtectedArtifactHashes(hashes=freeze_protected_artifacts(run_dir, protected_paths)).model_dump(mode="json"))
-    command_file = run_dir / "artifacts" / "07h" / "baseline_patchcore_command.json"
-    smoke = build_patchcore_smoke_command_plan(case=case, run_id=args.run_id, attempt="baseline_seed_0", dataset_path=str(run_dir / "data" / "b_dev"))
+    seeded_parameters = {**case.fixed_parameters, "seed": args.seed}
+    seeded_case = case.model_copy(update={"fixed_parameters": seeded_parameters})
+    command_file = run_dir / "artifacts" / "07h" / f"baseline_seed_{args.seed}_patchcore_command.json"
+    smoke = build_patchcore_smoke_command_plan(case=seeded_case, run_id=args.run_id, attempt=f"baseline_seed_{args.seed}", dataset_path=str(run_dir / "data" / "b_dev"))
     _write(command_file, {"command_id": smoke.command_id, "argv": [str(repo / case.repository.entrypoint_path), *smoke.args[1:]], "results_path": patchcore_smoke_metric_specs(case)[0].source_path, "metrics": [{"name": metric.name, "required": metric.required} for metric in case.evaluation.metrics], "protected_paths": case.evaluation.protected_paths})
-    plan = _plan(command_file, repo, python, weight, case)
+    plan = _plan(command_file, repo, python, weight, seeded_case)
     refs = ExperimentInputRefs(repository_fingerprint=case.repository.commit_sha, environment_sha256=sha256_file(lockfile), dataset_manifest_sha256=b_dev_sha, asset_manifest_sha256=sha256_file(weight), command_sha256=experiment_command_sha256(plan))
-    identity = ComparisonIdentity(dataset_identity=contract.dataset_identity, split_identity=contract.split_identity, seed=0, checkpoint_selection=contract.checkpoint_selection, command_sha256=refs.command_sha256, metric_implementation_refs=case.evaluation.evaluator_paths, evaluation_contract_sha256=frozen.sha256, outputs_complete=True)
-    started = ExperimentAttemptService().create_or_get_attempt(run_dir, session_id=session.session_id, job_type="experiment_baseline", idempotency_key=f"07h:baseline:seed:0:{refs.command_sha256}", command_plan=plan, input_refs=refs, job_timeout_sec=1800, required_device_count=1, required_vram_mb=20000, evaluation_contract_ref=frozen.ref, evaluation_contract_sha256=frozen.sha256, protected_artifact_report_ref=str(protected.relative_to(run_dir)), protected_artifact_report_sha256=sha256_file(protected))
+    identity = ComparisonIdentity(dataset_identity=contract.dataset_identity, split_identity=contract.split_identity, seed=args.seed, checkpoint_selection=contract.checkpoint_selection, command_sha256=refs.command_sha256, metric_implementation_refs=case.evaluation.evaluator_paths, evaluation_contract_sha256=frozen.sha256, outputs_complete=True)
+    started = ExperimentAttemptService().create_or_get_attempt(run_dir, session_id=session.session_id, job_type="experiment_baseline", idempotency_key=f"07h:baseline:seed:{args.seed}:{refs.command_sha256}", command_plan=plan, input_refs=refs, job_timeout_sec=1800, required_device_count=1, required_vram_mb=20000, evaluation_contract_ref=frozen.ref, evaluation_contract_sha256=frozen.sha256, protected_artifact_report_ref=str(protected.relative_to(run_dir)), protected_artifact_report_sha256=sha256_file(protected))
     ScientificAssessmentInputsStore().save(run_dir / "attempts" / started.attempt.attempt_id, ScientificEvaluationInputs(baseline_metrics={}, candidate_identity=identity, baseline_identity=identity))
     print(json.dumps({"attempt_id": started.attempt.attempt_id, "job_id": started.pipeline_job["job_id"], "disposition": started.disposition}, ensure_ascii=False))
     return 0
