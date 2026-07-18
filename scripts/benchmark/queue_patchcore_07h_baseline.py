@@ -88,7 +88,10 @@ def _plan(command_file: Path, repo: Path, python: Path, weight: Path, case) -> E
     expected_csv = patchcore_smoke_metric_specs(case)[0].source_path
     source = PROJECT_ROOT / "src"
     command_sha = sha256_file(command_file)
-    return ExperimentCommandPlan(schema_version=1, command_id=f"baseline_seed_0_{case.case_id}", program=str(python), args=["-m", "autoad_researcher.benchmarks.patchcore_07h_runner", "--command-file", str(command_file), "--repository", str(repo), "--command-sha256", command_sha], cwd="attempts", environment={"PYTHONPATH": f"{source}:{repo / 'src'}", "TORCH_HOME": str(weight.parent.parent.parent), "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "CUDA_VISIBLE_DEVICES": "0", "AUTOAD_PATCHCORE_COMMAND_SHA256": command_sha}, timeout_seconds=1800, network=False, expected_outputs=[expected_csv, "metrics.json", "parsed_metrics.json", "protected_hash_before.json", "protected_hash_after.json", "command.json"])
+    seed = case.fixed_parameters["seed"]
+    if not isinstance(seed, int):
+        raise ValueError("frozen PatchCore seed must be an integer")
+    return ExperimentCommandPlan(schema_version=1, command_id=f"baseline_seed_{seed}_{case.case_id}", program=str(python), args=["-m", "autoad_researcher.benchmarks.patchcore_07h_runner", "--command-file", str(command_file), "--repository", str(repo), "--command-sha256", command_sha], cwd="attempts", environment={"PYTHONPATH": f"{source}:{repo / 'src'}", "TORCH_HOME": str(weight.parent.parent.parent), "PYTHONHASHSEED": str(seed), "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "CUDA_VISIBLE_DEVICES": "0", "AUTOAD_PATCHCORE_COMMAND_SHA256": command_sha}, timeout_seconds=1800, network=False, expected_outputs=[expected_csv, "metrics.json", "parsed_metrics.json", "protected_hash_before.json", "protected_hash_after.json", "command.json"])
 
 
 def _path(value: str) -> Path:
