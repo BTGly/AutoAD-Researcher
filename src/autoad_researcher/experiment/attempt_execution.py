@@ -66,7 +66,14 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
         return _finalize_failure(run_dir, attempt, "PROCESS_SPAWN_FAILED", str(exc))
     _PROCESSES[(str(run_dir.resolve()), attempt.attempt_id)] = process
     attempt = store.mark_running(run_dir, attempt_id=attempt.attempt_id, pid=process.pid, process_group_id=os.getpgid(process.pid))
-    _write_json(output_dir / "process.json", {"pid": process.pid, "process_group_id": os.getpgid(process.pid), "started_at": _utc_now()})
+    _write_json(output_dir / "process.json", {
+        "pid": process.pid,
+        "process_group_id": os.getpgid(process.pid),
+        "started_at": _utc_now(),
+        "resource_lease_id": lease.lease_id if lease is not None else None,
+        "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
+        "command_id": attempt.command_plan.command_id,
+    })
     _write_heartbeat(output_dir, attempt, "running")
     append_event(run_dir, "experiment.attempt.running", {"attempt_id": attempt.attempt_id, "pid": process.pid})
     return AttemptObservation(terminal=False)
@@ -103,6 +110,8 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
     if process is not None:
         code = process.poll()
         if code is None:
+            if attempt.resource_lease_id:
+                GpuAllocator().heartbeat(run_dir, lease_id=attempt.resource_lease_id, worker_id=_worker_id())
             ExperimentAttemptStore().heartbeat(run_dir, attempt_id=attempt.attempt_id)
             _write_heartbeat(output_dir, attempt, "running")
             return AttemptObservation(terminal=False)
@@ -120,6 +129,7 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
 
 def _finalize_exit(run_dir: Path, attempt, exit_code: int) -> AttemptObservation:
     output_dir = run_dir / "attempts" / attempt.attempt_id
+    _write_json(output_dir / "process_exit.json", {"exit_code": exit_code, "finished_at": _utc_now()})
     if exit_code != 0:
         return _finalize_failure(run_dir, attempt, "RUN_COMMAND_FAILED", f"experiment command exited with code {exit_code}", exit_code=exit_code)
     missing = [path for path in attempt.command_plan.expected_outputs if not (output_dir / path).is_file()]
@@ -150,6 +160,11 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
     if runtime_status != "COMPLETED":
         classification = classify_or_load(run_dir / "attempts" / attempt.attempt_id)
     finalize_attempt(run_dir / "attempts" / attempt.attempt_id, attempt_id=attempt.attempt_id, runtime_status=runtime_status, run_dir=run_dir, evaluation_contract_ref=attempt.evaluation_contract_ref, evaluation_contract_sha256=attempt.evaluation_contract_sha256, protected_artifact_report_ref=attempt.protected_artifact_report_ref, protected_artifact_report_sha256=attempt.protected_artifact_report_sha256)
+    assessment_inputs = run_dir / "attempts" / attempt.attempt_id / "scientific_evaluation_inputs.json"
+    if assessment_inputs.is_file():
+        from autoad_researcher.experiment.scientific_assessment import ScientificAssessmentService
+
+        ScientificAssessmentService().assess(run_dir, attempt_id=attempt.attempt_id)
     if RetryPolicy().should_retry(final, classification):
         from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
         ExperimentAttemptService().create_retry(run_dir, attempt_id=final.attempt_id)
