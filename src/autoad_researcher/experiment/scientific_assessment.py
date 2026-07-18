@@ -65,6 +65,47 @@ class ScientificAssessment(BaseModel):
     guardrail_deltas: dict[str, float] = Field(default_factory=dict)
 
 
+class AssessmentReconciliation(BaseModel):
+    """Immutable explanation of raw and derived assessment responsibilities."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    attempt_id: str
+    outcome_card_ref: str
+    outcome_card_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scientific_assessment_ref: str
+    scientific_assessment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    comparison_status_at_finalization: Literal["COMPARABLE", "NON_COMPARABLE"]
+    effective_evaluation_status: Literal["COMPARABLE", "NON_COMPARABLE"]
+    execution_protocol_authority: Literal["outcome_card"] = "outcome_card"
+    scientific_comparison_authority: Literal["scientific_assessment"] = "scientific_assessment"
+
+
+class EffectiveScientificAssessment(BaseModel):
+    """Only decision-consumable view: raw execution plus derived comparison facts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    attempt_id: str
+    outcome_card_ref: str
+    outcome_card_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scientific_assessment_ref: str
+    scientific_assessment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    execution_status: Literal["COMPLETED", "CRASHED", "TIMEOUT", "CANCELLED", "LOST"]
+    attempt_category: str
+    protocol_intact: bool
+    metrics_parsed: bool
+    patch_applied: bool
+    smoke_passed: bool
+    evaluation_status: Literal["COMPARABLE", "NON_COMPARABLE"]
+    scientific_effect: Literal["IMPROVEMENT", "NO_EFFECT", "REGRESSION", "INCONCLUSIVE"] | None = None
+    primary_delta: float | None = None
+    guardrail_deltas: dict[str, float] = Field(default_factory=dict)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class ScientificAssessmentInputsStore:
     def save(self, attempt_dir: Path, inputs: ScientificEvaluationInputs) -> str:
         path = attempt_dir / "scientific_evaluation_inputs.json"
@@ -160,9 +201,76 @@ class ScientificAssessmentService:
             existing = ScientificAssessment.model_validate_json(assessment_path.read_text(encoding="utf-8"))
             if existing != assessment:
                 raise ValueError("scientific assessment changed for immutable inputs")
+            self.reconcile(run_dir, attempt_id=attempt_id, card=card, assessment=existing)
             return existing
         _write_json_atomic(assessment_path, assessment.model_dump(mode="json", exclude_none=True))
+        self.reconcile(run_dir, attempt_id=attempt_id, card=card, assessment=assessment)
         return assessment
+
+    def reconcile(
+        self,
+        run_dir: Path,
+        *,
+        attempt_id: str,
+        card: OutcomeCard | None = None,
+        assessment: ScientificAssessment | None = None,
+    ) -> AssessmentReconciliation:
+        attempt_dir = run_dir / "attempts" / attempt_id
+        card_path = attempt_dir / "outcome_card.json"
+        assessment_path = attempt_dir / "scientific_assessment.json"
+        raw = card or OutcomeCard.model_validate_json(card_path.read_text(encoding="utf-8"))
+        derived = assessment or ScientificAssessment.model_validate_json(assessment_path.read_text(encoding="utf-8"))
+        reconciliation = AssessmentReconciliation(
+            attempt_id=attempt_id,
+            outcome_card_ref=str(card_path.relative_to(run_dir)),
+            outcome_card_sha256=sha256_file(card_path),
+            scientific_assessment_ref=str(assessment_path.relative_to(run_dir)),
+            scientific_assessment_sha256=sha256_file(assessment_path),
+            comparison_status_at_finalization=raw.evaluation_status,
+            effective_evaluation_status=derived.evaluation_status,
+        )
+        path = attempt_dir / "assessment_reconciliation.json"
+        if path.is_file():
+            existing = AssessmentReconciliation.model_validate_json(path.read_text(encoding="utf-8"))
+            if existing != reconciliation:
+                raise ValueError("assessment reconciliation changed for immutable inputs")
+            return existing
+        _write_json_atomic(path, reconciliation.model_dump(mode="json"))
+        return reconciliation
+
+    def effective_assessment(self, run_dir: Path, *, attempt_id: str) -> EffectiveScientificAssessment:
+        attempt_dir = run_dir / "attempts" / attempt_id
+        card_path = attempt_dir / "outcome_card.json"
+        card = OutcomeCard.model_validate_json(card_path.read_text(encoding="utf-8"))
+        assessment = self.assess(run_dir, attempt_id=attempt_id)
+        reconciliation = self.reconcile(run_dir, attempt_id=attempt_id, card=card, assessment=assessment)
+        refs = [
+            value for value in (
+                card.execution_result_ref,
+                card.evaluation_contract_ref,
+                card.protected_artifact_validation_ref,
+                reconciliation.scientific_assessment_ref,
+                str((attempt_dir / "assessment_reconciliation.json").relative_to(run_dir)),
+            ) if value
+        ]
+        return EffectiveScientificAssessment(
+            attempt_id=attempt_id,
+            outcome_card_ref=str(card_path.relative_to(run_dir)),
+            outcome_card_sha256=sha256_file(card_path),
+            scientific_assessment_ref=reconciliation.scientific_assessment_ref,
+            scientific_assessment_sha256=reconciliation.scientific_assessment_sha256,
+            execution_status=card.execution_status,
+            attempt_category=card.attempt_category,
+            protocol_intact=card.protocol_intact,
+            metrics_parsed=card.metrics_parsed,
+            patch_applied=assessment.patch_applied,
+            smoke_passed=assessment.smoke_passed,
+            evaluation_status=assessment.evaluation_status,
+            scientific_effect=assessment.scientific_effect,
+            primary_delta=assessment.primary_delta,
+            guardrail_deltas=assessment.guardrail_deltas,
+            evidence_refs=refs,
+        )
 
     def assessed_card(self, run_dir: Path, *, attempt_id: str) -> OutcomeCard:
         attempt_dir = run_dir / "attempts" / attempt_id

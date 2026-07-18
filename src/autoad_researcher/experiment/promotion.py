@@ -20,7 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.assistant.v2.event_service import append_event
-from autoad_researcher.experiment.finalizer import OutcomeCard
+from autoad_researcher.experiment.scientific_assessment import EffectiveScientificAssessment
 
 
 CHAMPION_DIR = "experiments/champions"
@@ -50,12 +50,12 @@ class DecisionResult(BaseModel):
 
 
 class DecisionEngine:
-    """Classify a completed OutcomeCard without LLM or free-text heuristics."""
+    """Classify an effective assessment without LLM or free-text heuristics."""
 
     def decide(
         self,
         *,
-        card: OutcomeCard,
+        assessment: EffectiveScientificAssessment,
         phase: Literal["b_dev", "b_test"],
         noise_threshold: float | None,
         minimum_noise_multiplier: float = 1.0,
@@ -65,74 +65,72 @@ class DecisionEngine:
         refs = [
             value
             for value in (
-                card.execution_result_ref,
-                card.evaluation_contract_ref,
-                card.protected_artifact_validation_ref,
+                *assessment.evidence_refs,
             )
             if value
         ]
-        if card.attempt_category == "protocol_violated" or not card.protocol_intact:
+        if assessment.attempt_category == "protocol_violated" or not assessment.protocol_intact:
             return DecisionResult(
                 action="reject_result",
                 reason="evaluation protocol is not intact",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if card.attempt_category == "run_failed" or card.execution_status != "COMPLETED":
+        if assessment.attempt_category == "run_failed" or assessment.execution_status != "COMPLETED":
             return DecisionResult(
                 action="run_failed",
                 reason="attempt did not produce a scientifically evaluable completion",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if card.patch_applied is not True or card.smoke_passed is not True or not card.metrics_parsed:
+        if assessment.patch_applied is not True or assessment.smoke_passed is not True or not assessment.metrics_parsed:
             return DecisionResult(
                 action="reject_result",
                 reason="implementation evidence is incomplete",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if card.evaluation_status != "COMPARABLE" or card.scientific_effect is None:
+        if assessment.evaluation_status != "COMPARABLE" or assessment.scientific_effect is None:
             return DecisionResult(
                 action="reject_result",
                 reason="result is not comparable under the frozen contract",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if any(delta < 0 for delta in card.guardrail_deltas.values()):
+        if any(delta < 0 for delta in assessment.guardrail_deltas.values()):
             return DecisionResult(
                 action="no_promote",
                 reason="one or more guardrail metrics regressed",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if card.scientific_effect == "REGRESSION":
+        if assessment.scientific_effect == "REGRESSION":
             return DecisionResult(
                 action="regression",
                 reason="primary metric regressed",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if card.scientific_effect in {"NO_EFFECT", "INCONCLUSIVE"}:
+        if assessment.scientific_effect in {"NO_EFFECT", "INCONCLUSIVE"}:
             return DecisionResult(
-                action="no_effect" if card.scientific_effect == "NO_EFFECT" else "confirm_seed",
+                action="no_effect" if assessment.scientific_effect == "NO_EFFECT" else "confirm_seed",
                 reason="result does not establish a reliable improvement",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if card.primary_delta is None:
+        if assessment.primary_delta is None:
             return DecisionResult(
                 action="confirm_seed",
                 reason="primary delta is unavailable",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
         if noise_threshold is None:
@@ -140,22 +138,22 @@ class DecisionEngine:
                 action="confirm_seed",
                 reason="noise floor is not calibrated",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if card.primary_delta <= noise_threshold * minimum_noise_multiplier:
+        if assessment.primary_delta <= noise_threshold * minimum_noise_multiplier:
             return DecisionResult(
                 action="confirm_seed",
                 reason="improvement is within the configured noise boundary",
                 phase=phase,
-                attempt_id=card.attempt_id,
+                attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
         return DecisionResult(
             action="candidate" if phase == "b_dev" else "ready_for_promotion",
             reason="deterministic scientific gates passed",
             phase=phase,
-            attempt_id=card.attempt_id,
+            attempt_id=assessment.attempt_id,
             evidence_refs=refs,
         )
 

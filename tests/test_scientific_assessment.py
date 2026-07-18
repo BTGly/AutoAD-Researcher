@@ -4,6 +4,7 @@ from autoad_researcher.experiment.evaluation_contract import EvaluationContract,
 from autoad_researcher.experiment.executor_agent import ExecutorSummary
 from autoad_researcher.experiment.finalizer import OutcomeCard
 from autoad_researcher.experiment.scientific_assessment import (
+    EffectiveScientificAssessment,
     ScientificAssessmentInputsStore,
     ScientificAssessmentService,
     ScientificEvaluationInputs,
@@ -127,3 +128,33 @@ def test_assessment_does_not_claim_patch_or_smoke_without_executor_evidence(tmp_
     assert not assessment.patch_applied
     assert not assessment.smoke_passed
     assert assessment.scientific_effect is None
+
+
+def test_effective_assessment_reconciles_raw_card_without_rewriting_it(tmp_path: Path):
+    contract_path = tmp_path / "evaluation_contract.json"
+    contract_path.write_text(_contract().model_dump_json(), encoding="utf-8")
+    attempt_dir = tmp_path / "attempts" / "attempt_000001"
+    attempt_dir.mkdir(parents=True)
+    raw = OutcomeCard(
+        attempt_id="attempt_000001", runtime_status="COMPLETED",
+        attempt_category="scientifically_evaluable",
+        execution_result_ref="attempts/attempt_000001/execution_result.json",
+        metrics={"score": 0.9}, evaluation_contract_ref="evaluation_contract.json",
+        protocol_valid=True, execution_status="COMPLETED", metrics_parsed=True,
+        protocol_intact=True, evaluation_status="NON_COMPARABLE",
+    )
+    (attempt_dir / "outcome_card.json").write_text(raw.model_dump_json(), encoding="utf-8")
+    (attempt_dir / "executor_summary.json").write_text(
+        ExecutorSummary(status="completed", model_calls=1, steps=1, changed_files=["model.py"], changed_symbols=["scale"], confidence=1).model_dump_json(),
+        encoding="utf-8",
+    )
+    (attempt_dir / "patch.diff").write_text("diff --git a/model.py b/model.py\n", encoding="utf-8")
+    ScientificAssessmentInputsStore().save(
+        attempt_dir,
+        ScientificEvaluationInputs(baseline_metrics={"score": 0.8}, candidate_identity=_identity(), baseline_identity=_identity()),
+    )
+    effective = ScientificAssessmentService().effective_assessment(tmp_path, attempt_id="attempt_000001")
+    assert isinstance(effective, EffectiveScientificAssessment)
+    assert effective.evaluation_status == "COMPARABLE"
+    assert OutcomeCard.model_validate_json((attempt_dir / "outcome_card.json").read_text()).evaluation_status == "NON_COMPARABLE"
+    assert (attempt_dir / "assessment_reconciliation.json").is_file()
