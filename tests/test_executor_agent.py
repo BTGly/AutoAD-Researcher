@@ -69,3 +69,13 @@ def test_executor_allows_one_bounded_repair_after_initial_syntax_failure(fixture
     assert summary.status == "completed" and summary.model_calls == 2
     records = (tmp_path / "attempts" / "attempt_000001" / "repair_log.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(records) == 1
+
+
+def test_repeated_hard_violation_stops_and_preserves_protected_file(fixture_repository: Path, tmp_path: Path):
+    agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_steps=4, max_wall_seconds=30, max_model_calls=4))
+    proposal = lambda _tools: ExecutorProposal(edits=[SearchReplaceEdit(path="evaluate.py", search="protected = True\n", replace="protected = False\n")], changed_symbols=["protected"], possible_contract_deviation="requested evaluation change is outside the frozen contract", confidence=.2)
+    summary = agent.run(proposal)
+    assert summary.status == "implementation_failed" and summary.model_calls == 2
+    assert summary.possible_contract_deviation
+    assert (Path(workspace.worktree_path) / "evaluate.py").read_text(encoding="utf-8") == "protected = True\n"
+    assert len((tmp_path / "attempts" / "attempt_000001" / "repair_log.jsonl").read_text(encoding="utf-8").splitlines()) == 2
