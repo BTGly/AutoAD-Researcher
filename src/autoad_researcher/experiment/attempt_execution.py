@@ -178,7 +178,12 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
         if diagnosis is not None:
             _write_json(run_dir / "attempts" / attempt.attempt_id / "health_diagnosis.json", diagnosis.model_dump(mode="json"))
     if attempt.resource_lease_id:
-        try: GpuAllocator().release(run_dir, lease_id=attempt.resource_lease_id, worker_id=_worker_id())
+        try:
+            GpuAllocator().release_after_attempt_terminal(
+                run_dir,
+                lease_id=attempt.resource_lease_id,
+                attempt_id=attempt.attempt_id,
+            )
         except (FileNotFoundError, ValueError): pass
     append_event(run_dir, "experiment.attempt.finalized", {"attempt_id": final.attempt_id, "runtime_status": final.runtime_status, "failure_code": final.failure_code})
     return AttemptObservation(terminal=True, succeeded=final.runtime_status == "COMPLETED", outputs=_outputs(run_dir, run_dir / "attempts" / attempt.attempt_id), error=result.failure_message)
