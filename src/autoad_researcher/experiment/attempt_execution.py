@@ -38,9 +38,9 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
     store = ExperimentAttemptStore()
     attempt = store.mark_starting(run_dir, attempt_id=attempt.attempt_id, pipeline_job_id=job_id)
     output_dir = run_dir / "attempts" / attempt.attempt_id
-    if output_dir.exists():
+    if (output_dir / "process.json").exists() or (output_dir / "execution_result.json").exists():
         return _finalize_failure(run_dir, attempt, "RUN_ATTEMPT_ARTIFACT_EXISTS", "attempt artifact directory already exists")
-    output_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     lease = None
     try:
         if attempt.required_device_count:
@@ -48,6 +48,7 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
             attempt = store.bind_resource_lease(run_dir, attempt_id=attempt.attempt_id, lease_id=lease.lease_id)
         env = os.environ.copy()
         env.update(attempt.command_plan.environment)
+        env["AUTOAD_ATTEMPT_DIR"] = str(output_dir.resolve())
         if lease is not None:
             env["CUDA_VISIBLE_DEVICES"] = lease.cuda_visible_devices
         cwd = _resolve_run_relative_path(run_dir, attempt.command_plan.cwd)

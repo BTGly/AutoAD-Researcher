@@ -35,13 +35,13 @@ class WorktreeManager:
         if worktree == repository or repository.is_relative_to(worktree) or worktree.is_relative_to(repository):
             raise ValueError("Executor worktree must not overlap the source checkout")
         if worktree.exists():
-            existing = self.inspect(worktree)
-            if existing.base_commit != resolved_base or existing.branch != branch:
+            existing_branch = self._git(worktree, "branch", "--show-current")
+            if existing_branch != branch:
                 raise ValueError("existing Executor worktree does not match the requested identity")
             return WorkspaceSpec(
-                base_commit=existing.base_commit,
+                base_commit=resolved_base,
                 worktree_path=str(worktree),
-                branch=existing.branch,
+                branch=existing_branch,
                 protected_hashes=freeze_protected_hashes(worktree, protected_paths),
                 environment_snapshot_ref=environment_snapshot_ref,
             )
