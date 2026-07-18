@@ -94,6 +94,45 @@ class ExperimentSessionStore:
             self._write_unlocked(path, updated)
             return updated, True
 
+    def bind_evaluation_contract(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        evaluation_contract_ref: str,
+        evaluation_contract_sha256: str,
+        evaluation_contract_revision: int,
+    ) -> ExperimentSession:
+        """Point a Session at one already-frozen immutable contract revision."""
+        path = self._session_path(run_dir, session_id)
+        with self._lock(run_dir):
+            if not path.is_file():
+                raise FileNotFoundError("experiment session not found")
+            session = ExperimentSession.model_validate_json(path.read_text(encoding="utf-8"))
+            current = (
+                session.evaluation_contract_ref,
+                session.evaluation_contract_sha256,
+                session.evaluation_contract_revision,
+            )
+            requested = (evaluation_contract_ref, evaluation_contract_sha256, evaluation_contract_revision)
+            if current == requested:
+                return session
+            if session.evaluation_contract_revision is not None and evaluation_contract_revision != session.evaluation_contract_revision + 1:
+                raise ValueError("evaluation contract revision must advance exactly once")
+            if session.evaluation_contract_revision is None and evaluation_contract_revision != 0:
+                raise ValueError("first evaluation contract revision must be zero")
+            updated = session.model_copy(
+                update={
+                    "evaluation_contract_ref": evaluation_contract_ref,
+                    "evaluation_contract_sha256": evaluation_contract_sha256,
+                    "evaluation_contract_revision": evaluation_contract_revision,
+                    "updated_at": _utc_now(),
+                    "revision": session.revision + 1,
+                }
+            )
+            self._write_unlocked(path, updated)
+            return updated
+
     def load(self, run_dir: Path, session_id: str) -> ExperimentSession | None:
         path = self._session_path(run_dir, session_id)
         if not path.is_file():

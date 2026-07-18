@@ -14,6 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoad_researcher.benchmarks.hashing import sha256_file
+from autoad_researcher.experiment.evaluation_contract import EvaluationContract
 from autoad_researcher.experiment.failure_classifier import classify_or_load
 from autoad_researcher.schemas.benchmark import BenchmarkEvaluationContract
 
@@ -161,7 +162,8 @@ def _validate_protocol_refs(
     if protected_path is None or not protected_path.is_file() or sha256_file(protected_path) != protected_sha:
         return False, ["protected hash reference is missing, escapes run_dir, or changed"], None
     try:
-        contract = BenchmarkEvaluationContract.model_validate_json(contract_path.read_text(encoding="utf-8"))
+        raw_contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract = _parse_evaluation_contract(raw_contract)
         baseline = ProtectedArtifactHashes.model_validate_json(protected_path.read_text(encoding="utf-8"))
     except Exception:
         return False, ["EvaluationContract or protected hashes have invalid schema"], None
@@ -189,6 +191,15 @@ def _validate_protocol_refs(
     if changed:
         return False, [f"protected artifacts changed: {', '.join(changed)}"], report_path.name
     return True, [], report_path.name
+
+
+def _parse_evaluation_contract(value: object) -> BenchmarkEvaluationContract | EvaluationContract:
+    """Accept the legacy internal fixture contract and the Session contract only."""
+    if not isinstance(value, dict):
+        raise ValueError("evaluation contract must be an object")
+    if "contract_id" in value:
+        return EvaluationContract.model_validate(value)
+    return BenchmarkEvaluationContract.model_validate(value)
 
 
 def _resolve_ref(run_dir: Path, ref: str) -> Path | None:

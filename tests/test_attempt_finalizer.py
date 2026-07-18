@@ -6,6 +6,11 @@ from pathlib import Path
 
 from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.experiment.finalizer import finalize_attempt
+from autoad_researcher.experiment.evaluation_contract import (
+    EvaluationContract,
+    EvaluationMetric,
+    EvaluationResourceBudget,
+)
 
 def test_finalizer_writes_one_immutable_outcome_card(tmp_path: Path):
     (tmp_path / "execution_result.json").write_text("{}", encoding="utf-8")
@@ -85,3 +90,32 @@ def test_finalizer_recovers_a_stale_lock_owned_by_a_dead_process(tmp_path: Path)
     card = finalize_attempt(tmp_path, attempt_id="attempt_000007", runtime_status="COMPLETED")
     assert card.attempt_category == "scientifically_evaluable"
     assert not lock.exists()
+
+
+def test_finalizer_accepts_the_frozen_session_evaluation_contract(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    attempt_dir = run_dir / "attempts" / "attempt_000008"
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "execution_result.json").write_text("{}", encoding="utf-8")
+    (attempt_dir / "metrics.json").write_text(json.dumps({"score": 1}), encoding="utf-8")
+    evaluator = run_dir / "eval.py"
+    evaluator.write_text("score", encoding="utf-8")
+    contract = EvaluationContract(
+        contract_id="evaluation_contract_000001", session_id="session_fixture", revision=0,
+        baseline_commit="a" * 40, dataset_identity="fixture", split_identity="split",
+        b_dev_ref="splits/dev.json", b_test_ref="splits/test.json", category_set=["bottle"],
+        metrics=[EvaluationMetric(name="score", direction="maximize", implementation_ref="eval.py")],
+        primary_metric="score", aggregation="mean", seeds=[1], checkpoint_selection="best",
+        resource_budget=EvaluationResourceBudget(max_wall_seconds=60, max_gpu_seconds=60),
+        protected_paths=["eval.py"],
+    )
+    contract_path = run_dir / "contract.json"
+    contract_path.write_text(contract.model_dump_json(), encoding="utf-8")
+    protected_path = run_dir / "protected_hashes.json"
+    protected_path.write_text(json.dumps({"schema_version": 1, "hashes": {"eval.py": sha256_file(evaluator)}}), encoding="utf-8")
+    card = finalize_attempt(
+        attempt_dir, attempt_id="attempt_000008", runtime_status="COMPLETED", run_dir=run_dir,
+        evaluation_contract_ref="contract.json", evaluation_contract_sha256=sha256_file(contract_path),
+        protected_artifact_report_ref="protected_hashes.json", protected_artifact_report_sha256=sha256_file(protected_path),
+    )
+    assert card.attempt_category == "scientifically_evaluable"

@@ -65,6 +65,11 @@ class ExperimentAttemptService:
         protected_artifact_report_sha256: str | None = None,
     ) -> ExperimentAttemptStartResult:
         session = self._require_executable_session(run_dir, session_id, job_type)
+        self._validate_session_evaluation_contract(
+            session,
+            evaluation_contract_ref=evaluation_contract_ref,
+            evaluation_contract_sha256=evaluation_contract_sha256,
+        )
         now = _utc_now()
         candidate = ExperimentAttempt(
             attempt_id="attempt_000000",
@@ -179,6 +184,21 @@ class ExperimentAttemptService:
         if job_type != "experiment_baseline" and session.status not in {"READY", "BASELINE_RUNNING"}:
             raise ValueError("experiment Attempt requires a Session ready after baseline")
         return session
+
+    @staticmethod
+    def _validate_session_evaluation_contract(
+        session,
+        *,
+        evaluation_contract_ref: str | None,
+        evaluation_contract_sha256: str | None,
+    ) -> None:
+        """New Session contracts are authoritative; legacy Sessions stay readable."""
+        session_ref = session.evaluation_contract_ref
+        session_sha = session.evaluation_contract_sha256
+        if session_ref is None:
+            return
+        if (evaluation_contract_ref, evaluation_contract_sha256) != (session_ref, session_sha):
+            raise ValueError("Attempt evaluation contract must match the Session-frozen contract")
 
 
 def _utc_now() -> str:
