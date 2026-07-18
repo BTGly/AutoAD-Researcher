@@ -52,23 +52,27 @@ class PatchCore07HExecutorAdapter:
         self._case = case
 
     def build(self, inputs: PatchCore07HAdapterInputs) -> tuple[ExperimentCommandPlan, ExperimentInputRefs]:
-        entrypoint = inputs.repository / self._case.repository.entrypoint_path
+        repository = inputs.repository.resolve()
+        benchmark_python = inputs.benchmark_python.resolve()
+        dataset_path = inputs.dataset_path.resolve()
+        weight_path = inputs.weight_path.resolve()
+        entrypoint = repository / self._case.repository.entrypoint_path
         if not entrypoint.is_file():
             raise FileNotFoundError("PatchCore07H worktree is missing the frozen entrypoint")
         fixed = {**self._case.fixed_parameters, **inputs.parameter_overrides, "seed": 0}
         case = self._case.model_copy(update={"fixed_parameters": fixed})
-        smoke = build_patchcore_smoke_command_plan(case=case, run_id=inputs.run_id, attempt="intervention_seed_0", dataset_path=str(inputs.dataset_path))
-        command_file = inputs.artifact_dir / "patchcore_command.json"
+        smoke = build_patchcore_smoke_command_plan(case=case, run_id=inputs.run_id, attempt="intervention_seed_0", dataset_path=str(dataset_path))
+        command_file = (inputs.artifact_dir / "patchcore_command.json").resolve()
         command_file.parent.mkdir(parents=True, exist_ok=True)
         command_file.write_text(json.dumps({"command_id": smoke.command_id, "argv": [str(entrypoint), *smoke.args[1:]], "results_path": patchcore_smoke_metric_specs(case)[0].source_path, "metrics": [{"name": metric.name, "required": metric.required} for metric in case.evaluation.metrics], "protected_paths": case.evaluation.protected_paths, "parameter_overrides": inputs.parameter_overrides}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         command_sha = sha256_file(command_file)
         plan = ExperimentCommandPlan(
             schema_version=1,
             command_id=smoke.command_id,
-            program=str(inputs.benchmark_python),
-            args=["-m", "autoad_researcher.benchmarks.patchcore_07h_runner", "--command-file", str(command_file), "--repository", str(inputs.repository), "--command-sha256", command_sha],
+            program=str(benchmark_python),
+            args=["-m", "autoad_researcher.benchmarks.patchcore_07h_runner", "--command-file", str(command_file), "--repository", str(repository), "--command-sha256", command_sha],
             cwd="attempts",
-            environment={"PYTHONPATH": f"{Path(__file__).resolve().parents[3] / 'src'}:{inputs.repository / 'src'}", "TORCH_HOME": str(inputs.weight_path.parent.parent.parent), "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "CUDA_VISIBLE_DEVICES": "0", "AUTOAD_PATCHCORE_COMMAND_SHA256": command_sha},
+            environment={"PYTHONPATH": f"{Path(__file__).resolve().parents[3] / 'src'}:{repository / 'src'}", "TORCH_HOME": str(weight_path.parent.parent.parent), "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "CUDA_VISIBLE_DEVICES": "0", "AUTOAD_PATCHCORE_COMMAND_SHA256": command_sha},
             timeout_seconds=1800,
             network=False,
             expected_outputs=[patchcore_smoke_metric_specs(case)[0].source_path, "metrics.json", "parsed_metrics.json", "protected_hash_before.json", "protected_hash_after.json", "command.json"],

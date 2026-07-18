@@ -16,8 +16,8 @@ def test_patchcore_07h_adapter_binds_one_approved_override_into_command(tmp_path
     plan, refs = PatchCore07HExecutorAdapter(case=case).build(
         PatchCore07HAdapterInputs(
             run_id="07h", attempt_id="attempt_000006", repository=repo,
-            benchmark_python=Path("/opt/patchcore/python"), dataset_path=tmp_path / "b_dev",
-            weight_path=tmp_path / "weight.pth", environment_sha256="a" * 64,
+            benchmark_python=Path("workspace/envs/patchcore/python"), dataset_path=tmp_path / "b_dev",
+            weight_path=Path("workspace/cache/weight.pth"), environment_sha256="a" * 64,
             dataset_manifest_sha256="b" * 64, asset_manifest_sha256="c" * 64,
             repository_fingerprint="d" * 40,
             allowed_parameters=["coreset_sampling_ratio"],
@@ -28,6 +28,9 @@ def test_patchcore_07h_adapter_binds_one_approved_override_into_command(tmp_path
     assert '"0.2"' in command
     assert plan.command_id.startswith("intervention_seed_0_")
     assert refs.command_sha256
+    assert Path(plan.program).is_absolute()
+    assert Path(plan.args[3]).is_absolute()
+    assert Path(plan.args[5]).is_absolute()
 
 
 def test_patchcore_07h_adapter_rejects_unapproved_or_multi_parameter_override(tmp_path: Path):

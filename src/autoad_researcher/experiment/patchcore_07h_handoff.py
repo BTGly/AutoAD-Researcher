@@ -18,6 +18,8 @@ from autoad_researcher.experiment.attempt_service import ExperimentAttemptServic
 from autoad_researcher.experiment.executor_agent import ExecutorAgent, ExecutorLimits, ExecutorSummary
 from autoad_researcher.experiment.executor_contracts import InterventionContract, WorkspaceSpec
 from autoad_researcher.experiment.intervention_admission import InterventionAdmissionService
+from autoad_researcher.experiment.scientific_assessment import ScientificAssessmentInputsStore, ScientificEvaluationInputs
+from autoad_researcher.experiment.validity import ComparisonIdentity
 from autoad_researcher.experiment.worktree import WorktreeManager
 from autoad_researcher.runner import ExperimentInputRefs
 
@@ -46,6 +48,7 @@ class PatchCore07HInterventionRequest(BaseModel):
     evaluation_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     protected_artifact_report_ref: str
     protected_artifact_report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_metrics: dict[str, float]
 
 
 class PatchCore07HInterventionHandoff:
@@ -60,12 +63,18 @@ class PatchCore07HInterventionHandoff:
             repository_path=request.repository_path, attempt_id=key, base_commit=request.base_commit,
             protected_paths=case.evaluation.protected_paths, environment_snapshot_ref=request.environment_snapshot_ref,
         )
-        self._bootstrap_config(Path(workspace.worktree_path), case)
+        self._bootstrap_config(Path(workspace.worktree_path), case, request.intervention_contract)
         staging = run_dir / "executor_staging" / key
-        summary = ExecutorAgent(
-            contract=request.intervention_contract, workspace=workspace, artifact_dir=staging,
-            limits=ExecutorLimits(max_steps=8, max_wall_seconds=request.intervention_contract.time_budget, max_model_calls=request.intervention_contract.max_repairs + 1),
-        ).run(proposal_provider)
+        summary_path = staging / "executor_summary.json"
+        admission_path = staging / "intervention_admission.json"
+        summary = (
+            ExecutorSummary.model_validate_json(summary_path.read_text(encoding="utf-8"))
+            if summary_path.is_file() and admission_path.is_file()
+            else ExecutorAgent(
+                contract=request.intervention_contract, workspace=workspace, artifact_dir=staging,
+                limits=ExecutorLimits(max_steps=8, max_wall_seconds=request.intervention_contract.time_budget, max_model_calls=request.intervention_contract.max_repairs + 1),
+            ).run(proposal_provider)
+        )
         if summary.status != "completed":
             raise ValueError(summary.error or "Executor did not complete")
         overrides = _load_overrides(Path(workspace.worktree_path) / INTERVENTION_CONFIG)
@@ -87,6 +96,24 @@ class PatchCore07HInterventionHandoff:
         )
         artifact_dir = run_dir / "attempts" / started.attempt.attempt_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
+        identity = ComparisonIdentity(
+            dataset_identity=f"07h-b-dev:{request.dataset_manifest_sha256}",
+            split_identity=request.dataset_manifest_sha256,
+            seed=0,
+            checkpoint_selection="not_applicable",
+            command_sha256=refs.command_sha256,
+            metric_implementation_refs=case.evaluation.evaluator_paths,
+            evaluation_contract_sha256=request.evaluation_contract_sha256,
+            outputs_complete=True,
+        )
+        ScientificAssessmentInputsStore().save(
+            artifact_dir,
+            ScientificEvaluationInputs(
+                baseline_metrics=request.baseline_metrics,
+                candidate_identity=identity,
+                baseline_identity=identity,
+            ),
+        )
         for name in ["patch.diff", "final_patch.diff", "intervention_admission.json", "executor_summary.json", "patchcore_command.json"]:
             source = staging / name
             if source.is_file(): shutil.copy2(source, artifact_dir / name)
@@ -95,12 +122,16 @@ class PatchCore07HInterventionHandoff:
         return started.attempt.model_dump(mode="json"), started.pipeline_job, workspace
 
     @staticmethod
-    def _bootstrap_config(worktree: Path, case: InternalBenchmarkCase) -> None:
+    def _bootstrap_config(worktree: Path, case: InternalBenchmarkCase, contract: InterventionContract) -> None:
         path = worktree / INTERVENTION_CONFIG
         if path.exists():
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"parameter_overrides": {"coreset_sampling_ratio": case.fixed_parameters["coreset_sampling_ratio"]}}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        allowed = _allowed_parameters(contract)
+        if len(allowed) != 1 or allowed[0] not in case.fixed_parameters:
+            raise ValueError("07H intervention contract must authorize exactly one fixed PatchCore parameter")
+        parameter = allowed[0]
+        path.write_text(json.dumps({"parameter_overrides": {parameter: case.fixed_parameters[parameter]}}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         subprocess.run(["git", "add", "-N", INTERVENTION_CONFIG], cwd=worktree, check=True, capture_output=True, text=True, shell=False)
 
 
