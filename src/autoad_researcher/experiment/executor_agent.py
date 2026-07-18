@@ -156,7 +156,7 @@ class ExecutorAgent:
                 repair_index = model_call
                 if repair_index <= self._contract.max_repairs:
                     append_repair_record(self._artifact_dir / "repair_log.jsonl", RepairRecord(repair_index=repair_index, trigger=failed.decision.code, classification=classification, patch_ref="patch.diff", validation_result=failed.decision.detail))
-                if hard_failures >= 2 or repair_index >= self._contract.max_repairs:
+                if hard_failures >= 2 or repair_index > self._contract.max_repairs:
                     summary = ExecutorSummary(status="implementation_failed", model_calls=model_call, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence, error=f"{failed.decision.code}: {failed.decision.detail}")
                     return summary
             assert proposal is not None

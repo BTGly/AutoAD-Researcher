@@ -55,3 +55,17 @@ def test_executor_budget_and_command_allowlist_are_hard_bounds(fixture_repositor
     tools = ExecutorTools(worktree_path=Path(workspace.worktree_path), applier=SearchReplaceApplier(contract=_contract(), workspace=workspace), limits=ExecutorLimits(max_steps=2, max_wall_seconds=30, max_model_calls=1))
     with pytest.raises(PermissionError):
         tools.run_command(["git", "status"], timeout_seconds=1)
+
+
+def test_executor_allows_one_bounded_repair_after_initial_syntax_failure(fixture_repository: Path, tmp_path: Path):
+    contract = _contract().model_copy(update={"max_repairs": 1})
+    workspace = WorktreeManager(tmp_path / "worktrees").create(repository_path=fixture_repository, attempt_id="attempt_000001", base_commit="HEAD", protected_paths=["evaluate.py"], environment_snapshot_ref="environment/snapshot.json")
+    agent = ExecutorAgent(contract=contract, workspace=workspace, artifact_dir=tmp_path / "attempts" / "attempt_000001", limits=ExecutorLimits(max_steps=4, max_wall_seconds=30, max_model_calls=2))
+    proposals = iter([
+        ExecutorProposal(edits=[SearchReplaceEdit(path="train.py", search="learning_rate = 0.1\n", replace="def broken(:\n")], changed_symbols=[], confidence=.1),
+        ExecutorProposal(edits=[SearchReplaceEdit(path="train.py", search="learning_rate = 0.1\n", replace="learning_rate = 0.2\n")], changed_symbols=["learning_rate"], confidence=.9),
+    ])
+    summary = agent.run(lambda _tools: next(proposals))
+    assert summary.status == "completed" and summary.model_calls == 2
+    records = (tmp_path / "attempts" / "attempt_000001" / "repair_log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(records) == 1
