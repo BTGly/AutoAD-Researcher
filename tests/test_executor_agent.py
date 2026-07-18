@@ -45,6 +45,13 @@ def test_executor_applies_only_structured_edit_and_always_writes_summary(fixture
     assert (Path(workspace.worktree_path) / "train.py").read_text(encoding="utf-8") == "learning_rate = 0.2\n"
 
 
+def test_executor_rejects_empty_edit_proposal(fixture_repository: Path, tmp_path: Path):
+    agent, _ = _agent(fixture_repository, tmp_path, ExecutorLimits(max_steps=4, max_wall_seconds=30, max_model_calls=1))
+    summary = agent.run(lambda _tools: ExecutorProposal(edits=[], changed_symbols=[], confidence=.5))
+    assert summary.status == "implementation_failed"
+    assert summary.error == "proposal did not include edits"
+
+
 def test_executor_budget_and_command_allowlist_are_hard_bounds(fixture_repository: Path, tmp_path: Path):
     agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_steps=1, max_wall_seconds=30, max_model_calls=0))
     exhausted = agent.run(lambda _tools: pytest.fail("provider must not be called"))

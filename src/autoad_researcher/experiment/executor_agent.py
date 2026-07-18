@@ -142,6 +142,18 @@ class ExecutorAgent:
             proposal: ExecutorProposal | None = None
             for model_call in range(1, min(self._limits.max_model_calls, self._contract.max_repairs + 1) + 1):
                 proposal = ExecutorProposal.model_validate(proposal_provider(tools))
+                if not proposal.edits:
+                    summary = ExecutorSummary(
+                        status="implementation_failed",
+                        model_calls=model_call,
+                        steps=tools.steps,
+                        changed_files=sorted(set(changed_files)),
+                        changed_symbols=proposal.changed_symbols,
+                        possible_contract_deviation=proposal.possible_contract_deviation,
+                        confidence=proposal.confidence,
+                        error="proposal did not include edits",
+                    )
+                    return summary
                 failed = None
                 for edit in proposal.edits:
                     result = tools.apply_edit(edit, diff_path=self._artifact_dir / "patch.diff")
