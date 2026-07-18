@@ -1,0 +1,120 @@
+schema_version: 1
+
+case_id: internal_patchcore_mvtec_bottle_smoke_v1
+
+scope: internal_benchmark_only
+must_not_be_used_as_user_default: true
+
+purpose: >
+  07H physical PatchCore/MVTec bottle smoke protocol. This independently frozen
+  case is for a small single-GPU workflow and must not alter the existing
+  internal regression benchmark.
+
+baseline_name: PatchCore
+implementation_name: amazon-science-patchcore-inspection
+
+repository:
+  url: https://github.com/amazon-science/patchcore-inspection
+  ref: main
+  commit_sha: aa646496cd960f30a21eedf1ba97d0371bc26200
+  license: Apache-2.0
+  entrypoint_path: bin/run_patchcore.py
+  config_path: null
+  dependency_files:
+    - requirements.txt
+    - setup.py
+
+dataset:
+  name: MVTec AD
+  category: bottle
+  root_env: AUTOAD_07H_MVTEC_ROOT
+  license: CC BY-NC-SA 4.0
+  acquisition:
+    mode: user_provided
+    source_page: https://www.mvtec.com/research-teaching/datasets/mvtec-ad
+    license: CC-BY-NC-SA-4.0
+    redistribution_allowed: false
+    automatic_download: false
+    user_must_accept_license: true
+  required_relative_paths:
+    - bottle/train/good
+    - bottle/test
+    - bottle/ground_truth
+  manifest_strategy: relative_path_size_v1
+
+fixed_parameters:
+  seed: 0
+  backbone: wideresnet50
+  layers:
+    - layer2
+    - layer3
+  resize: 128
+  imagesize: 128
+  pretrain_embed_dimension: 1024
+  target_embed_dimension: 1024
+  anomaly_scorer_num_nn: 1
+  patchsize: 3
+  sampler: approx_greedy_coreset
+  coreset_sampling_ratio: 0.1
+  batch_size: 2
+  num_workers: 2
+  train_val_split: 1.0
+  faiss_on_gpu: false
+  gpu: 0
+  preprocessing: mean
+  aggregation: mean
+  patchscore: max
+  patchoverlap: 0.0
+  faiss_num_workers: 2
+  augment: false
+  log_project: autoad_07h_physical
+  log_group: internal_patchcore_mvtec_bottle_smoke_v1
+  results_path: raw
+  save_patchcore_model: false
+  save_segmentation_images: false
+  attempt_timeout_seconds: 1800
+
+evaluation:
+  metrics:
+    - name: instance_auroc
+      required: true
+      direction: maximize
+      unit: ratio
+      absolute_tolerance: 0.005
+    - name: full_pixel_auroc
+      required: false
+      direction: maximize
+      unit: ratio
+      absolute_tolerance: 0.005
+    - name: anomaly_pixel_auroc
+      required: false
+      direction: maximize
+      unit: ratio
+      absolute_tolerance: 0.005
+  evaluator_paths:
+    - bin/run_patchcore.py
+    - src/patchcore/metrics.py
+    - src/patchcore/utils.py
+  protected_paths:
+    - bin/run_patchcore.py
+    - src/patchcore/metrics.py
+    - src/patchcore/utils.py
+    - src/patchcore/datasets/mvtec.py
+  raw_result_paths:
+    - raw/autoad_07h_physical/internal_patchcore_mvtec_bottle_smoke_v1/results.csv
+  fingerprint_strategy: repo_commit_paths_and_config_v1
+
+reproducibility:
+  attempts: 2
+  seed: 0
+  require_same_repository_commit: true
+  require_same_case_config: true
+  require_same_dataset_manifest: true
+  require_same_evaluation_contract: true
+  require_same_environment: true
+
+safety:
+  allow_network_during_execution: false
+  require_clean_repository: true
+  overwrite_existing_attempt: false
+  allow_paths_outside_workspace: false
