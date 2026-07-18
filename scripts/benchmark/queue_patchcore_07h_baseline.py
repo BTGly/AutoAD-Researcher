@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from autoad_researcher.benchmarks.config import compute_case_sha256, load_internal_benchmark_case  # noqa: E402
 from autoad_researcher.benchmarks.hashing import sha256_file  # noqa: E402
-from autoad_researcher.benchmarks.patchcore_smoke import patchcore_smoke_metric_specs  # noqa: E402
+from autoad_researcher.benchmarks.patchcore_smoke import build_patchcore_smoke_command_plan, patchcore_smoke_metric_specs  # noqa: E402
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService  # noqa: E402
 from autoad_researcher.experiment.evaluation_contract import (  # noqa: E402
     EvaluationContract, EvaluationContractStore, EvaluationMetric, EvaluationResourceBudget, freeze_protected_artifacts,
@@ -69,7 +69,10 @@ def main() -> int:
     session_store.bind_evaluation_contract(run_dir, session_id=session.session_id, evaluation_contract_ref=frozen.ref, evaluation_contract_sha256=frozen.sha256, evaluation_contract_revision=0)
     protected = run_dir / "artifacts" / "07h" / "protected_hashes.json"
     _write(protected, ProtectedArtifactHashes(hashes=freeze_protected_artifacts(run_dir, protected_paths)).model_dump(mode="json"))
-    plan = _plan(case_path, repo, python, run_dir / "data" / "b_dev", weight, case)
+    command_file = run_dir / "artifacts" / "07h" / "baseline_patchcore_command.json"
+    smoke = build_patchcore_smoke_command_plan(case=case, run_id=args.run_id, attempt="baseline_seed_0", dataset_path=str(run_dir / "data" / "b_dev"))
+    _write(command_file, {"command_id": smoke.command_id, "argv": [str(repo / case.repository.entrypoint_path), *smoke.args[1:]], "results_path": patchcore_smoke_metric_specs(case)[0].source_path, "metrics": [{"name": metric.name, "required": metric.required} for metric in case.evaluation.metrics], "protected_paths": case.evaluation.protected_paths})
+    plan = _plan(command_file, repo, python, weight, case)
     refs = ExperimentInputRefs(repository_fingerprint=case.repository.commit_sha, environment_sha256=sha256_file(lockfile), dataset_manifest_sha256=b_dev_sha, asset_manifest_sha256=sha256_file(weight), command_sha256=experiment_command_sha256(plan))
     identity = ComparisonIdentity(dataset_identity=contract.dataset_identity, split_identity=contract.split_identity, seed=0, checkpoint_selection=contract.checkpoint_selection, command_sha256=refs.command_sha256, metric_implementation_refs=case.evaluation.evaluator_paths, evaluation_contract_sha256=frozen.sha256, outputs_complete=True)
     started = ExperimentAttemptService().create_or_get_attempt(run_dir, session_id=session.session_id, job_type="experiment_baseline", idempotency_key="07h:baseline:seed:0", command_plan=plan, input_refs=refs, job_timeout_sec=1800, required_device_count=1, required_vram_mb=20000, evaluation_contract_ref=frozen.ref, evaluation_contract_sha256=frozen.sha256, protected_artifact_report_ref=str(protected.relative_to(run_dir)), protected_artifact_report_sha256=sha256_file(protected))
@@ -78,10 +81,11 @@ def main() -> int:
     return 0
 
 
-def _plan(case_path: Path, repo: Path, python: Path, dataset: Path, weight: Path, case) -> ExperimentCommandPlan:
+def _plan(command_file: Path, repo: Path, python: Path, weight: Path, case) -> ExperimentCommandPlan:
     expected_csv = patchcore_smoke_metric_specs(case)[0].source_path
     source = PROJECT_ROOT / "src"
-    return ExperimentCommandPlan(schema_version=1, command_id=f"baseline_seed_0_{case.case_id}", program=str(python), args=["-m", "autoad_researcher.benchmarks.patchcore_07h_runner", "--case", str(case_path), "--repository", str(repo), "--dataset", str(dataset)], cwd="attempts", environment={"PYTHONPATH": f"{source}:{repo / 'src'}", "TORCH_HOME": str(weight.parent.parent.parent), "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "CUDA_VISIBLE_DEVICES": "0"}, timeout_seconds=1800, network=False, expected_outputs=[expected_csv, "metrics.json", "parsed_metrics.json", "protected_hash_before.json", "protected_hash_after.json", "command.json"])
+    command_sha = sha256_file(command_file)
+    return ExperimentCommandPlan(schema_version=1, command_id=f"baseline_seed_0_{case.case_id}", program=str(python), args=["-m", "autoad_researcher.benchmarks.patchcore_07h_runner", "--command-file", str(command_file), "--repository", str(repo), "--command-sha256", command_sha], cwd="attempts", environment={"PYTHONPATH": f"{source}:{repo / 'src'}", "TORCH_HOME": str(weight.parent.parent.parent), "PYTHONHASHSEED": "0", "PYTHONDONTWRITEBYTECODE": "1", "HF_HUB_OFFLINE": "1", "CUDA_VISIBLE_DEVICES": "0", "AUTOAD_PATCHCORE_COMMAND_SHA256": command_sha}, timeout_seconds=1800, network=False, expected_outputs=[expected_csv, "metrics.json", "parsed_metrics.json", "protected_hash_before.json", "protected_hash_after.json", "command.json"])
 
 
 def _path(value: str) -> Path:
