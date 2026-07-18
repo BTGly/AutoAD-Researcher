@@ -8,7 +8,7 @@
 
 | 日期 | 文件 | 主要工作 |
 |---|---|---|
-| 2026-07-18 | [2026-07-18.md](2026-07-18.md) | 计划 05D/05E：Decision、Candidate、Champion、Reflection 与科学 Context；计划 06：Convergence、Strategy、Stop、Cost、FailurePolicy；AD-AgentBench 与两轮 E2E |
+| 2026-07-18 | [2026-07-18.md](2026-07-18.md) | 计划 05D/05E：Decision、Candidate、Champion、Reflection 与科学 Context；计划 06：Convergence、Strategy、Stop、Cost、FailurePolicy；AD-AgentBench 与两轮 E2E；07H 真实 PatchCore 基线与 Agent 主链验收 |
 | 2026-07-17 | [2026-07-17.md](2026-07-17.md) | PR-001A ExperimentSession、reconcile-style 确认、幂等环境 Job、授权事件与确认 API/UI |
 | 2026-06-15 | [2026-06-15.md](2026-06-15.md) | Spike 01、验证门禁、AgentHarness ABC、Schema 迁移、ArtifactStore、EventStore、CI 修复、日志结构重构 |
 | 2026-06-17 | [2026-06-17.md](2026-06-17.md) | 3.0C-2 封板、3.0C-3 Commit 1/2A/2B（lock contracts, lockfile generation）、Step 3.2 Paper Intelligence、3.4 v1.3、3.5 v1.3、3.6–3.7 Patch Planning & Approval（schemas + planner + validator + conflict analyzer + approval + controlled applicator）|

@@ -53,7 +53,10 @@ class PatchCore07HExecutorAdapter:
 
     def build(self, inputs: PatchCore07HAdapterInputs) -> tuple[ExperimentCommandPlan, ExperimentInputRefs]:
         repository = inputs.repository.resolve()
-        benchmark_python = inputs.benchmark_python.resolve()
+        # Preserve a virtualenv launcher symlink.  ``resolve()`` turns
+        # ``venv/bin/python`` into its base interpreter and drops the venv's
+        # site-packages at process startup.
+        benchmark_python = inputs.benchmark_python.absolute()
         dataset_path = inputs.dataset_path.resolve()
         weight_path = inputs.weight_path.resolve()
         entrypoint = repository / self._case.repository.entrypoint_path

@@ -40,3 +40,25 @@ def test_patchcore_07h_adapter_rejects_unapproved_or_multi_parameter_override(tm
         PatchCore07HExecutorAdapter(case=case).build(PatchCore07HAdapterInputs(**base, parameter_overrides={"coreset_sampling_ratio": .2}))
     with pytest.raises(ValueError, match="exactly one"):
         PatchCore07HExecutorAdapter(case=case).build(PatchCore07HAdapterInputs(**base, parameter_overrides={"patchsize": 3, "anomaly_scorer_num_nn": 1}))
+
+
+def test_patchcore_07h_adapter_preserves_virtualenv_python_symlink(tmp_path: Path):
+    """Resolving the launcher would discard the virtualenv's site-packages."""
+    repo = tmp_path / "patchcore"; (repo / "bin").mkdir(parents=True)
+    (repo / "bin" / "run_patchcore.py").write_text("# fixture\n", encoding="utf-8")
+    target = tmp_path / "base-python"; target.write_text("fixture\n", encoding="utf-8")
+    launcher = tmp_path / "venv" / "bin" / "python"; launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(target)
+    case = load_internal_benchmark_case(Path("configs/benchmarks/internal_patchcore_mvtec_bottle_smoke_v1.yaml"))
+
+    plan, _ = PatchCore07HExecutorAdapter(case=case).build(
+        PatchCore07HAdapterInputs(
+            run_id="07h", attempt_id="attempt_000008", repository=repo,
+            benchmark_python=launcher, dataset_path=tmp_path / "b_dev", weight_path=tmp_path / "weight.pth",
+            environment_sha256="a" * 64, dataset_manifest_sha256="b" * 64, asset_manifest_sha256="c" * 64,
+            repository_fingerprint="d" * 40, allowed_parameters=["patchsize"],
+            parameter_overrides={"patchsize": 2}, artifact_dir=tmp_path / "artifact",
+        )
+    )
+
+    assert plan.program == str(launcher.absolute())
