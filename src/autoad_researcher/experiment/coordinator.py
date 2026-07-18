@@ -15,6 +15,7 @@ from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.cognitive_budget import CognitiveBudget, CognitiveBudgetCheck, CognitiveBudgetStore, CognitiveUsage, new_usage
 from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCommitStore, ObservationSnapshot
 from autoad_researcher.experiment.idea_tree import IdeaTree, IdeaTreeMutation, IdeaTreeStore
+from autoad_researcher.experiment.noise_floor import NoiseFloorStore
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 
 COORDINATOR_DIR = "experiments/coordinator"
@@ -219,11 +220,12 @@ class CoordinatorTools:
 class CoordinatorContextBuilder:
     """Build a stable compact input from existing Session, Tree, Attempt, and Commit stores."""
 
-    def __init__(self, *, session_store: ExperimentSessionStore | None = None, tree_store: IdeaTreeStore | None = None, attempt_store: ExperimentAttemptStore | None = None, commit_store: CognitiveCommitStore | None = None):
+    def __init__(self, *, session_store: ExperimentSessionStore | None = None, tree_store: IdeaTreeStore | None = None, attempt_store: ExperimentAttemptStore | None = None, commit_store: CognitiveCommitStore | None = None, noise_store: NoiseFloorStore | None = None):
         self._sessions = session_store or ExperimentSessionStore()
         self._trees = tree_store or IdeaTreeStore()
         self._attempts = attempt_store or ExperimentAttemptStore()
         self._commits = commit_store or CognitiveCommitStore()
+        self._noise = noise_store or NoiseFloorStore()
 
     def build(self, run_dir: Path, *, session_id: str, recent_commit_limit: int = 5) -> ContextPack:
         session = self._sessions.load(run_dir, session_id)
@@ -252,7 +254,7 @@ class CoordinatorContextBuilder:
             "champion_summary": None,
             "recent_cognitive_commits": [item.model_dump(mode="json") for item in commits[-recent_commit_limit:]],
             "dead_end_summary": [self._node_summary(node) for node in tree.nodes if node.status in dead_end_statuses],
-            "noise_floor": None,
+            "noise_floor": {f"{item.metric}:{item.category}": item.model_dump(mode="json") for item in self._noise.load_for_session(run_dir, session_id=session_id)} or None,
             "budget_snapshot": dict(sorted(session.budget.items())),
         }
         return ContextPack.create(**values)
