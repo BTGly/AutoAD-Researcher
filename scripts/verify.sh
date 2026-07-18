@@ -162,6 +162,10 @@ test -f src/autoad_researcher/benchmarks/environment.py
 test -f src/autoad_researcher/benchmarks/preflight.py
 test -f scripts/benchmark/preflight.py
 test -f scripts/benchmark/run_internal_patchcore_attempt.py
+test -f src/autoad_researcher/benchmarks/patchcore_07h_data.py
+test -f scripts/benchmark/prepare_patchcore_07h_data.py
+test -f src/autoad_researcher/benchmarks/patchcore_07h_readiness.py
+test -f scripts/benchmark/check_patchcore_07h_physical_readiness.py
 echo "[verify] checking benchmark environment lock..."
 test -f src/autoad_researcher/benchmarks/environment_lock.py
 test -f configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml
