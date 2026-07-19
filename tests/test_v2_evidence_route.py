@@ -395,6 +395,13 @@ async def test_intent_summary_route_returns_empty_summary_for_missing_run(tmp_pa
     assert payload == {
         "goal": "",
         "confirmed_facts": [],
+        "confirmed_task_parameters": {
+            "baseline": None,
+            "dataset": None,
+            "compute_budget": None,
+            "primary_metrics": [],
+            "evaluation_constraints": [],
+        },
         "inferred_facts": [],
         "unresolved_conflicts": [],
         "blocking_question": None,

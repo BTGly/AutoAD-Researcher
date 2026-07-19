@@ -303,30 +303,47 @@ export default function App() {
       if (currentRunIdRef.current === targetRunId && res.experiment_task) {
         const task = res.experiment_task;
         const goal = task.input_task.user_idea || task.input_task.request;
-        const selectedMode = window.prompt(
-          `选择执行模式：\n- plan_only：仅生成实验输入\n- approve_each_step：每一步都需要确认\n- agent_assisted_after_approval：确认后由 Agent 协助准备环境\n\n目标：${goal}\n材料：${task.input_task.source_ids.length} 项`,
-          'plan_only',
-        );
-        if (selectedMode === null) {
-          // Closing the mode dialog is a deliberate no-op.
-        } else if (
-          selectedMode !== 'plan_only'
-          && selectedMode !== 'approve_each_step'
-          && selectedMode !== 'agent_assisted_after_approval'
-        ) {
-          addToast('未确认有效的执行模式', 'error');
-        } else {
-          const confirmed = window.confirm(
-            selectedMode === 'plan_only'
-              ? '确认生成 input_task.yaml？不会修改代码或运行实验。'
-              : `确认以 ${selectedMode} 启动环境准备？不会启动 baseline 或修改模型代码。`,
+        if (task.status === 'confirmed') {
+          const recover = window.confirm(
+            `任务已按 ${task.execution_mode} 确认。是否恢复缺失的任务材料化？不会重新选择或升级执行模式。\n\n目标：${goal}`,
           );
-          if (confirmed) {
-            const prepared = await confirmExperimentTask(targetRunId, task.task_id, selectedMode).catch(() => null);
+          if (recover) {
+            const prepared = await confirmExperimentTask(
+              targetRunId,
+              task.task_id,
+              task.execution_mode,
+            ).catch(() => null);
             addToast(
-              prepared ? `实验任务已确认（${prepared.disposition}）` : '实验输入生成失败',
+              prepared ? `已恢复确认任务（${prepared.disposition}）` : '任务恢复失败',
               prepared ? 'success' : 'error',
             );
+          }
+        } else {
+          const selectedMode = window.prompt(
+            `选择执行模式：\n- plan_only：仅生成实验输入\n- approve_each_step：每一步都需要确认\n- agent_assisted_after_approval：确认后由 Agent 协助准备环境\n\n目标：${goal}\n材料：${task.input_task.source_ids.length} 项`,
+            'plan_only',
+          );
+          if (selectedMode === null) {
+            // Closing the mode dialog is a deliberate no-op.
+          } else if (
+            selectedMode !== 'plan_only'
+            && selectedMode !== 'approve_each_step'
+            && selectedMode !== 'agent_assisted_after_approval'
+          ) {
+            addToast('未确认有效的执行模式', 'error');
+          } else {
+            const confirmed = window.confirm(
+              selectedMode === 'plan_only'
+                ? '确认生成 input_task.yaml？不会修改代码或运行实验。'
+                : `确认以 ${selectedMode} 启动环境准备？不会启动 baseline 或修改模型代码。`,
+            );
+            if (confirmed) {
+              const prepared = await confirmExperimentTask(targetRunId, task.task_id, selectedMode).catch(() => null);
+              addToast(
+                prepared ? `实验任务已确认（${prepared.disposition}）` : '实验输入生成失败',
+                prepared ? 'success' : 'error',
+              );
+            }
           }
         }
       }

@@ -114,6 +114,7 @@ class InputTask(BaseModel):
     baseline: str | None = None
     dataset: str | None = None
     compute_budget: str | None = None
+    primary_metrics: list[str] = Field(default_factory=list)
 
     constraints: list[str] = Field(default_factory=list)
 

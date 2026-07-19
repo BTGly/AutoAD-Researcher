@@ -29,6 +29,13 @@ async def test_intent_summary_api_replaces_draft_api():
     assert response.json() == {
         "goal": "",
         "confirmed_facts": [],
+        "confirmed_task_parameters": {
+            "baseline": None,
+            "dataset": None,
+            "compute_budget": None,
+            "primary_metrics": [],
+            "evaluation_constraints": [],
+        },
         "inferred_facts": [],
         "unresolved_conflicts": [],
         "blocking_question": None,

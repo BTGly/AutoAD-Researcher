@@ -184,6 +184,8 @@ class TaskBridge:
                     confirmed.model_dump(mode="json"),
                 )
             else:
+                if execution_mode != draft.execution_mode:
+                    raise ValueError("execution mode differs from confirmed task")
                 confirmed = draft
 
             _materialize_input_task(run_dir, confirmed)
@@ -230,12 +232,22 @@ def _build_and_write_pending_task(
     run_id = _validate_run_dir(run_dir)
     summary = summary or _require_preparable_summary(run_dir)
     request = _original_user_request(user_input, transcript_tail)
+    parameters = summary.confirmed_task_parameters
     input_task = InputTask(
         run_id=run_id,
         request=request,
         source_ids=_registered_source_ids(run_dir),
         user_idea=summary.goal,
-        constraints=list(summary.confirmed_facts),
+        baseline=_confirmed_value(parameters.baseline),
+        dataset=_confirmed_value(parameters.dataset),
+        compute_budget=_confirmed_value(parameters.compute_budget),
+        primary_metrics=[item.value for item in parameters.primary_metrics],
+        constraints=_unique_texts(
+            [
+                *summary.confirmed_facts,
+                *(item.value for item in parameters.evaluation_constraints),
+            ]
+        ),
     )
     summary_sha256 = _summary_sha256(summary)
     draft = ExperimentTaskDraft(
@@ -248,6 +260,14 @@ def _build_and_write_pending_task(
     )
     _write_json_atomic(run_dir / BRIDGE_DIR / PENDING_TASK_FILE, draft.model_dump(mode="json"))
     return draft
+
+
+def _confirmed_value(value: Any) -> str | None:
+    return value.value if value is not None else None
+
+
+def _unique_texts(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(item for item in values if item.strip()))
 
 
 def _original_user_request(

@@ -11,9 +11,11 @@ from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_intent_summary import (
     BasedStatement,
+    ConfirmedTaskParameters,
     ResearchIntentSummary,
     save_research_intent_summary,
 )
+from autoad_researcher.schemas.decisions import ConfirmedDecision
 from autoad_researcher.assistant.v2.task_bridge import (
     BRIDGE_DIR,
     PENDING_TASK_FILE,
@@ -119,6 +121,66 @@ def test_task_bridge_prepares_then_confirms_exact_pipeline_input(tmp_path: Path)
     assert not (run_dir / "experiments" / "sessions").exists()
 
 
+def test_task_bridge_projects_only_typed_confirmed_parameters(tmp_path: Path):
+    run_dir = tmp_path / "run_typed_parameters"
+    run_dir.mkdir()
+    save_research_intent_summary(
+        run_dir,
+        ResearchIntentSummary(
+            goal="复现用户指定的异常检测基线",
+            confirmed_facts=["用户不允许修改 evaluator"],
+            confirmed_task_parameters=ConfirmedTaskParameters(
+                baseline=ConfirmedDecision(
+                    value="PatchCore",
+                    source="user_provided",
+                    evidence="用户指定 baseline 为 PatchCore",
+                ),
+                dataset=ConfirmedDecision(
+                    value="MVTec AD / bottle",
+                    source="user_provided",
+                    evidence="用户指定 MVTec AD 的 bottle 类别",
+                ),
+                compute_budget=ConfirmedDecision(
+                    value="GPU 0，最多 2 小时",
+                    source="user_confirmed",
+                    evidence="用户确认 GPU 0 和两小时预算",
+                ),
+                primary_metrics=[
+                    ConfirmedDecision(
+                        value="instance AUROC",
+                        source="user_provided",
+                        evidence="用户指定 instance AUROC",
+                    )
+                ],
+                evaluation_constraints=[
+                    ConfirmedDecision(
+                        value="不允许修改 evaluator",
+                        source="user_provided",
+                        evidence="用户明确禁止修改 evaluator",
+                    ),
+                    ConfirmedDecision(
+                        value="B_test 不参与训练、选择或校准",
+                        source="user_provided",
+                        evidence="用户明确 B_test 隔离约束",
+                    ),
+                ],
+            ),
+        ),
+    )
+
+    draft = TaskBridge.build_experiment_task(run_dir, user_input="请准备实验")
+
+    assert draft.input_task.baseline == "PatchCore"
+    assert draft.input_task.dataset == "MVTec AD / bottle"
+    assert draft.input_task.compute_budget == "GPU 0，最多 2 小时"
+    assert draft.input_task.primary_metrics == ["instance AUROC"]
+    assert draft.input_task.constraints == [
+        "用户不允许修改 evaluator",
+        "不允许修改 evaluator",
+        "B_test 不参与训练、选择或校准",
+    ]
+
+
 def test_task_bridge_blocks_unresolved_question(tmp_path: Path):
     run_dir = tmp_path / "run_task_blocked"
     run_dir.mkdir()
@@ -216,6 +278,106 @@ def test_orchestrator_explicit_task_action_prepares_pending_input(monkeypatch, t
     assert not (run_dir / "input_task.yaml").exists()
     assert load_pipeline_jobs(run_dir) == []
     assert not (run_dir / "experiments" / "sessions").exists()
+
+
+def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
+    run_dir = tmp_path / "run_local_dataset"
+    run_dir.mkdir()
+    dataset_dir = tmp_path / "mvtec"
+    dataset_dir.mkdir()
+
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "plan",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "dataset_source": {
+                "source_path": str(dataset_dir),
+                "user_label": "MVTec AD / bottle",
+            },
+            "task_action": "prepare_experiment_task",
+        },
+        {
+            "reply_to_user": "参数已对齐，可以准备任务草案。",
+            "summary": {
+                "goal": "复现 PatchCore 的 MVTec AD bottle 实验",
+                "confirmed_facts": ["用户不允许修改 evaluator"],
+                "confirmed_task_parameters": {
+                    "baseline": {
+                        "value": "PatchCore",
+                        "source": "user_provided",
+                        "evidence": "用户指定 PatchCore",
+                    },
+                    "dataset": {
+                        "value": "MVTec AD / bottle",
+                        "source": "user_provided",
+                        "evidence": "用户指定 MVTec AD 的 bottle 类别",
+                    },
+                    "compute_budget": {
+                        "value": "GPU 0",
+                        "source": "user_provided",
+                        "evidence": "用户指定 GPU 0",
+                    },
+                    "primary_metrics": [
+                        {
+                            "value": "instance AUROC",
+                            "source": "user_provided",
+                            "evidence": "用户指定 instance AUROC",
+                        }
+                    ],
+                    "evaluation_constraints": [
+                        {
+                            "value": "不允许修改 evaluator",
+                            "source": "user_provided",
+                            "evidence": "用户明确禁止修改 evaluator",
+                        },
+                        {
+                            "value": "B_test 不参与训练、选择或校准",
+                            "source": "user_provided",
+                            "evidence": "用户明确 B_test 隔离约束",
+                        },
+                    ],
+                },
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=(
+            f"数据集目录是 {dataset_dir}，使用 MVTec AD bottle、PatchCore、"
+            "instance AUROC 和 GPU 0，请准备实验。"
+        ),
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.experiment_task is not None
+    assert result.created_sources == [{
+        "source_id": result.experiment_task["input_task"]["source_ids"][0],
+        "kind": "dataset",
+        "status": "user_provided_not_ingested",
+    }]
+    task = result.experiment_task["input_task"]
+    assert task["baseline"] == "PatchCore"
+    assert task["dataset"] == "MVTec AD / bottle"
+    assert task["compute_budget"] == "GPU 0"
+    assert task["primary_metrics"] == ["instance AUROC"]
+    assert task["constraints"] == [
+        "用户不允许修改 evaluator",
+        "不允许修改 evaluator",
+        "B_test 不参与训练、选择或校准",
+    ]
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
 
 
 def test_orchestrator_plan_without_task_action_does_not_prepare_task(monkeypatch, tmp_path: Path):

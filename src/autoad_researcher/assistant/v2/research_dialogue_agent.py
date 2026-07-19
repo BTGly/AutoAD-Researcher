@@ -29,6 +29,15 @@ class SourceInstruction(BaseModel):
     reason: str = ""
 
 
+class DatasetSourceInstruction(BaseModel):
+    """An explicit server-local dataset directory supplied by the user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_path: str = Field(min_length=1)
+    user_label: str = Field(min_length=1)
+
+
 class TargetSpec(BaseModel):
     """Semantic benchmark selector proposed for deterministic validation."""
 
@@ -101,6 +110,7 @@ class DialogueDecision(BaseModel):
     numeric_claim_allowed: bool = True
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
+    dataset_source: DatasetSourceInstruction | None = None
     task_action: TaskActionProposal | None = None
     target_spec: TargetSpec | None = None
     _is_valid: bool = PrivateAttr(default=False)
@@ -131,6 +141,7 @@ class GatedDialogueDecision(BaseModel):
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
     source_permission: dict[str, Any] | None = None
+    dataset_source: DatasetSourceInstruction | None = None
     task_action: TaskInstruction | None = None
     target_spec: TargetSpec | None = None
     execution_gate: ExecutionGate = "not_requested"

@@ -296,6 +296,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 
 <candidate_actions>
 - source_action 只针对 registered_sources 中逐字存在的唯一 source_id。用户明确要求删除时用 request_source_removal；用户明确要求对已登记的本地 PDF 重新解析时用 request_source_reparse。否定、讨论、来源不唯一或 source 未登记时为 null。
+- dataset_source 只在用户明确把一个已有的服务器本地目录作为数据集来源提供时填写 source_path 和用户给出的 user_label；必须原样保留路径，不从普通路径、文件名或上下文猜测。它只会经过代码的允许目录和目录存在性校验后登记，不能读取、复制或启动实验。否则为 null。
 - task_action 只在用户明确希望准备一份可由界面确认的实验任务草案时填字符串 "prepare_experiment_task"，否则为 null。它不代表用户已经授权修改、训练、评估或使用 GPU。用户要求实际执行但还没有任务合同，也可以提出这个候选；是否准备草案由代码根据持久化 summary、policy 和任务状态决定。
 - target_spec 只转换用户明确给出的受支持 workload 和完整 selectors；不得从 Adapter 目录反推任务或补值。
 - 这些都是候选，代码 Gate 会验证。policy=deny 时三个动作全为 null。request_source_reparse 可以伴随 act，但不等于代码修改或实验执行。
@@ -303,7 +304,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 
 <decision_output>
 只输出一个 JSON object：
-{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"task_action":null,"target_spec":null}
+{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"dataset_source":null,"task_action":null,"target_spec":null}
 </decision_output>
 """
 
@@ -326,6 +327,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 - 输出前在内部做 evidence audit：逐项删掉无法从当前上下文定位依据的具体事实；计划用“读取/验证/确认”表达未知项，不预填结论。不输出 audit 过程。
 - Repository Intelligence 路径只称候选。只有候选路径时说“下一步读取后确认”，不猜文件内容。
 - confirmed_facts 只写用户明确陈述，包含禁止项和负向约束；材料推断写 inferred_facts，并在 basis 标 source_id/artifact_path。
+- confirmed_task_parameters 只记录用户直接提供或明确确认的 baseline、dataset、compute_budget、primary_metrics 和 evaluation_constraints；每项必须带 source=user_provided|user_confirmed 及对应的用户话语 evidence。没有明确值时保留 null 或空列表，绝不从 confirmed_facts、材料或模型常识猜取。
 - unresolved_conflicts 只写有依据的风险；summary 是整合本轮后的完整状态，保留有效事实并应用用户最新纠正。
 - 跨领域迁移先说明模态、学习信号和假设冲突；初步假设必须标为未验证，不能写成 inferred_facts。
 </evidence>
@@ -334,7 +336,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 - Propose first。回复简洁，按任务使用自然段、步骤、清单或表格；最多一个 blocking_question，回复中自然提出同一问题。
 - 不声称已保存、已更新、稍后通知或完成任何没有 artifact 支持的动作。
 - 只输出一个 JSON object，不要输出 mode、policy、source_action、task_action 或 target_spec：
-{"reply_to_user":"...","summary":{"goal":"...","confirmed_facts":["..."],"inferred_facts":[{"statement":"...","basis":"..."}],"unresolved_conflicts":[{"statement":"...","basis":"..."}],"blocking_question":null}}
+{"reply_to_user":"...","summary":{"goal":"...","confirmed_facts":["..."],"confirmed_task_parameters":{"baseline":null,"dataset":null,"compute_budget":null,"primary_metrics":[],"evaluation_constraints":[]},"inferred_facts":[{"statement":"...","basis":"..."}],"unresolved_conflicts":[{"statement":"...","basis":"..."}],"blocking_question":null}}
 </style_and_output>
 """
 

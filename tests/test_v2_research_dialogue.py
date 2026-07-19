@@ -103,9 +103,17 @@ def test_summary_round_trip_uses_exact_schema(tmp_path: Path):
     assert set(payload) == {
         "goal",
         "confirmed_facts",
+        "confirmed_task_parameters",
         "inferred_facts",
         "unresolved_conflicts",
         "blocking_question",
+    }
+    assert payload["confirmed_task_parameters"] == {
+        "baseline": None,
+        "dataset": None,
+        "compute_budget": None,
+        "primary_metrics": [],
+        "evaluation_constraints": [],
     }
 
 

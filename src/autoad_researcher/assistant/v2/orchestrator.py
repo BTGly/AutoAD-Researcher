@@ -15,6 +15,7 @@ from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueMode,
+    DatasetSourceInstruction,
     GatedDialogueDecision,
     ResearchDecisionAgent,
     ResearchReplyAgent,
@@ -34,7 +35,7 @@ from autoad_researcher.assistant.v2.source_actions import (
 from autoad_researcher.assistant.v2.source_service import register_source_intake
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
-from autoad_researcher.ui.sources import load_source_registry
+from autoad_researcher.ui.sources import load_source_registry, register_local_dataset_source
 
 
 @dataclass
@@ -117,6 +118,23 @@ class ResearchOrchestratorV2:
             run_dir=run_dir,
             registered_sources=registered_sources,
         )
+        dataset_source_registration_failed = False
+        if decision.dataset_source is not None:
+            try:
+                created_sources.append(
+                    register_local_dataset_source(
+                        run_dir,
+                        decision.dataset_source.source_path,
+                        user_label=decision.dataset_source.user_label,
+                    )
+                )
+            except ValueError as exc:
+                dataset_source_registration_failed = True
+                append_event(
+                    run_dir,
+                    "assistant.dataset_source.registration_failed",
+                    {"exception_type": type(exc).__name__},
+                )
         if not candidate.is_valid:
             if not api_key:
                 failure_reply = "当前没有可用的对话模型连接，材料任务仍可在后台处理。"
@@ -188,7 +206,7 @@ class ResearchOrchestratorV2:
                 decision,
                 reply_response.summary,
             )
-        )
+        ) and not dataset_source_registration_failed
         if reply_response.should_persist and task_draft_requested:
             try:
                 draft, task_preparation_disposition = TaskBridge.prepare_or_reuse_experiment_task(
@@ -225,6 +243,7 @@ class ResearchOrchestratorV2:
             reply_response,
             experiment_task=experiment_task,
             task_preparation_disposition=task_preparation_disposition,
+            dataset_source_registration_failed=dataset_source_registration_failed,
         )
         if on_reply_delta is not None:
             on_reply_delta(reply)
@@ -259,7 +278,10 @@ def _validated_dialogue_reply(
     *,
     experiment_task: dict[str, Any] | None = None,
     task_preparation_disposition: str | None = None,
+    dataset_source_registration_failed: bool = False,
 ) -> str:
+    if dataset_source_registration_failed:
+        return "本地数据集目录未能通过安全登记校验，因此尚未准备任务草案；请检查已配置的数据集目录后重试。"
     assessment = decision.policy_assessment
     if decision.policy == "deny" or assessment.decision == "reject":
         if reply_response.should_persist:

@@ -177,12 +177,13 @@ async def confirm_experiment_task(
             task_id=task_id,
             execution_mode=request.execution_mode,
         )
-        if request.execution_mode == "plan_only":
+        effective_mode = task.execution_mode
+        if effective_mode == "plan_only":
             return ExperimentTaskConfirmationResult(task=task, disposition="plan_only")
         started = ExperimentStarter().on_task_confirmed(
             run_dir,
             task,
-            execution_mode=request.execution_mode,
+            execution_mode=effective_mode,
         )
         return ExperimentTaskConfirmationResult(
             task=task,

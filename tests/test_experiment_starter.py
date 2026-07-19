@@ -183,6 +183,28 @@ def test_plan_only_confirmation_never_creates_session_or_job(tmp_path: Path):
     assert load_pipeline_jobs(run_dir) == []
 
 
+def test_confirmed_task_rejects_execution_mode_change(tmp_path: Path):
+    run_dir = tmp_path / "run_mode_immutable"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    confirmed = TaskBridge.confirm_or_load_existing(
+        run_dir,
+        task_id=draft.task_id,
+        execution_mode="plan_only",
+    )
+
+    with pytest.raises(ValueError, match="execution mode differs"):
+        TaskBridge.confirm_or_load_existing(
+            run_dir,
+            task_id=confirmed.task_id,
+            execution_mode="agent_assisted_after_approval",
+        )
+
+    assert confirmed.execution_mode == "plan_only"
+    assert load_pipeline_jobs(run_dir) == []
+    assert not (run_dir / "experiments" / "sessions").exists()
+
+
 def test_existing_confirmed_files_must_match_authoritative_draft(tmp_path: Path):
     run_dir = tmp_path / "run_conflict"
     run_dir.mkdir()

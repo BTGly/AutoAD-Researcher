@@ -64,6 +64,7 @@ export interface PipelineInputTask {
   baseline: string | null;
   dataset: string | null;
   compute_budget: string | null;
+  primary_metrics: string[];
   constraints: string[];
 }
 

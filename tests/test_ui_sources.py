@@ -14,6 +14,7 @@ from autoad_researcher.ui.sources import (
     get_allowed_local_source_roots,
     get_source_context,
     load_source_registry,
+    register_local_dataset_source,
     register_local_file_source,
     resolve_source_pdf_path_safely,
     save_uploaded_file,
@@ -173,6 +174,52 @@ class TestRegisterLocalFileSource:
 
         with pytest.raises(ValueError, match="仅支持"):
             register_local_file_source(run_dir, src)
+
+
+class TestRegisterLocalDatasetSource:
+    def test_registers_allowed_directory_without_copying(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        dataset = tmp_path / "mvtec"
+        dataset.mkdir()
+
+        first = register_local_dataset_source(
+            run_dir,
+            dataset,
+            user_label="MVTec AD / bottle",
+        )
+        second = register_local_dataset_source(
+            run_dir,
+            dataset,
+            user_label="MVTec AD / bottle",
+        )
+
+        registry = load_source_registry(run_dir)
+        assert first == second
+        assert first["kind"] == "dataset"
+        assert len(registry["sources"]) == 1
+        assert registry["sources"][0]["original_reference"] == str(dataset.resolve())
+        assert registry["sources"][0]["stored_path"] is None
+        assert registry["sources"][0]["metadata"] == {
+            "location_kind": "server_local_directory"
+        }
+
+    def test_rejects_directory_outside_allowed_roots(self, tmp_path, monkeypatch):
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(allowed))
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        dataset = tmp_path / "mvtec"
+        dataset.mkdir()
+
+        with pytest.raises(ValueError, match="允许的数据集目录"):
+            register_local_dataset_source(
+                run_dir,
+                dataset,
+                user_label="MVTec AD / bottle",
+            )
 
     def test_default_allowed_root_includes_ai4s(self, monkeypatch):
         monkeypatch.delenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", raising=False)

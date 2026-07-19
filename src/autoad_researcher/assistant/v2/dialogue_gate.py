@@ -50,6 +50,7 @@ class DialogueGate:
             notes.append("legacy_act_request_mode_normalized")
 
         source_action = decision.source_action
+        dataset_source = decision.dataset_source
         task_action = (
             TaskInstruction(action=decision.task_action)
             if decision.task_action is not None
@@ -64,6 +65,7 @@ class DialogueGate:
         source_permission: dict[str, Any] | None = None
         if not actions_allowed:
             source_action = None
+            dataset_source = None
             task_action = None
             target_spec = None
         else:
@@ -98,6 +100,7 @@ class DialogueGate:
                         source_action = None
                         notes.append("source_action_permission_denied")
             if source_action is not None:
+                dataset_source = None
                 task_action = None
                 target_spec = None
             elif mode not in {"ask", "plan"}:
@@ -143,6 +146,7 @@ class DialogueGate:
             policy_assessment=policy,
             source_action=source_action,
             source_permission=source_permission,
+            dataset_source=dataset_source,
             task_action=task_action,
             target_spec=target_spec,
             execution_gate=execution_gate,

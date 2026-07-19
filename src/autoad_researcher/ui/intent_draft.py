@@ -219,6 +219,7 @@ def intent_draft_to_clarification_input(draft: ResearchIntentDraft) -> dict[str,
         user_idea=draft.research_goal,
         baseline=baseline if isinstance(baseline, str) and baseline.strip() else None,
         dataset=dataset if isinstance(dataset, str) and dataset.strip() else None,
+        primary_metrics=draft.primary_metrics,
         constraints=constraints,
     )
     return {

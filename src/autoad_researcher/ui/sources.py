@@ -44,6 +44,7 @@ SourceKind = Literal[
     "webpage",
     "user_text",
     "local_repo",
+    "dataset",
     "archive_bundle",
     "document",
 ]
@@ -239,6 +240,7 @@ def append_source_ref(
     parse_attempts: list[dict[str, Any]] | None = None,
     parent_source_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    original_reference: str | None = None,
 ) -> str:
     sid = source_id or _generate_source_id()
     ref = {
@@ -257,6 +259,8 @@ def append_source_ref(
         ref["parent_source_id"] = parent_source_id
     if metadata:
         ref["metadata"] = dict(metadata)
+    if original_reference:
+        ref["original_reference"] = original_reference
     registry = load_source_registry(run_dir)
     registry["sources"].append(ref)
     _save_registry(run_dir, registry)
@@ -747,6 +751,53 @@ def register_local_file_source(run_dir: Path, source_path: str | Path) -> dict[s
         "source_id": source_id,
         "stored_path": stored_path,
         "kind": kind,
+    }
+
+
+def register_local_dataset_source(
+    run_dir: Path,
+    source_path: str | Path,
+    *,
+    user_label: str,
+) -> dict[str, Any]:
+    """Register an allowed server-local dataset directory without copying it."""
+    src = Path(source_path).expanduser().resolve()
+    if not _is_under_allowed_local_source_root(src, get_allowed_local_source_roots()):
+        raise ValueError("该路径不在允许的数据集目录内")
+    if not src.is_dir():
+        raise ValueError("该路径不是可注册的数据集目录")
+    label = user_label.strip()
+    if not label:
+        raise ValueError("dataset source label must not be empty")
+
+    reference = str(src)
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if (
+            source.get("kind") == "dataset"
+            and source.get("original_reference") == reference
+        ):
+            return {
+                "source_id": source["source_id"],
+                "kind": "dataset",
+                "status": source["status"],
+            }
+
+    source_id = _generate_source_id()
+    append_source_ref(
+        run_dir,
+        kind="dataset",
+        user_label=label,
+        stored_path=None,
+        status="user_provided_not_ingested",
+        source_id=source_id,
+        metadata={"location_kind": "server_local_directory"},
+        original_reference=reference,
+    )
+    return {
+        "source_id": source_id,
+        "kind": "dataset",
+        "status": "user_provided_not_ingested",
     }
 
 
