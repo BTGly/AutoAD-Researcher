@@ -41,6 +41,8 @@ def test_offline_package_scripts_are_shell_valid_and_documented():
     assert "docker save" in text
     assert "docker load" in text
     assert "AUTOAD_EMBEDDED_WORKER=0" in text
+    assert "离线安装" in text
+    assert "运行时网络" in text
 
 
 def test_verify_and_push_gate_detects_untracked_delivery_files():
@@ -48,3 +50,17 @@ def test_verify_and_push_gate_detects_untracked_delivery_files():
 
     assert "git status --porcelain" in script
     assert "git diff --quiet && git diff --cached --quiet" not in script
+
+
+def test_manual_offline_package_workflow_uses_existing_verified_package_script():
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "package-offline.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "bash scripts/verify.sh" in workflow
+    assert "scripts/package_offline_deployment.sh" in workflow
+    assert "docker build" not in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "retention-days: 14" in workflow

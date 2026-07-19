@@ -1,9 +1,9 @@
 # Linux/amd64 离线 Docker 部署
 
-本交付方式面向没有外网访问要求的 Linux/amd64 目标机。交付包包含一个由
+本交付方式提供 Linux/amd64 的**离线安装**，不等于运行时完全隔离网络。交付包包含一个由
 `docker save` 导出的镜像 tar、其 SHA-256 清单、`docker-compose.yml`、
 `DEPLOYMENT.md` 和 `image-tag.txt`。目标机不需要项目源码，也不需要执行
-`docker build`。
+`docker build`、访问 Docker Hub 或 GitHub Container Registry。
 
 ## 构建交付包
 
@@ -33,6 +33,12 @@ autoad-offline-package/
 cd /absolute/path/autoad-offline-package
 sha256sum --check autoad-researcher-linux-amd64.tar.sha256
 ```
+
+项目还提供手动 GitHub Actions 工作流 `package-offline-linux-amd64`。在 GitHub
+Actions 页面选择待交付的分支或提交并运行它；留空 `image_tag` 时，它使用
+`autoad-researcher:offline-<短提交号>`。成功后下载同名 Workflow Artifact，其中会额外
+包含 `BUILD-INFO.txt`（提交、引用、镜像标签、平台和 workflow run 标识）。Artifact 默认
+保留 14 天，适合首次验证打包链路；长期分发策略应在确认实际 tar 大小后再确定。
 
 ## 目标机部署
 
@@ -74,6 +80,22 @@ docker compose --project-name autoad-researcher ps
 ```
 
 `AUTOAD_EMBEDDED_WORKER=0` 只用于受控诊断，不是普通部署或用户文档中的运行路径。
+
+## 离线安装与运行时网络
+
+“离线”在本文中仅指目标机可通过 `docker load` 安装并启动，不需要在安装阶段拉取镜像。
+运行时是否需要网络取决于用户选择的功能：
+
+| 功能 | 运行时网络 |
+| --- | --- |
+| 上传附件、解析本地材料、查看已有 Run | 不一定 |
+| 对话中发送网页 URL | 需要 |
+| 对话中发送 GitHub 仓库 URL 并克隆 | 需要 |
+| 调用远程 LLM API | 需要 |
+| 完全本地模型与已上传资料 | 可离线 |
+
+因此，隔离网络的部署应只使用本地资料与本地模型能力；不要把“镜像已离线导入”理解为网页、
+GitHub 或远程模型在无网络下仍可用。
 
 ## 停止、重启与升级
 

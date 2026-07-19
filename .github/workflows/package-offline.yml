@@ -1,0 +1,88 @@
+name: package-offline-linux-amd64
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag; empty uses offline-<commit>"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install verification dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Verify source revision
+        run: bash scripts/verify.sh
+
+      - name: Check Docker builder
+        run: |
+          docker version
+          docker info
+          test "$(uname -m)" = "x86_64"
+
+      - name: Build offline deployment package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          short_sha="${GITHUB_SHA::7}"
+          image_tag="${{ inputs.image_tag }}"
+
+          if [ -z "$image_tag" ]; then
+            image_tag="autoad-researcher:offline-${short_sha}"
+          fi
+
+          output_dir="${RUNNER_TEMP}/autoad-offline-package"
+
+          scripts/package_offline_deployment.sh \
+            --tag "$image_tag" \
+            --output-dir "$output_dir"
+
+          sha256sum --check \
+            "$output_dir/autoad-researcher-linux-amd64.tar.sha256"
+
+          {
+            echo "output_dir=$output_dir"
+            echo "artifact_name=autoad-offline-linux-amd64-${short_sha}"
+            echo "image_tag=$image_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Record build metadata
+        shell: bash
+        run: |
+          cat > "${{ steps.package.outputs.output_dir }}/BUILD-INFO.txt" <<EOF
+          git_commit=${GITHUB_SHA}
+          git_ref=${GITHUB_REF}
+          image_tag=${{ steps.package.outputs.image_tag }}
+          platform=linux/amd64
+          workflow_run=${GITHUB_RUN_ID}
+          EOF
+
+      - name: Upload offline deployment package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.output_dir }}/
+          if-no-files-found: error
+          retention-days: 14
