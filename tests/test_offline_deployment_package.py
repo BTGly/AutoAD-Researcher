@@ -41,3 +41,10 @@ def test_offline_package_scripts_are_shell_valid_and_documented():
     assert "docker save" in text
     assert "docker load" in text
     assert "AUTOAD_EMBEDDED_WORKER=0" in text
+
+
+def test_verify_and_push_gate_detects_untracked_delivery_files():
+    script = (PROJECT_ROOT / "scripts" / "verify_and_push.sh").read_text(encoding="utf-8")
+
+    assert "git status --porcelain" in script
+    assert "git diff --quiet && git diff --cached --quiet" not in script

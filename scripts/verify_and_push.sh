@@ -18,7 +18,7 @@ bash "$SCRIPT_DIR/verify.sh"
 echo "[gate] verification passed."
 
 echo "[gate] checking git changes..."
-if git diff --quiet && git diff --cached --quiet; then
+if [ -z "$(git status --porcelain)" ]; then
   echo "[gate] no changes to commit."
   exit 0
 fi
