@@ -9,6 +9,7 @@ from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.research_intent_summary import load_research_intent_summary
 from autoad_researcher.assistant.v2.source_service import classify_input
+from autoad_researcher.assistant.v2.source_actions import plan_explicit_source_actions
 from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence, load_usable_evidence
 from autoad_researcher.ui.sources import load_source_registry
 from autoad_researcher.worker.main import _run_web_search
@@ -49,6 +50,70 @@ def _mock_two_call(monkeypatch, decision: dict, reply: dict) -> list[list[dict[s
 def test_natural_language_repo_request_is_not_classified_by_source_service():
     assert classify_input("你先 clone pathcore 的 github 仓库吧") == "general_chat"
     assert classify_input("搜索 MVTec AD 上能迁移到 PatchCore 的方法") == "general_chat"
+
+
+def test_source_action_plan_keeps_every_unique_conversation_url_with_attachments():
+    plan = plan_explicit_source_actions(
+        user_input=(
+            "参考仓库 https://github.com/example/repository ，再阅读 "
+            "https://example.org/research-page ，仓库重复一次 "
+            "https://github.com/example/repository"
+        ),
+        attachments=["already-uploaded.pdf"],
+    )
+
+    assert plan is not None
+    assert [(action.action_type, action.source_url) for action in plan.actions] == [
+        ("register_github_repo", "https://github.com/example/repository"),
+        ("register_webpage", "https://example.org/research-page"),
+    ]
+
+
+def test_multiple_conversation_urls_are_registered_and_visible_to_decision_agent(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_multiple_urls"
+    run_dir.mkdir()
+    calls = _mock_two_call(
+        monkeypatch,
+        _allow_decision(dialogue_mode="plan"),
+        {
+            "reply_to_user": "两个材料已登记，先等待获取完成后再分析。",
+            "summary": {
+                "goal": "比较用户提供的仓库和网页资料",
+                "confirmed_facts": [],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=(
+            "参考这个仓库实现 PatchCore baseline，并阅读配套页面；先分析，不要运行实验。\n"
+            "https://github.com/example/repository\n"
+            "https://example.org/research-page"
+        ),
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert [source["kind"] for source in result.created_sources] == ["github_repo", "webpage"]
+    assert [job["job_type"] for job in result.created_jobs] == [
+        "git_clone",
+        "repo_summarize",
+        "web_fetch",
+        "web_markitdown",
+    ]
+    registry = load_source_registry(run_dir)
+    assert [source["kind"] for source in registry["sources"]] == ["github_repo", "webpage"]
+    decision_context = calls[0][0]["content"]
+    for source in result.created_sources:
+        assert source["source_id"] in decision_context
+    assert "git_clone" in decision_context
+    assert "web_fetch" in decision_context
+    assert not (run_dir / "experiments" / "sessions").exists()
 
 
 def test_orchestrator_does_not_use_llm_to_invent_repo_url(monkeypatch, tmp_path: Path):

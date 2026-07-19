@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from autoad_researcher.repository_intelligence.discovery import parse_github_repository_url
 from autoad_researcher.source_normalizer import (
-    extract_first_source_candidate,
+    extract_source_candidates,
     extract_first_url,
     normalize_repository_reference,
 )
@@ -60,43 +60,42 @@ def plan_explicit_source_actions(
     user_input: str,
     attachments: list[str] | None,
 ) -> SourceActionPlan | None:
-    """Map only structured attachments and explicit URLs to source actions."""
+    """Map every explicit conversation URL to its existing source action.
 
-    if attachments:
-        return SourceActionPlan(
-            actions=[
-                SourceAction(
-                    action_type="answer_only",
-                    target="uploaded attachment",
-                    source_kind="paper_pdf",
-                    confidence=1.0,
-                    rationale="Attachment upload is handled by the upload route.",
-                )
-            ],
-            confidence=1.0,
-            reason="Structured upload signal.",
-        )
+    File attachments are registered through the upload route before this
+    planner runs. They must not suppress URL intake from the same conversation
+    turn, and this function never creates an attachment-specific action.
+    """
 
-    candidate = extract_first_source_candidate(user_input.strip())
-    if candidate is None:
+    del attachments
+    candidates = extract_source_candidates(user_input.strip())
+    if not candidates:
         return None
-    url = candidate.normalized_ref
-    github_locator = parse_github_repository_url(url, strict=False)
-    explicit_repo = candidate.source_kind == "github_repo" or github_locator is not None
-    if github_locator is not None:
-        url = github_locator.canonical_url
-    if explicit_repo:
-        repository = normalize_repository_reference(url)
-        if repository is not None:
-            url = repository.normalized_ref
-    action_type: SourceActionType = (
-        "register_github_repo" if explicit_repo else "register_webpage"
-    )
-    source_kind: Literal["webpage", "github_repo", "paper_pdf"] = (
-        "github_repo" if explicit_repo else "webpage"
-    )
-    return SourceActionPlan(
-        actions=[
+
+    actions: list[SourceAction] = []
+    registered_urls: set[str] = set()
+    for candidate in candidates:
+        url = candidate.normalized_ref
+        github_locator = parse_github_repository_url(url, strict=False)
+        explicit_repo = (
+            candidate.source_kind == "github_repo" or github_locator is not None
+        )
+        if github_locator is not None:
+            url = github_locator.canonical_url
+        if explicit_repo:
+            repository = normalize_repository_reference(url)
+            if repository is not None:
+                url = repository.normalized_ref
+        if url in registered_urls:
+            continue
+        registered_urls.add(url)
+        action_type: SourceActionType = (
+            "register_github_repo" if explicit_repo else "register_webpage"
+        )
+        source_kind: Literal["webpage", "github_repo", "paper_pdf"] = (
+            "github_repo" if explicit_repo else "webpage"
+        )
+        actions.append(
             SourceAction(
                 action_type=action_type,
                 target=url,
@@ -105,7 +104,12 @@ def plan_explicit_source_actions(
                 confidence=1.0,
                 rationale="Explicit URL supplied by user.",
             )
-        ],
+        )
+
+    if not actions:
+        return None
+    return SourceActionPlan(
+        actions=actions,
         confidence=1.0,
-        reason="Structured URL signal.",
+        reason="Explicit URL signal(s).",
     )
