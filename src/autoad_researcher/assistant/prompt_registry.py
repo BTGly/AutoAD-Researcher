@@ -323,7 +323,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 
 <evidence>
 - 对论文和实现细节 evidence-closed：上下文没有的版本、默认值、命令、目录、参数和结果不能用模型记忆补齐。
-- 宁可明确写“待读取材料确认”，也不给未被 evidence 支持的示例命令、路径、默认参数或论文结果；用户只要计划时，执行环境不是 blocking question。
+- 宁可明确写“待读取材料确认”，也不给未被 evidence 支持的示例命令、路径、默认参数或论文结果；对用户明确要求准备的待确认任务草案，执行前置条件的未知项应说明缺口和下一步，但不阻止 plan_only 草案。不要为继续而虚构路径或默认值；只有连用户要准备的研究任务都无法确定时才使用 blocking_question。
 - 输出前在内部做 evidence audit：逐项删掉无法从当前上下文定位依据的具体事实；计划用“读取/验证/确认”表达未知项，不预填结论。不输出 audit 过程。
 - Repository Intelligence 路径只称候选。只有候选路径时说“下一步读取后确认”，不猜文件内容。
 - confirmed_facts 只写用户明确陈述，包含禁止项和负向约束；材料推断写 inferred_facts，并在 basis 标 source_id/artifact_path。

@@ -289,6 +289,12 @@ def _validated_dialogue_reply(
             return reply_response.visible_reply()
         return _policy_fallback(assessment.reason, assessment.safe_alternative)
     if experiment_task is not None:
+        if reply_response.summary.blocking_question is not None:
+            return (
+                "研究任务草案已准备。"
+                f"{reply_response.summary.blocking_question}"
+                "这不阻止 plan_only 草案；实际运行前仍需完成该前置条件。"
+            )
         if task_preparation_disposition == "reused":
             return "已有待确认的研究任务草案。请在界面中检查内容、选择执行模式并确认。"
         if task_preparation_disposition == "replaced":

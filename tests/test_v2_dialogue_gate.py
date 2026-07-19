@@ -212,7 +212,7 @@ def test_gate_rejects_reparse_without_registered_pdf_input(tmp_path: Path):
     assert "source_reparse_unavailable" in gated.gate_notes
 
 
-def test_task_action_requires_goal_and_no_blocker(tmp_path: Path):
+def test_explicit_task_action_requires_goal_but_allows_an_open_question(tmp_path: Path):
     decision = _valid(DialogueDecision(
         dialogue_mode="plan",
         policy_assessment=_allow_policy(),
@@ -235,7 +235,7 @@ def test_task_action_requires_goal_and_no_blocker(tmp_path: Path):
     assert DialogueGate.task_action_allowed(
         gated,
         ResearchIntentSummary(goal="复现实验", blocking_question="缺少数据"),
-    ) is False
+    ) is True
 
 
 def test_missing_contract_execution_can_prepare_task_without_task_action(tmp_path: Path):

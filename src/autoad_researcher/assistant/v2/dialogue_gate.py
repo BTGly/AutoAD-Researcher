@@ -158,12 +158,12 @@ class DialogueGate:
         decision: GatedDialogueDecision,
         summary: ResearchIntentSummary,
     ) -> bool:
+        """Allow an explicit request to prepare a non-executing task draft."""
         return (
             decision.policy == "allow"
             and decision.task_action is not None
             and decision.source_action is None
             and bool(summary.goal.strip())
-            and summary.blocking_question is None
             and decision.conversation_transition != "cancel"
         )
 

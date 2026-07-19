@@ -123,7 +123,7 @@ class TaskBridge:
             if (run_dir / INPUT_TASK_FILE).is_file():
                 return None, "already_materialized"
 
-            summary = _require_preparable_summary(run_dir)
+            summary = _require_draftable_summary(run_dir)
             pending_path = run_dir / BRIDGE_DIR / PENDING_TASK_FILE
             if pending_path.is_file():
                 pending = _load_pending_task(run_dir)
@@ -214,11 +214,20 @@ def _validate_run_dir(run_dir: Path) -> str:
 
 
 def _require_preparable_summary(run_dir: Path) -> ResearchIntentSummary:
+    """Require a settled summary for the direct task-building API."""
+
+    summary = _require_draftable_summary(run_dir)
+    if summary.blocking_question is not None:
+        raise ValueError("blocking question must be resolved before task preparation")
+    return summary
+
+
+def _require_draftable_summary(run_dir: Path) -> ResearchIntentSummary:
+    """Require enough state to persist a user-confirmable, plan-only draft."""
+
     summary = load_research_intent_summary(run_dir)
     if summary is None or not summary.goal.strip():
         raise ValueError("research summary goal is required")
-    if summary.blocking_question is not None:
-        raise ValueError("blocking question must be resolved before task preparation")
     return summary
 
 

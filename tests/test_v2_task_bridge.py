@@ -280,6 +280,53 @@ def test_orchestrator_explicit_task_action_prepares_pending_input(monkeypatch, t
     assert not (run_dir / "experiments" / "sessions").exists()
 
 
+def test_orchestrator_prepares_plan_draft_with_execution_readiness_question(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_task_readiness_question"
+    run_dir.mkdir()
+
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "plan",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "task_action": "prepare_experiment_task",
+        },
+        {
+            "reply_to_user": "我会在执行前核对数据集目录。",
+            "summary": {
+                "goal": "复现 PatchCore 的 MVTec AD bottle 实验",
+                "confirmed_facts": ["用户要求 plan_only"],
+                "confirmed_task_parameters": {
+                    "baseline": "PatchCore",
+                    "dataset": "MVTec AD / bottle",
+                    "compute_budget": None,
+                    "primary_metrics": ["instance AUROC"],
+                    "evaluation_constraints": [],
+                },
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": "请在实际运行前提供 MVTec AD bottle 数据源路径。",
+            },
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="准备 PatchCore 在 MVTec AD bottle 上的 plan_only 实验任务。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.experiment_task is not None
+    assert result.experiment_task["status"] == "pending_confirmation"
+    assert result.experiment_task["execution_mode"] == "plan_only"
+    assert "数据源路径" in result.reply
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
+    assert not (run_dir / "experiments" / "sessions").exists()
+
+
 def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
     monkeypatch,
     tmp_path: Path,
