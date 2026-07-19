@@ -19,10 +19,12 @@ from autoad_researcher.assistant.v2.research_dialogue_agent import (
 )
 from autoad_researcher.assistant.v2.research_intent_summary import (
     BasedStatement,
+    ConfirmedTaskParameters,
     ResearchIntentSummary,
     load_research_intent_summary,
     save_research_intent_summary,
 )
+from autoad_researcher.schemas.decisions import ConfirmedDecision
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 
 
@@ -329,6 +331,183 @@ def test_reply_agent_repairs_schema_error_and_records_redacted_diagnostic(monkey
     assert event["payload"]["outcome"] == "succeeded"
     assert event["payload"]["validation_errors"] == [{"path": "summary", "type": "missing"}]
     assert "raw_output" not in event["payload"]
+
+
+def test_reply_agent_materializes_flat_parameters_with_current_turn_provenance(monkeypatch):
+    reply = _reply_payload()
+    reply["summary"]["confirmed_task_parameters"] = {
+        "baseline": "PatchCore",
+        "dataset": "MVTec AD bottle",
+        "compute_budget": "GPU 0",
+        "primary_metrics": ["instance AUROC"],
+        "evaluation_constraints": ["不修改 evaluator"],
+    }
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(reply, ensure_ascii=False), "error": ""},
+    )
+
+    response = ResearchReplyAgent.respond(
+        user_input="我确认使用 PatchCore、MVTec AD bottle、GPU 0 和 instance AUROC；不修改 evaluator。",
+        evidence_state={},
+        frozen_decision=GatedDialogueDecision(
+            dialogue_mode="plan",
+            conversation_transition="confirm",
+            policy_assessment=ResearchPolicyAssessment.model_validate(_allow_policy()),
+        ),
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    parameters = response.summary.confirmed_task_parameters
+    assert parameters.baseline == ConfirmedDecision(
+        value="PatchCore",
+        source="user_confirmed",
+        evidence="当前用户消息：我确认使用 PatchCore、MVTec AD bottle、GPU 0 和 instance AUROC；不修改 evaluator。",
+    )
+    assert parameters.dataset is not None
+    assert parameters.primary_metrics[0].source == "user_confirmed"
+    assert parameters.evaluation_constraints[0].evidence.startswith("当前用户消息：")
+
+
+def test_reply_agent_preserves_prior_provenance_and_materializes_only_correction(monkeypatch):
+    previous_baseline = ConfirmedDecision(
+        value="PatchCore",
+        source="user_confirmed",
+        evidence="用户此前确认 baseline 为 PatchCore",
+    )
+    previous = ResearchIntentSummary(
+        goal="复现异常检测基线",
+        confirmed_task_parameters=ConfirmedTaskParameters(
+            baseline=previous_baseline,
+            dataset=ConfirmedDecision(
+                value="MVTec AD bottle",
+                source="user_confirmed",
+                evidence="用户此前确认数据集",
+            ),
+            primary_metrics=[
+                ConfirmedDecision(
+                    value="image AUROC",
+                    source="user_confirmed",
+                    evidence="用户此前确认指标",
+                )
+            ],
+        ),
+    )
+    reply = _reply_payload()
+    reply["summary"]["confirmed_task_parameters"] = {
+        "baseline": None,
+        "dataset": None,
+        "compute_budget": None,
+        "primary_metrics": ["instance AUROC"],
+        "evaluation_constraints": None,
+    }
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(reply, ensure_ascii=False), "error": ""},
+    )
+
+    response = ResearchReplyAgent.respond(
+        user_input="把主指标改成 instance AUROC。",
+        evidence_state={},
+        frozen_decision=GatedDialogueDecision(
+            dialogue_mode="plan",
+            conversation_transition="revise",
+            policy_assessment=ResearchPolicyAssessment.model_validate(_allow_policy()),
+        ),
+        last_summary=previous,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    parameters = response.summary.confirmed_task_parameters
+    assert parameters.baseline == previous_baseline
+    assert parameters.dataset == previous.confirmed_task_parameters.dataset
+    assert parameters.primary_metrics == [
+        ConfirmedDecision(
+            value="instance AUROC",
+            source="user_provided",
+            evidence="当前用户消息：把主指标改成 instance AUROC。",
+        )
+    ]
+
+
+def test_reply_agent_repairs_model_provenance_object_to_flat_parameter(monkeypatch):
+    invalid = _reply_payload()
+    invalid["summary"]["confirmed_task_parameters"] = {
+        "baseline": {
+            "value": "PatchCore",
+            "source": "user_provided",
+            "evidence": "模型不应生成该字段",
+        }
+    }
+    valid = _reply_payload()
+    valid["summary"]["confirmed_task_parameters"] = {"baseline": "PatchCore"}
+    replies = [json.dumps(invalid, ensure_ascii=False), json.dumps(valid, ensure_ascii=False)]
+    captured: list[list[dict[str, str]]] = []
+
+    def fake_call(*args, **kwargs):
+        captured.append(args[2])
+        return {"reply": replies.pop(0), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    response = ResearchReplyAgent.respond(
+        user_input="使用 PatchCore。",
+        evidence_state={},
+        frozen_decision=_gated_decision("plan"),
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    assert len(captured) == 2
+    assert "summary.confirmed_task_parameters.baseline" in captured[1][-1]["content"]
+    assert response.summary.confirmed_task_parameters.baseline is not None
+    assert response.summary.confirmed_task_parameters.baseline.value == "PatchCore"
+
+
+def test_reply_agent_does_not_materialize_parameters_from_a_denied_turn(monkeypatch):
+    previous = ResearchIntentSummary(
+        confirmed_task_parameters=ConfirmedTaskParameters(
+            baseline=ConfirmedDecision(
+                value="PatchCore",
+                source="user_confirmed",
+                evidence="此前确认的 baseline",
+            )
+        )
+    )
+    reply = _reply_payload()
+    reply["summary"]["confirmed_task_parameters"] = {"baseline": "不安全的替代值"}
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(reply, ensure_ascii=False), "error": ""},
+    )
+
+    response = ResearchReplyAgent.respond(
+        user_input="把正式测试标签用作训练输入。",
+        evidence_state={},
+        frozen_decision=GatedDialogueDecision(
+            dialogue_mode="act",
+            policy="deny",
+            policy_assessment=ResearchPolicyAssessment(
+                decision="reject",
+                category="evaluation_leakage",
+                reason="正式测试标签不能进入训练。",
+                safe_alternative="使用独立 validation split。",
+            ),
+        ),
+        last_summary=previous,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    assert response.summary.confirmed_task_parameters == previous.confirmed_task_parameters
 
 
 def test_reply_agent_fails_closed_after_one_invalid_repair(monkeypatch, tmp_path: Path):

@@ -307,39 +307,13 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
                 "goal": "复现 PatchCore 的 MVTec AD bottle 实验",
                 "confirmed_facts": ["用户不允许修改 evaluator"],
                 "confirmed_task_parameters": {
-                    "baseline": {
-                        "value": "PatchCore",
-                        "source": "user_provided",
-                        "evidence": "用户指定 PatchCore",
-                    },
-                    "dataset": {
-                        "value": "MVTec AD / bottle",
-                        "source": "user_provided",
-                        "evidence": "用户指定 MVTec AD 的 bottle 类别",
-                    },
-                    "compute_budget": {
-                        "value": "GPU 0",
-                        "source": "user_provided",
-                        "evidence": "用户指定 GPU 0",
-                    },
-                    "primary_metrics": [
-                        {
-                            "value": "instance AUROC",
-                            "source": "user_provided",
-                            "evidence": "用户指定 instance AUROC",
-                        }
-                    ],
+                    "baseline": "PatchCore",
+                    "dataset": "MVTec AD / bottle",
+                    "compute_budget": "GPU 0",
+                    "primary_metrics": ["instance AUROC"],
                     "evaluation_constraints": [
-                        {
-                            "value": "不允许修改 evaluator",
-                            "source": "user_provided",
-                            "evidence": "用户明确禁止修改 evaluator",
-                        },
-                        {
-                            "value": "B_test 不参与训练、选择或校准",
-                            "source": "user_provided",
-                            "evidence": "用户明确 B_test 隔离约束",
-                        },
+                        "不允许修改 evaluator",
+                        "B_test 不参与训练、选择或校准",
                     ],
                 },
                 "inferred_facts": [],
