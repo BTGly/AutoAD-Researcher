@@ -164,6 +164,7 @@ class ResearchOrchestratorV2:
             )
 
         reply_response = ResearchReplyAgent.respond(
+            run_dir=run_dir,
             user_input=user_input,
             evidence_state=context,
             frozen_decision=decision,

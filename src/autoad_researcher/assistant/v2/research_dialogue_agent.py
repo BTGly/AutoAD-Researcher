@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
@@ -16,6 +16,9 @@ from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
 from autoad_researcher.assistant.v2.task_bridge import TaskInstruction
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
+
+
+T = TypeVar("T")
 
 
 class SourceInstruction(BaseModel):
@@ -190,50 +193,18 @@ class ResearchDecisionAgent:
             last_summary=last_summary,
             transcript_tail=transcript_tail,
         )
-        from autoad_researcher.ui.chat_client import call_research_chat
-
-        result = call_research_chat(
-            api_key,
-            provider_url,
-            messages,
+        decision = _call_with_schema_repair(
+            run_dir=run_dir,
+            repair_event_type="assistant.decision_repair",
+            api_key=api_key,
+            provider_url=provider_url,
+            messages=messages,
             model=model,
-            timeout_s=30,
-            priority="interactive",
-            response_format_json=True,
             temperature=temperature,
+            validate_reply=_validate_decision_reply,
+            repair_messages=_decision_repair_messages,
         )
-        if result.get("error"):
-            return _fallback_decision()
-        raw_reply = str(result.get("reply") or "")
-        if not raw_reply.strip():
-            return _fallback_decision()
-        decision, failure = _validate_decision_reply(raw_reply)
-        if decision is not None:
-            return decision
-
-        repair_result = call_research_chat(
-            api_key,
-            provider_url,
-            _decision_repair_messages(messages, raw_reply, failure),
-            model=model,
-            timeout_s=30,
-            priority="interactive",
-            response_format_json=True,
-            temperature=0.0,
-        )
-        repair_raw_reply = str(repair_result.get("reply") or "")
-        repaired, _ = (
-            _validate_decision_reply(repair_raw_reply)
-            if not repair_result.get("error") and repair_raw_reply.strip()
-            else (None, None)
-        )
-        _record_decision_repair(
-            run_dir,
-            original_reply=raw_reply,
-            failure=failure,
-            outcome="succeeded" if repaired is not None else "failed",
-        )
-        return repaired or _fallback_decision()
+        return decision or _fallback_decision()
 
     @classmethod
     def build_messages(
@@ -310,9 +281,73 @@ def _decision_repair_messages(
     ]
 
 
-def _record_decision_repair(
+def _call_with_schema_repair(
+    *,
+    run_dir: Path | None,
+    repair_event_type: str,
+    api_key: str,
+    provider_url: str,
+    messages: list[dict[str, str]],
+    model: str,
+    temperature: float,
+    validate_reply: Callable[[str], tuple[T | None, dict[str, Any]]],
+    repair_messages: Callable[
+        [list[dict[str, str]], str, dict[str, Any]],
+        list[dict[str, str]],
+    ],
+) -> T | None:
+    """Validate one schema-bound answer, then allow one diagnostic repair call."""
+    from autoad_researcher.ui.chat_client import call_research_chat
+
+    result = call_research_chat(
+        api_key,
+        provider_url,
+        messages,
+        model=model,
+        timeout_s=30,
+        priority="interactive",
+        response_format_json=True,
+        temperature=temperature,
+    )
+    if result.get("error"):
+        return None
+    raw_reply = str(result.get("reply") or "")
+    if not raw_reply.strip():
+        return None
+    value, failure = validate_reply(raw_reply)
+    if value is not None:
+        return value
+
+    repair_result = call_research_chat(
+        api_key,
+        provider_url,
+        repair_messages(messages, raw_reply, failure),
+        model=model,
+        timeout_s=30,
+        priority="interactive",
+        response_format_json=True,
+        temperature=0.0,
+    )
+    repair_raw_reply = str(repair_result.get("reply") or "")
+    repaired, _ = (
+        validate_reply(repair_raw_reply)
+        if not repair_result.get("error") and repair_raw_reply.strip()
+        else (None, {})
+    )
+    _record_schema_repair(
+        run_dir,
+        event_type=repair_event_type,
+        original_reply=raw_reply,
+        failure=failure,
+        outcome="succeeded" if repaired is not None else "failed",
+    )
+    return repaired
+
+
+def _record_schema_repair(
     run_dir: Path | None,
     *,
+    event_type: str,
     original_reply: str,
     failure: dict[str, Any],
     outcome: Literal["succeeded", "failed"],
@@ -321,7 +356,7 @@ def _record_decision_repair(
         return
     append_event(
         run_dir,
-        "assistant.decision_repair",
+        event_type,
         {
             "attempted": True,
             "outcome": outcome,
@@ -341,6 +376,7 @@ class ResearchReplyAgent:
     def respond(
         cls,
         *,
+        run_dir: Path | None = None,
         user_input: str,
         evidence_state: dict[str, Any],
         frozen_decision: GatedDialogueDecision,
@@ -369,25 +405,19 @@ class ResearchReplyAgent:
             last_summary=last_summary,
             transcript_tail=transcript_tail,
         )
-        from autoad_researcher.ui.chat_client import call_research_chat
-
-        result = call_research_chat(
-            api_key,
-            provider_url,
-            messages,
+        response = _call_with_schema_repair(
+            run_dir=run_dir,
+            repair_event_type="assistant.reply_repair",
+            api_key=api_key,
+            provider_url=provider_url,
+            messages=messages,
             model=model,
-            timeout_s=30,
-            priority="interactive",
-            response_format_json=True,
             temperature=temperature,
+            validate_reply=_validate_reply_response,
+            repair_messages=_reply_repair_messages,
         )
-        payload = _parse_json_object(str(result.get("reply") or ""))
-        if result.get("error") or payload is None:
+        if response is None:
             return _fallback_reply(last_summary, "这轮回复生成失败了，请重试。")
-        try:
-            response = ResearchReplyResponse.model_validate(payload)
-        except ValidationError:
-            return _fallback_reply(last_summary, "这轮回复格式无效，请重试。")
         response._should_persist = True
         if on_reply_delta is not None:
             on_reply_delta(response.visible_reply())
@@ -420,6 +450,48 @@ class ResearchReplyAgent:
             {"role": "system", "content": system},
             {"role": "user", "content": user_input},
         ]
+
+
+def _validate_reply_response(
+    reply: str,
+) -> tuple[ResearchReplyResponse | None, dict[str, Any]]:
+    payload = _parse_json_object(reply)
+    if payload is None:
+        return None, {"failure_kind": "json_parse_error", "validation_errors": []}
+    try:
+        return ResearchReplyResponse.model_validate(payload), {}
+    except ValidationError as exc:
+        return None, {
+            "failure_kind": "schema_validation_error",
+            "validation_errors": _compact_validation_errors(exc),
+        }
+
+
+def _reply_repair_messages(
+    messages: list[dict[str, str]],
+    raw_reply: str,
+    failure: dict[str, Any],
+) -> list[dict[str, str]]:
+    validation_errors = json.dumps(
+        failure.get("validation_errors") or [],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return [
+        *messages,
+        {"role": "assistant", "content": raw_reply[:4000]},
+        {
+            "role": "user",
+            "content": (
+                "上一个回答未通过 ResearchReplyResponse schema 校验。"
+                f"失败类型：{failure.get('failure_kind', 'unknown')}。"
+                f"字段问题：{validation_errors}。\n"
+                "保持冻结决策和上一轮语义不变，只修复 JSON 结构。"
+                "仅输出一个符合回复 schema 的 JSON object。"
+                "不要解释，不要 Markdown，不要代码围栏。"
+            ),
+        },
+    ]
 
 
 def _fallback_decision() -> DialogueDecision:

@@ -7,8 +7,8 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job
-from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_paths import run_dir_or_400
 from autoad_researcher.ui.sources import remove_source, save_uploaded_file
 
 router = APIRouter(prefix="/api/runs", tags=["sources"])
@@ -16,10 +16,7 @@ router = APIRouter(prefix="/api/runs", tags=["sources"])
 
 @router.get("/{run_id}/sources")
 async def get_sources(run_id: str):
-    try:
-        run_dir = run_dir_path(RUNS_ROOT, run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     path = run_dir / "sources" / "source_references.json"
     if not path.is_file():
         return []
@@ -43,10 +40,7 @@ async def upload_source(
     content = await request.body()
     if not content:
         raise HTTPException(400, "uploaded file is empty")
-    try:
-        run_dir = run_dir_path(RUNS_ROOT, run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     uploaded = SimpleNamespace(name=name, getvalue=lambda: content)
@@ -151,10 +145,7 @@ async def upload_source(
 
 @router.delete("/{run_id}/sources/{source_id}")
 async def delete_source(run_id: str, source_id: str):
-    try:
-        run_dir = run_dir_path(RUNS_ROOT, run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     if not run_dir.exists():
         raise HTTPException(status_code=404, detail="run not found")
     removed = remove_source(run_dir, source_id, reason="user_deleted")

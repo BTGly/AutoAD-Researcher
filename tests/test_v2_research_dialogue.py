@@ -297,6 +297,71 @@ def test_reply_agent_calls_llm_once_with_frozen_decision(monkeypatch):
     assert response.summary.confirmed_facts == ["用户明确要求只做复现"]
 
 
+def test_reply_agent_repairs_schema_error_and_records_redacted_diagnostic(monkeypatch, tmp_path: Path):
+    invalid = _reply_payload()
+    invalid.pop("summary")
+    replies = [json.dumps(invalid), json.dumps(_reply_payload())]
+    captured: list[dict[str, object]] = []
+
+    def fake_call(*args, **kwargs):
+        captured.append({"messages": args[2], **kwargs})
+        return {"reply": replies.pop(0), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    response = ResearchReplyAgent.respond(
+        run_dir=tmp_path,
+        user_input="继续",
+        evidence_state={},
+        frozen_decision=_gated_decision(),
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    event = json.loads((tmp_path / "events" / "events.jsonl").read_text(encoding="utf-8"))
+    assert response.should_persist is True
+    assert len(captured) == 2
+    assert captured[1]["temperature"] == 0.0
+    assert "ResearchReplyResponse schema 校验" in captured[1]["messages"][-1]["content"]
+    assert event["type"] == "assistant.reply_repair"
+    assert event["payload"]["outcome"] == "succeeded"
+    assert event["payload"]["validation_errors"] == [{"path": "summary", "type": "missing"}]
+    assert "raw_output" not in event["payload"]
+
+
+def test_reply_agent_fails_closed_after_one_invalid_repair(monkeypatch, tmp_path: Path):
+    invalid = _reply_payload()
+    invalid.pop("summary")
+    calls = 0
+
+    def fake_call(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {"reply": json.dumps(invalid), "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+
+    response = ResearchReplyAgent.respond(
+        run_dir=tmp_path,
+        user_input="继续",
+        evidence_state={},
+        frozen_decision=_gated_decision(),
+        last_summary=ResearchIntentSummary(goal="原目标"),
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    event = json.loads((tmp_path / "events" / "events.jsonl").read_text(encoding="utf-8"))
+    assert calls == 2
+    assert response.should_persist is False
+    assert response.summary.goal == "原目标"
+    assert event["type"] == "assistant.reply_repair"
+    assert event["payload"]["outcome"] == "failed"
+
+
 def test_reply_agent_receives_exact_repository_structure_evidence(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -483,6 +548,7 @@ def test_orchestrator_policy_deny_uses_fallback_when_reply_is_invalid(monkeypatc
     alternative = "保持评估协议冻结，并比较允许变化的模型。"
     replies = [
         _rejected_decision_payload("evaluation_manipulation", reason, alternative),
+        "not-json",
         "not-json",
     ]
 

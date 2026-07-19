@@ -7,13 +7,13 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
 from autoad_researcher.assistant.v2.task_bridge import (
     ExperimentTaskConfirmationResult,
     TaskBridge,
 )
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_paths import run_dir_or_400
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
 from autoad_researcher.task_workspace.task_profile import (
     archive_task,
@@ -84,11 +84,11 @@ async def create_run(req: CreateRunRequest | None = None):
     now = datetime.now(timezone.utc)
     task_title = req.task_title if req is not None else None
     run_id = build_run_id_from_optional_name(task_name=task_title, now=now)
-    run_dir = run_dir_path(RUNS_ROOT, run_id)
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     if run_dir.exists():
         suffix = now.strftime("%f")
         run_id = f"{run_id}_{suffix}"
-        run_dir = run_dir_path(RUNS_ROOT, run_id)
+        run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "sources").mkdir(exist_ok=True)
     (run_dir / "ui_chat").mkdir(exist_ok=True)
@@ -199,10 +199,7 @@ async def confirm_experiment_task(
 
 
 def _existing_run_dir(run_id: str) -> Path:
-    try:
-        run_dir = run_dir_path(RUNS_ROOT, run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail="run not found")
     return run_dir

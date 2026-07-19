@@ -1,15 +1,15 @@
-from pathlib import Path
-
 from fastapi import APIRouter
 
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
+from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_paths import run_dir_or_400
 
 router = APIRouter(prefix="/api/runs", tags=["jobs"])
 
 
 @router.get("/{run_id}/jobs")
 async def get_jobs(run_id: str):
-    run_dir = Path("runs") / run_id
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     if not run_dir.exists():
         return []
 

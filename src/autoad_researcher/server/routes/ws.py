@@ -1,20 +1,23 @@
 import asyncio
-import os
-from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from autoad_researcher.assistant.v2.event_service import load_events_since
+from autoad_researcher.core.run_id import run_dir_path
+from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.ws_manager import manager
 
-RUNS_ROOT = os.environ.get("AUTOAD_RUNS_ROOT", "runs")
 router = APIRouter()
 TRANSIENT_EVENT_PREFIXES = ("toast.",)
 
 
 @router.websocket("/api/runs/{run_id}/ws")
 async def websocket_endpoint(ws: WebSocket, run_id: str):
-    run_dir = Path(RUNS_ROOT) / run_id
+    try:
+        run_dir = run_dir_path(RUNS_ROOT, run_id)
+    except ValueError:
+        await ws.close(code=1008)
+        return
     await manager.connect(run_id, ws)
     last_event_id = 0
 

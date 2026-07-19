@@ -266,6 +266,41 @@ def test_archive_bundle_classifies_mixed_materials_and_queues_child_jobs(tmp_pat
     assert any(item["evidence_type"] == "uploaded_text" for item in evidence)
 
 
+def test_worker_projects_unsafe_archive_failure_to_source_terminal_status(tmp_path: Path):
+    run_dir = tmp_path / "run_demo"
+    source_dir = run_dir / "sources" / "src_bundle"
+    source_dir.mkdir(parents=True)
+    archive_path = source_dir / "unsafe.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("../escape.txt", "must not escape")
+    append_source_ref(
+        run_dir,
+        kind="archive_bundle",
+        user_label="unsafe.zip",
+        stored_path="sources/src_bundle/unsafe.zip",
+        status="uploaded_not_parsed",
+        source_id="src_bundle",
+    )
+    job = append_pipeline_job(
+        run_dir,
+        source_id="src_bundle",
+        job_type="archive_unpack_classify",
+        payload={"stored_path": "sources/src_bundle/unsafe.zip"},
+    )
+
+    assert _process_pending_jobs(run_dir) == 1
+
+    source = load_source_registry(run_dir)["sources"][0]
+    finished_job = load_pipeline_jobs(run_dir)[0]
+    assert not (run_dir / "escape.txt").exists()
+    assert finished_job["job_id"] == job["job_id"]
+    assert finished_job["status"] == "failed"
+    assert source["status"] == "failed"
+    assert source["intake_status"] == "failed"
+    assert source["intake_error"]["error_code"] == "source_processing_failed"
+    assert "unsafe archive member path" in source["intake_error"]["error_message"]
+
+
 @pytest.mark.asyncio
 async def test_evidence_route_returns_v2_evidence(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(evidence_route, "RUNS_ROOT", str(tmp_path))
