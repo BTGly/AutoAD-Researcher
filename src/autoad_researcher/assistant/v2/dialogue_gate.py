@@ -14,11 +14,7 @@ from autoad_researcher.assistant.v2.dialogue_permissions import (
     source_can_reparse,
 )
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
-from autoad_researcher.assistant.v2.task_bridge import (
-    BRIDGE_DIR,
-    PENDING_TASK_FILE,
-    TaskInstruction,
-)
+from autoad_researcher.assistant.v2.task_bridge import TaskInstruction
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 from autoad_researcher.tools import append_permission_decision
 
@@ -104,16 +100,11 @@ class DialogueGate:
             if source_action is not None:
                 task_action = None
                 target_spec = None
-            elif mode != "plan":
-                task_action = None
-            if mode not in {"ask", "plan"}:
-                task_action = None
+            elif mode not in {"ask", "plan"}:
+                # Repository targets remain unavailable from an execution request.
+                # A task-action proposal, however, is only a semantic handoff hint;
+                # it is not an authorization and may still describe an act request.
                 target_spec = None
-            elif task_action is not None and (
-                run_dir / BRIDGE_DIR / PENDING_TASK_FILE
-            ).is_file():
-                task_action = None
-                notes.append("duplicate_task_action_removed")
             if target_spec is not None:
                 resolved = get_target_adapter_registry().resolve(
                     target_spec.adapter_id,
@@ -164,10 +155,26 @@ class DialogueGate:
         summary: ResearchIntentSummary,
     ) -> bool:
         return (
-            decision.dialogue_mode == "plan"
-            and decision.policy == "allow"
+            decision.policy == "allow"
             and decision.task_action is not None
             and decision.source_action is None
             and bool(summary.goal.strip())
             and summary.blocking_question is None
+            and decision.conversation_transition != "cancel"
+        )
+
+    @staticmethod
+    def missing_contract_execution_can_prepare_task(
+        decision: GatedDialogueDecision,
+        summary: ResearchIntentSummary,
+    ) -> bool:
+        """Allow an execution request to prepare, never confirm, its missing contract."""
+        return (
+            decision.dialogue_mode == "act"
+            and decision.execution_gate == "blocked_missing_contract"
+            and decision.policy == "allow"
+            and decision.source_action is None
+            and bool(summary.goal.strip())
+            and summary.blocking_question is None
+            and decision.conversation_transition != "cancel"
         )

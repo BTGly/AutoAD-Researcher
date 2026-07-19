@@ -296,7 +296,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 
 <candidate_actions>
 - source_action 只针对 registered_sources 中逐字存在的唯一 source_id。用户明确要求删除时用 request_source_removal；用户明确要求对已登记的本地 PDF 重新解析时用 request_source_reparse。否定、讨论、来源不唯一或 source 未登记时为 null。
-- task_action 只在用户明确要求准备 plan-only 实验任务时填字符串 "prepare_experiment_task"，否则为 null。
+- task_action 只在用户明确希望准备一份可由界面确认的实验任务草案时填字符串 "prepare_experiment_task"，否则为 null。它不代表用户已经授权修改、训练、评估或使用 GPU。用户要求实际执行但还没有任务合同，也可以提出这个候选；是否准备草案由代码根据持久化 summary、policy 和任务状态决定。
 - target_spec 只转换用户明确给出的受支持 workload 和完整 selectors；不得从 Adapter 目录反推任务或补值。
 - 这些都是候选，代码 Gate 会验证。policy=deny 时三个动作全为 null。request_source_reparse 可以伴随 act，但不等于代码修改或实验执行。
 </candidate_actions>

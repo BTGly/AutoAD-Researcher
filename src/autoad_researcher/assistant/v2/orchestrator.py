@@ -181,18 +181,37 @@ class ResearchOrchestratorV2:
         if source_job is not None:
             created_jobs.append(source_job)
         experiment_task = None
-        if actions_allowed and DialogueGate.task_action_allowed(
-            decision,
-            reply_response.summary,
-        ):
+        task_preparation_disposition = None
+        task_draft_requested = (
+            DialogueGate.task_action_allowed(decision, reply_response.summary)
+            or DialogueGate.missing_contract_execution_can_prepare_task(
+                decision,
+                reply_response.summary,
+            )
+        )
+        if reply_response.should_persist and task_draft_requested:
             try:
-                experiment_task = TaskBridge.build_experiment_task(
+                draft, task_preparation_disposition = TaskBridge.prepare_or_reuse_experiment_task(
                     run_dir,
                     user_input=user_input,
                     transcript_tail=transcript_tail,
-                ).model_dump(mode="json")
-            except (FileExistsError, ValueError):
+                )
+                if draft is not None:
+                    experiment_task = draft.model_dump(mode="json")
+                if task_preparation_disposition == "replaced":
+                    append_event(
+                        run_dir,
+                        "assistant.experiment_task.replaced",
+                        {"task_id": draft.task_id if draft is not None else ""},
+                    )
+            except (FileExistsError, ValueError) as exc:
                 experiment_task = None
+                task_preparation_disposition = "prepare_failed"
+                append_event(
+                    run_dir,
+                    "assistant.experiment_task.prepare_failed",
+                    {"exception_type": type(exc).__name__},
+                )
 
         if reply_response.should_persist:
             append_dialogue_transition(
@@ -201,7 +220,12 @@ class ResearchOrchestratorV2:
                 summary=reply_response.summary,
             )
 
-        reply = _validated_dialogue_reply(decision, reply_response)
+        reply = _validated_dialogue_reply(
+            decision,
+            reply_response,
+            experiment_task=experiment_task,
+            task_preparation_disposition=task_preparation_disposition,
+        )
         if on_reply_delta is not None:
             on_reply_delta(reply)
         return OrchestratorResult(
@@ -232,12 +256,23 @@ class ResearchOrchestratorV2:
 def _validated_dialogue_reply(
     decision: GatedDialogueDecision,
     reply_response: ResearchReplyResponse,
+    *,
+    experiment_task: dict[str, Any] | None = None,
+    task_preparation_disposition: str | None = None,
 ) -> str:
     assessment = decision.policy_assessment
     if decision.policy == "deny" or assessment.decision == "reject":
         if reply_response.should_persist:
             return reply_response.visible_reply()
         return _policy_fallback(assessment.reason, assessment.safe_alternative)
+    if experiment_task is not None:
+        if task_preparation_disposition == "reused":
+            return "已有待确认的研究任务草案。请在界面中检查内容、选择执行模式并确认。"
+        if task_preparation_disposition == "replaced":
+            return "研究任务约束已更新，新的待确认草案已准备。请在界面中检查内容、选择执行模式并确认。"
+        return "研究任务草案已准备。请在界面中检查内容、选择执行模式并确认。"
+    if task_preparation_disposition == "prepare_failed":
+        return "研究任务草案暂时无法准备；系统已保留诊断记录，请检查当前任务状态后重试。"
     if decision.dialogue_mode != "act" or decision.source_action is not None:
         return reply_response.visible_reply()
     if decision.execution_gate == "blocked_missing_contract":

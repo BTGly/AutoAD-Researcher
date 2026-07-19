@@ -31,6 +31,13 @@ PENDING_TASK_FILE = "pending_experiment_task.json"
 TASK_REPORT_FILE = "experiment_task_source_report.json"
 INPUT_TASK_FILE = "input_task.yaml"
 _SECRET_LIKE_RE = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
+TaskPreparationDisposition = Literal[
+    "created",
+    "reused",
+    "replaced",
+    "already_materialized",
+    "recovery_required",
+]
 
 
 class TaskInstruction(BaseModel):
@@ -94,36 +101,55 @@ class TaskBridge:
         user_input: str,
         transcript_tail: list[dict[str, Any]] | None = None,
     ) -> ExperimentTaskDraft:
-        run_id = _validate_run_dir(run_dir)
-        if (run_dir / INPUT_TASK_FILE).is_file():
-            raise FileExistsError("input_task.yaml already exists")
-        summary = load_research_intent_summary(run_dir)
-        if summary is None or not summary.goal.strip():
-            raise ValueError("research summary goal is required")
-        if summary.blocking_question is not None:
-            raise ValueError("blocking question must be resolved before task preparation")
+        with _confirm_lock(run_dir):
+            if (run_dir / INPUT_TASK_FILE).is_file():
+                raise FileExistsError("input_task.yaml already exists")
+            return _build_and_write_pending_task(
+                run_dir,
+                user_input=user_input,
+                transcript_tail=transcript_tail,
+            )
 
-        request = _original_user_request(user_input, transcript_tail)
-        source_ids = _registered_source_ids(run_dir)
-        input_task = InputTask(
-            run_id=run_id,
-            request=request,
-            source_ids=source_ids,
-            user_idea=summary.goal,
-            constraints=list(summary.confirmed_facts),
-        )
-        summary_sha256 = _summary_sha256(summary)
-        task_id = f"task_{summary_sha256[:16]}"
-        draft = ExperimentTaskDraft(
-            task_id=task_id,
-            run_id=run_id,
-            input_task=input_task,
-            evidence_refs=_evidence_refs(run_dir),
-            summary_sha256=summary_sha256,
-            created_at=datetime.now(timezone.utc).isoformat(),
-        )
-        _write_json_atomic(run_dir / BRIDGE_DIR / PENDING_TASK_FILE, draft.model_dump(mode="json"))
-        return draft
+    @classmethod
+    def prepare_or_reuse_experiment_task(
+        cls,
+        run_dir: Path,
+        *,
+        user_input: str,
+        transcript_tail: list[dict[str, Any]] | None = None,
+    ) -> tuple[ExperimentTaskDraft | None, TaskPreparationDisposition]:
+        """Create, return, or safely refresh the one confirmable task draft."""
+        with _confirm_lock(run_dir):
+            if (run_dir / INPUT_TASK_FILE).is_file():
+                return None, "already_materialized"
+
+            summary = _require_preparable_summary(run_dir)
+            pending_path = run_dir / BRIDGE_DIR / PENDING_TASK_FILE
+            if pending_path.is_file():
+                pending = _load_pending_task(run_dir)
+                if pending.status == "confirmed":
+                    return pending, "recovery_required"
+                if pending.summary_sha256 == _summary_sha256(summary):
+                    return pending, "reused"
+                return (
+                    _build_and_write_pending_task(
+                        run_dir,
+                        user_input=user_input,
+                        transcript_tail=transcript_tail,
+                        summary=summary,
+                    ),
+                    "replaced",
+                )
+
+            return (
+                _build_and_write_pending_task(
+                    run_dir,
+                    user_input=user_input,
+                    transcript_tail=transcript_tail,
+                    summary=summary,
+                ),
+                "created",
+            )
 
     @classmethod
     def confirm_or_load_existing(
@@ -183,6 +209,45 @@ class TaskBridge:
 def _validate_run_dir(run_dir: Path) -> str:
     validate_run_id(run_dir.parent, run_dir.name)
     return run_dir.name
+
+
+def _require_preparable_summary(run_dir: Path) -> ResearchIntentSummary:
+    summary = load_research_intent_summary(run_dir)
+    if summary is None or not summary.goal.strip():
+        raise ValueError("research summary goal is required")
+    if summary.blocking_question is not None:
+        raise ValueError("blocking question must be resolved before task preparation")
+    return summary
+
+
+def _build_and_write_pending_task(
+    run_dir: Path,
+    *,
+    user_input: str,
+    transcript_tail: list[dict[str, Any]] | None,
+    summary: ResearchIntentSummary | None = None,
+) -> ExperimentTaskDraft:
+    run_id = _validate_run_dir(run_dir)
+    summary = summary or _require_preparable_summary(run_dir)
+    request = _original_user_request(user_input, transcript_tail)
+    input_task = InputTask(
+        run_id=run_id,
+        request=request,
+        source_ids=_registered_source_ids(run_dir),
+        user_idea=summary.goal,
+        constraints=list(summary.confirmed_facts),
+    )
+    summary_sha256 = _summary_sha256(summary)
+    draft = ExperimentTaskDraft(
+        task_id=f"task_{summary_sha256[:16]}",
+        run_id=run_id,
+        input_task=input_task,
+        evidence_refs=_evidence_refs(run_dir),
+        summary_sha256=summary_sha256,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _write_json_atomic(run_dir / BRIDGE_DIR / PENDING_TASK_FILE, draft.model_dump(mode="json"))
+    return draft
 
 
 def _original_user_request(

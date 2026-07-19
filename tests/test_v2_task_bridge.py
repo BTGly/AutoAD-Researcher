@@ -133,6 +133,35 @@ def test_task_bridge_blocks_unresolved_question(tmp_path: Path):
     assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()
 
 
+def test_task_bridge_prepares_reuses_and_replaces_pending_task(tmp_path: Path):
+    run_dir = tmp_path / "run_task_reuse"
+    run_dir.mkdir()
+    save_research_intent_summary(run_dir, _ready_summary())
+
+    created, created_disposition = TaskBridge.prepare_or_reuse_experiment_task(
+        run_dir,
+        user_input="准备实验输入",
+    )
+    reused, reused_disposition = TaskBridge.prepare_or_reuse_experiment_task(
+        run_dir,
+        user_input="准备实验输入",
+    )
+    save_research_intent_summary(run_dir, ResearchIntentSummary(goal="用户修订了实验目标"))
+    replaced, replaced_disposition = TaskBridge.prepare_or_reuse_experiment_task(
+        run_dir,
+        user_input="准备修订后的实验输入",
+    )
+
+    assert created is not None
+    assert created_disposition == "created"
+    assert reused is not None
+    assert reused_disposition == "reused"
+    assert reused.task_id == created.task_id
+    assert replaced is not None
+    assert replaced_disposition == "replaced"
+    assert replaced.task_id != created.task_id
+
+
 def test_task_bridge_rejects_confirmation_after_summary_changes(tmp_path: Path):
     run_dir = tmp_path / "run_task_stale"
     run_dir.mkdir()
@@ -150,7 +179,7 @@ def test_task_bridge_rejects_confirmation_after_summary_changes(tmp_path: Path):
     assert not (run_dir / "input_task.yaml").exists()
 
 
-def test_orchestrator_typed_task_action_only_prepares_plan_only_input(monkeypatch, tmp_path: Path):
+def test_orchestrator_explicit_task_action_prepares_pending_input(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_task_action"
     run_dir.mkdir()
 
@@ -187,6 +216,39 @@ def test_orchestrator_typed_task_action_only_prepares_plan_only_input(monkeypatc
     assert not (run_dir / "input_task.yaml").exists()
     assert load_pipeline_jobs(run_dir) == []
     assert not (run_dir / "experiments" / "sessions").exists()
+
+
+def test_orchestrator_plan_without_task_action_does_not_prepare_task(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_plan_discussion"
+    run_dir.mkdir()
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "plan",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+        },
+        {
+            "reply_to_user": "可以先比较方法差异。",
+            "summary": {
+                "goal": "比较 PatchCore 和其他方法",
+                "confirmed_facts": [],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="比较 PatchCore 和其他方法的优缺点",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.experiment_task is None
+    assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()
 
 
 def test_orchestrator_reject_mode_drops_all_candidate_actions(monkeypatch, tmp_path: Path):
@@ -232,7 +294,7 @@ def test_orchestrator_reject_mode_drops_all_candidate_actions(monkeypatch, tmp_p
     assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()
 
 
-def test_orchestrator_act_request_is_explicitly_blocked_without_confirmed_task(
+def test_orchestrator_act_request_prepares_missing_contract_without_task_action(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -244,7 +306,6 @@ def test_orchestrator_act_request_is_explicitly_blocked_without_confirmed_task(
         {
             "dialogue_mode": "act_request",
             "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
-            "task_action": "prepare_experiment_task",
         },
         {
             "reply_to_user": "开始执行。",
@@ -267,6 +328,10 @@ def test_orchestrator_act_request_is_explicitly_blocked_without_confirmed_task(
     )
 
     assert result.dialogue_mode == "act"
-    assert "没有已确认的 input_task.yaml" in result.reply
-    assert result.experiment_task is None
-    assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()
+    assert "研究任务草案已准备" in result.reply
+    assert result.experiment_task is not None
+    assert result.experiment_task["status"] == "pending_confirmation"
+    assert (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
+    assert not (run_dir / "experiments" / "sessions").exists()
