@@ -54,6 +54,10 @@ http://localhost:8000
 
 运行数据保存在 Docker volume `autoad-researcher_runs_data` 中；停止服务用 `Ctrl+C`，后台再次启动会继续使用同一份 runs 数据。
 
+面向 Linux/amd64 无外网目标机的镜像 tar 交付与部署说明见
+[离线 Docker 部署](docs/deployment/offline-linux-amd64.md)。该路径使用
+`docker save` / `docker load`，目标机不需要源码构建。
+
 ## 真实用户任务 vs 内部 Benchmark
 
 ### 真实用户任务
