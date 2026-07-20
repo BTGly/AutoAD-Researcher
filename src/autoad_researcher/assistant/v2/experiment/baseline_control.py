@@ -92,6 +92,7 @@ class BaselineControlService:
         if existing is not None:
             if session.evaluation_contract_ref is None:
                 raise ValueError("existing baseline is missing its Session evaluation contract")
+            self._require_matching_replay(run_dir, session_id=session_id, value=contract_input)
             job = self._pipeline_job(run_dir, existing.pipeline_job_id)
             return BaselineLaunchResult(
                 started=ExperimentAttemptStartResult(attempt=existing, pipeline_job=job, disposition="reused"),
@@ -285,6 +286,7 @@ class BaselineControlService:
             "split_identity": value.split_identity,
             "dataset_source_ids": value.dataset_source_ids,
             "asset_source_ids": value.asset_source_ids,
+            "baseline_request_sha256": canonical_sha256(value),
         }
         dataset_sha = canonical_sha256({key: payload[key] for key in ["dataset_identity", "split_identity", "dataset_source_ids"]})
         asset_sha = canonical_sha256({"asset_source_ids": value.asset_source_ids})
@@ -294,3 +296,22 @@ class BaselineControlService:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return str(path.relative_to(run_dir)), dataset_sha, asset_sha
+
+    @staticmethod
+    def _require_matching_replay(run_dir: Path, *, session_id: str, value: BaselineContractInput) -> None:
+        """Reuse only an exactly identical baseline launch request.
+
+        A pre-receipt artifact predates this invariant and cannot establish that
+        the caller requested the same protocol, so it deliberately fails closed.
+        """
+
+        path = run_dir / "experiments" / "execution_inputs" / f"{session_id}.json"
+        if not path.is_file():
+            raise ValueError("idempotency_conflict: existing baseline request receipt is missing")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            recorded = payload.get("baseline_request_sha256")
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("idempotency_conflict: existing baseline request receipt is invalid") from exc
+        if recorded != canonical_sha256(value):
+            raise ValueError("idempotency_conflict: baseline request differs from the existing Attempt")

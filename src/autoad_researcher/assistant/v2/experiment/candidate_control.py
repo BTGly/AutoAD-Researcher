@@ -71,6 +71,7 @@ class CandidateControlService:
         existing = next((item for item in self._attempts.list_for_session(run_dir, session_id=session_id)
                          if item.idempotency_key == value.idempotency_key), None)
         if existing is not None:
+            self._require_matching_replay(run_dir, attempt_id=existing.attempt_id, value=value)
             return CandidateLaunchResult(status="reused", attempt=existing.model_dump(mode="json"), pipeline_job=_pipeline_job(run_dir, existing.pipeline_job_id))
 
         binding = BaselineControlService._load_binding(run_dir, session)
@@ -151,6 +152,7 @@ class CandidateControlService:
         )
         if result.status == "queued" and result.attempt is not None:
             attempt_id = str(result.attempt["attempt_id"])
+            self._write_request_receipt(run_dir, attempt_id=attempt_id, value=value)
             latest = self._trees.load(run_dir, session_id=session_id)
             assert latest is not None
             self._trees.attach_attempt(run_dir, session_id=session_id, expected_revision=latest.revision,
@@ -158,6 +160,33 @@ class CandidateControlService:
                                        attempt_ref=f"attempts/{attempt_id}")
         return CandidateLaunchResult(status=result.status, attempt=result.attempt, pipeline_job=result.pipeline_job,
                                      workspace_ref=(str(Path(result.workspace.worktree_path).resolve().relative_to(run_dir.resolve())) if result.workspace else None), blocker=result.blocker)
+
+    @staticmethod
+    def _request_receipt_path(run_dir: Path, attempt_id: str) -> Path:
+        return run_dir / "attempts" / attempt_id / "candidate_request.json"
+
+    @classmethod
+    def _write_request_receipt(cls, run_dir: Path, *, attempt_id: str, value: CandidateLaunchInput) -> None:
+        path = cls._request_receipt_path(run_dir, attempt_id)
+        payload = {"schema_version": 1, "candidate_request_sha256": canonical_sha256(value)}
+        if path.is_file():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if existing != payload:
+                raise ValueError("idempotency_conflict: candidate request receipt differs")
+            return
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    @classmethod
+    def _require_matching_replay(cls, run_dir: Path, *, attempt_id: str, value: CandidateLaunchInput) -> None:
+        path = cls._request_receipt_path(run_dir, attempt_id)
+        if not path.is_file():
+            raise ValueError("idempotency_conflict: existing candidate request receipt is missing")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("idempotency_conflict: existing candidate request receipt is invalid") from exc
+        if payload.get("candidate_request_sha256") != canonical_sha256(value):
+            raise ValueError("idempotency_conflict: candidate request differs from the existing Attempt")
 
 
 def _metrics(run_dir: Path, attempt_id: str) -> dict[str, float]:

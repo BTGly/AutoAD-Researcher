@@ -144,6 +144,22 @@ def test_baseline_control_refuses_metric_that_was_not_confirmed(tmp_path: Path):
     assert load_pipeline_jobs(run_dir) == []
 
 
+def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    first = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+
+    with pytest.raises(ValueError, match="idempotency_conflict"):
+        BaselineControlService().start(
+            run_dir,
+            session_id=session.session_id,
+            contract_input=_contract().model_copy(update={"seeds": [2]}),
+        )
+
+    assert len(load_pipeline_jobs(run_dir)) == 1
+    assert ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)[0].attempt_id == first.started.attempt.attempt_id
+
+
 def test_candidate_control_derives_execution_from_completed_baseline(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
@@ -196,3 +212,28 @@ def test_candidate_control_derives_execution_from_completed_baseline(tmp_path: P
         ),
     )
     assert replay.status == "reused" and replay.attempt is not None and replay.attempt["attempt_id"] == started.attempt["attempt_id"]
+
+
+def test_candidate_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    baseline = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        attempt = ExperimentAttemptStore().load(run_dir, baseline.started.attempt.attempt_id)
+        if attempt is not None and attempt.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+    tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
+    IdeaTreeStore().add_node(run_dir, session_id=session.session_id, expected_revision=tree.revision, idempotency_key="idea-conflict", parent_id="idea_000000", mechanism="score change", hypothesis="raise score", observable="score", grounding=[], expected_cost="low")
+    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n"
+    candidate = CandidateLaunchInput(
+        idempotency_key="candidate:conflict", comparison_seed=1,
+        intervention_contract=InterventionContract(idea_id="idea_000001", mechanism="score change", hypothesis="raise score", target_modules=["run.py"], allowed_paths=["run.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["score"], time_budget=30),
+        approved_proposal=ExecutorProposal(edits=[SearchReplaceEdit(path="run.py", search=before, replace=before.replace("0.8", "0.9"))], changed_symbols=["score"], confidence=1),
+    )
+    first = CandidateControlService().start(run_dir, session_id=session.session_id, value=candidate)
+    with pytest.raises(ValueError, match="idempotency_conflict"):
+        CandidateControlService().start(run_dir, session_id=session.session_id, value=candidate.model_copy(update={"comparison_seed": 2}))
+    assert len(load_pipeline_jobs(run_dir)) == 2
+    assert first.attempt is not None

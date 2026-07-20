@@ -64,7 +64,11 @@ async def start_baseline(run_id: str, session_id: str, request: StartBaselineReq
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         message = str(exc)
-        code = "execution_contract_incomplete" if message.startswith("execution_contract_incomplete:") else "baseline_start_invalid"
+        code = (
+            "execution_contract_incomplete" if message.startswith("execution_contract_incomplete:")
+            else "idempotency_conflict" if message.startswith("idempotency_conflict:")
+            else "baseline_start_invalid"
+        )
         raise HTTPException(status_code=409, detail={"code": code, "message": message}) from exc
 
 
@@ -80,7 +84,11 @@ async def start_candidate(run_id: str, session_id: str, request: StartCandidateR
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         message = str(exc)
-        code = "execution_contract_incomplete" if message.startswith("execution_contract_incomplete:") else "candidate_start_invalid"
+        code = (
+            "execution_contract_incomplete" if message.startswith("execution_contract_incomplete:")
+            else "idempotency_conflict" if message.startswith("idempotency_conflict:")
+            else "candidate_start_invalid"
+        )
         raise HTTPException(status_code=409, detail={"code": code, "message": message}) from exc
 
 
