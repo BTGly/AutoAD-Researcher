@@ -9,6 +9,7 @@ import { FirstRunSetup } from './components/FirstRunSetup';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
 import { LeftSidebar } from './components/LeftSidebar';
+import { ExperimentPage } from './components/ExperimentPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ReportPage } from './components/ReportPage';
 import { DevMockPanel } from './components/DevMockPanel';
@@ -81,6 +82,7 @@ export default function App() {
   const [intentSummary, setIntentSummary] = useState<IntentSummary | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
+  const [showExperimentSettings, setShowExperimentSettings] = useState(false);
   const [page, setPage] = useState<PageId>('chat');
   const [composerText, setComposerText] = useState('');
   const [queuedMessagesByRun, setQueuedMessagesByRun] = useState<Record<string, QueuedChatMessage[]>>({});
@@ -694,12 +696,19 @@ export default function App() {
           </>
         )}
 
-        {page === 'settings' && (
+        {page === 'experiment' && !showExperimentSettings && (
+          <ExperimentPage
+            runId={runId}
+            onOpenExperimentSettings={() => setShowExperimentSettings(true)}
+          />
+        )}
+
+        {page === 'experiment' && showExperimentSettings && (
           <SettingsPage
             experiment={config.experiment ?? DEFAULT_EXPERIMENT}
             defaultApiKey={config.apiKey}
             onSave={saveExperimentConfig}
-            onBack={() => setPage('chat')}
+            onBack={() => setShowExperimentSettings(false)}
           />
         )}
 

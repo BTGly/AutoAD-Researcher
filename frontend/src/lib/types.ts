@@ -170,4 +170,4 @@ export interface ExperimentConfig {
 
 export type TabId = 'sources' | 'jobs' | 'evidence' | 'summary';
 
-export type PageId = 'chat' | 'settings' | 'report';
+export type PageId = 'chat' | 'experiment' | 'report';

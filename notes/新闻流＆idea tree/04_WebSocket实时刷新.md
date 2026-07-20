@@ -133,17 +133,27 @@ experiment.* → 刷新投影
 - transient event 过滤不变；
 - 原有 source/job/assistant/toast 消息不变。
 
-### 前端
+### 前端与首版验收
 
-至少覆盖：
+当前 `frontend/package.json` 只有 `build`、`lint`、`dev`、`preview`，没有 Vitest、Jest 或 Testing Library。首版不为了这一个页面立即引入新的前端测试框架，也不把组件自动化测试写成现有执行条件。
 
-1. `experiment.*` 消息只触发刷新计数；
-2. 不读取 payload 来拼接 UI；
-3. 短时间多个事件只触发一次防抖请求；
-4. 重连 replay 多事件后最终只加载一次投影；
-5. 切换 run/session 后旧请求不能覆盖新投影；
-6. 手动刷新直接请求投影；
-7. 请求失败保留上一份快照并展示错误。
+自动验证使用当前工具链：
+
+1. Python 投影和路由测试由 `pytest` 覆盖；
+2. `cd frontend && npm run build`；
+3. `cd frontend && npm run lint`；
+4. `bash scripts/verify.sh`。
+
+真人 UAT 检查以下行为：
+
+1. `experiment.*` 消息只触发刷新计数，不读取 payload 拼接 UI；
+2. 短时间多个事件和重连 replay 最终只请求一次投影；
+3. 切换 run/session 后旧请求不能覆盖新投影；
+4. 手动刷新直接请求投影；
+5. 请求失败保留上一份快照并展示错误；
+6. Activity 不重复插入，且超过 100 条时显示截断提示。
+
+未来若前端交互复杂度确实需要组件级自动化测试，再单独引入 Vitest/Testing Library，并在引入后补充对应脚本和 CI 入口。
 
 ## 8. 不重复证明
 
@@ -157,4 +167,5 @@ experiment.* → 刷新投影
 - 前端不从事件 payload 生成科研状态。
 - 重连后不会重复显示事件卡片。
 - 切换 run/session 后不显示旧数据。
+- Activity 首版最多显示最近 100 条可靠动态，截断状态可见。
 - 现有 Chat、Sources、Jobs、Evidence、Toast 行为不回归。

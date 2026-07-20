@@ -29,8 +29,9 @@ ExperimentPage
 7. 不为了页面首版增加 `ExperimentSessionStore.list_sessions()`。
 8. 不修改现有 WebSocket envelope，不增加第二条 broadcast 路径。
 9. 底层 enum 保持精确，用户界面通过确定性映射显示中文。
+10. 外部 `session_id` 必须先与当前 Session 候选文件精确匹配，不能直接拼接为路径。
 
-Arbor 的成熟做法是用持久化 Idea Tree / RunState 生成紧凑的只读监控状态，原始事件独立保留；MLflow 的 Run metadata、metrics、inputs、Artifact 分层用于参考 AutoAD 的执行事实和科学评价分层。两者都是设计参考，不直接复制代码。
+根据本地固定版本 Arbor（`4f8c5c2e8d4b8d238ae911da486240e1ba95f4ca`，Apache-2.0）、MLflow（`77769e5f3022ba92da4f5a9a9cba7b31d0ede758`，Apache-2.0）和 MiMo-Code（`42e7da3d51dba1129cd3abfa214e29f7385924a3`，MIT）源码与文档对照，本计划参考持久化状态、观测分层和 checkpoint/task progress 机制；不声称接口或实现完全等价，也不直接复制代码。精确文件和采用/不采用范围见 `00_README_文档索引.md`。
 
 ## 3. 提交一：导航、配置入口与空页面
 
@@ -135,7 +136,7 @@ Session.evaluation_contract_sha256
   → 读取已有科学评价
 ```
 
-无评价合同、无对应 Pointer、Candidate 不属于当前 Session 或 Artifact 无效时，显示“暂未产生”。
+`champion_status` 使用 `absent`、`available`、`assessment_missing`、`assessment_invalid`。无评价合同、无对应 Pointer、Candidate 不属于当前 Session 或 Pointer/Candidate 本身无效时才是 `absent`；Champion 已登记但科学评价 Artifact 缺失或无效时，保留 Champion 身份和引用，分别显示“科学评价详情缺失”或“科学评价详情无效”。
 
 ### 4.6 Idea Tree 和 Activity
 
@@ -143,6 +144,7 @@ Session.evaluation_contract_sha256
 - `experiment.idea_tree.mutated` 只显示“Idea Tree 已更新”和 revision。
 - 不从 mutation receipt 推断历史节点或剪枝原因。
 - Activity 映射使用确定性逻辑，不调用 LLM。
+- Activity 首版只返回当前 Session 最近 100 条可靠卡片，并通过 `activity_truncated` 标识是否截断；不引入分页、游标或新索引。
 
 ### 4.7 API
 
@@ -166,7 +168,9 @@ GET /api/runs/{run_id}/experiment/projection?session_id={session_id}
 - 无 Session、单 Session、多 Session 行为正确。
 - 研究目标来自 InputTask，不显示 `input_task.yaml`。
 - 执行事实和科学评价分层。
-- Champion 使用当前评价合同精确选择。
+- Champion 使用当前评价合同精确选择；详情缺失时不掩盖已登记状态。
+- `session_id` 不能绕过候选 Session 文件集合访问目录外路径。
+- Activity 数量上限和截断标记正确。
 - GET 前后 Artifact 内容和文件修改时间不变。
 
 ## 5. 提交三：工作台数据展示
@@ -219,6 +223,8 @@ Idea 状态按当前 `IdeaNodeStatus` 映射。未知值显示“未知状态（
 - Idea、Attempt、Activity 点击详情正确。
 - 普通模式隐藏内部路径和 ID。
 - 讨论按钮只预填，不自动发送。
+- Champion 详情缺失或无效时仍显示已登记身份及退化状态。
+- Activity 最多显示最近 100 条可靠动态，并在截断时提示。
 
 ## 6. 提交四：WebSocket 失效通知刷新
 
@@ -247,10 +253,10 @@ Idea 状态按当前 `IdeaNodeStatus` 映射。未知值显示“未知状态（
 每个提交编码前：
 
 1. 读取当前源码、测试和配置，核对精确标识符；
-2. 编写对应测试；
+2. 编写对应的 Python 测试；前端首版按现有工具链执行 `npm run build` 和 `npm run lint`，不假设已经存在 Vitest/Jest；
 3. 更新当天 `notes/YYYY-MM-DD.md`；
 4. 运行 `bash scripts/verify.sh`；
-5. 通过后运行 `bash scripts/verify_and_push.sh "<message>"`；
+5. 通过后按项目交付要求运行 `bash scripts/verify_and_push.sh "<message>"`；本次仅做计划补丁，按用户要求不执行提交和推送；
 6. 确认 `git status --short --branch`、`git log --oneline -3` 和 GitHub Actions。
 
 不得把审阅报告中的示例字段当成现有代码事实，也不得在未验证参考项目实现的情况下声称“直接复用”。
