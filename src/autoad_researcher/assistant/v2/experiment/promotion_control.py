@@ -84,9 +84,18 @@ class PromotionControlService:
         allowed = (run_dir / "executor_worktrees").resolve()
         if not root.is_relative_to(allowed):
             raise ValueError("candidate workspace is outside the run-owned executor area")
-        repository = Path(_git(root, "rev-parse", "--show-toplevel")).resolve()
+        # `--show-toplevel` names this candidate worktree, not the checkout that
+        # owns the baseline/trunk branch.  Git's worktree list is the authority
+        # for that relationship; its first entry is the primary checkout.
+        lines = _git(root, "worktree", "list", "--porcelain").splitlines()
+        first = next((line.removeprefix("worktree ") for line in lines if line.startswith("worktree ")), None)
+        if first is None:
+            raise ValueError("candidate Git worktree has no primary checkout")
+        repository = Path(first).resolve()
         if not repository.is_relative_to(run_dir.resolve()):
             raise ValueError("candidate repository is outside the run")
+        if repository == root:
+            raise ValueError("candidate worktree cannot be its own promotion target")
         return repository
 
     @staticmethod

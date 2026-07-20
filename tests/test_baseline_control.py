@@ -242,6 +242,8 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
     promoted = PromotionControlService().promote(run_dir, value=PromotionInput(candidate_id=snapshot.candidate_id, approved_by="fixture-user"))
     assert promoted.champion_event["candidate_id"] == snapshot.candidate_id
     assert CandidateRegistry().current_by_contract(run_dir)[snapshot.evaluation_contract_hash].candidate_id == snapshot.candidate_id
+    source = run_dir / "repos" / "source_micro"
+    assert "0.9" in (source / "run.py").read_text(encoding="utf-8")
 
 
 def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):
