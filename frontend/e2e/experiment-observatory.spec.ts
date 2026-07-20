@@ -21,7 +21,7 @@ const projection = {
   developer_refs: { run_id: run.run_id, session_id: 'session_aaaaaaaaaaaaaaaa', event_ids: [1], artifact_paths: [], pipeline_job_ids: [], event_log_path: 'events/events.jsonl' },
 };
 
-async function prepare(page: Page, getProjection: () => object = () => projection, withWebSocket = false) {
+async function prepare(page: Page, getProjection: (sessionId?: string) => object = () => projection, withWebSocket = false) {
   if (withWebSocket) {
     await page.addInitScript(() => {
       const sockets: Array<{ onmessage: ((event: { data: string }) => void) | null; readyState: number }> = [];
@@ -52,7 +52,7 @@ async function prepare(page: Page, getProjection: () => object = () => projectio
     if (path === `/api/runs/${run.run_id}/intent-summary`) return route.fulfill({ json: { goal: '', confirmed_facts: [], inferred_facts: [], unresolved_conflicts: [], blocking_question: null } });
     if (path === `/api/runs/${run.run_id}/experiment/projection`) {
       try {
-        return route.fulfill({ json: getProjection() });
+        return route.fulfill({ json: getProjection(new URL(route.request().url()).searchParams.get('session_id') || undefined) });
       } catch {
         return route.fulfill({ status: 500, json: { detail: 'fixture refresh failure' } });
       }
@@ -149,4 +149,34 @@ test('keeps the last projection when a WebSocket refresh fails', async ({ page }
   await page.evaluate(() => (window as any).emitExperimentEvent());
   await expect(page.getByRole('alert')).toHaveText('工作台刷新失败，仍保留上一份有效快照。');
   await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
+});
+
+test('does not duplicate a Session load when a pending refresh tick changes scope', async ({ page }) => {
+  let requests = 0;
+  await prepare(page, (sessionId?: string) => {
+    requests += 1;
+    if (!sessionId) {
+      return {
+        schema_version: 1,
+        selection_status: 'ambiguous',
+        session: null,
+        session_candidates: [
+          { session_id: 'session_aaaaaaaaaaaaaaaa', task_hash: 'a'.repeat(64), status: 'READY', created_at: '2026-07-20T00:00:00Z' },
+          { session_id: 'session_bbbbbbbbbbbbbbbb', task_hash: 'b'.repeat(64), status: 'READY', created_at: '2026-07-20T00:00:00Z' },
+        ],
+        input_task: null, summary: null, idea_tree: null, attempts: [], candidates: [], candidate_inventory_status: 'available', cognitive_commits: [], champion_status: 'absent', champion: null, activity: [], activity_limit: 100, activity_truncated: false, activity_scan_truncated: false, developer_refs: null,
+      };
+    }
+    const value = structuredClone(projection);
+    value.session.session_id = sessionId;
+    return value;
+  }, true);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('发现多个实验 Session，请明确选择')).toBeVisible();
+  await page.evaluate(() => (window as any).emitExperimentEvent());
+  const requestsBeforeSelection = requests;
+  await page.getByLabel('实验 Session').selectOption('session_bbbbbbbbbbbbbbbb');
+  await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
+  await page.waitForTimeout(450);
+  expect(requests).toBe(requestsBeforeSelection + 1);
 });

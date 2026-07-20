@@ -30,6 +30,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   const requestId = useRef(0);
   const currentRequest = useRef<AbortController | null>(null);
   const refreshScope = useRef({ runId, sessionId });
+  const refreshScopeVersion = useRef(0);
   const lastHandledRefreshTick = useRef(experimentRefreshTick);
   refreshScope.current = { runId, sessionId };
 
@@ -55,6 +56,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   }, []);
 
   useEffect(() => {
+    refreshScopeVersion.current += 1;
     setSessionId(undefined);
     setSelection(null);
     setProjection(null);
@@ -62,6 +64,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   }, [runId]);
 
   useEffect(() => {
+    refreshScopeVersion.current += 1;
     if (!runId) {
       currentRequest.current?.abort();
       setProjection(null);
@@ -75,7 +78,9 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   useEffect(() => {
     if (experimentRefreshTick === lastHandledRefreshTick.current) return;
     lastHandledRefreshTick.current = experimentRefreshTick;
+    const scheduledScopeVersion = refreshScopeVersion.current;
     const timer = window.setTimeout(() => {
+      if (refreshScopeVersion.current !== scheduledScopeVersion) return;
       const scope = refreshScope.current;
       if (scope.runId) void loadProjection(scope.runId, scope.sessionId);
     }, 300);
