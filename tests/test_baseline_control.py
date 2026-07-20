@@ -10,6 +10,7 @@ import pytest
 
 from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineContractInput, BaselineControlService
 from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateControlService, CandidateLaunchInput
+from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationInput, CandidateConfirmationService
 from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
@@ -21,6 +22,7 @@ from autoad_researcher.experiment.executor_agent import ExecutorProposal
 from autoad_researcher.experiment.executor_contracts import InterventionContract
 from autoad_researcher.experiment.idea_tree import IdeaTreeStore
 from autoad_researcher.experiment.patch_protocol import SearchReplaceEdit
+from autoad_researcher.experiment.promotion import CandidateRegistry
 from autoad_researcher.experiment.scientific_assessment import ScientificAssessmentService
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.worker.main import _process_pending_jobs
@@ -100,6 +102,28 @@ def _contract() -> BaselineContractInput:
     )
 
 
+def _declare_b_test_adapter(run_dir: Path, session_id: str) -> None:
+    manifest_path = run_dir / "repos" / "source_micro" / "autoad_executor_adapter.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evaluation_commands"] = {
+        "b_dev": {"args": ["run.py"], "metrics_output": "metrics.json"},
+        "b_test": {"args": ["run.py"], "metrics_output": "metrics.json"},
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    binding_path = run_dir / "task_bridge" / "execution_repository_binding.json"
+    binding = ExecutionRepositoryBinding.model_validate_json(binding_path.read_text(encoding="utf-8"))
+    updated_binding = binding.model_copy(update={"adapter_manifest_sha256": sha256_file(manifest_path)})
+    binding_path.write_text(updated_binding.model_dump_json(), encoding="utf-8")
+    _git(manifest_path.parent, "add", "autoad_executor_adapter.json")
+    _git(manifest_path.parent, "commit", "-m", "declare fixture b-test command")
+    session = ExperimentSessionStore().load(run_dir, session_id)
+    assert session is not None
+    ExperimentSessionStore._write_unlocked(
+        run_dir / "experiments" / "sessions" / f"{session_id}.json",
+        session.model_copy(update={"execution_repository_binding_sha256": canonical_sha256(updated_binding)}),
+    )
+
+
 def test_baseline_control_freezes_server_owned_attempt_and_projects_ready(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
@@ -147,33 +171,7 @@ def test_baseline_control_refuses_metric_that_was_not_confirmed(tmp_path: Path):
 def test_baseline_control_queues_explicit_b_test_baseline_and_waits_for_both(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
-    manifest_path = run_dir / "repos" / "source_micro" / "autoad_executor_adapter.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["evaluation_commands"] = {
-        "b_dev": {"args": ["run.py"], "metrics_output": "metrics.json"},
-        "b_test": {"args": ["run.py"], "metrics_output": "metrics.json"},
-    }
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    binding_path = run_dir / "task_bridge" / "execution_repository_binding.json"
-    binding = ExecutionRepositoryBinding.model_validate_json(binding_path.read_text(encoding="utf-8"))
-    updated_binding = binding.model_copy(update={"adapter_manifest_sha256": sha256_file(manifest_path)})
-    binding_path.write_text(
-        updated_binding.model_dump_json(),
-        encoding="utf-8",
-    )
-    _git(manifest_path.parent, "add", "autoad_executor_adapter.json")
-    _git(manifest_path.parent, "commit", "-m", "declare fixture b-test command")
-    sessions = ExperimentSessionStore()
-    refreshed = sessions.load(run_dir, session.session_id)
-    assert refreshed is not None
-    ExperimentSessionStore._write_unlocked(
-        run_dir / "experiments" / "sessions" / f"{session.session_id}.json",
-        refreshed.model_copy(
-            update={
-                "execution_repository_binding_sha256": canonical_sha256(updated_binding),
-            }
-        ),
-    )
+    _declare_b_test_adapter(run_dir, session.session_id)
     started = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
     assert started.b_test_started is not None
     assert started.b_test_started.attempt.command_plan.command_id == "generic_python_b_test"
@@ -185,6 +183,61 @@ def test_baseline_control_queues_explicit_b_test_baseline_and_waits_for_both(tmp
         time.sleep(0.02)
     projected = ExperimentSessionStore().load(run_dir, session.session_id)
     assert projected is not None and projected.status == "READY"
+
+
+def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    _declare_b_test_adapter(run_dir, session.session_id)
+    baseline = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        projected = ExperimentSessionStore().load(run_dir, session.session_id)
+        if projected is not None and projected.status == "READY":
+            break
+        time.sleep(0.02)
+    tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
+    IdeaTreeStore().add_node(run_dir, session_id=session.session_id, expected_revision=tree.revision, idempotency_key="idea-confirm", parent_id="idea_000000", mechanism="score change", hypothesis="raise score", observable="score", grounding=[], expected_cost="low")
+    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n"
+    candidate = CandidateControlService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=CandidateLaunchInput(
+            idempotency_key="candidate:confirm", comparison_seed=1,
+            intervention_contract=InterventionContract(idea_id="idea_000001", mechanism="score change", hypothesis="raise score", target_modules=["run.py"], allowed_paths=["run.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["score"], time_budget=30),
+            approved_proposal=ExecutorProposal(edits=[SearchReplaceEdit(path="run.py", search=before, replace=before.replace("0.8", "0.9"))], changed_symbols=["score"], confidence=1),
+        ),
+    )
+    assert candidate.attempt is not None
+    candidate_attempt_id = str(candidate.attempt["attempt_id"])
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        attempt = ExperimentAttemptStore().load(run_dir, candidate_attempt_id)
+        if attempt is not None and attempt.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+    confirmation = CandidateConfirmationService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=CandidateConfirmationInput(candidate_attempt_id=candidate_attempt_id, noise_threshold=0.01, idempotency_key="confirm:idea-1"),
+    )
+    confirmation_id = confirmation.started.attempt.attempt_id
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        if (run_dir / "experiments" / "champions" / "candidates" / f"candidate_{int(candidate_attempt_id.rsplit('_', 1)[1]):06d}.json").is_file():
+            break
+        time.sleep(0.02)
+    snapshot = CandidateRegistry().load_candidate(run_dir, f"candidate_{int(candidate_attempt_id.rsplit('_', 1)[1]):06d}")
+    assert snapshot.attempt_id == candidate_attempt_id
+    assert snapshot.b_test_passed
+    assert snapshot.b_test_evidence_ref == f"attempts/{confirmation_id}/scientific_assessment.json"
+    replay = CandidateConfirmationService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=CandidateConfirmationInput(candidate_attempt_id=candidate_attempt_id, noise_threshold=0.01, idempotency_key="confirm:idea-1"),
+    )
+    assert replay.started.disposition == "reused"
+    assert replay.candidate_snapshot_ref == f"experiments/champions/candidates/{snapshot.candidate_id}.json"
 
 
 def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):

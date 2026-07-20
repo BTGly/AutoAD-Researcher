@@ -201,6 +201,10 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
             ExperimentSessionStore().update_baseline_state(
                 run_dir, session_id=attempt.session_id, status="FAILED", baseline_status="failed"
             )
+    if attempt.job_type == "experiment_confirmatory" and final.runtime_status == "COMPLETED":
+        from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationService
+
+        CandidateConfirmationService().finalize_if_ready(run_dir, confirmation_attempt_id=attempt.attempt_id)
     append_event(run_dir, "experiment.attempt.finalized", {"attempt_id": final.attempt_id, "runtime_status": final.runtime_status, "failure_code": final.failure_code})
     return AttemptObservation(terminal=True, succeeded=final.runtime_status == "COMPLETED", outputs=_outputs(run_dir, run_dir / "attempts" / attempt.attempt_id), error=result.failure_message)
 

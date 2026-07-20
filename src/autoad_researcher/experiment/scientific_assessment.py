@@ -169,7 +169,7 @@ class ScientificAssessmentService:
             raise ValueError("OutcomeCard attempt ID does not match its directory")
         inputs_path = attempt_dir / "scientific_evaluation_inputs.json"
         inputs = self._inputs.load(attempt_dir)
-        implementation = self._implementation_evidence(attempt_dir, card)
+        implementation = self._implementation_evidence(run_dir, attempt_dir, card)
         evaluation_status = comparable(inputs.candidate_identity, inputs.baseline_identity)
         contract = self._load_contract(run_dir, card)
         effect, delta, guardrails = scientific_effect(
@@ -290,7 +290,24 @@ class ScientificAssessmentService:
         )
 
     @staticmethod
-    def _implementation_evidence(attempt_dir: Path, card: OutcomeCard) -> ImplementationEvidence:
+    def _implementation_evidence(run_dir: Path, attempt_dir: Path, card: OutcomeCard) -> ImplementationEvidence:
+        """Use the admitted B_dev evidence for a linked B_test confirmation.
+
+        A confirmation evaluates an already-committed candidate, so it has no
+        second Executor edit.  Its immutable link names the original Attempt;
+        all other paths remain local to that source Attempt.
+        """
+        link_path = attempt_dir / "candidate_confirmation.json"
+        if link_path.is_file():
+            try:
+                candidate_attempt_id = json.loads(link_path.read_text(encoding="utf-8"))["candidate_attempt_id"]
+                if not isinstance(candidate_attempt_id, str) or not candidate_attempt_id.startswith("attempt_"):
+                    raise ValueError("invalid candidate attempt ID")
+                source = run_dir / "attempts" / candidate_attempt_id
+                if source.is_dir():
+                    attempt_dir = source
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                return ImplementationEvidence(patch_applied=False, smoke_passed=False)
         summary_path = attempt_dir / "executor_summary.json"
         patch_path = attempt_dir / "patch.diff"
         if not summary_path.is_file():

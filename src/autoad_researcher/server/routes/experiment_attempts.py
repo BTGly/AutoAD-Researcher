@@ -15,6 +15,11 @@ from autoad_researcher.assistant.v2.experiment.candidate_control import (
     CandidateLaunchInput,
     CandidateLaunchResult,
 )
+from autoad_researcher.assistant.v2.experiment.candidate_confirmation import (
+    CandidateConfirmationInput,
+    CandidateConfirmationResult,
+    CandidateConfirmationService,
+)
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
@@ -89,6 +94,22 @@ async def start_candidate(run_id: str, session_id: str, request: StartCandidateR
             else "idempotency_conflict" if message.startswith("idempotency_conflict:")
             else "candidate_start_invalid"
         )
+        raise HTTPException(status_code=409, detail={"code": code, "message": message}) from exc
+
+
+@router.post(
+    "/{run_id}/sessions/{session_id}/candidate-confirmations",
+    response_model=CandidateConfirmationResult,
+)
+async def confirm_candidate(run_id: str, session_id: str, request: CandidateConfirmationInput):
+    run_dir = _run_dir(run_id)
+    try:
+        return CandidateConfirmationService().start(run_dir, session_id=session_id, value=request)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        message = str(exc)
+        code = "idempotency_conflict" if message.startswith("idempotency_conflict:") else "candidate_confirmation_invalid"
         raise HTTPException(status_code=409, detail={"code": code, "message": message}) from exc
 
 
