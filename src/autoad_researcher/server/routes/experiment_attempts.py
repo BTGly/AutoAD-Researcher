@@ -10,6 +10,11 @@ from autoad_researcher.assistant.v2.experiment.baseline_control import (
     BaselineControlService,
     BaselineLaunchResult,
 )
+from autoad_researcher.assistant.v2.experiment.candidate_control import (
+    CandidateControlService,
+    CandidateLaunchInput,
+    CandidateLaunchResult,
+)
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
@@ -24,6 +29,14 @@ class StartBaselineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contract: BaselineContractInput
+
+
+class StartCandidateRequest(BaseModel):
+    """The reviewed candidate change, not a raw execution plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate: CandidateLaunchInput
 
 
 @router.get("/{run_id}/sessions/{session_id}")
@@ -52,6 +65,22 @@ async def start_baseline(run_id: str, session_id: str, request: StartBaselineReq
     except ValueError as exc:
         message = str(exc)
         code = "execution_contract_incomplete" if message.startswith("execution_contract_incomplete:") else "baseline_start_invalid"
+        raise HTTPException(status_code=409, detail={"code": code, "message": message}) from exc
+
+
+@router.post(
+    "/{run_id}/sessions/{session_id}/candidates",
+    response_model=CandidateLaunchResult,
+)
+async def start_candidate(run_id: str, session_id: str, request: StartCandidateRequest):
+    run_dir = _run_dir(run_id)
+    try:
+        return CandidateControlService().start(run_dir, session_id=session_id, value=request.candidate)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        message = str(exc)
+        code = "execution_contract_incomplete" if message.startswith("execution_contract_incomplete:") else "candidate_start_invalid"
         raise HTTPException(status_code=409, detail={"code": code, "message": message}) from exc
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineContractInput, BaselineControlService
+from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateControlService, CandidateLaunchInput
 from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
@@ -16,6 +17,11 @@ from autoad_researcher.environments.context_collector import CollectedValidation
 from autoad_researcher.environments.snapshot import EnvironmentSnapshot
 from autoad_researcher.environments.validation import ValidationContext
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+from autoad_researcher.experiment.executor_agent import ExecutorProposal
+from autoad_researcher.experiment.executor_contracts import InterventionContract
+from autoad_researcher.experiment.idea_tree import IdeaTreeStore
+from autoad_researcher.experiment.patch_protocol import SearchReplaceEdit
+from autoad_researcher.experiment.scientific_assessment import ScientificAssessmentService
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.worker.main import _process_pending_jobs
 
@@ -136,3 +142,57 @@ def test_baseline_control_refuses_metric_that_was_not_confirmed(tmp_path: Path):
 
     assert not (run_dir / "experiments" / "attempts").exists()
     assert load_pipeline_jobs(run_dir) == []
+
+
+def test_candidate_control_derives_execution_from_completed_baseline(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    baseline = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        attempt = ExperimentAttemptStore().load(run_dir, baseline.started.attempt.attempt_id)
+        if attempt is not None and attempt.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+    tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
+    tree = IdeaTreeStore().add_node(
+        run_dir, session_id=session.session_id, expected_revision=tree.revision, idempotency_key="idea-1",
+        parent_id="idea_000000", mechanism="score change", hypothesis="raise score", observable="score",
+        grounding=[], expected_cost="low",
+    )
+    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n"
+    after = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.9}))\n"
+    started = CandidateControlService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=CandidateLaunchInput(
+            idempotency_key="candidate:idea-1",
+            comparison_seed=1,
+            intervention_contract=InterventionContract(
+                idea_id="idea_000001", mechanism="score change", hypothesis="raise score", target_modules=["run.py"],
+                allowed_paths=["run.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["score"], time_budget=30,
+            ),
+            approved_proposal=ExecutorProposal(
+                edits=[SearchReplaceEdit(path="run.py", search=before, replace=after)], changed_symbols=["score"], confidence=1,
+            ),
+        ),
+    )
+    assert started.status == "queued" and started.attempt is not None
+    assert started.attempt["command_plan"]["cwd"] != baseline.started.attempt.command_plan.cwd
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        attempt = ExperimentAttemptStore().load(run_dir, str(started.attempt["attempt_id"]))
+        if attempt is not None and attempt.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+    assessment = ScientificAssessmentService().effective_assessment(run_dir, attempt_id=str(started.attempt["attempt_id"]))
+    assert assessment.scientific_effect == "IMPROVEMENT"
+    replay = CandidateControlService().start(
+        run_dir, session_id=session.session_id,
+        value=CandidateLaunchInput(
+            idempotency_key="candidate:idea-1", comparison_seed=1,
+            intervention_contract=InterventionContract(idea_id="idea_000001", mechanism="score change", hypothesis="raise score", target_modules=["run.py"], allowed_paths=["run.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["score"], time_budget=30),
+            approved_proposal=ExecutorProposal(edits=[SearchReplaceEdit(path="run.py", search=before, replace=after)], changed_symbols=["score"], confidence=1),
+        ),
+    )
+    assert replay.status == "reused" and replay.attempt is not None and replay.attempt["attempt_id"] == started.attempt["attempt_id"]
