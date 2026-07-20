@@ -19,14 +19,14 @@
 | `[REIMPL]` | 按已观察行为独立实现 | 不复制源码，补充本项目测试 |
 | `[REFER]` | 只参考架构、提示词或交互思想 | 不形成运行时依赖 |
 
-每条复用记录必须能回答：来源仓库 URL、固定 commit、实际文件路径、许可证及 license hash、复制还是重写、AutoAD 的本地差异、是否需要 NOTICE。完整记录见 `reference_reuse_manifest.yaml`。没有这些信息时只能标 `[REFER]`。
+每条复用记录必须能回答：来源仓库 URL、固定 commit、实际文件路径、许可证及 license hash、复制还是重写、AutoAD 的本地差异、是否需要 NOTICE。这里的“已核对”限定为固定上游提交中的文件和行为；本地 checkout 的额外修改、依赖环境和未提交内容仍需实施时复核。完整记录见 `reference_reuse_manifest.yaml`。没有这些信息时只能标 `[REFER]`。
 
 ## 三、已核对的成熟项目
 
 | 项目 | 仓库与固定版本 | 可吸收的机制 | 本计划中的处理 |
 |---|---|---|---|
 | Arbor | `https://github.com/RUC-NLPIR/Arbor` @ `4f8c5c2e...`；Apache-2.0 | partial `REPORT.md`、确定性拼接、自包含 HTML、artifact export、独立只读 Companion | `[REFER]`；HTML/Companion 可按需 `[ADAPT]`，不直接复制 |
-| Claw-AI-Lab | `https://github.com/Claw-AI-Lab/Claw-AI-Lab` @ `84553208...`；README 声明 MIT，但当前 checkout 无 LICENSE 文件 | 阶段输入/输出契约、artifact manifest、编译预检、timeout、非阻塞 LaTeX、PIVOT/REFINE 版本化 | `[REFER]` / 局部 `[REIMPL]`；不复制其论文流水线 |
+| Claw-AI-Lab | `https://github.com/Claw-AI-Lab/Claw-AI-Lab` @ `84553208...`；README 声明 MIT，固定 checkout 未发现 LICENSE 文件 | 阶段输入/输出契约、artifact manifest、编译预检、timeout、非阻塞 LaTeX、PIVOT/REFINE 版本化 | `[REFER]` / `[REIMPL]`；许可证未核验前不复制代码 |
 | AI-Scientist | `https://github.com/SakanaAI/AI-Scientist` @ `1de1dbc1...`；专用 Source Code License | 逐节写作、结果不得臆造、编译和引用检查 | `[REFER]`；不复制源码 |
 | AiScientist | `https://github.com/AweAI-Team/AiScientist` @ `6bba373d...`；MIT | MIT 许可下的科研工作流和报告组织思路 | `[REFER]`，不形成运行时依赖 |
 | DeepAgents | `https://github.com/langchain-ai/deepagents` @ `59755031...`；MIT | `response_format`、filesystem permission、`HarnessProfile.excluded_tools`、持久化图状态 API | `[REFER]`；按锁定版本核对 API，不按旧路径硬写 |

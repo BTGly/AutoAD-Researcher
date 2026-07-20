@@ -15,15 +15,17 @@ entries:
       - src/cli/companion.py
       - skills/arbor-agent-resume-report/SKILL.md
     local_target:
-      - reporting/renderer_markdown.py
-      - reporting/renderer_html.py
-      - reporting/discussion.py
+      - src/autoad_researcher/reporting/renderer_markdown.py
+      - src/autoad_researcher/reporting/renderer_html.py
+      - src/autoad_researcher/reporting/discussion.py
     modifications: "独立重实现确定性渲染、partial report、导出安全和只读 Discussion 边界。"
 
   - project: Claw-AI-Lab
     repository: https://github.com/Claw-AI-Lab/Claw-AI-Lab
     commit: 845532086f644630dd87aa610ca65bc261df5276
-    license: MIT
+    declared_license: MIT
+    license_status: unverified_no_license_file
+    license: null
     license_file: null
     license_sha256: null
     license_note: "README 的 License section 声明 MIT，但该 checkout 未包含 LICENSE 文件；未完成许可证文件核对前不复制代码。"
@@ -35,9 +37,9 @@ entries:
       - backend/agent/researchclaw/experiment/runner.py
       - backend/agent/researchclaw/templates/compiler.py
     local_target:
-      - reporting/jobs.py
-      - reporting/bundle.py
-      - reporting/renderers/pdf.py
+      - src/autoad_researcher/reporting/jobs.py
+      - src/autoad_researcher/reporting/bundle.py
+      - src/autoad_researcher/reporting/renderers/pdf.py
     modifications: "只吸收阶段契约、artifact manifest、timeout 和编译结果表达；不复制论文流水线。"
 
   - project: AI-Scientist
@@ -51,7 +53,7 @@ entries:
     source_files:
       - ai_scientist/perform_writeup.py
     local_target:
-      - reporting/narrative.py
+      - src/autoad_researcher/reporting/narrative.py
     modifications: "只参考逐节写作和结果不得臆造；不复制源码。"
 
   - project: AiScientist
@@ -62,9 +64,13 @@ entries:
     license_sha256: 2d681e318bce109074798f9db19e191c0774f4a508e1d616bb66c1c86f4c1e45
     notice_required: verify_if_source_is_copied
     reuse_level: REFER
-    source_files: []
+    source_files:
+      - README.md
+      - src/aisci_core/exporter.py
+      - src/aisci_domain_paper/state_manager.py
+      - src/aisci_app/cli.py
     local_target:
-      - reporting/narrative.py
+      - src/autoad_researcher/reporting/narrative.py
     modifications: "只参考科研工作流组织方式；当前不复制代码。"
 
   - project: DeepAgents
@@ -80,8 +86,8 @@ entries:
       - libs/deepagents/deepagents/middleware/filesystem.py
       - libs/deepagents/deepagents/backends/filesystem.py
     local_target:
-      - reporting/discussion.py
-      - reporting/tools.py
+      - src/autoad_researcher/reporting/discussion.py
+      - src/autoad_researcher/reporting/tools.py
     modifications: "只参考公开 API、structured response 和工具排除边界；Report API 不使用通用 FilesystemBackend。"
 
   - project: ARIS
@@ -95,8 +101,8 @@ entries:
     source_files:
       - tools/run_state.py
     local_target:
-      - reporting/store.py
-      - reporting/review.py
+      - src/autoad_researcher/reporting/store.py
+      - src/autoad_researcher/reporting/review.py
     modifications: "按观察到的原子 JSON、单运行锁、恢复和 done/accepted 分离行为独立重实现。"
 
   - project: AutoSOTA
@@ -107,7 +113,9 @@ entries:
     license_sha256: 5679b4ae5db8bcc9cdb8f0eec2d72993ae2a28b34cae798b7fa49f1569a1b490
     notice_required: verify_if_source_is_copied
     reuse_level: REFER
-    source_files: []
+    source_files:
+      - README.md
+      - cli_guide.md
     local_target:
-      - server/routes/report_route.py
+      - src/autoad_researcher/server/routes/report_route.py
     modifications: "只参考 inspect/report 和多格式查看思路；当前不复制代码。"

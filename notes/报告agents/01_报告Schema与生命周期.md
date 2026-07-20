@@ -34,7 +34,10 @@ previous_report_id
 parent_report_id
 parent_session_ref
 snapshot_policy_hash
+report_recipe_hash
 ```
+
+`report_recipe_hash` 是报告生成配方的 canonical hash，至少覆盖 Facts schema 版本、Narrative prompt/template 版本、model/profile、Validator 版本和 Renderer 版本。相同 `snapshot_content_sha256 + report_recipe_hash` 的请求复用已有报告；Snapshot 相同但配方变化时创建新的报告版本，不把配方变化伪装成同一报告的重试。
 
 `report_manifest.json` 创建后不覆盖。Facts、Evidence 和制品仍使用现有 `ArtifactReferenceV2`；报告下载所需的 MIME、文件名和 Content-Disposition 另由报告侧制品记录保存，不修改现有 schema。报告字段中同时保存：
 
@@ -115,18 +118,18 @@ unreviewed / accepted / needs_more / needs_repair / disputed
 
 ## 5. PR-R0A：同步冻结 Snapshot
 
-`POST /reports` 在现有 run/report 锁内完成：
+`POST /reports` 在现有 run/report 锁内完成版本分配和 Snapshot 写入，但不依赖一把跨 Store 的全局锁。各来源 Store 已有自己的锁，因此来源一致性用短时 optimistic double-read 保证：
 
 ```text
 校验 Session/readiness
-→ 读取精确 revision 的 Session、IdeaTree、Champion、StopDecision
-→ 复制小型控制面对象并 canonicalize
-→ 校验大型 artifact refs 并计算 source inventory
-→ 原子写入 report snapshot
-→ 计算 snapshot_content_sha256
+→ 读取各来源的稳定 revision；没有 revision 时计算 canonical content hash
+→ 复制小型控制面对象并 canonicalize，校验大型 artifact refs
+→ 再次读取各来源 revision/hash
+→ 全部未变化：计算 source inventory 和 snapshot_content_sha256，原子写入 Snapshot
+→ 任一来源变化：丢弃本轮副本，在有限次数内重试；仍不稳定则返回冲突/稍后重试
 ```
 
-重复请求返回已有 Snapshot；同一请求身份但来源 revision 或内容不一致时返回冲突。这里不创建 `report_snapshot_build` Job。
+报告锁只保护 report version 分配和 Snapshot 写入，不保护 Session、IdeaTree 等来源，也不在多个 Store 之间取得锁；这样避免锁顺序和死锁问题。重复请求返回已有 Snapshot；同一请求身份但来源 revision 或内容不一致时，只有双读稳定后才允许创建报告。这里不创建 `report_snapshot_build` Job。
 
 ## 6. PR-R0B：报告 Job 主链
 
@@ -205,7 +208,9 @@ runs/{run_id}/reports/{report_id}/
 - [ ] 同幂等键、不同身份报告冲突。
 - [ ] 创建报告后修改 Session，旧 Snapshot 的 canonical 内容和 hash 不变。
 - [ ] 创建报告后修改 IdeaTree 或 Champion pointer，旧 Snapshot 仍可重建。
+- [ ] Snapshot 构造期间并发修改任一来源时，不会写出混合 revision 的 Snapshot；有限重试耗尽后会明确失败。
 - [ ] Snapshot 引用只允许已登记、SHA 匹配的 artifact。
+- [ ] 相同 Snapshot 和相同 `report_recipe_hash` 复用报告；配方变化生成新版本。
 - [ ] Snapshot hash 产生前不会创建依赖该 hash 的 Job。
 - [ ] 非法状态转换被拒绝。
 - [ ] 报告 Job 超过普通 300 秒恢复边界时不会被重复 claim。

@@ -34,20 +34,27 @@
 runs/{run_id}/reports/{report_id}/discussion/messages.jsonl
 ```
 
-每条消息保存：
+Transcript 仍可使用 JSONL，但幂等和恢复的逻辑单位是一个 `DiscussionTurn`，而不是孤立的 user/assistant 两条消息。每个 turn 保存：
 
 ```text
-message_id
+turn_id
 request_id
 report_id
 snapshot_content_sha256
-role
-content
+user_message
+response
+status: pending / completed / failed
 evidence_ids
 created_at
+completed_at
+error
 ```
 
-写入复用 V2 event service 的锁内 JSONL 追加模式：message_id 在锁内分配，append 后 flush/fsync，请求带 request_id 时重复请求返回已有结果。读取时只允许忽略最后一条未完成的尾行并记录 transcript warning；中间损坏行不能静默当作正常消息。Transcript 设置最近消息窗口和总字节上限，超过上限时保留最近窗口并写入明确的 truncation marker，不为首版增加独立归档系统。
+写入复用 V2 event service 的锁内 JSONL 追加模式：`turn_id` 和 `request_id` 在锁内分配，先持久化 pending turn，再写入 completed/failed 结果，append 后 flush/fsync。重复 request_id 若已有 completed/failed turn，返回该 turn；若已有 pending turn，则由恢复逻辑继续完成或明确返回 pending，不能再次追加一条 user message。进程崩溃后不得把“只有 user 消息、没有 assistant 回复”当作已完成请求。
+
+同一个 `turn_id` 的 pending 和 completed/failed 记录由读取器按最后状态折叠；如果实现选择单文件原子更新，也必须保留相同的状态和恢复语义，不需要另建复杂的 checkpoint 系统。
+
+读取时只允许忽略最后一条未完成的物理尾行并记录 transcript warning；中间损坏行不能静默当作正常消息。Transcript 设置最近消息窗口和总字节上限，超过上限时保留最近窗口并写入明确的 truncation marker，不为首版增加独立归档系统。
 
 Transcript 是用户对话记录，不是 Facts 的权威来源。上下文装配时只加载有上限的最近消息，并把 report snapshot identity 固定注入。
 
@@ -128,7 +135,7 @@ proposal_candidate
 - 核查 Evidence；
 - 讨论不确定性和是否需要更多实验。
 
-返回普通解释，并尽量附 `evidence_ids`。
+返回普通解释；其中涉及报告事实的解释必须附有效 `evidence_ids`，纯方法背景或对话组织文字可以不附。
 
 ### Propose
 
@@ -166,6 +173,7 @@ PIVOT
 - [ ] 绝对路径、`..`、symlink、未登记 artifact 和超大日志均被拒绝或截断。
 - [ ] 讨论固定绑定 `report_id` 和 snapshot hash。
 - [ ] 多轮 transcript 可恢复但不污染主 Chat。
+- [ ] user turn 已持久化但 assistant 尚未完成时，重放同一 `request_id` 不会重复追加 user message，并能继续、失败或明确返回 pending。
 - [ ] 并发 append、重复 request_id、尾部半行和中间损坏行按契约处理。
 - [ ] 预算、超时、并发和有限重试生效。
 - [ ] EXPLAIN/VERIFY/COMPARE 在缺少证据时明确返回证据不足。
