@@ -16,6 +16,7 @@ from autoad_researcher.assistant.v2.job_service import (
     load_pipeline_jobs,
 )
 from autoad_researcher.assistant.v2.research_intent_summary import (
+    ConfirmedTaskParameters,
     ResearchIntentSummary,
     save_research_intent_summary,
 )
@@ -23,6 +24,7 @@ from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmat
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.repository_intelligence.acquisition import RepositoryAttestation
+from autoad_researcher.schemas.decisions import ConfirmedDecision
 from autoad_researcher.server.routes import runs as runs_route
 from autoad_researcher.ui.sources import append_source_ref
 
@@ -77,7 +79,19 @@ def _draft(run_dir: Path):
     _prepare_executable_source(run_dir)
     save_research_intent_summary(
         run_dir,
-        ResearchIntentSummary(goal="比较候选方法", blocking_question=None),
+        ResearchIntentSummary(
+            goal="比较候选方法",
+            blocking_question=None,
+            confirmed_task_parameters=ConfirmedTaskParameters(
+                primary_metrics=[
+                    ConfirmedDecision(
+                        value="image_auroc",
+                        source="user_confirmed",
+                        evidence="test fixture metric confirmation",
+                    )
+                ]
+            ),
+        ),
     )
     return TaskBridge.build_experiment_task(run_dir, user_input="准备实验")
 
@@ -257,6 +271,57 @@ def test_execution_confirmation_without_source_selection_has_zero_execution_side
     assert excinfo.value.code == "execution_repository_unresolved"
     assert not (run_dir / "input_task.yaml").exists()
     assert not (run_dir / "task_bridge" / "execution_repository_binding.json").exists()
+    assert not (run_dir / "experiments" / "sessions").exists()
+    assert load_pipeline_jobs(run_dir) == []
+
+
+def test_execution_confirmation_without_primary_metric_has_zero_execution_side_effects(tmp_path: Path):
+    run_dir = tmp_path / "run_missing_primary_metric"
+    run_dir.mkdir()
+    _prepare_executable_source(run_dir)
+    save_research_intent_summary(run_dir, ResearchIntentSummary(goal="比较候选方法"))
+    draft = TaskBridge.build_experiment_task(run_dir, user_input="准备实验")
+
+    with pytest.raises(TaskConfirmationConflict) as excinfo:
+        TaskBridge.confirm_or_load_existing(
+            run_dir,
+            task_id=draft.task_id,
+            execution_mode="agent_assisted_after_approval",
+            execution_repository_source_id=EXECUTION_SOURCE_ID,
+        )
+
+    assert excinfo.value.code == "execution_contract_incomplete"
+    assert not (run_dir / "input_task.yaml").exists()
+    assert not (run_dir / "task_bridge" / "execution_repository_binding.json").exists()
+    assert not (run_dir / "experiments" / "sessions").exists()
+    assert load_pipeline_jobs(run_dir) == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_route_reports_incomplete_execution_contract_with_stable_code(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_primary_metric_api"
+    run_dir.mkdir()
+    _prepare_executable_source(run_dir)
+    save_research_intent_summary(run_dir, ResearchIntentSummary(goal="比较候选方法"))
+    draft = TaskBridge.build_experiment_task(run_dir, user_input="准备实验")
+    monkeypatch.setattr(runs_route, "RUNS_ROOT", str(tmp_path))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await runs_route.confirm_experiment_task(
+            run_dir.name,
+            draft.task_id,
+            runs_route.ConfirmExperimentTaskRequest(
+                execution_mode="agent_assisted_after_approval",
+                execution_repository_source_id=EXECUTION_SOURCE_ID,
+            ),
+        )
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail == {
+        "code": "execution_contract_incomplete",
+        "message": "primary metric is not confirmed",
+    }
+    assert not (run_dir / "input_task.yaml").exists()
     assert not (run_dir / "experiments" / "sessions").exists()
     assert load_pipeline_jobs(run_dir) == []
 

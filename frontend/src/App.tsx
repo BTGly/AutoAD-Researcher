@@ -20,6 +20,7 @@ import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
   ApiError,
+  confirmPrimaryMetrics,
   confirmExperimentTask,
   createRun,
   deleteSource,
@@ -574,6 +575,18 @@ export default function App() {
               }
               throw error;
             }
+          }}
+          onConfirmPrimaryMetrics={async primaryMetrics => {
+            const updatedTask = await confirmPrimaryMetrics(
+              pendingExperimentTaskConfirmation.runId,
+              primaryMetrics,
+            );
+            setPendingExperimentTaskConfirmation(current => current && {
+              ...current,
+              task: updatedTask,
+            });
+            addToast('主指标已确认；请检查刷新后的任务草案后再确认执行。', 'success');
+            await refreshSidebarForRun(pendingExperimentTaskConfirmation.runId);
           }}
         />
       )}

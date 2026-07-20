@@ -24,9 +24,11 @@ from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     load_research_intent_summary,
+    save_research_intent_summary,
 )
 from autoad_researcher.core.run_id import validate_run_id
 from autoad_researcher.experiment.session import ExecutionMode
+from autoad_researcher.schemas.decisions import ConfirmedDecision
 from autoad_researcher.schemas.intake import InputTask
 from autoad_researcher.ui.sources import load_source_registry
 
@@ -56,6 +58,7 @@ TaskConfirmationConflictCode = Literal[
     "execution_repository_unresolved",
     "execution_repository_attestation_invalid",
     "execution_adapter_unsupported",
+    "execution_contract_incomplete",
     "confirmation_invalid",
 ]
 
@@ -214,6 +217,7 @@ class TaskBridge:
                         "research summary changed after task preparation",
                     )
                 _validate_existing_input_task(run_dir, draft)
+                _require_execution_contract(draft, execution_mode=execution_mode)
                 binding = _require_execution_repository_binding(
                     run_dir,
                     execution_mode=execution_mode,
@@ -272,6 +276,62 @@ class TaskBridge:
             execution_mode=execution_mode,
             execution_repository_source_id=execution_repository_source_id,
         )
+
+    @classmethod
+    def confirm_primary_metrics(
+        cls,
+        run_dir: Path,
+        *,
+        primary_metrics: list[str],
+    ) -> ExperimentTaskDraft:
+        """Persist user-confirmed metrics and refresh only a pending task draft."""
+        _validate_run_dir(run_dir)
+        values = [value.strip() for value in primary_metrics]
+        if not values or any(not value for value in values):
+            raise TaskConfirmationConflict(
+                "execution_contract_incomplete",
+                "at least one non-empty primary metric is required",
+            )
+        with _confirm_lock(run_dir):
+            try:
+                draft = _load_pending_task(run_dir)
+            except (FileNotFoundError, ValueError) as exc:
+                raise TaskConfirmationConflict(
+                    "pending_task_invalid",
+                    "a pending experiment task is required to confirm primary metrics",
+                ) from exc
+            if draft.status != "pending_confirmation":
+                raise TaskConfirmationConflict(
+                    "confirmation_invalid",
+                    "primary metrics cannot change after task confirmation",
+                )
+            try:
+                summary = _require_draftable_summary(run_dir)
+            except ValueError as exc:
+                raise TaskConfirmationConflict("pending_task_invalid", str(exc)) from exc
+
+            parameters = summary.confirmed_task_parameters.model_copy(
+                update={
+                    "primary_metrics": [
+                        ConfirmedDecision(
+                            value=value,
+                            source="user_confirmed",
+                            evidence="task card primary metric confirmation",
+                        )
+                        for value in values
+                    ]
+                }
+            )
+            updated_summary = summary.model_copy(
+                update={"confirmed_task_parameters": parameters}
+            )
+            save_research_intent_summary(run_dir, updated_summary)
+            return _build_and_write_pending_task(
+                run_dir,
+                user_input=draft.input_task.request,
+                transcript_tail=None,
+                summary=updated_summary,
+            )
 
     @classmethod
     def pending_plan_only_task_available(cls, run_dir: Path) -> bool:
@@ -540,6 +600,18 @@ def _require_execution_repository_binding(
             admission.blocker or "execution repository is unresolved",
         )
     return admission.binding
+
+
+def _require_execution_contract(
+    draft: ExperimentTaskDraft,
+    *,
+    execution_mode: ExecutionMode,
+) -> None:
+    if execution_mode != "plan_only" and not draft.input_task.primary_metrics:
+        raise TaskConfirmationConflict(
+            "execution_contract_incomplete",
+            "primary metric is not confirmed",
+        )
 
 
 def _materialize_execution_repository_binding(

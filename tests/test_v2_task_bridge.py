@@ -13,6 +13,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     BasedStatement,
     ConfirmedTaskParameters,
     ResearchIntentSummary,
+    load_research_intent_summary,
     save_research_intent_summary,
 )
 from autoad_researcher.schemas.decisions import ConfirmedDecision
@@ -179,6 +180,35 @@ def test_task_bridge_projects_only_typed_confirmed_parameters(tmp_path: Path):
         "不允许修改 evaluator",
         "B_test 不参与训练、选择或校准",
     ]
+
+
+def test_primary_metric_confirmation_refreshes_pending_draft_without_execution_side_effects(tmp_path: Path):
+    run_dir = tmp_path / "run_metric_confirmation"
+    run_dir.mkdir()
+    _write_source_registry(run_dir)
+    save_research_intent_summary(run_dir, _ready_summary())
+    draft = TaskBridge.build_experiment_task(run_dir, user_input="请准备实验")
+
+    updated = TaskBridge.confirm_primary_metrics(
+        run_dir,
+        primary_metrics=["image_auroc"],
+    )
+
+    summary = load_research_intent_summary(run_dir)
+    assert summary is not None
+    assert summary.confirmed_task_parameters.primary_metrics == [
+        ConfirmedDecision(
+            value="image_auroc",
+            source="user_confirmed",
+            evidence="task card primary metric confirmation",
+        )
+    ]
+    assert updated.task_id != draft.task_id
+    assert updated.status == "pending_confirmation"
+    assert updated.input_task.primary_metrics == ["image_auroc"]
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
+    assert not (run_dir / "experiments" / "sessions").exists()
 
 
 def test_task_bridge_blocks_unresolved_question(tmp_path: Path):

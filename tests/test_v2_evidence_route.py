@@ -15,6 +15,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     save_research_intent_summary,
 )
+from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.paper_intelligence.reading_artifacts import build_paper_reading_artifacts
 from autoad_researcher.server.worker_runtime import embedded_worker_enabled
 from autoad_researcher.server.routes import evidence as evidence_route
@@ -510,6 +511,28 @@ async def test_intent_summary_route_returns_persisted_fact_groups(tmp_path: Path
     assert payload["inferred_facts"][0]["basis"] == "src_repo:README.md"
     assert payload["unresolved_conflicts"][0]["statement"] == "硬件不兼容"
     assert payload["blocking_question"] == "是否接受兼容实现？"
+
+
+@pytest.mark.asyncio
+async def test_primary_metric_confirmation_route_refreshes_pending_task(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(intent_summary_route, "RUNS_ROOT", str(tmp_path))
+    run_dir = tmp_path / "run_metric_confirmation_route"
+    run_dir.mkdir()
+    save_research_intent_summary(run_dir, ResearchIntentSummary(goal="比较候选方法"))
+    original = TaskBridge.build_experiment_task(run_dir, user_input="准备实验")
+
+    updated = await intent_summary_route.confirm_primary_metrics(
+        run_dir.name,
+        intent_summary_route.ConfirmPrimaryMetricsRequest(
+            primary_metrics=["image_auroc"],
+        ),
+    )
+
+    assert updated.task_id != original.task_id
+    assert updated.input_task.primary_metrics == ["image_auroc"]
+    assert updated.status == "pending_confirmation"
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
 
 
 @pytest.mark.asyncio

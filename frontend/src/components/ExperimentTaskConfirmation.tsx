@@ -8,6 +8,7 @@ interface Props {
     executionMode: ExperimentTaskDraft['execution_mode'],
     executionRepositorySourceId?: string,
   ) => Promise<void>;
+  onConfirmPrimaryMetrics: (primaryMetrics: string[]) => Promise<void>;
   onClose: () => void;
 }
 
@@ -17,11 +18,12 @@ const MODE_LABELS: Record<ExperimentTaskDraft['execution_mode'], string> = {
   agent_assisted_after_approval: '确认后允许 Agent 协助准备环境',
 };
 
-export function ExperimentTaskConfirmation({ task, sources, onConfirm, onClose }: Props) {
+export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirmPrimaryMetrics, onClose }: Props) {
   const [executionMode, setExecutionMode] = useState<ExperimentTaskDraft['execution_mode']>('plan_only');
   const [executionRepositorySourceId, setExecutionRepositorySourceId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [primaryMetricsText, setPrimaryMetricsText] = useState(task.input_task.primary_metrics.join('\n'));
   const repositories = sources.filter(source => source.kind === 'github_repo' || source.kind === 'local_repo');
   const availableRepositories = repositories.filter(source => source.intakeStatus === 'ok');
   const requiresRepository = executionMode !== 'plan_only';
@@ -36,6 +38,19 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onClose }
       await onConfirm(executionMode, selectedRepository?.sourceId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '实验任务确认失败');
+      setSubmitting(false);
+    }
+  };
+
+  const savePrimaryMetrics = async () => {
+    const primaryMetrics = primaryMetricsText.split('\n').map(value => value.trim()).filter(Boolean);
+    if (!primaryMetrics.length) return;
+    setSubmitting(true);
+    setError('');
+    try {
+      await onConfirmPrimaryMetrics(primaryMetrics);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '主指标确认失败');
       setSubmitting(false);
     }
   };
@@ -59,6 +74,27 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onClose }
             ))}
           </select>
         </label>
+
+        {task.input_task.primary_metrics.length === 0 ? (
+          <div style={{ marginBottom: 16, padding: 10, border: '1px solid var(--orange)', borderRadius: 4 }}>
+            <div style={{ color: 'var(--orange)', fontSize: '0.84em', marginBottom: 6 }}>主指标未确认；可以保留 plan_only 草案，但不能确认执行。</div>
+            <textarea
+              value={primaryMetricsText}
+              onChange={event => setPrimaryMetricsText(event.target.value)}
+              placeholder="每行一个主指标，例如 image_auroc"
+              aria-label="主指标"
+              rows={3}
+              style={{ width: '100%', marginBottom: 8 }}
+            />
+            <button onClick={savePrimaryMetrics} disabled={submitting || !primaryMetricsText.trim()}>
+              确认主指标并刷新草案
+            </button>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 16, fontSize: '0.82em', color: 'var(--green)' }}>
+            主指标已确认：{task.input_task.primary_metrics.join('、')}
+          </div>
+        )}
 
         {requiresRepository && (
           <div style={{ marginBottom: 16 }}>

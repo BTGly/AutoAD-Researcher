@@ -97,6 +97,19 @@ export async function confirmExperimentTask(
   return res.json();
 }
 
+export async function confirmPrimaryMetrics(
+  runId: string,
+  primaryMetrics: string[],
+): Promise<ExperimentTaskDraft> {
+  const res = await fetch(`/api/runs/${runId}/intent-summary/primary-metrics`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ primary_metrics: primaryMetrics }),
+  });
+  if (!res.ok) throw await apiError(res, `Primary metric confirmation error: ${res.status}`);
+  return res.json();
+}
+
 export async function getRuns(includeArchived = false): Promise<TaskRun[]> {
   const res = await fetch(`/api/runs?include_archived=${includeArchived ? 'true' : 'false'}`);
   if (!res.ok) throw new Error(`Runs API error: ${res.status}`);
