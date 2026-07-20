@@ -251,6 +251,31 @@ def _run_web_fetch(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
     result = provider.fetch(url)
     out_dir = run_dir / "sources" / source_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    content_bytes = result.content_bytes or result.content.encode("utf-8")
+    if _web_fetch_is_pdf(content_type=result.content_type, content=content_bytes):
+        paper_path = out_dir / "paper.pdf"
+        paper_path.write_bytes(content_bytes)
+        paper_ref = str(paper_path.relative_to(run_dir))
+        from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
+        from autoad_researcher.ui.sources import update_source_intake_result, update_source_kind
+
+        update_source_kind(run_dir, str(source_id), "paper_pdf")
+        update_source_intake_result(
+            run_dir,
+            str(source_id),
+            stored_path=paper_ref,
+            intake_status="ok",
+            clear_intake_error=True,
+        )
+        create_or_get_pipeline_job(
+            run_dir,
+            source_id=str(source_id),
+            job_type="paper_parse_mineru",
+            evidence_role="parsed_paper_evidence",
+            idempotency_key=f"web_pdf_parse:{source_id}:{result.content_sha256}",
+            payload={"stored_path": paper_ref, "web_fetch_sha256": result.content_sha256},
+        )
+        return True, [paper_ref]
     html_path = out_dir / "raw.html"
     html_path.write_text(result.content, encoding="utf-8")
     return True, [str(html_path.relative_to(run_dir))]
@@ -258,6 +283,11 @@ def _run_web_fetch(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
 
 def _run_web_markitdown(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = job.get("source_id", "")
+    source = _find_source(run_dir, str(source_id))
+    if source is not None and source.get("kind") == "paper_pdf":
+        # The fetch result was refined from its actual payload.  This queued
+        # webpage conversion is now superseded by the existing paper pipeline.
+        return True, []
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     input_rel = str(payload.get("input_path") or "")
     if not input_rel:
@@ -284,6 +314,11 @@ def _run_web_markitdown(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[
         raw=result.metadata,
     )
     return True, result.output_paths
+
+
+def _web_fetch_is_pdf(*, content_type: str, content: bytes) -> bool:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return media_type in {"application/pdf", "application/x-pdf"} or content.startswith(b"%PDF-")
 
 
 def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:

@@ -20,6 +20,8 @@ class WebFetchResult(BaseModel):
     status_code: int
     content: str
     content_sha256: str
+    content_bytes: bytes = b""
+    content_type: str = ""
 
 
 class WebSearchResult(BaseModel):
@@ -72,12 +74,14 @@ class SecureWebFetchProvider:
         response = self._client.get(safe_url)
         if 300 <= response.status_code < 400 and "location" in response.headers:
             _validate_public_http_url(urljoin(safe_url, response.headers["location"]))
-        text = response.text
+        content = response.content
         return WebFetchResult(
             url=safe_url,
             status_code=response.status_code,
-            content=text,
-            content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            content=response.text,
+            content_bytes=content,
+            content_type=response.headers.get("content-type", ""),
+            content_sha256=hashlib.sha256(content).hexdigest(),
         )
 
 

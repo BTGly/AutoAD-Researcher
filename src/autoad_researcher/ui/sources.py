@@ -188,6 +188,17 @@ def update_source_intake_result(
     _save_registry(run_dir, registry)
 
 
+def update_source_kind(run_dir: Path, source_id: str, kind: SourceKind) -> None:
+    """Refine a registered source kind from acquired material evidence."""
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("source_id") == source_id:
+            source["kind"] = kind
+            _save_registry(run_dir, registry)
+            return
+    raise KeyError(f"source not found: {source_id}")
+
+
 def set_source_metadata(run_dir: Path, source_id: str, updates: dict[str, Any]) -> None:
     """Merge checked metadata into one registered source entry.
 

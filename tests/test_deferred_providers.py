@@ -34,6 +34,8 @@ def test_secure_web_fetch_hashes_content():
 
     assert result.status_code == 200
     assert result.content == "hello"
+    assert result.content_bytes == b"hello"
+    assert result.content_type == "text/plain; charset=utf-8"
     assert len(result.content_sha256) == 64
 
 

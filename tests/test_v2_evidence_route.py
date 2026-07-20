@@ -22,7 +22,7 @@ from autoad_researcher.server.routes import intent_summary as intent_summary_rou
 from autoad_researcher.server.routes import sources as sources_route
 from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
 from autoad_researcher.tools.pdf_text_adapter import PdfTextAdapterResult, convert_pdf_to_markdown
-from autoad_researcher.tools.providers import GitHubCommitRef, GitHubRepositoryMetadata
+from autoad_researcher.tools.providers import GitHubCommitRef, GitHubRepositoryMetadata, WebFetchResult
 from autoad_researcher.ui.sources import append_source_ref, load_source_registry
 from autoad_researcher.worker.main import (
     _process_pending_jobs,
@@ -33,6 +33,8 @@ from autoad_researcher.worker.main import (
     _run_paper_parse_pdftotext,
     _run_paper_summarize,
     _run_repo_analyze,
+    _run_web_fetch,
+    _run_web_markitdown,
 )
 
 
@@ -570,6 +572,73 @@ def test_markitdown_builtin_fallback_refuses_binary_files(tmp_path: Path, monkey
     assert result.ok is False
     assert "builtin fallback does not support .docx files" in str(result.error)
     assert not (tmp_path / "content.md").exists()
+
+
+def test_markitdown_converts_a_real_docx_when_docx_extra_is_installed(tmp_path: Path):
+    source = tmp_path / "constraints.docx"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version=\"1.0\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>Latest experiment constraint</w:t></w:r></w:p></w:body></w:document>""",
+        )
+
+    result = convert_local_to_markdown(source, tmp_path / "constraints.md", run_dir=tmp_path)
+
+    assert result.ok is True
+    assert "Latest experiment constraint" in (tmp_path / "constraints.md").read_text(encoding="utf-8")
+
+
+def test_web_fetch_preserves_pdf_bytes_and_routes_to_paper_parse(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_web_pdf"
+    append_source_ref(
+        run_dir,
+        source_id="src_official_paper",
+        kind="webpage",
+        user_label="https://example.org/official-paper",
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    class PdfProvider:
+        def fetch(self, url: str) -> WebFetchResult:
+            content = b"%PDF-1.7\nOfficial paper bytes\n"
+            return WebFetchResult(
+                url=url,
+                status_code=200,
+                content=content.decode("utf-8"),
+                content_bytes=content,
+                content_type="application/octet-stream",
+                content_sha256="a" * 64,
+            )
+
+    import autoad_researcher.tools.providers as providers
+
+    monkeypatch.setattr(providers, "SecureWebFetchProvider", PdfProvider)
+    fetch_job = {"job_id": "job_000001", "source_id": "src_official_paper", "job_type": "web_fetch", "payload": {}}
+    ok, outputs = _run_web_fetch(run_dir, fetch_job)
+
+    source = load_source_registry(run_dir)["sources"][0]
+    assert ok is True
+    assert outputs == ["sources/src_official_paper/paper.pdf"]
+    assert source["kind"] == "paper_pdf"
+    assert source["stored_path"] == outputs[0]
+    assert (run_dir / outputs[0]).read_bytes().startswith(b"%PDF-")
+    assert [job["job_type"] for job in load_pipeline_jobs(run_dir)] == ["paper_parse_mineru"]
+
+    superseded_ok, superseded_outputs = _run_web_markitdown(
+        run_dir,
+        {"job_id": "job_000002", "source_id": "src_official_paper", "job_type": "web_markitdown", "payload": {}},
+    )
+    assert superseded_ok is True
+    assert superseded_outputs == []
 
 
 def test_pdftotext_adapter_extracts_real_uploaded_pdf(tmp_path: Path):
