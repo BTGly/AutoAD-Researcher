@@ -42,7 +42,7 @@ test('renders a durable observatory snapshot and only prefills discussion', asyn
   await page.getByRole('button', { name: '实验工作台' }).click();
   await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
   await page.getByRole('button', { name: '局部特征重加权' }).click();
-  await expect(page.getByText('已记录观察', { exact: true })).toBeVisible();
+  await expect(page.getByText('已记录观察', { exact: true }).last()).toBeVisible();
   await page.getByRole('button', { name: '在研究助手中讨论' }).click();
   await expect(page.getByPlaceholder('输入问题，或粘贴 URL…')).toHaveValue(/Idea idea_000001/);
   expect(chatCalls).toBe(0);
