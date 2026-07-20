@@ -219,9 +219,9 @@ export async function getExperimentConfig(runId: string): Promise<any> {
   return res.json();
 }
 
-export async function getExperimentProjection(runId: string, sessionId?: string): Promise<ExperimentProjection> {
+export async function getExperimentProjection(runId: string, sessionId?: string, signal?: AbortSignal): Promise<ExperimentProjection> {
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
-  const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders() });
+  const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders(), signal });
   if (!res.ok) throw await apiError(res, `Experiment projection error: ${res.status}`);
   return res.json();
 }

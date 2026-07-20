@@ -83,6 +83,7 @@ export default function App() {
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
   const [showExperimentSettings, setShowExperimentSettings] = useState(false);
+  const [experimentRefreshTick, setExperimentRefreshTick] = useState(0);
   const [page, setPage] = useState<PageId>('chat');
   const [composerText, setComposerText] = useState('');
   const [queuedMessagesByRun, setQueuedMessagesByRun] = useState<Record<string, QueuedChatMessage[]>>({});
@@ -472,6 +473,10 @@ export default function App() {
 
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
+    if (msg.type.startsWith('experiment.')) {
+      setExperimentRefreshTick(value => value + 1);
+      return;
+    }
     const jobId = msg.jobId || msg.job_id;
     const jobType = msg.jobType || msg.job_type;
     const sourceId = msg.sourceId || msg.source_id;
@@ -702,6 +707,7 @@ export default function App() {
         {page === 'experiment' && !showExperimentSettings && (
           <ExperimentPage
             runId={runId}
+            experimentRefreshTick={experimentRefreshTick}
             onOpenExperimentSettings={() => setShowExperimentSettings(true)}
             onDiscuss={text => {
               setShowExperimentSettings(false);

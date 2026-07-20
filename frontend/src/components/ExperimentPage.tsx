@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityFeed } from './ActivityFeed';
 import { DetailDrawer, type ExperimentDetailSelection } from './DetailDrawer';
 import { IdeaTree } from './IdeaTree';
@@ -7,6 +7,7 @@ import type { ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, Experim
 
 interface Props {
   runId: string;
+  experimentRefreshTick: number;
   onOpenExperimentSettings: () => void;
   onDiscuss: (text: string) => void;
 }
@@ -22,31 +23,64 @@ function label(value: string, labels: Record<string, string>) {
   return labels[value] || `未知状态（原始值：${value}）`;
 }
 
-export function ExperimentPage({ runId, onOpenExperimentSettings, onDiscuss }: Props) {
+export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentSettings, onDiscuss }: Props) {
   const [projection, setProjection] = useState<ExperimentProjection | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [selection, setSelection] = useState<ExperimentDetailSelection>(null);
   const [showDeveloper, setShowDeveloper] = useState(false);
+  const requestId = useRef(0);
+  const currentRequest = useRef<AbortController | null>(null);
+
+  const loadProjection = useCallback(async (targetRunId: string, targetSessionId: string | undefined) => {
+    currentRequest.current?.abort();
+    const controller = new AbortController();
+    currentRequest.current = controller;
+    const id = ++requestId.current;
+    setLoading(true);
+    try {
+      const value = await getExperimentProjection(targetRunId, targetSessionId, controller.signal);
+      if (id === requestId.current) {
+        setProjection(value);
+        setError(null);
+      }
+    } catch (reason) {
+      if (id === requestId.current && !(reason instanceof DOMException && reason.name === 'AbortError')) {
+        setError('工作台刷新失败，仍保留上一份有效快照。');
+      }
+    } finally {
+      if (id === requestId.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    setSessionId(undefined);
+    setSelection(null);
+    setProjection(null);
+    setError(null);
+  }, [runId]);
 
   useEffect(() => {
     if (!runId) {
+      currentRequest.current?.abort();
       setProjection(null);
       setError(null);
       return;
     }
-    let active = true;
-    setLoading(true);
-    getExperimentProjection(runId, sessionId)
-      .then(value => { if (active) { setProjection(value); setError(null); } })
-      .catch(() => { if (active) setError('工作台刷新失败，仍保留上一份有效快照。'); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [runId, sessionId]);
+    void loadProjection(runId, sessionId);
+    return () => currentRequest.current?.abort();
+  }, [loadProjection, runId, sessionId]);
+
+  useEffect(() => {
+    if (!runId || experimentRefreshTick === 0) return;
+    const timer = window.setTimeout(() => void loadProjection(runId, sessionId), 300);
+    return () => window.clearTimeout(timer);
+  }, [experimentRefreshTick, loadProjection, runId, sessionId]);
 
   const chooseSession = (next: string) => {
     setSelection(null);
+    setProjection(null);
     setSessionId(next || undefined);
   };
   const chooseIdea = (value: ExperimentIdeaNode) => setSelection({ kind: 'idea', value });
@@ -56,7 +90,7 @@ export function ExperimentPage({ runId, onOpenExperimentSettings, onDiscuss }: P
   return <main style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: 20 }}>
     <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
       <div><h1 style={{ margin: 0, fontSize: '1.25em' }}>实验工作台</h1><div style={{ color: 'var(--text-muted)', fontSize: '0.82em', marginTop: 4 }}>持久化实验状态的只读快照</div></div>
-      <button onClick={onOpenExperimentSettings}>实验配置</button>
+      <div style={{ display: 'flex', gap: 8 }}><button onClick={() => void loadProjection(runId, sessionId)} disabled={!runId || loading}>刷新</button><button onClick={onOpenExperimentSettings}>实验配置</button></div>
     </header>
     {!runId && <EmptyState title="请先创建一个研究任务。" />}
     {runId && loading && !projection && <EmptyState title="正在读取实验状态…" />}
