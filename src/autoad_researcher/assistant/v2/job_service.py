@@ -32,6 +32,7 @@ JOB_TYPES = {
     "paper_summarize": "parsed_paper_evidence",
     "repo_analyze": "repo_acquired",
     "repo_summarize": "repo_acquired",
+    "report_snapshot_build": "report_artifact",
 }
 
 
@@ -104,6 +105,7 @@ def create_or_get_pipeline_job(
     idempotency_key: str,
     evidence_role: str = "",
     payload: dict[str, Any] | None = None,
+    report_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create one durable job for an idempotency key, or return the existing one.
 
@@ -126,12 +128,14 @@ def create_or_get_pipeline_job(
                 "job_type": job_type,
                 "evidence_role": resolved_role,
                 "payload": normalized_payload,
+                "report_id": report_id,
             }
             existing_identity = {
                 "source_id": existing.get("source_id", ""),
                 "job_type": existing.get("job_type"),
                 "evidence_role": existing.get("evidence_role", ""),
                 "payload": existing.get("payload", {}),
+                "report_id": existing.get("report_id"),
             }
             if existing_identity != identity:
                 raise ValueError("same idempotency key, different job identity")
@@ -144,6 +148,7 @@ def create_or_get_pipeline_job(
             evidence_role=resolved_role,
             payload=normalized_payload,
             idempotency_key=idempotency_key,
+            report_id=report_id,
         )
         jobs.append(job)
         _write_jobs_unlocked(run_dir, jobs)
@@ -158,6 +163,7 @@ def _new_pipeline_job(
     evidence_role: str,
     payload: dict[str, Any] | None,
     idempotency_key: str | None,
+    report_id: str | None = None,
 ) -> dict[str, Any]:
     return {
         "job_id": _next_id_from_loaded(jobs),
@@ -172,6 +178,7 @@ def _new_pipeline_job(
         "error": None,
         "payload": payload or {},
         "idempotency_key": idempotency_key,
+        "report_id": report_id,
     }
 
 

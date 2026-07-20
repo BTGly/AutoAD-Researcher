@@ -127,7 +127,7 @@ def _process_pending_jobs(run_dir: Path) -> int:
             claimed = claim_pipeline_job(run_dir, job_id)
             if claimed:
                 error = f"dependency failed: {job.get('payload', {}).get('depends_on')}"
-                _project_source_failure(run_dir, job, error)
+                _project_job_failure(run_dir, job, error)
                 fail_pipeline_job(run_dir, job_id, error=error)
                 append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error}"})
@@ -167,6 +167,11 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 success, outputs = _run_paper_summarize(run_dir, job)
             elif job_type in {"repo_analyze", "repo_summarize"}:
                 success, outputs = _run_repo_analyze(run_dir, job)
+            elif job_type == "report_snapshot_build":
+                from autoad_researcher.reporting.service import run_snapshot_job
+
+                outputs = run_snapshot_job(run_dir, job)
+                success = True
             elif job_type == "experiment_environment_prepare":
                 from autoad_researcher.environments.prepare import prepare_environment_for_job
 
@@ -184,7 +189,7 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 if not success:
                     raise RuntimeError(observation.error or "experiment attempt failed")
             else:
-                _project_source_failure(run_dir, job, f"unknown job_type: {job_type}")
+                _project_job_failure(run_dir, job, f"unknown job_type: {job_type}")
                 fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
                 append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
                 continue
@@ -198,13 +203,13 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 append_event(run_dir, "toast.success", {"message": f"{job_type} 完成"})
             else:
                 error_msg = _best_job_error(run_dir, job)
-                _project_source_failure(run_dir, job, error_msg)
+                _project_job_failure(run_dir, job, error_msg)
                 fail_pipeline_job(run_dir, job_id, error=error_msg)
                 append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error_msg})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error_msg}"})
         except Exception as exc:
             error_msg = str(exc)[:500]
-            _project_source_failure(run_dir, job, error_msg)
+            _project_job_failure(run_dir, job, error_msg)
             fail_pipeline_job(run_dir, job_id, error=error_msg)
             append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})
             append_event(run_dir, "toast.error", {"message": f"{job_type} 失败"})
@@ -1694,6 +1699,15 @@ def _best_job_error(run_dir: Path, job: dict[str, Any]) -> str:
                 errors.append(f"{parser}: {error[:240]}")
     return "；".join(errors[:3]) if errors else "execution failed"
 
+
+def _project_job_failure(run_dir: Path, job: dict[str, Any], error: str) -> None:
+    """Project failures to their true control-plane owner."""
+    if isinstance(job.get("report_id"), str) and job["report_id"]:
+        from autoad_researcher.reporting.service import mark_report_job_failed
+
+        mark_report_job_failed(run_dir, job, error)
+        return
+    _project_source_failure(run_dir, job, error)
 
 def _project_source_failure(run_dir: Path, job: dict[str, Any], error: str) -> None:
     """Persist an actionable Source outcome before its Job becomes terminal.
