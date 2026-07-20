@@ -16,6 +16,7 @@ from autoad_researcher.runner.models import ExperimentCommandPlan, ExperimentInp
 
 ATTEMPT_PURPOSE_BY_JOB_TYPE: dict[AttemptJobType, AttemptPurpose] = {
     "experiment_baseline": "baseline",
+    "experiment_baseline_b_test": "baseline",
     "experiment_attempt": "exploration",
     "experiment_confirmatory": "confirmation",
 }
@@ -179,9 +180,9 @@ class ExperimentAttemptService:
             raise FileNotFoundError("experiment session not found")
         if session.authorization.execution_mode == "plan_only":
             raise ValueError("plan_only Session may not create experiment Attempts")
-        if job_type == "experiment_baseline" and session.status != "READY_FOR_BASELINE":
+        if job_type in {"experiment_baseline", "experiment_baseline_b_test"} and session.status != "READY_FOR_BASELINE":
             raise ValueError("baseline Attempt requires Session READY_FOR_BASELINE")
-        if job_type != "experiment_baseline" and session.status not in {"READY", "BASELINE_RUNNING"}:
+        if job_type not in {"experiment_baseline", "experiment_baseline_b_test"} and session.status not in {"READY", "BASELINE_RUNNING"}:
             raise ValueError("experiment Attempt requires a Session ready after baseline")
         return session
 

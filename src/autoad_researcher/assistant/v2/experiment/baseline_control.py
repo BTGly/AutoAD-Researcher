@@ -66,6 +66,7 @@ class BaselineLaunchResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     started: ExperimentAttemptStartResult
+    b_test_started: ExperimentAttemptStartResult | None = None
     evaluation_contract_ref: str
     execution_inputs_ref: str
 
@@ -157,6 +158,7 @@ class BaselineControlService:
                 asset_manifest_sha256=asset_sha,
                 python_executable=python_executable,
                 timeout_seconds=contract_input.max_wall_seconds,
+                evaluation_phase="b_dev",
             ),
         )
         started = self._attempts.create_or_get_attempt(
@@ -172,8 +174,42 @@ class BaselineControlService:
             protected_artifact_report_ref=protected_ref,
             protected_artifact_report_sha256=protected_sha,
         )
+        b_test_started = None
+        if "b_test" in adapter_result.evidence.evaluation_commands:
+            b_test_plan, b_test_refs = adapter.build_execution(
+                adapter_result,
+                ExecutorAdapterInputs(
+                    run_id=run_dir.name,
+                    worktree_ref=workspace_ref,
+                    repository_fingerprint=binding.repository_fingerprint,
+                    environment_sha256=snapshot.environment_sha256,
+                    dataset_manifest_sha256=dataset_sha,
+                    asset_manifest_sha256=asset_sha,
+                    python_executable=python_executable,
+                    timeout_seconds=contract_input.max_wall_seconds,
+                    evaluation_phase="b_test",
+                ),
+            )
+            b_test_started = self._attempts.create_or_get_attempt(
+                run_dir,
+                session_id=session_id,
+                job_type="experiment_baseline_b_test",
+                idempotency_key=f"baseline-b-test:{session_id}:{frozen.sha256}",
+                command_plan=b_test_plan,
+                input_refs=b_test_refs,
+                job_timeout_sec=contract_input.max_wall_seconds,
+                evaluation_contract_ref=frozen.ref,
+                evaluation_contract_sha256=frozen.sha256,
+                protected_artifact_report_ref=protected_ref,
+                protected_artifact_report_sha256=protected_sha,
+            )
         self._sessions.update_baseline_state(run_dir, session_id=session_id, status="BASELINE_RUNNING", baseline_status="queued")
-        return BaselineLaunchResult(started=started, evaluation_contract_ref=frozen.ref, execution_inputs_ref=inputs_ref)
+        return BaselineLaunchResult(
+            started=started,
+            b_test_started=b_test_started,
+            evaluation_contract_ref=frozen.ref,
+            execution_inputs_ref=inputs_ref,
+        )
 
     def _require_ready_session(self, run_dir: Path, session_id: str):
         session = self._sessions.load(run_dir, session_id)

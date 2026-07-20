@@ -16,7 +16,7 @@ from autoad_researcher.experiment.worktree import WorktreeManager
 class ExecutorHandoffRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session_id: str
-    job_type: Literal["experiment_baseline", "experiment_attempt", "experiment_confirmatory"]
+    job_type: Literal["experiment_baseline", "experiment_baseline_b_test", "experiment_attempt", "experiment_confirmatory"]
     idempotency_key: str
     repository_path: Path
     base_commit: str

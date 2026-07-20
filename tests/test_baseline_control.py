@@ -144,6 +144,49 @@ def test_baseline_control_refuses_metric_that_was_not_confirmed(tmp_path: Path):
     assert load_pipeline_jobs(run_dir) == []
 
 
+def test_baseline_control_queues_explicit_b_test_baseline_and_waits_for_both(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    manifest_path = run_dir / "repos" / "source_micro" / "autoad_executor_adapter.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["evaluation_commands"] = {
+        "b_dev": {"args": ["run.py"], "metrics_output": "metrics.json"},
+        "b_test": {"args": ["run.py"], "metrics_output": "metrics.json"},
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    binding_path = run_dir / "task_bridge" / "execution_repository_binding.json"
+    binding = ExecutionRepositoryBinding.model_validate_json(binding_path.read_text(encoding="utf-8"))
+    updated_binding = binding.model_copy(update={"adapter_manifest_sha256": sha256_file(manifest_path)})
+    binding_path.write_text(
+        updated_binding.model_dump_json(),
+        encoding="utf-8",
+    )
+    _git(manifest_path.parent, "add", "autoad_executor_adapter.json")
+    _git(manifest_path.parent, "commit", "-m", "declare fixture b-test command")
+    sessions = ExperimentSessionStore()
+    refreshed = sessions.load(run_dir, session.session_id)
+    assert refreshed is not None
+    ExperimentSessionStore._write_unlocked(
+        run_dir / "experiments" / "sessions" / f"{session.session_id}.json",
+        refreshed.model_copy(
+            update={
+                "execution_repository_binding_sha256": canonical_sha256(updated_binding),
+            }
+        ),
+    )
+    started = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    assert started.b_test_started is not None
+    assert started.b_test_started.attempt.command_plan.command_id == "generic_python_b_test"
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        projected = ExperimentSessionStore().load(run_dir, session.session_id)
+        if projected is not None and projected.status == "READY":
+            break
+        time.sleep(0.02)
+    projected = ExperimentSessionStore().load(run_dir, session.session_id)
+    assert projected is not None and projected.status == "READY"
+
+
 def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)

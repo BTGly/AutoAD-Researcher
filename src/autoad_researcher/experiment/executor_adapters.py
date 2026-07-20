@@ -9,6 +9,22 @@ from autoad_researcher.runner import ExperimentCommandPlan, ExperimentInputRefs,
 
 _CONFIG = "autoad_executor_adapter.json"
 
+
+class ExecutorEvaluationCommand(BaseModel):
+    """One repository-declared command for a named evaluation phase.
+
+    A held-out evaluation must not be reconstructed from a path or prose.  The
+    adapter manifest therefore carries the exact argv/environment it supports
+    for that phase, just as the normal adapter contract carries its entrypoint.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    args: list[str] = Field(min_length=1)
+    environment: dict[str, str] = Field(default_factory=dict)
+    metrics_output: str = Field(min_length=1)
+
+
 class ExecutorAdapterEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     adapter_id: Literal["generic_python", "patchcore_style", "anomalib_style"]
@@ -18,6 +34,7 @@ class ExecutorAdapterEvidence(BaseModel):
     allowed_paths: list[str] = Field(min_length=1)
     protected_paths: list[str] = Field(min_length=1)
     activation_evidence: Literal["observed", "unverified"] = "unverified"
+    evaluation_commands: dict[Literal["b_dev", "b_test"], ExecutorEvaluationCommand] = Field(default_factory=dict)
 
 class ExecutorAdapterResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -36,6 +53,7 @@ class ExecutorAdapterInputs(BaseModel):
     repository_fingerprint: str = Field(min_length=1)
     python_executable: str = Field(default_factory=lambda: sys.executable, min_length=1)
     timeout_seconds: int = Field(default=60, gt=0)
+    evaluation_phase: Literal["b_dev", "b_test"] = "b_dev"
 
 class ExecutorAdapter:
     """Read one explicit repository-local adapter manifest, never infer an argv."""
@@ -46,7 +64,13 @@ class ExecutorAdapter:
         try:
             raw = json.loads(manifest.read_text(encoding="utf-8"))
             evidence = ExecutorAdapterEvidence.model_validate(raw)
-            for path in [evidence.entrypoint, evidence.metrics_output, *evidence.allowed_paths, *evidence.protected_paths]:
+            for path in [
+                evidence.entrypoint,
+                evidence.metrics_output,
+                *evidence.allowed_paths,
+                *evidence.protected_paths,
+                *[command.metrics_output for command in evidence.evaluation_commands.values()],
+            ]:
                 _safe_relative(path)
                 if not (repository_root / path).is_file() and path in {evidence.entrypoint, *evidence.protected_paths}:
                     raise ValueError(f"declared file is missing: {path}")
@@ -58,7 +82,14 @@ class ExecutorAdapter:
         if result.status != "supported" or result.evidence is None:
             raise ValueError(result.blocker or "adapter is unsupported")
         evidence = result.evidence
-        plan = ExperimentCommandPlan(schema_version=1, command_id=f"{evidence.adapter_id}_attempt", program=inputs.python_executable, args=[evidence.entrypoint], cwd=inputs.worktree_ref, environment={}, timeout_seconds=inputs.timeout_seconds, network=False, expected_outputs=[evidence.metrics_output])
+        phase_command = evidence.evaluation_commands.get(inputs.evaluation_phase)
+        if phase_command is None:
+            if inputs.evaluation_phase == "b_test":
+                raise ValueError("adapter has no explicit b_test evaluation command")
+            args, environment, metrics_output = [evidence.entrypoint], {}, evidence.metrics_output
+        else:
+            args, environment, metrics_output = phase_command.args, phase_command.environment, phase_command.metrics_output
+        plan = ExperimentCommandPlan(schema_version=1, command_id=f"{evidence.adapter_id}_{inputs.evaluation_phase}", program=inputs.python_executable, args=args, cwd=inputs.worktree_ref, environment=environment, timeout_seconds=inputs.timeout_seconds, network=False, expected_outputs=[metrics_output])
         refs = ExperimentInputRefs(repository_fingerprint=inputs.repository_fingerprint, environment_sha256=inputs.environment_sha256, dataset_manifest_sha256=inputs.dataset_manifest_sha256, asset_manifest_sha256=inputs.asset_manifest_sha256, command_sha256=experiment_command_sha256(plan))
         return plan, refs
 

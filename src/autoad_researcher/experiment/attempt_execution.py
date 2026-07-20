@@ -185,10 +185,15 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
                 attempt_id=attempt.attempt_id,
             )
         except (FileNotFoundError, ValueError): pass
-    if attempt.job_type == "experiment_baseline":
+    if attempt.job_type in {"experiment_baseline", "experiment_baseline_b_test"}:
         from autoad_researcher.experiment.session_store import ExperimentSessionStore
 
-        if final.runtime_status == "COMPLETED":
+        baseline_attempts = [
+            item
+            for item in store.list_for_session(run_dir, session_id=attempt.session_id)
+            if item.job_type in {"experiment_baseline", "experiment_baseline_b_test"}
+        ]
+        if all(item.runtime_status == "COMPLETED" for item in baseline_attempts):
             ExperimentSessionStore().update_baseline_state(
                 run_dir, session_id=attempt.session_id, status="READY", baseline_status="completed"
             )

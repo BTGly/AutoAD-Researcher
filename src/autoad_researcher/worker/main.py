@@ -72,7 +72,7 @@ def _process_pending_jobs(run_dir: Path) -> int:
     from autoad_researcher.assistant.v2.job_service import requeue_stale_running_jobs
     from autoad_researcher.assistant.v2.event_service import append_event
 
-    experiment_job_types = {"experiment_baseline", "experiment_attempt", "experiment_confirmatory"}
+    experiment_job_types = {"experiment_baseline", "experiment_baseline_b_test", "experiment_attempt", "experiment_confirmatory"}
     recovered = requeue_stale_running_jobs(run_dir, excluded_job_types=experiment_job_types)
     for recovered_job in recovered:
         append_event(
