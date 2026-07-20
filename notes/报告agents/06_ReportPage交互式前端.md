@@ -83,7 +83,8 @@ GET /api/runs/{run_id}/reports/{report_id}/evidence/{evidence_id}
 
 ```text
 进入 Report
-→ 读取 reports/latest
+→ 读取 latest-content-ready
+→ 查询 latest-created 的生成状态
 → 读取 manifest/status
 → 若 report.md 可用则展示
 → digest 作为摘要卡
@@ -105,7 +106,9 @@ GET /api/runs/{run_id}/reports/{report_id}/evidence/{evidence_id}
 
 - [ ] 实际 `components/ReportPage.tsx` 读取新版 API。
 - [ ] 报告未完成时显示生成步骤和错误原因。
+- [ ] queued/running 的最新创建版本不会遮挡仍可读的 content-ready 版本。
 - [ ] PDF 失败不阻断 Markdown/HTML 阅读。
+- [ ] HTML 只下载或新窗口打开，不通过 `dangerouslySetInnerHTML` 注入当前 DOM。
 - [ ] 版本切换后摘要、内容和下载均绑定同一 `report_id`。
 - [ ] EvidenceCard 不能读取未登记 artifact。
 - [ ] 失败和不可比较 Attempt 在报告中可见。

@@ -19,12 +19,20 @@
 ```text
 GET  /api/runs/{run_id}/reports
 GET  /api/runs/{run_id}/reports/latest
+GET  /api/runs/{run_id}/reports/latest-created
+GET  /api/runs/{run_id}/reports/latest-content-ready
 GET  /api/runs/{run_id}/reports/{report_id}/manifest
 POST /api/runs/{run_id}/reports
 POST /api/runs/{run_id}/reports/{report_id}/retry
 ```
 
-`POST /reports` 只校验 Session/readiness、冻结 snapshot identity、分配版本并创建幂等报告 Jobs。重复请求返回既有报告，不重复执行。
+`POST /reports` 只校验 Session/readiness、在锁内同步冻结 Snapshot、分配版本并创建幂等报告 Jobs。重复请求返回既有报告，不重复执行。Snapshot hash 产生前不创建依赖该 hash 的 Job。
+
+Retry 请求必须显式指定允许重试的目标步骤，并沿用该步骤的幂等身份和 retry 记录；不能把一个 PDF 失败无条件扩散成 Facts/Narrative 全链重跑。
+
+`latest-created` 表示最新创建的版本；`latest-content-ready` 表示最新可读且 Validator 通过的版本。旧 `/latest` 保留兼容语义，但 ReportPage 默认使用 `latest-content-ready`，并单独显示更新中的最新创建版本。
+
+这里先固定两个语义，具体路由名称和是否保留为独立 endpoint，实施前必须结合现有 FastAPI 路由注册和测试确认，不能因为字符串相似而复用错误的 `/latest` 语义。
 
 ### 内容和证据
 
@@ -42,7 +50,7 @@ Markdown/HTML 是否可读由对应制品和内容状态决定；不要把不存
 GET /api/runs/{run_id}/reports/{report_id}/download/{artifact}
 ```
 
-`artifact` 只允许 manifest 中登记且位于固定报告目录的制品。路径参数不能直接拼接成任意文件路径。
+`artifact` 只允许报告侧制品记录中登记且位于固定报告目录的制品。路径参数不能直接拼接成任意文件路径；Manifest 负责身份，State/制品记录负责可下载清单。
 
 ### 讨论和审阅（后续阶段注册）
 
@@ -74,6 +82,8 @@ require_run(run_id)
 - 非法 `report_id`、`run_id` 和版本。
 
 下载响应使用真实 MIME 和 `Content-Disposition`，不能一律返回文本或依赖文件扩展名猜测。
+
+现有 `ArtifactReferenceV2` 不包含 MIME、下载文件名或 Content-Disposition。报告侧必须保存独立的制品交付记录；它引用 `ArtifactReferenceV2`，但不修改该通用 schema，也不从扩展名猜测真实 MIME。
 
 ## 5. 状态返回
 
@@ -110,11 +120,14 @@ GET /api/runs/{run_id}/report
 ## 7. 验收
 
 - [ ] 相同报告请求只创建一组幂等 Jobs。
+- [ ] Retry 只重排队指定目标步骤，并保留失败原因和 retry 次数。
+- [ ] `latest-created` 与 `latest-content-ready` 语义不混淆，排队中的新版本不会遮挡旧的可读版本。
 - [ ] API 使用 `RUNS_ROOT` 和现有 path helper。
 - [ ] `report_id` 固定绑定，不能在 Agent 请求中隐式切换 latest。
 - [ ] Markdown/HTML 在存在且验证通过时可读取，即使 PDF 失败。
 - [ ] 不存在的制品返回明确的 404/409，而不是目录穿越结果。
 - [ ] 下载 MIME、文件名和版本正确。
+- [ ] 报告制品交付记录明确保存 MIME、下载文件名和 Content-Disposition。
 - [ ] 旧 `/report` 路由仍能读取旧报告。
 - [ ] 路径攻击、symlink 和前缀碰撞测试通过。
 

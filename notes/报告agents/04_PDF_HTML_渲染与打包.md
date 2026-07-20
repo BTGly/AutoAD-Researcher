@@ -38,6 +38,8 @@ HTML 需要：
 - Evidence link 使用 `evidence_id`，不把绝对路径注入页面；
 - 浏览器离线打开仍能显示摘要、表格、证据清单和状态。
 
+ReportPage 首版不把生成的 HTML 直接插入当前 DOM，不使用 `dangerouslySetInnerHTML`。HTML 作为下载制品或新窗口打开；如果以后需要内嵌，只能使用 sandboxed iframe，默认不允许脚本、同源权限、顶层导航和弹窗。需要执行自包含 HTML 的交互时，应先另建明确的安全 capability，不把“自包含”当作“可信”。
+
 Arbor 的 base64 payload 只是实现选择，不是必须契约；如果使用 JSON script 节点，必须补充 XSS 和 round-trip 测试。
 
 ## 5. PDF Renderer（可选）
@@ -67,12 +69,24 @@ evidence_index.json
 report_digest.json
 report_validation.json
 report_manifest.json
+report_state.json
+snapshot.json
 checksums.sha256
 ```
 
+Bundle 必须确定性生成：
+
+- 文件按固定的相对路径排序；
+- ZIP entry 使用固定 timestamp 和稳定权限；
+- 拒绝 symlink、目录逃逸和不在 allow-list 中的文件；
+- 默认不包含 checkpoint、数据集、模型权重和原始大日志；
+- 已知配置/凭据字段在进入 Bundle 前按结构化规则过滤；
+- 写入 `bundle_exclusions.json`，记录被排除制品及原因；
+- 相同 report_id、Snapshot hash 和制品字节重复打包得到相同 ZIP hash。
+
 引用的 Evidence 可以进入 `evidence/` 子目录，但必须依据 allow-list 和大小上限复制；不能把整个 run 目录打包。
 
-Manifest 中每个实际制品都要有 artifact ref 和 SHA。ZIP 生成后再次计算 ZIP 自身 SHA，不能只记录打包前文件。
+报告侧制品交付记录中的每个实际制品都要有 artifact ref 和 SHA；不可变 Manifest 只负责身份，State 负责可用制品投影。ZIP 生成后再次计算 ZIP 自身 SHA，不能只记录打包前文件。
 
 ## 7. 状态关系
 
@@ -89,10 +103,12 @@ PDF 或 ZIP 失败不能把已验证的 Markdown 报告改成内容失败。
 
 - [ ] HTML 可离线打开，无 CDN 和外部脚本。
 - [ ] HTML payload 经过 XSS 转义测试。
+- [ ] ReportPage 不直接注入 HTML；sandboxed iframe（若未来启用）默认无脚本和同源权限。
 - [ ] 超大日志不会导致 HTML 或 Agent 上下文无限增长。
 - [ ] PDF capability 缺失时有明确失败状态和日志。
 - [ ] PDF 编译检查 return code、timeout 和输出文件，而非只调用 subprocess。
 - [ ] ZIP 包含 Facts、Evidence、Validation 和 checksums。
+- [ ] ZIP 文件排序、timestamp 和内容 hash 稳定，symlink 和敏感/非 allow-list 文件被排除并有记录。
 - [ ] 下载包和页面绑定同一个 `report_id`。
 - [ ] 重复渲染不覆盖已冻结的正文和 Facts。
 
