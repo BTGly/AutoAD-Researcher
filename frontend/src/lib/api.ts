@@ -275,3 +275,14 @@ export function wsUrl(runId: string): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   return `${proto}://${window.location.host}/api/runs/${runId}/ws`;
 }
+
+export async function getLatestVersionedReport(runId: string): Promise<{ content: string; reportId?: string }> {
+  const latest = await fetch(`/api/runs/${runId}/reports/latest`);
+  if (latest.status === 404) return getReport(runId);
+  if (!latest.ok) throw new Error(`Latest report error: ${latest.status}`);
+  const manifest = await latest.json();
+  const content = await fetch(`/api/runs/${runId}/reports/${manifest.report_id}/content?format=md`);
+  if (!content.ok) throw new Error(`Report content error: ${content.status}`);
+  const payload = await content.json();
+  return { content: payload.content || "", reportId: manifest.report_id };
+}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getReport } from '../lib/api';
+import { getLatestVersionedReport } from '../lib/api';
 import { MarkdownContent } from './MarkdownContent';
 
 interface Props {
@@ -14,7 +14,7 @@ export function ReportPage({ runId, onBack }: Props) {
   useEffect(() => {
     if (!runId) return;
     setLoading(true);
-    getReport(runId)
+    getLatestVersionedReport(runId)
       .then(res => setReport(res.content || null))
       .catch(() => setReport(null))
       .finally(() => setLoading(false));

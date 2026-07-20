@@ -11,6 +11,7 @@ from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
 from autoad_researcher.reporting.persistence import write_immutable_report_json
 from autoad_researcher.reporting.renderer_markdown import render_markdown
+from autoad_researcher.reporting.renderer_html import render_html
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.validator import validate_report
 
@@ -38,7 +39,10 @@ def run_narrative_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
         raise ValueError("report validation failed: " + "; ".join(validation.errors))
     markdown = render_markdown(facts=facts, narrative=narrative)
     write_immutable_report_text(run_dir, report_id=report_id, filename="report.md", artifact_type="report_markdown", text=markdown)
+    html = render_html(report_id=report_id, markdown=markdown)
+    write_immutable_report_text(run_dir, report_id=report_id, filename="report.html", artifact_type="report_html", text=html)
     store.set_format_status(run_dir, report_id=report_id, format_name="markdown", status="ready")
+    store.set_format_status(run_dir, report_id=report_id, format_name="html", status="ready")
     store.transition_generation(run_dir, report_id=report_id, target="validating")
     store.transition_generation(run_dir, report_id=report_id, target="content_ready")
     append_event(run_dir, "report.content_ready", {"report_id": report_id})
@@ -47,4 +51,4 @@ def run_narrative_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
 
 def _outputs(run_dir: Path, report_id: str) -> list[str]:
     directory = run_dir / "reports" / report_id
-    return [str((directory / name).relative_to(run_dir)) for name in ("narrative_sections.json", "report_validation.json", "report.md")]
+    return [str((directory / name).relative_to(run_dir)) for name in ("narrative_sections.json", "report_validation.json", "report.md", "report.html")]
