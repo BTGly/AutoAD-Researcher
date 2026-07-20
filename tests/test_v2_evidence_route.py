@@ -266,6 +266,49 @@ def test_archive_bundle_classifies_mixed_materials_and_queues_child_jobs(tmp_pat
     assert any(item["evidence_type"] == "uploaded_text" for item in evidence)
 
 
+def test_archive_bundle_accepts_manifest_only_executable_micro_repository(tmp_path: Path):
+    run_dir = tmp_path / "run_micro_repo"
+    source_dir = run_dir / "sources" / "src_bundle"
+    source_dir.mkdir(parents=True)
+    archive_path = source_dir / "micro.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("micro/run_experiment.py", "print('ok')\n")
+        zf.writestr("micro/evaluation.py", "")
+        zf.writestr("micro/autoad_executor_adapter.json", json.dumps({
+            "adapter_id": "generic_python",
+            "entrypoint": "run_experiment.py",
+            "smoke_argv": ["python", "run_experiment.py"],
+            "metrics_output": "metrics.json",
+            "allowed_paths": ["rarity_model.py"],
+            "protected_paths": ["evaluation.py", "run_experiment.py", "autoad_executor_adapter.json"],
+            "activation_evidence": "observed",
+        }))
+    append_source_ref(
+        run_dir,
+        kind="archive_bundle",
+        user_label="micro.zip",
+        stored_path="sources/src_bundle/micro.zip",
+        status="uploaded_not_parsed",
+        source_id="src_bundle",
+    )
+
+    ok, _outputs = _run_archive_unpack_classify(
+        run_dir,
+        {
+            "job_id": "job_000001",
+            "source_id": "src_bundle",
+            "job_type": "archive_unpack_classify",
+            "payload": {"stored_path": "sources/src_bundle/micro.zip"},
+        },
+    )
+
+    assert ok is True
+    registry = json.loads((run_dir / "sources" / "source_references.json").read_text(encoding="utf-8"))
+    children = [source for source in registry["sources"] if source.get("parent_source_id") == "src_bundle"]
+    assert [(child["kind"], child["user_label"]) for child in children] == [("local_repo", "micro")]
+    assert (run_dir / "sources" / children[0]["source_id"] / "repository" / "autoad_executor_adapter.json").is_file()
+
+
 def test_worker_projects_unsafe_archive_failure_to_source_terminal_status(tmp_path: Path):
     run_dir = tmp_path / "run_demo"
     source_dir = run_dir / "sources" / "src_bundle"

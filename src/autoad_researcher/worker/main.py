@@ -736,6 +736,17 @@ def _discover_repo_roots(extract_dir: Path) -> list[Path]:
 
 def _repo_score(directory: Path) -> int:
     score = 0
+    # A repository-local adapter is stronger execution evidence than an
+    # incidental README or a minimum number of source files.  Reuse the same
+    # strict validator used by execution admission; an invalid manifest adds no
+    # score and therefore cannot turn arbitrary archive content into a repo.
+    try:
+        from autoad_researcher.experiment.executor_adapters import ExecutorAdapter
+
+        if ExecutorAdapter().inspect(directory).status == "supported":
+            score += 50
+    except Exception:
+        pass
     for marker in _REPO_MARKER_FILES:
         if (directory / marker).exists():
             score += 100 if marker == ".git" else 30
