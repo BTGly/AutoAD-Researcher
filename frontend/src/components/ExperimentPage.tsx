@@ -38,6 +38,8 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   const [showDeveloper, setShowDeveloper] = useState(false);
   const requestId = useRef(0);
   const currentRequest = useRef<AbortController | null>(null);
+  const refreshScope = useRef({ runId, sessionId });
+  refreshScope.current = { runId, sessionId };
 
   const loadProjection = useCallback(async (targetRunId: string, targetSessionId: string | undefined) => {
     currentRequest.current?.abort();
@@ -79,10 +81,13 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   }, [loadProjection, runId, sessionId]);
 
   useEffect(() => {
-    if (!runId || experimentRefreshTick === 0) return;
-    const timer = window.setTimeout(() => void loadProjection(runId, sessionId), 300);
+    if (experimentRefreshTick === 0) return;
+    const timer = window.setTimeout(() => {
+      const scope = refreshScope.current;
+      if (scope.runId) void loadProjection(scope.runId, scope.sessionId);
+    }, 300);
     return () => window.clearTimeout(timer);
-  }, [experimentRefreshTick, loadProjection, runId, sessionId]);
+  }, [experimentRefreshTick, loadProjection]);
 
   const chooseSession = (next: string) => {
     setSelection(null);
@@ -156,7 +161,7 @@ function ExperimentActions({ runId, projection, onChanged }: { runId: string; pr
 function SessionOverview({ projection }: { projection: ExperimentProjection }) {
   const task = projection.input_task;
   const goal = task?.user_idea || task?.request || '未能读取已确认研究目标';
-  const champion = projection.champion_status === 'absent' ? '暂未产生' : projection.champion_status === 'available' ? '已登记' : projection.champion_status === 'assessment_missing' ? 'Champion 已登记，但科学评价详情缺失' : 'Champion 已登记，但科学评价详情无效';
+  const champion = projection.champion_status === 'absent' ? '暂未产生' : projection.champion_status === 'available' ? '已登记' : projection.champion_status === 'assessment_missing' ? 'Champion 已登记，但科学评价详情缺失' : projection.champion_status === 'assessment_invalid' ? 'Champion 已登记，但科学评价详情无效' : 'Champion 控制面记录无效，不能据此判断不存在 Champion';
   return <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--bg-panel)' }}>
     <div style={{ fontWeight: 600 }}>{goal}</div>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 10, fontSize: '0.8em', color: 'var(--text-muted)' }}>

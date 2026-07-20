@@ -260,7 +260,7 @@ export interface ExperimentProjection {
   idea_tree: { session_id: string; revision: number; root_node_id: string; nodes: ExperimentIdeaNode[] } | null;
   attempts: ExperimentAttempt[];
   candidates: Array<{ candidate_id: string; idea_id: string; attempt_id: string; b_test_passed: boolean; guardrails_passed: boolean }>;
-  champion_status: 'absent' | 'available' | 'assessment_missing' | 'assessment_invalid';
+  champion_status: 'absent' | 'available' | 'assessment_missing' | 'assessment_invalid' | 'control_plane_invalid';
   champion: { candidate_id: string; idea_id: string; attempt_id: string; assessment_error: string | null } | null;
   activity: ExperimentActivity[];
   activity_limit: number;

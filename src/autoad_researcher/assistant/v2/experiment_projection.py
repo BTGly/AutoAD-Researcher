@@ -9,7 +9,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.assistant.v2.event_service import load_events_since
+from autoad_researcher.assistant.v2.event_service import iter_events_reverse
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCommitStore
 from autoad_researcher.experiment.cognitive_budget import CognitiveBudgetStore
@@ -25,7 +25,7 @@ from autoad_researcher.experiment.session_store import ExperimentSessionStore, S
 from autoad_researcher.schemas.intake import InputTask
 
 
-ChampionStatus = Literal["absent", "available", "assessment_missing", "assessment_invalid"]
+ChampionStatus = Literal["absent", "available", "assessment_missing", "assessment_invalid", "control_plane_invalid"]
 ACTIVITY_LIMIT = 100
 
 
@@ -213,8 +213,8 @@ class ExperimentProjection(BaseModel):
 def build_projection(run_dir: Path, session_id: str | None = None) -> ExperimentProjection:
     """Build one ephemeral view without modifying any durable run file."""
 
-    sessions = _discover_sessions(run_dir)
     if session_id is None:
+        sessions = _discover_sessions(run_dir)
         if not sessions:
             return ExperimentProjection(selection_status="no_session")
         if len(sessions) > 1:
@@ -296,10 +296,17 @@ def _discover_sessions(run_dir: Path) -> list[ExperimentSession]:
     directory = run_dir / SESSIONS_DIR
     if not directory.is_dir():
         return []
-    return [
-        ExperimentSession.model_validate_json(path.read_text(encoding="utf-8"))
-        for path in sorted(directory.glob("*.json"))
-    ]
+    sessions = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            sessions.append(ExperimentSession.model_validate_json(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            raise SessionInventoryError("experiment session inventory contains an invalid durable record") from exc
+    return sessions
+
+
+class SessionInventoryError(ValueError):
+    """A session inventory cannot be summarized without hiding corruption."""
 
 
 def _session_candidate_stems(run_dir: Path) -> set[str]:
@@ -473,15 +480,15 @@ def _champion_projection(run_dir: Path, session: ExperimentSession) -> tuple[Cha
     try:
         pointer = registry.current_by_contract(run_dir).get(contract_hash)
     except ValueError:
-        return "absent", None
+        return "control_plane_invalid", None
     if pointer is None:
         return "absent", None
     try:
         candidate = registry.load_candidate(run_dir, pointer.candidate_id)
     except (FileNotFoundError, ValueError):
-        return "absent", None
+        return "control_plane_invalid", None
     if candidate.session_id != session.session_id or candidate.evaluation_contract_hash != contract_hash:
-        return "absent", None
+        return "control_plane_invalid", None
     directory = run_dir / "attempts" / candidate.attempt_id
     assessment_path = directory / "scientific_assessment.json"
     assessment = _read_model(assessment_path, ScientificAssessment)
@@ -526,12 +533,13 @@ def _activity(
     candidate_ids: set[str],
 ) -> tuple[list[ActivityCard], bool]:
     cards = []
-    for event in load_events_since(run_dir):
+    for event in iter_events_reverse(run_dir):
         card = _activity_card(event, session_id, attempts, commits, candidate_ids)
         if card is not None:
             cards.append(card)
-    cards.sort(key=lambda item: item.event_id, reverse=True)
-    return cards[:ACTIVITY_LIMIT], len(cards) > ACTIVITY_LIMIT
+            if len(cards) > ACTIVITY_LIMIT:
+                return cards[:ACTIVITY_LIMIT], True
+    return cards, False
 
 
 def _activity_card(

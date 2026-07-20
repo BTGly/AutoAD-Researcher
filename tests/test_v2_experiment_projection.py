@@ -127,6 +127,35 @@ def test_multiple_sessions_stay_ambiguous_and_external_selection_is_exact(tmp_pa
         build_projection(tmp_path, session_id="../outside")
 
 
+def test_selected_session_is_not_blocked_by_an_unrelated_invalid_record(tmp_path: Path):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    directory = tmp_path / "experiments" / "sessions"
+    (directory / "session_bbbbbbbbbbbbbbbb.json").write_text("{invalid", encoding="utf-8")
+
+    selected = build_projection(tmp_path, session_id=session.session_id)
+
+    assert selected.session is not None and selected.session.session_id == session.session_id
+    with pytest.raises(projection_route.SessionInventoryError):
+        build_projection(tmp_path)
+
+
+def test_invalid_champion_pointer_is_not_projected_as_absent(tmp_path: Path):
+    session = _session(tmp_path).model_copy(update={
+        "evaluation_contract_ref": "experiments/contracts/contract.json",
+        "evaluation_contract_sha256": "a" * 64,
+    })
+    _write_session(tmp_path, session)
+    directory = tmp_path / "experiments" / "champions"
+    directory.mkdir(parents=True)
+    (directory / "current_by_contract.json").write_text("{invalid", encoding="utf-8")
+
+    projection = build_projection(tmp_path)
+
+    assert projection.champion_status == "control_plane_invalid"
+    assert projection.champion is None
+
+
 def test_projection_does_not_materialize_missing_scientific_assessment(tmp_path: Path):
     session = _session(tmp_path)
     _write_session(tmp_path, session)
@@ -202,3 +231,18 @@ async def test_projection_route_uses_configured_root_and_maps_missing_session(tm
     with pytest.raises(HTTPException) as excinfo:
         await projection_route.get_experiment_projection(run_dir.name, session_id="session_missing")
     assert excinfo.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_projection_route_reports_invalid_session_inventory(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_projection"
+    run_dir.mkdir()
+    directory = run_dir / "experiments" / "sessions"
+    directory.mkdir(parents=True)
+    (directory / "session_bad.json").write_text("{invalid", encoding="utf-8")
+    monkeypatch.setattr(projection_route, "RUNS_ROOT", str(tmp_path))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await projection_route.get_experiment_projection(run_dir.name, session_id=None)
+
+    assert excinfo.value.status_code == 409

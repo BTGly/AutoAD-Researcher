@@ -45,7 +45,7 @@ function Node({ node, byParent, championIdeaId, selectedId, expanded, setExpande
   const children = byParent.get(node.node_id) || [];
   const defaultOpen = node.is_root || node.status !== 'PRUNED';
   const open = expanded[node.node_id] ?? defaultOpen;
-  const label = node.mechanism || '未记录机制';
+  const label = node.mechanism || (node.is_root ? '研究根节点' : '未记录机制');
   return (
     <div style={{ marginLeft: node.depth ? 12 : 0, marginTop: 6 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
