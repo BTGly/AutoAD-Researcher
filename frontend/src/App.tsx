@@ -620,7 +620,10 @@ export default function App() {
       </div>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        <LeftSidebar page={page} onPage={setPage} />
+        <LeftSidebar page={page} onPage={nextPage => {
+          setPage(nextPage);
+          if (nextPage !== 'experiment') setShowExperimentSettings(false);
+        }} />
 
         {page === 'chat' && (
           <>
@@ -700,6 +703,11 @@ export default function App() {
           <ExperimentPage
             runId={runId}
             onOpenExperimentSettings={() => setShowExperimentSettings(true)}
+            onDiscuss={text => {
+              setShowExperimentSettings(false);
+              setComposerText(text);
+              setPage('chat');
+            }}
           />
         )}
 

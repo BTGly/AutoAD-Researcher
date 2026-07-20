@@ -1,6 +1,7 @@
 import type {
   ExperimentTaskConfirmationResult,
   ExperimentTaskDraft,
+  ExperimentProjection,
   SourceInstruction,
   TaskRun,
 } from './types';
@@ -215,6 +216,13 @@ export async function getArtifact(runId: string, path: string): Promise<{ path: 
 export async function getExperimentConfig(runId: string): Promise<any> {
   const res = await fetch(`/api/runs/${runId}/experiment-config`);
   if (!res.ok) return {};
+  return res.json();
+}
+
+export async function getExperimentProjection(runId: string, sessionId?: string): Promise<ExperimentProjection> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders() });
+  if (!res.ok) throw await apiError(res, `Experiment projection error: ${res.status}`);
   return res.json();
 }
 

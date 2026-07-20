@@ -1,0 +1,48 @@
+import { expect, test, type Page } from '@playwright/test';
+
+const run = { run_id: 'run_observatory', created_at: null, updated_at: null, sources_count: 0, task_title: '观测任务', task_summary: '', task_source: 'manual', task_profile_warning: null, archived_at: null };
+const projection = {
+  schema_version: 1, selection_status: 'selected',
+  session: { session_id: 'session_aaaaaaaaaaaaaaaa', task_ref: 'input_task.yaml', task_hash: 'a'.repeat(64), status: 'READY', execution_mode: 'approve_each_step', readiness_status: 'ready', readiness_blockers: [], environment_status: 'ready', baseline_status: 'completed', budget: {} },
+  session_candidates: [],
+  input_task: { run_id: run.run_id, request: '验证异常检测', source_ids: [], target_domain: null, user_idea: '验证一个可审计的异常检测假设', baseline: 'PatchCore', dataset: 'MVTec bottle', compute_budget: null, primary_metrics: ['image AUROC'], constraints: [] },
+  summary: { idea_count: 2, idea_rooted_count: 1, attempt_by_status: { COMPLETED: 1 }, budget: {}, budget_consumed: null, champion_status: 'absent' },
+  idea_tree: { session_id: 'session_aaaaaaaaaaaaaaaa', revision: 1, root_node_id: 'idea_000000', nodes: [
+    { node_id: 'idea_000000', parent_id: null, is_root: true, depth: 0, mechanism: null, hypothesis: null, observable: null, research_axis: null, minimal_intervention: null, falsification: null, relationship_to_previous_ideas: null, grounding: [], expected_cost: 'unknown', status: 'DRAFT', attempt_refs: [], evidence_refs: [], cognitive_commit_refs: [], insights: [], children: ['idea_000001'], attempt_summary: {} },
+    { node_id: 'idea_000001', parent_id: 'idea_000000', is_root: false, depth: 1, mechanism: '局部特征重加权', hypothesis: '可提高 AUROC', observable: 'image AUROC', research_axis: null, minimal_intervention: null, falsification: null, relationship_to_previous_ideas: null, grounding: [], expected_cost: 'low', status: 'SUPPORTED', attempt_refs: ['attempt_000001'], evidence_refs: [], cognitive_commit_refs: [], insights: [{ text: '已记录观察', kind: 'observation', evidence_refs: [], created_at: '2026-07-20T00:00:00Z' }], children: [], attempt_summary: { COMPLETED: 1 } },
+  ] },
+  attempts: [{ attempt_id: 'attempt_000001', attempt_purpose: 'exploration', runtime_status: 'COMPLETED', job_type: 'experiment_attempt', pipeline_job_id: null, required_device_count: 1, required_vram_mb: 1, retry_of: null, retry_count: 0, max_retries: 0, retry_exhausted: false, failure_code: null, command_plan_summary: 'python run.py', execution_outcome: { execution_status: 'COMPLETED' }, scientific_assessment: null, assessment_reconciliation: null, scientific_assessment_status: 'not_materialized', related_idea_ids: ['idea_000001'], pid: null, heartbeat_at: null, resource_lease_id: null }],
+  cognitive_commits: [], champion_status: 'absent', champion: null,
+  activity: [{ event_id: 1, event_type: 'experiment.idea_tree.mutated', created_at: '2026-07-20T00:00:00Z', title: 'Idea Tree 已更新', summary: '树版本：1', card_kind: 'idea_tree', related_idea_id: null, related_attempt_id: null, related_commit_id: null, related_outcome: null, detail: '', evidence_refs: [] }],
+  activity_limit: 100, activity_truncated: false,
+  developer_refs: { run_id: run.run_id, session_id: 'session_aaaaaaaaaaaaaaaa', event_ids: [1], artifact_paths: [], pipeline_job_ids: [], event_log_path: 'events/events.jsonl' },
+};
+
+async function prepare(page: Page) {
+  await page.addInitScript(() => localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' })));
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/runs') return route.fulfill({ json: [run] });
+    if (path === `/api/runs/${run.run_id}/transcript`) return route.fulfill({ json: [] });
+    if (path === `/api/runs/${run.run_id}/sources`) return route.fulfill({ json: [] });
+    if (path === `/api/runs/${run.run_id}/jobs`) return route.fulfill({ json: [] });
+    if (path === `/api/runs/${run.run_id}/evidence/state`) return route.fulfill({ json: { usable_evidence: [], unusable_parsed_sources: [] } });
+    if (path === `/api/runs/${run.run_id}/intent-summary`) return route.fulfill({ json: { goal: '', confirmed_facts: [], inferred_facts: [], unresolved_conflicts: [], blocking_question: null } });
+    if (path === `/api/runs/${run.run_id}/experiment/projection`) return route.fulfill({ json: projection });
+    return route.fulfill({ json: {} });
+  });
+  await page.goto('/');
+}
+
+test('renders a durable observatory snapshot and only prefills discussion', async ({ page }) => {
+  let chatCalls = 0;
+  await prepare(page);
+  await page.route('**/api/chat/send', async route => { chatCalls += 1; await route.fulfill({ json: {} }); });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
+  await page.getByRole('button', { name: '局部特征重加权' }).click();
+  await expect(page.getByText('已记录观察', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '在研究助手中讨论' }).click();
+  await expect(page.getByPlaceholder('输入问题，或粘贴 URL…')).toHaveValue(/Idea idea_000001/);
+  expect(chatCalls).toBe(0);
+});
