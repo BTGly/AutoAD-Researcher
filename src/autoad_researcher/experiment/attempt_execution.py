@@ -185,6 +185,17 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
                 attempt_id=attempt.attempt_id,
             )
         except (FileNotFoundError, ValueError): pass
+    if attempt.job_type == "experiment_baseline":
+        from autoad_researcher.experiment.session_store import ExperimentSessionStore
+
+        if final.runtime_status == "COMPLETED":
+            ExperimentSessionStore().update_baseline_state(
+                run_dir, session_id=attempt.session_id, status="READY", baseline_status="completed"
+            )
+        elif final.retry_exhausted:
+            ExperimentSessionStore().update_baseline_state(
+                run_dir, session_id=attempt.session_id, status="FAILED", baseline_status="failed"
+            )
     append_event(run_dir, "experiment.attempt.finalized", {"attempt_id": final.attempt_id, "runtime_status": final.runtime_status, "failure_code": final.failure_code})
     return AttemptObservation(terminal=True, succeeded=final.runtime_status == "COMPLETED", outputs=_outputs(run_dir, run_dir / "attempts" / attempt.attempt_id), error=result.failure_message)
 

@@ -182,6 +182,31 @@ class ExperimentSessionStore:
             self._write_unlocked(path, updated)
             return updated
 
+    def update_baseline_state(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        status: SessionStatus,
+        baseline_status: str,
+    ) -> ExperimentSession:
+        """Project one baseline lifecycle transition without altering environment facts."""
+        path = self._session_path(run_dir, session_id)
+        with self._lock(run_dir):
+            if not path.is_file():
+                raise FileNotFoundError("experiment session not found")
+            session = ExperimentSession.model_validate_json(path.read_text(encoding="utf-8"))
+            updated = session.model_copy(
+                update={
+                    "status": status,
+                    "baseline_status": baseline_status,
+                    "updated_at": _utc_now(),
+                    "revision": session.revision + 1,
+                }
+            )
+            self._write_unlocked(path, updated)
+            return updated
+
     def advance_environment_revision(
         self,
         run_dir: Path,

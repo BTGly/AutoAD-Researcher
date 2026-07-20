@@ -48,7 +48,7 @@ async def stop_embedded_worker():
     await asyncio.to_thread(reset_llm_call_broker)
 
 
-from autoad_researcher.server.routes import artifacts, chat, evidence, experiment_config, intent_summary, jobs, report_route, runs, sources, ws
+from autoad_researcher.server.routes import artifacts, chat, evidence, experiment_attempts, experiment_config, intent_summary, jobs, report_route, runs, sources, ws
 
 app.include_router(chat.router)
 app.include_router(runs.router)
@@ -59,6 +59,7 @@ app.include_router(artifacts.router)
 app.include_router(evidence.router)
 app.include_router(ws.router)
 app.include_router(experiment_config.router)
+app.include_router(experiment_attempts.router)
 app.include_router(report_route.router)
 
 
