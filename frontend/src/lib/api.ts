@@ -82,11 +82,16 @@ export async function confirmExperimentTask(
   runId: string,
   taskId: string,
   executionMode: ExperimentTaskDraft['execution_mode'],
+  executionRepositorySourceId?: string,
 ): Promise<ExperimentTaskConfirmationResult> {
   const res = await fetch(`/api/runs/${runId}/experiment-task/${taskId}/confirm`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ execution_mode: executionMode }),
+    body: JSON.stringify({
+      execution_mode: executionMode,
+      execution_repository_source_id:
+        executionMode === 'plan_only' ? null : executionRepositorySourceId,
+    }),
   });
   if (!res.ok) throw await apiError(res, `Experiment task confirmation error: ${res.status}`);
   return res.json();

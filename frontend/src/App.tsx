@@ -14,6 +14,7 @@ import { ReportPage } from './components/ReportPage';
 import { DevMockPanel } from './components/DevMockPanel';
 import { MarkdownContent } from './components/MarkdownContent';
 import { TaskMenu } from './components/TaskMenu';
+import { ExperimentTaskConfirmation } from './components/ExperimentTaskConfirmation';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -36,12 +37,17 @@ import {
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary } from './lib/types';
+import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary, ExperimentTaskDraft } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
   label: string;
   content?: string;
+}
+
+interface PendingExperimentTaskConfirmation {
+  runId: string;
+  task: ExperimentTaskDraft;
 }
 
 function hasIntentSummary(summary: IntentSummary | null): boolean {
@@ -67,6 +73,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
+  const [pendingExperimentTaskConfirmation, setPendingExperimentTaskConfirmation] = useState<PendingExperimentTaskConfirmation | null>(null);
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [unusableParsedSources, setUnusableParsedSources] = useState<UnusableParsedSource[]>([]);
@@ -120,7 +127,13 @@ export default function App() {
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
     if (currentRunIdRef.current && currentRunIdRef.current !== nextRunId) return;
-    setSources(s.map((src: any) => ({ sourceId: src.source_id || generateId(), kind: src.kind || 'unknown', label: src.user_label || src.source_id || 'source', status: src.status || 'unknown' })));
+    setSources(s.map((src: any) => ({
+      sourceId: src.source_id || generateId(),
+      kind: src.kind || 'unknown',
+      label: src.user_label || src.source_id || 'source',
+      status: src.status || 'unknown',
+      intakeStatus: typeof src.intake_status === 'string' ? src.intake_status : null,
+    })));
     setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '', error: job.error || '' })));
     setEvidence(e.map(normalizeEvidence));
     setUnusableParsedSources((evidenceState.unusable_parsed_sources || []).map(normalizeUnusableParsedSource));
@@ -142,6 +155,7 @@ export default function App() {
     setRunId(nextRunId);
     setTaskStatus('Ready');
     setSources([]);
+    setPendingExperimentTaskConfirmation(null);
     setJobs([]);
     setEvidence([]);
     setUnusableParsedSources([]);
@@ -322,38 +336,7 @@ export default function App() {
             }
           }
         } else {
-          const selectedMode = window.prompt(
-            `选择执行模式：\n- plan_only：仅生成实验输入\n- approve_each_step：每一步都需要确认\n- agent_assisted_after_approval：确认后由 Agent 协助准备环境\n\n目标：${goal}\n材料：${task.input_task.source_ids.length} 项`,
-            'plan_only',
-          );
-          if (selectedMode === null) {
-            // Closing the mode dialog is a deliberate no-op.
-          } else if (
-            selectedMode !== 'plan_only'
-            && selectedMode !== 'approve_each_step'
-            && selectedMode !== 'agent_assisted_after_approval'
-          ) {
-            addToast('未确认有效的执行模式', 'error');
-          } else {
-            const confirmed = window.confirm(
-              selectedMode === 'plan_only'
-                ? '确认生成 input_task.yaml？不会修改代码或运行实验。'
-                : `确认以 ${selectedMode} 启动环境准备？不会启动 baseline 或修改模型代码。`,
-            );
-            if (confirmed) {
-              try {
-                const prepared = await confirmExperimentTask(targetRunId, task.task_id, selectedMode);
-                addToast(`实验任务已确认（${prepared.disposition}）`, 'success');
-              } catch (error) {
-                if (error instanceof ApiError && error.code === 'summary_changed') {
-                  addToast('研究摘要已在草案生成后更新；当前草案已过期。请先生成最新草案，再次确认。', 'info');
-                } else {
-                  const message = error instanceof Error ? error.message : '实验输入生成失败';
-                  addToast(`实验输入生成失败：${message}`, 'error');
-                }
-              }
-            }
-          }
+          setPendingExperimentTaskConfirmation({ runId: targetRunId, task });
         }
       }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
@@ -454,7 +437,13 @@ export default function App() {
       if (source.source_id) {
         setSources(prev => prev.some(s => s.sourceId === source.source_id)
           ? prev
-          : [...prev, { sourceId: source.source_id, kind: source.kind || 'unknown', label: source.stored_path || file.name, status: 'uploaded_not_parsed' }]);
+          : [...prev, {
+            sourceId: source.source_id,
+            kind: source.kind || 'unknown',
+            label: source.stored_path || file.name,
+            status: 'uploaded_not_parsed',
+            intakeStatus: typeof source.intake_status === 'string' ? source.intake_status : null,
+          }]);
       }
       await refreshSidebarForRun(targetRunId);
       setTaskStatus('Ready');
@@ -488,7 +477,7 @@ export default function App() {
       if (!sourceId) return;
       setSources(prev => {
         if (prev.some(source => source.sourceId === sourceId)) return prev;
-        return [...prev, { sourceId, kind: msg.kind || 'unknown', label: storedPath || sourceId, status: 'registered' }];
+        return [...prev, { sourceId, kind: msg.kind || 'unknown', label: storedPath || sourceId, status: 'registered', intakeStatus: null }];
       });
     }
     if (msg.type === 'source.deleted') {
@@ -563,6 +552,31 @@ export default function App() {
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} />}
+      {pendingExperimentTaskConfirmation && (
+        <ExperimentTaskConfirmation
+          task={pendingExperimentTaskConfirmation.task}
+          sources={sources}
+          onClose={() => setPendingExperimentTaskConfirmation(null)}
+          onConfirm={async (executionMode, executionRepositorySourceId) => {
+            try {
+              const prepared = await confirmExperimentTask(
+                pendingExperimentTaskConfirmation.runId,
+                pendingExperimentTaskConfirmation.task.task_id,
+                executionMode,
+                executionRepositorySourceId,
+              );
+              setPendingExperimentTaskConfirmation(null);
+              addToast(`实验任务已确认（${prepared.disposition}）`, 'success');
+              await refreshSidebarForRun(pendingExperimentTaskConfirmation.runId);
+            } catch (error) {
+              if (error instanceof ApiError && error.code === 'summary_changed') {
+                addToast('研究摘要已在草案生成后更新；当前草案已过期。请先生成最新草案，再次确认。', 'info');
+              }
+              throw error;
+            }
+          }}
+        />
+      )}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
 
       {/* Header */}

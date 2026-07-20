@@ -33,6 +33,7 @@ export interface SourceItem {
   kind: string;
   label: string;
   status: string;
+  intakeStatus: string | null;
 }
 
 export interface BasedStatement {
