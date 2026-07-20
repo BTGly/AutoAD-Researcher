@@ -256,6 +256,28 @@ def test_plan_only_confirmation_never_creates_session_or_job(tmp_path: Path):
     assert load_pipeline_jobs(run_dir) == []
 
 
+def test_pending_task_can_be_loaded_for_browser_reload(tmp_path: Path):
+    run_dir = tmp_path / "run_pending_browser_reload"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+
+    loaded = TaskBridge.load_pending_experiment_task(run_dir)
+
+    assert loaded == draft
+
+
+def test_pending_task_route_returns_the_durable_draft(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_pending_route"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    monkeypatch.setattr(runs_route, "RUNS_ROOT", tmp_path)
+
+    import asyncio
+    loaded = asyncio.run(runs_route.get_pending_experiment_task(run_dir.name))
+
+    assert loaded == draft
+
+
 def test_execution_confirmation_without_source_selection_has_zero_execution_side_effects(tmp_path: Path):
     run_dir = tmp_path / "run_missing_execution_source"
     run_dir.mkdir()

@@ -145,6 +145,12 @@ class TaskBridge:
             )
 
     @classmethod
+    def load_pending_experiment_task(cls, run_dir: Path) -> ExperimentTaskDraft:
+        """Load the durable draft for a page reload; never prepare a new task."""
+        _validate_run_dir(run_dir)
+        return _load_pending_task(run_dir)
+
+    @classmethod
     def prepare_or_reuse_experiment_task(
         cls,
         run_dir: Path,

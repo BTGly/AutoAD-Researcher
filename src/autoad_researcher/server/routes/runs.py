@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
 from autoad_researcher.assistant.v2.task_bridge import (
+    ExperimentTaskDraft,
     ExperimentTaskConfirmationResult,
     TaskBridge,
     TaskConfirmationConflict,
@@ -203,6 +204,24 @@ async def confirm_experiment_task(
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
     except (FileExistsError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "confirmation_invalid", "message": str(exc)},
+        ) from exc
+
+
+@router.get(
+    "/{run_id}/experiment-task/pending",
+    response_model=ExperimentTaskDraft,
+)
+async def get_pending_experiment_task(run_id: str):
+    """Return the durable task draft so a browser refresh preserves consent state."""
+    run_dir = _existing_run_dir(run_id)
+    try:
+        return TaskBridge.load_pending_experiment_task(run_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(
             status_code=409,
             detail={"code": "confirmation_invalid", "message": str(exc)},

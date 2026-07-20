@@ -31,6 +31,7 @@ import {
   getEvidenceState,
   getIntentSummary,
   getJobs,
+  getPendingExperimentTask,
   getRuns,
   getSources,
   getTranscript,
@@ -175,7 +176,11 @@ export default function App() {
       timestamp: entry.created_at ? new Date(entry.created_at).getTime() : Date.now(),
     })));
     await refreshSidebarForRun(nextRunId);
+    const pendingTask = await getPendingExperimentTask(nextRunId).catch(() => null);
     if (currentRunIdRef.current === nextRunId) {
+      if (pendingTask?.status === 'pending_confirmation') {
+        setPendingExperimentTaskConfirmation({ runId: nextRunId, task: pendingTask });
+      }
       setLoadedRunId(nextRunId);
       setRunLoading(false);
     }

@@ -98,6 +98,13 @@ export async function confirmExperimentTask(
   return res.json();
 }
 
+export async function getPendingExperimentTask(runId: string): Promise<ExperimentTaskDraft | null> {
+  const res = await fetch(`/api/runs/${runId}/experiment-task/pending`, { headers: getHeaders() });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await apiError(res, `Pending experiment task error: ${res.status}`);
+  return res.json();
+}
+
 export async function confirmPrimaryMetrics(
   runId: string,
   primaryMetrics: string[],
