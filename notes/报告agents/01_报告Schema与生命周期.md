@@ -56,13 +56,25 @@ review_status
 format_status
 jobs
 retry_count
-dependency_projection
 last_error
 available_artifacts
 updated_at
 ```
 
 状态和制品条目更新使用同一份原子 JSON。已生成文件字节不可覆盖；`available_artifacts` 只追加新制品或更新其状态，不承担报告身份事实。
+
+`jobs` 中每个报告 Job 都带自己的依赖投影，不使用一个覆盖整条 DAG 的全局字符串：
+
+```text
+job_id
+job_type
+status
+depends_on_job_id: string or explicit missing marker
+dependency_status: ready / pending / blocked_by_failed_dependency
+dependency_reason: string or explicit missing marker
+```
+
+`dependency_status` 是当前依赖检查的确定性投影，不改变 `PipelineJob` 的基础状态语义；没有依赖的 Job 使用 `ready`，依赖尚未完成使用 `pending`，上游失败但允许报告专用重试时使用 `blocked_by_failed_dependency`。
 
 ### 3.3 `ReportSnapshot`（计划新增，冻结输入）
 
@@ -102,13 +114,15 @@ retry_count
 pipeline_job_id
 failure_code
 execution_result_ref
+execution_result_binding_status: bound / missing / ambiguous / sha_mismatch
+execution_result_missing_reason: string or explicit missing marker
 evaluation_contract_ref
 evaluation_contract_sha256
 created_at
 updated_at_at_snapshot
 ```
 
-`execution_result_ref` 继续保留现有 Attempt 字段语义，但在 Snapshot 中必须解析到 `source_refs` 里唯一的 `ArtifactReferenceV2`：其 `artifact_id`、类型、run-relative locator 和 SHA 必须一致。无法解析、引用不唯一或 SHA 校验失败时，Snapshot 写入显式 missing marker，并由 Facts/Evidence Validator 报告缺失原因；不另造第二套执行结果引用模型。
+`execution_result_ref` 继续保留现有 Attempt 字段语义，但在 Snapshot 中必须解析到 `source_refs` 里唯一的 `ArtifactReferenceV2`：其 `artifact_id`、类型、run-relative locator 和 SHA 必须一致。绑定成功时写 `bound`；引用为空或缺失写 `missing`，引用不唯一写 `ambiguous`，SHA 校验失败写 `sha_mismatch`，并填写 `execution_result_missing_reason`。不另造第二套执行结果引用模型；Facts/Evidence Validator 只消费这个结构化绑定结果。
 
 PID、process group、resource lease 和 heartbeat 不进入报告身份；若以后展示，必须明确是 Snapshot 时刻的运行状态。`CognitiveCostSummary` 是从 append-only usage ledger 重建的派生视图，R0A 冻结其结果，R1 不再调用 live builder。
 
@@ -179,7 +193,7 @@ report_facts_assemble
 
 这是固定的报告 DAG，不新增通用调度器：`report_package` 依赖 HTML ready，PDF 只依赖 Validator。各格式失败不会回退 `content_ready`，也不会阻断另一条已满足依赖的分支。
 
-报告 Job 的依赖失败只做报告侧的依赖投影：下游 `PipelineJob` 保持 `queued`，报告状态记录 `dependency_projection: blocked_by_failed_dependency`，Worker 不把它 claim 后永久置为 `failed`。上游 Job 通过显式报告重试成功后，下一轮依赖检查清除该投影，下游自然具备执行条件。非报告 Job 继续使用当前 Worker 的严格失败传播，不把这条例外推广成通用调度规则。
+报告 Job 的依赖失败只做报告侧的逐 Job 依赖投影：下游 `PipelineJob` 保持 `queued`，对应 `ReportState.jobs` 条目记录 `dependency_status: blocked_by_failed_dependency`、具体的 `depends_on_job_id` 和原因，Worker 不把它 claim 后永久置为 `failed`。上游 Job 通过显式报告重试成功后，下一轮依赖检查只清除对应 Job 的阻塞投影，下游自然具备执行条件；PDF 分支的状态不被 HTML 分支的阻塞覆盖。非报告 Job 继续使用当前 Worker 的严格失败传播，不把这条例外推广成通用调度规则。
 
 报告 Job 失败重试必须使用独立的、受限的 failed requeue 操作，而不是让 `create_or_get_pipeline_job()` 隐式改变状态。该操作只允许报告 Job 类型，并在同一把 Job 锁内：
 
@@ -264,6 +278,7 @@ runs/{run_id}/reports/{report_id}/
 - [ ] Snapshot 的 `frozen_cognitive_cost_summary` 与 `cognitive_usage_sha256` 来自同一账本读取窗口；账本在窗口内变化时不会写出混合摘要和指纹。
 - [ ] Snapshot 引用只允许已登记、SHA 匹配的 artifact。
 - [ ] `execution_result_ref` 能唯一解析到 `source_refs` 中的 `ArtifactReferenceV2`；无法解析时保留显式 missing marker。
+- [ ] `execution_result_binding_status` 能区分 bound、missing、ambiguous 和 sha_mismatch，并保留可解释的缺失原因。
 - [ ] 相同 Snapshot 和相同 `report_recipe_hash` 复用报告；配方变化生成新版本。
 - [ ] Snapshot hash 产生前不会创建依赖该 hash 的 Job。
 - [ ] 非法状态转换被拒绝。
@@ -271,6 +286,7 @@ runs/{run_id}/reports/{report_id}/
 - [ ] failed 报告 Job 只能通过显式受限 requeue 重试；普通 `create_or_get_pipeline_job()` 不会暗中重新执行。
 - [ ] PDF 不依赖 Bundle；HTML 失败不会错误地让 PDF 进入依赖失败，Bundle 只在 HTML ready 后生成。
 - [ ] 报告下游依赖失败时保持 queued 和阻塞投影；上游报告 Job 成功重试后，下游可自然恢复执行。
+- [ ] `/state` 能逐 Job 返回依赖状态、上游 Job ID 和原因；HTML 阻塞不会覆盖 PDF 分支状态。
 - [ ] Markdown/Validator 完成后，即使 PDF 不可用，也能进入可审阅条件。
 - [ ] 失败重试通过持久化 Job，而不是进程内后台任务。
 - [ ] 旧报告目录和文件字节不发生改变。

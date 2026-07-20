@@ -22,7 +22,7 @@
 
 R0A 是唯一可以读取 Session、IdeaTree、Attempt、Candidate/Champion、StopDecision 和 CognitiveCostSummary live 来源并写入冻结副本的边界。R1 及后续阶段只接受 Snapshot 和其中登记的不可变引用；即使生成期间控制面继续变化，也不能回读最新值来“补齐” Facts。
 
-Facts assembler 对 `execution_result_ref` 做确定性绑定校验：引用为空、缺失、对应多个 artifact 或 SHA 不匹配时，保留失败/缺失事实和原因，不从路径名、文件扩展名或自由文本猜测执行结果。
+Facts assembler 对 `execution_result_ref` 做确定性绑定校验，并消费 `execution_result_binding_status` 和 `execution_result_missing_reason`：引用为空、缺失、对应多个 artifact 或 SHA 不匹配时，保留失败/缺失事实和原因，不从路径名、文件扩展名或自由文本猜测执行结果。
 
 当前仓库确实存在 `IdeaTreeStore`，必须纳入 Snapshot 和 Facts。计划中不使用不存在的 `ChampionStore` 或含义不清的通用 `CostSummary`；如果某个事实在当前仓库没有权威来源，输出为缺失/未确定并记录原因，不自行补齐。
 

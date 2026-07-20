@@ -99,6 +99,19 @@ last_error
 available_artifacts
 ```
 
+`jobs` 必须逐项返回报告 Job 的依赖投影，至少包括：
+
+```text
+job_id
+job_type
+status
+depends_on_job_id
+dependency_status: ready / pending / blocked_by_failed_dependency
+dependency_reason
+```
+
+因此 `/state` 能同时表达“Bundle 等待 HTML 重试”和“PDF 已完成”，不会用一个全局依赖字符串覆盖并行分支。
+
 `READY_FOR_REVIEW` 可以作为前端兼容字段，但它必须是确定性 readiness projection，而不是 PDF 是否成功的别名。
 
 ## 6. 旧接口兼容
@@ -124,6 +137,7 @@ GET /api/runs/{run_id}/report
 - [ ] failed Job 的重排队通过显式报告 Job 操作完成，不改变普通幂等创建的读取语义。
 - [ ] `latest-created` 与 `latest-content-ready` 语义不混淆，排队中的新版本不会遮挡旧的可读版本。
 - [ ] `/manifest` 只返回不可变身份；`/state` 返回可变状态投影。
+- [ ] `/state` 的每个 Job 都返回 `dependency_status`、`depends_on_job_id` 和 `dependency_reason`。
 - [ ] API 使用 `RUNS_ROOT` 和现有 path helper。
 - [ ] 报告路径校验复用当前 `RUNS_ROOT + run_dir_path` 基线；若抽取共享 helper，测试覆盖现有证据路由和报告路由。
 - [ ] `report_id` 固定绑定，不能在 Agent 请求中隐式切换 latest。
