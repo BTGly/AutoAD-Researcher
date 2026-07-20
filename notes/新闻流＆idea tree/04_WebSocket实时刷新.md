@@ -2,249 +2,159 @@
 
 ## 1. 目标
 
-在不改变现有事件写入路径的前提下，使 `experiment.*` 事件通过现有 WebSocket 推送到前端，驱动实验工作台自动刷新。
+在不修改现有事件写入路径和 WebSocket envelope 的前提下，使 `experiment.*` 事件触发实验工作台重新读取只读投影。
 
-## 2. 设计约束
+## 2. 当前 WebSocket 事实
 
-- **不修改实验模块的 `append_event()` 调用** — 不在 25+ 个调用点增加额外 `ws_manager.broadcast()`
-- **继续使用现有事件路径**：`append_event()` → `events/events.jsonl` → `ws.py` polling → 前端
-- **不做双向 broadcast** — 不存在直接 broadcast 和 WS polling 两次推送的重复问题
-- **向后兼容** — 现有 `source.*`、`job.*`、`artifact.*`、`assistant.*`、`toast.*` 事件不受影响
+当前路径是：
 
-## 3. 当前 WebSocket 数据流
-
-```
+```text
 实验模块
   → append_event(run_dir, event_type, payload)
     → events/events.jsonl
-      ← ws.py: load_events_since(run_dir, last_event_id) (每 0.8 秒)
-        → ws.send_json({type: evt["type"], ...payload})
+      → ws.py load_events_since(run_dir, last_event_id)
+        → ws.send_json({"type": evt["type"], ...payload})
           → 前端 onWsMessage()
-
-连接时同时回放历史事件 (load_events_since from event_id=0)
 ```
 
-现有 `ws.py` 代码（`server/routes/ws.py:14-58`）：
+连接时会回放已有事件，后台按现有间隔轮询新事件。前端 `useWebSocket` 已有重连检查。
 
-```python
-@router.websocket("/api/runs/{run_id}/ws")
-async def websocket_endpoint(ws: WebSocket, run_id: str):
-    ...
-    last_event_id = 0
+本提交不改变这些事实，也不把事件 payload 当作科研状态。
 
-    # Replay existing events on connect
-    for evt in load_events_since(run_dir, last_event_id):
-        if not _is_transient_event(evt):
-            await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
-        last_event_id = evt["event_id"]
+## 3. 设计约束
 
-    # Background polling
-    async def poll_events():
-        nonlocal last_event_id
-        while True:
-            for evt in load_events_since(run_dir, last_event_id):
-                await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
-                last_event_id = evt["event_id"]
-            await asyncio.sleep(0.8)
-```
+- 不修改实验模块的 `append_event()` 调用。
+- 不在实验模块增加 `ws_manager.broadcast()`。
+- 不修改 `ws.py` 的消息 envelope。
+- 不新增 `event_id`、`created_at` 到 WebSocket 消息。
+- 不新增前端事件总线。
+- 不根据事件 payload 拼接 Idea、Attempt、Outcome 或 Champion 状态。
+- 所有科研状态刷新都重新请求投影 API。
+- 现有 `source.*`、`job.*`、`artifact.*`、`assistant.*`、`toast.*` 行为不改变。
 
-## 4. 后端改动
+审阅报告提出扩展 WS envelope 的建议，但当前页面只需要“投影可能失效”信号；事件 ID 和时间已经由后端投影的 ActivityCard 提供，放入 WS envelope 会扩大协议修改面而没有首版收益。
 
-**文件：** `src/autoad_researcher/server/routes/ws.py`
+## 4. 前端改动
 
-### 4.1 WS 消息 envelope 补齐 `event_id` 和 `created_at`
+### 4.1 `frontend/src/App.tsx`
 
-```diff
-- await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
-+ await ws.send_json({
-+     "type": evt["type"],
-+     "event_id": evt["event_id"],
-+     "created_at": evt["created_at"],
-+     **(evt.get("payload", {})),
-+ })
-```
-
-改动量：两行（replay 和 polling 各一）。
-
-向后兼容说明：现有前端 `onWsMessage` 按 `msg.type` 分发，不认识 `event_id`/`created_at` 的事件会忽略这些新字段，不产生行为变化。
-
-### 4.2 无需其他后端改动
-
-禁止在每个实验模块中增加：
-
-```python
-append_event(run_dir, "experiment.xxx", payload)
-ws_manager.broadcast(run_id, {"type": "experiment.xxx", ...})
-```
-
-同一事件会被 broadcast 一次（直接），又被 WS polling 捞到一次（0.8 秒后），造成前端重复展示。
-
-## 5. 前端改动
-
-### 5.1 `frontend/src/lib/types.ts` — WSMessage 扩展
-
-```diff
- export interface WSMessage {
-   type: string;
-+  event_id?: number;
-+  created_at?: string;
-   // ... 现有字段
- }
-```
-
-### 5.2 `frontend/src/App.tsx` — onWsMessage 增加 `experiment.*` 分支
+在现有 `onWsMessage` 中增加最小分支：
 
 ```typescript
-// 在 onWsMessage 回调中增加 (lines ~482-554)
 if (msg.type.startsWith('experiment.')) {
-  handleExperimentEvent(msg);
+  setExperimentRefreshTick(value => value + 1);
   return;
 }
 ```
 
+`experimentRefreshTick` 只表示“需要重新读取”，不携带实验数据。
+
+将它传入 `ExperimentPage`。不要把 `msg` 保存为前端实验状态，也不要在这里理解各个实验事件的 payload 字段。
+
+### 4.2 `frontend/src/components/ExperimentPage.tsx`
+
+页面负责：
+
+1. mount 或 `runId` 变化时请求一次投影；
+2. `sessionId` 变化时请求对应投影；
+3. `experimentRefreshTick` 变化时启动 300ms 防抖；
+4. 防抖结束后请求 `GET /api/runs/{run_id}/experiment/projection`；
+5. 请求完成后以返回快照替换页面投影。
+
+建议逻辑：
+
 ```typescript
-function handleExperimentEvent(msg: WSMessage) {
-  // 通知 ExperimentPage 重新加载投影
-  // 使用事件总线或回调
-  onExperimentEvent?.(msg);
-}
+useEffect(() => {
+  void loadProjection(runId, sessionId);
+}, [runId, sessionId]);
+
+useEffect(() => {
+  if (experimentRefreshTick === 0) return;
+  const timer = window.setTimeout(() => {
+    void loadProjection(runId, sessionId);
+  }, 300);
+  return () => window.clearTimeout(timer);
+}, [experimentRefreshTick, runId, sessionId]);
 ```
 
-### 5.3 `frontend/src/components/ExperimentPage.tsx` — 防抖刷新
+实际实现必须遵循当前 React 类型和 API helper 的写法，不复制不存在的 `onExperimentEvent` 事件总线接口。
 
-```typescript
-function ExperimentPage({ runId, sessionId, onExperimentEvent, ... }: Props) {
-  const [projection, setProjection] = useState<ExperimentProjection | null>(null);
-  const [loading, setLoading] = useState(false);
-  const debounceTimer = useRef<number | null>(null);
+### 4.3 刷新和请求竞态
 
-  // 初始加载
-  useEffect(() => {
-    loadProjection(runId, sessionId);
-  }, [runId, sessionId]);
+- `runId` 变化时清除旧的防抖计时器；
+- `sessionId` 变化时不能把旧 Session 的投影显示到新 Session；
+- 可以使用请求序号或 AbortController 防止旧请求覆盖新请求，但不能新增第二套实验状态；
+- 请求失败时保留上一份有效投影并显示错误提示；
+- 初次请求失败不能把“请求失败”伪装成“无 Session”。
 
-  // WebSocket 事件 → 防抖 → 重新加载
-  useEffect(() => {
-    if (!onExperimentEvent) return;
-    const handler = (msg: WSMessage) => {
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      debounceTimer.current = window.setTimeout(() => {
-        loadProjection(runId, sessionId);
-      }, 300);  // 300ms 防抖
-    };
-    // 注册事件监听
-    const unsubscribe = onExperimentEvent(handler);
-    return () => {
-      unsubscribe?.();
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-    };
-  }, [runId, sessionId, onExperimentEvent]);
+## 5. WebSocket 重连
 
-  async function loadProjection(runId: string, sessionId: string | null) {
-    setLoading(true);
-    try {
-      const data = await getExperimentProjection(runId, sessionId);
-      setProjection(data);
-    } finally {
-      setLoading(false);
-    }
-  }
+重连后当前 WebSocket 会回放事件。多个 replay 事件只会造成刷新计数连续变化，页面通过防抖合并为一次投影请求。
 
-  // 渲染 ...
-}
+页面恢复依赖持久化投影，而不是依赖浏览器内存里的事件卡片：
+
+```text
+重连
+  → 现有 WS replay experiment.*
+    → refresh tick
+      → 防抖
+        → GET projection
+          → 展示当前权威状态
 ```
 
-### 5.4 防抖策略说明
+不在重连时追加重复 Activity 卡片；Activity 始终由后端投影重新装配。
 
-| 场景 | 行为 |
-|------|------|
-| 收到 1 个 `experiment.attempt.finalized` | 300ms 后请求一次投影 |
-| 0.2 秒内连续收到 5 个事件 | 合并为 1 次请求（最终仅 1 次载荷） |
-| WebSocket 重连 | replay 多个事件 → 合并为 1 次请求 |
-| 用户手动刷新 | 直接请求投影，不受防抖限制 |
+## 6. 事件类型清单的处理方式
 
-### 5.5 WebSocket 重连恢复
+本文件不再维护带 payload 字段的静态事件表。当前分支中多个事件字段已经与旧计划不同，而且部分事件没有 `session_id`，需要通过准确引用关联 Store。
 
-当前 `useWebSocket` 已有自动重连机制（5 秒 interval 检查 socket 状态）。重连后：
+编码前如确实需要事件来源表，必须：
 
-1. 自动回放 `events.jsonl` 中的所有事件（包含 `experiment.*`）
-2. 前端收到 replay 事件 → 触发投影刷新
-3. 页面恢复最新状态
+1. 对当前分支所有 `append_event()` 调用执行精确检索；
+2. 从源码和测试读取事件类型及 payload；
+3. 只记录已核对的字段；
+4. 明确该表仅用于开发者参考，前端刷新逻辑不得依赖它。
 
-不依赖浏览器内存维持状态。
+首版前端只依赖 `type` 前缀：
 
-## 6. `experiment.*` 事件列表
+```text
+experiment.* → 刷新投影
+其他事件     → 保持现有 App.tsx 行为
+```
 
-以下事件现已存在于 `events.jsonl` 中，提交四仅需前端理解它们：
-
-| 事件类型 | emit 位置 | payload 内容 |
-|----------|-----------|-------------|
-| `experiment.session.created` | `session_store.py:123` | `{session_id, status}` |
-| `experiment.idea_tree.created` | `idea_tree.py:179` | `{session_id, tree_revision}` |
-| `experiment.idea_tree.mutated` | `idea_tree.py:358` | `{session_id, mutation, tree_revision}` |
-| `experiment.cognitive_commit.appended` | `cognition.py:82` | `{session_id, commit_id, tree_revision}` |
-| `experiment.observation_snapshot.written` | `cognition.py:103` | `{session_id, cycle_id, tree_revision}` |
-| `experiment.attempt.created` | `attempt_service.py:99` | `{session_id, attempt_id, attempt_purpose, idempotency_key}` |
-| `experiment.attempt.queued` | `attempt_service.py:124` | `{session_id, attempt_id, pipeline_job_id}` |
-| `experiment.attempt.running` | `attempt_execution.py:78` | `{session_id, attempt_id, pid}` |
-| `experiment.attempt.finalized` | `attempt_execution.py:188` | `{session_id, attempt_id, runtime_status}` |
-| `experiment.attempt.retry_queued` | `attempt_service.py:159` | `{session_id, attempt_id, retry_of, retry_count}` |
-| `experiment.attempt.reconnected` | `coordinator_recovery.py:163` | `{session_id, attempt_id}` |
-| `experiment.coordinator.checkpoint.recorded` | `coordinator_recovery.py:70` | `{session_id, cycle_id, tree_revision}` |
-| `experiment.coordinator.recovered` | `coordinator_recovery.py:138` | `{session_id, action, reason}` |
-| `experiment.coordinator.context_pruned` | `coordinator.py:306` | `{session_id, cycle_id, retained_outcome_refs}` |
-| `experiment.coordinator.compact_cycle.committed` | `coordinator.py:400` | `{session_id, cycle_id, next_action, tree_mutations}` |
-| `experiment.coordinator.exploratory_cycle.committed` | `coordinator.py:491` | `{session_id, cycle_id, next_action, tree_mutations}` |
-| `experiment.coordinator.exploratory_cycle.fallback` | `coordinator.py:502` | `{session_id, cycle_id, reason}` |
-| `experiment.strategy.filtered` | `strategy.py:179` | `{session_id, available_skills}` |
-| `experiment.champion.rolled_back` | `promotion.py:502` | `{session_id, candidate_id, event_id}` |
-| `experiment.champion.promoted_and_merged` | `promotion.py:555` | `{session_id, candidate_id, event_id, trunk_commit}` |
-| `experiment.stop_policy.evaluated` | `stop_policy.py:128` | `{session_id, decision, reason}` |
-| `experiment.convergence.alert` | `convergence.py:208` | `{session_id, level, window_index, max_attempts}` |
-| `experiment.cognitive_budget.usage_recorded` | `cognitive_budget.py:75` | `{session_id, call_count, total_cost, step_count}` |
-
-前端不需要理解所有 payload 字段。收到 `experiment.*` 事件后统一走防抖 → 重新请求投影。
-
-## 7. 参考来源
-
-| 来源 | 复用等级 | 说明 |
-|------|----------|------|
-| 现有 `ws.py` | `[REUSE]` | 沿用 polling 架构，只加 event_id/created_at |
-| 现有 `event_service.py` | `[REUSE]` | 沿用 load_events_since 读取 |
-| 现有 `App.tsx` onWsMessage | `[REUSE]` | 沿用消息分发模式，加 experiment.* 分支 |
-
-## 8. 测试
+## 7. 测试
 
 ### 后端
 
-1. WS 消息 envelope 包含 `event_id` 和 `created_at`
-2. 现有 `source.*` / `job.*` / `artifact.*` 消息格式不受影响
-3. `_is_transient_event` 过滤正常
+本提交不应新增 `ws.py` envelope 测试，因为 envelope 不变。继续运行现有 WS 和事件测试，确认：
+
+- replay 仍可用；
+- polling 仍可用；
+- transient event 过滤不变；
+- 原有 source/job/assistant/toast 消息不变。
 
 ### 前端
 
-1. `experiment.*` 事件触发投影刷新
-2. 多个事件合并为一次请求
-3. WebSocket 重连后恢复最新状态
-4. 切换 run/Session 后清理前一个的观测数据
-5. 手动刷新页面后恢复最新状态
+至少覆盖：
 
-## 9. 不重复证明
+1. `experiment.*` 消息只触发刷新计数；
+2. 不读取 payload 来拼接 UI；
+3. 短时间多个事件只触发一次防抖请求；
+4. 重连 replay 多事件后最终只加载一次投影；
+5. 切换 run/session 后旧请求不能覆盖新投影；
+6. 手动刷新直接请求投影；
+7. 请求失败保留上一份快照并展示错误。
 
-**问题：** 事件同时被 `append_event()` 写入 + `ws_manager.broadcast()` 发送，前端会收到两次。
+## 8. 不重复证明
 
-**验证：** 查看所有事件 emit 点，确认它们只调用 `append_event()`，不额外调用 `ws_manager.broadcast()`。
+不要修改实验模块以同时调用 `append_event()` 和 `ws_manager.broadcast()`。
+检查范围应是当前分支实际的实验目录，并以源码结果为准；不能把“预期无匹配”写成未经验证的事实。
 
-```bash
-# 确认没有模块同时做这两件事（除了 ws.py 本身的 polling 消费）
-rg "ws_manager\.broadcast" src/autoad_researcher/experiment/
-# → 预期：无匹配
-```
+## 9. 验收
 
-## 10. 验收
-
-- 后台运行实验时，实验工作台自动更新（0.8-1.5 秒延迟）
-- 切换 run/Session 后只显示对应数据
-- WebSocket 重连后不重复显示事件卡片
-- 关闭再打开页面后恢复最新状态
-- 现有 `source.*` / `job.*` / `assistant.*` / `toast.*` 事件不受影响
+- 后台实验状态变化后，工作台通过投影重新加载更新。
+- WS envelope 没有新增字段。
+- 前端不从事件 payload 生成科研状态。
+- 重连后不会重复显示事件卡片。
+- 切换 run/session 后不显示旧数据。
+- 现有 Chat、Sources、Jobs、Evidence、Toast 行为不回归。

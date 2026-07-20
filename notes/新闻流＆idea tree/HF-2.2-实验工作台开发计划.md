@@ -1,375 +1,256 @@
 # HF-2.2：实验工作台 (Experiment Observatory) 开发计划
 
-## 目标
+## 1. 目标
 
-将左侧中间「设置」页改造为「实验工作台」，只读展示实验进展。
+将左侧“设置”入口改造成实验工作台，展示当前实验的 Session、Idea Tree、Attempt、科学评价和研究动态。
 
-## 架构原则
+本功能是只读观察面，不增加实验控制动作，不修改 Coordinator、AttemptExecution、Finalizer、Promotion 等核心逻辑。
 
-1. **不新增第二套权威状态** — 数据来自现有 Store (Session/Idea/Attempt/Outcome/Cognition/Champion)，前端只做只读投影
-2. **Event 只作变化通知** — 事件不携带完整科研数据；收到事件后重新请求投影，而非从事件 payload 推断
-3. **不修改实验 Agents 核心逻辑** — Coordinator、AttemptExecution、Finalizer、Promotion 等不因本功能修改
-4. **复用现有 WebSocket** — 不新增 broadcast；继续使用 events.jsonl → ws.py polling 路径
-5. **首版不引入大型可视化框架** — Idea Tree 用 React 嵌套列表或简单 SVG，不用 D3/Cytoscape
+## 2. 总体原则
 
----
+```text
+现有权威 Store / Artifact
+        ↓
+只读投影
+        ↓
+ExperimentPage
+        ↑
+现有 WebSocket 只做失效通知
+```
 
-## 提交一：导航与空页面
+### 2.1 不能违反的边界
 
-### 改动清单
+1. 不新增第二套权威状态。
+2. 不把 `task_ref` 当研究目标；当前 Starter 会写入固定的 `input_task.yaml`。
+3. 不调用会写 Artifact 的科学评价服务来响应 GET。
+4. 不从当前最终 Idea Tree 反推历史 mutation。
+5. 不从 CandidateSnapshot 直接读取不存在的科学结论字段。
+6. 不按字典第一个值、时间或目录顺序选择 Champion 或 Session。
+7. 不为了页面首版增加 `ExperimentSessionStore.list_sessions()`。
+8. 不修改现有 WebSocket envelope，不增加第二条 broadcast 路径。
+9. 底层 enum 保持精确，用户界面通过确定性映射显示中文。
+
+Arbor 的成熟做法是用持久化 Idea Tree / RunState 生成紧凑的只读监控状态，原始事件独立保留；MLflow 的 Run metadata、metrics、inputs、Artifact 分层用于参考 AutoAD 的执行事实和科学评价分层。两者都是设计参考，不直接复制代码。
+
+## 3. 提交一：导航、配置入口与空页面
+
+### 3.1 改动
 
 | 文件 | 改动 |
-|------|------|
-| `frontend/src/lib/types.ts` | `PageId`: `"chat" | "settings" | "report"` → `"chat" | "experiment" | "report"` |
-| `frontend/src/components/LeftSidebar.tsx` | ITEMS 第三项改 `{ id: 'experiment', icon: '🔬', label: '实验工作台' }` |
-| `frontend/src/App.tsx` | 路由条件 `page === 'settings'` → `page === 'experiment'`；移除 `<SettingsPage>` 渲染 |
-| `frontend/src/components/ExperimentPage.tsx` | **新建** — 三栏布局 shell + 空状态 |
-| `frontend/src/components/SettingsPage.tsx` | 移出主路由，保留文件供顶部 `ConfigModal` 复用 |
+|---|---|
+| `frontend/src/lib/types.ts` | 将 `PageId` 的 `settings` 页面改为 `experiment` |
+| `frontend/src/components/LeftSidebar.tsx` | 设置入口改名为“实验工作台” |
+| `frontend/src/App.tsx` | 渲染 ExperimentPage，保留顶部 ConfigModal |
+| `frontend/src/components/ExperimentPage.tsx` | 新建工作台布局和空状态 |
+| `frontend/src/components/SettingsPage.tsx` | 保留现有实验配置表单，供工作台嵌入 |
 
-### ExperimentPage 空状态
+### 3.2 配置职责不能混淆
 
-- 无 Session → 居中显示「实验尚未启动。请先在研究助手中确认实验任务。」
-- 无 runId → 居中显示「请先创建一个研究任务。」
+当前 `ConfigModal` 只负责通用 API Key、Base URL、Model；当前 `SettingsPage` 负责实验 Provider、实验 Model、实验 API Key、Reasoning Effort、Cycle、Turn、Timeout、文献搜索和 Idea 新颖性检查。
 
-### 验收
+工作台增加“实验配置”按钮，复用 `SettingsPage` 的表单和 `saveExperimentConfig`。顶部齿轮继续打开 `ConfigModal`。不要重写第二套表单，也不要声称两个组件已经共用全部字段。
 
-- 左侧导航显示「实验工作台」，点击后打开空页面
-- 设置仍可通过顶部齿轮打开 ConfigModal
-- 设置功能未丢失
+### 3.3 空状态
 
----
+- 无 `runId`：请先创建一个研究任务。
+- 无 Session：实验尚未启动，请先在研究助手中确认实验任务。
+- 多个 Session：发现多个实验 Session，请明确选择；首版不偷偷选择。
 
-## 提交二：后端只读投影
+### 3.4 验收
 
-### 新增文件
+- 实验工作台入口可打开。
+- 通用 API 配置仍可打开和保存。
+- 实验配置字段未丢失。
+- Chat、Report 不回归。
+
+## 4. 提交二：后端只读投影
+
+### 4.1 新增文件
 
 | 文件 | 职责 |
-|------|------|
-| `src/autoad_researcher/assistant/v2/experiment_projection.py` | 只读投影装配器 |
+|---|---|
+| `src/autoad_researcher/assistant/v2/experiment_projection.py` | Pydantic 投影 Schema 和装配器 |
+| `src/autoad_researcher/server/routes/experiment_projection.py` | 投影 GET API |
+| `tests/test_v2_experiment_projection.py` | 投影测试 |
+| `src/autoad_researcher/server/main.py` | 注册新路由 |
 
-### 投影装配器
+### 4.2 投影选择状态
 
-输入：
-
-```python
-run_dir: str
-session_id: str
-```
-
-输出：
+新增 API Schema 使用明确的选择状态：
 
 ```python
-@dataclass
-class ExperimentProjection:
-    session: ExperimentSession | None            # Session 基础信息
-    summary: SessionSummary                       # 统计摘要
-    idea_tree: IdeaTreeProjection | None          # Idea 树投影
-    attempts: list[AttemptProjection]             # Attempt 列表
-    cognitive_commits: list[CognitiveCommit]       # 认知提交列表
-    champion: ChampionInfo | None                 # 当前最优方案
-    activity: list[ActivityCard]                  # 科研动态卡片
-    developer_refs: DeveloperRefs                 # 内部引用（仅开发者模式）
+selection_status: Literal["no_session", "selected", "ambiguous"]
+session: SessionProjection | None = None
+session_candidates: list[SessionSummary] = Field(default_factory=list)
+summary: SessionStats | None = None
 ```
 
-#### SessionSummary
+`session_id=None` 时只读发现 `experiments/sessions/*.json`：
 
-- `status`, `readiness_status`, `environment_status`, `baseline_status` — 直接读 `ExperimentSession`
-- `idea_count` — 读 `IdeaTreeStore`
-- `attempt_summary` — `ExperimentAttemptStore.list_for_session()`，按 `runtime_status` 分组计数
-- `budget` — 读 `ExperimentSession.budget`
-- `budget_consumed` — 读 `CognitiveBudget` 记录；无数据 → `None`
-- `champion_summary` — 读 `CandidateRegistry.current_summary_for_session()`；无数据 → `None`
+- 0 个：`no_session`；
+- 1 个：加载该 Session；
+- 多个：`ambiguous`，不加载任意一个。
 
-#### IdeaTreeProjection
+指定 `session_id` 时准确加载，不回退。
 
-- 保留 `IdeaNode` 全部现有字段
-- 不加 schema 中不存在的 status
-- 每个节点携带 `attempt_summary`（链接 attempt 的数量和状态分布）
+### 4.3 研究目标
 
-#### AttemptProjection
+按 `session.task_ref` 安全读取现有 `input_task.yaml`，使用已有 `InputTask` Schema 校验。
 
-| 字段 | 来源 |
-|------|------|
-| `attempt_id`, `attempt_purpose`, `runtime_status` | `ExperimentAttempt` schema |
-| `command_plan_summary` | `ExperimentAttempt.command_plan` |
-| `retry_of`, `retry_count`, `max_retries` | `ExperimentAttempt` |
-| `outcome_card` | 读 `OutcomeCard`；不存在 → `None` |
-| `failure_code`, `failure_classification` | `ExperimentAttempt` + `OutcomeCard`
-| `related_idea_ids` | `IdeaTree` 中 `attempt_refs` 反向查找 |
+前端展示：
 
-#### ActivityCard
+```text
+user_idea ?? request
+```
 
-由 **event + event 引用的权威 artifact** 组合生成：
+同时投影 baseline、dataset、primary_metrics、constraints。`task_ref` 只作为开发者引用。
 
-| Event | 附加读取 | 卡片标题 |
-|-------|----------|----------|
-| `experiment.session.created` | ExperimentSession | 实验 Session 已创建 |
-| `experiment.idea_tree.created` | IdeaTree | Idea 树已初始化 |
-| `experiment.idea_tree.mutated` (add_child) | IdeaTree → 读取新增节点 | 新 Idea：{mechanism} |
-| `experiment.idea_tree.mutated` (mark_status → PRUNED) | IdeaTree → 读取剪枝节点 | 方向已停止：{mechanism} |
-| `experiment.idea_tree.mutated` (mark_status → SUPPORTED) | IdeaTree → 读取节点 | 证据支持：{mechanism} |
-| `experiment.attempt.created` | ExperimentAttempt + IdeaTree | 实验排队：{purpose} |
-| `experiment.attempt.queued` | ExperimentAttempt | 实验加入队列 |
-| `experiment.attempt.running` | ExperimentAttempt | 实验开始运行 |
-| `experiment.attempt.finalized` | ExperimentAttempt + OutcomeCard | 实验完成：{scientific_effect} |
-| `experiment.attempt.retry_queued` | ExperimentAttempt | 重试已排队 |
-| `experiment.cognitive_commit.appended` | CognitiveCommit | 认知更新：{verdict} |
-| `experiment.coordinator.exploratory_cycle.committed` | — | 探索周期完成 |
-| `experiment.coordinator.compact_cycle.committed` | — | 收敛周期完成 |
-| `experiment.champion.promoted_and_merged` | CandidateRegistry | Champion 已更新 |
+### 4.4 Attempt 科学事实分层
 
-- 未知 event type → 研究者模式下忽略，开发者模式下保留原始 JSON
-- Activity 生成使用确定性映射，不调用 LLM
+每个 Attempt 需要分别读取：
 
-#### DeveloperRefs
+```text
+attempts/{attempt_id}/outcome_card.json
+attempts/{attempt_id}/scientific_assessment.json
+attempts/{attempt_id}/assessment_reconciliation.json
+```
 
-- `run_id`, `session_id`
-- `event_ids` 列表
-- `artifact_paths`
-- `pipeline_job_ids`
-- `prompt_versions`
-- 原始 `events.jsonl` 路径
+含义分别是：
 
-### 新增 API
+- OutcomeCard：执行、协议和指标解析事实；
+- ScientificAssessment：科学比较结论；
+- AssessmentReconciliation：两种事实的权威边界。
+
+缺少科学评价时保留执行事实，并显示“科学评价尚未物化”。GET 不得调用 `assess()` 或 `effective_assessment()`。
+
+### 4.5 Champion 选择
+
+严格遵循：
+
+```text
+Session.evaluation_contract_sha256
+  → current_summary_for_session()[contract_hash]
+  → ChampionPointer + CandidateSnapshot
+  → CandidateSnapshot.attempt_id
+  → 读取已有科学评价
+```
+
+无评价合同、无对应 Pointer、Candidate 不属于当前 Session 或 Artifact 无效时，显示“暂未产生”。
+
+### 4.6 Idea Tree 和 Activity
+
+- Idea Tree 只展示当前节点、状态、父子关系、insights 和 Attempt 引用。
+- `experiment.idea_tree.mutated` 只显示“Idea Tree 已更新”和 revision。
+- 不从 mutation receipt 推断历史节点或剪枝原因。
+- Activity 映射使用确定性逻辑，不调用 LLM。
+
+### 4.7 API
 
 ```text
 GET /api/runs/{run_id}/experiment/projection?session_id={session_id}
 ```
 
-- 返回 `ExperimentProjection` JSON
-- 只读，不写入任何文件
-- session_id 不存在 → 404
-- run_id 不存在 → 404
+| 情况 | HTTP |
+|---|---:|
+| run 不存在 | 404 |
+| 指定 Session 不存在 | 404 |
+| 无 Session | 200 |
+| 多 Session 未选择 | 200 |
+| 正常 | 200 |
 
-### 测试
+接口只读，不创建目录、不写文件、不追加事件。
 
-覆盖：
+### 4.8 验收
 
-1. 没有 ExperimentSession
-2. 一个 Session
-3. 多个 Session（需用户选择）
-4. Session 已创建但未准备环境
-5. Baseline 运行中
-6. Attempt queued / running / completed
-7. Attempt failed / timed_out / lost
-8. OutcomeCard 缺少 metrics
-9. NON_COMPARABLE OutcomeCard
-10. IdeaTree 含 pruned / inconclusive / merged
-11. CognitiveCommit 多轮
-12. 没有 Champion
-13. 有 Candidate 但没有 Promotion
-14. 已有 Champion
-15. 未知 event type
-16. 投影接口不得写入任何实验文件
+- Pydantic Schema 可实例化。
+- 无 Session、单 Session、多 Session 行为正确。
+- 研究目标来自 InputTask，不显示 `input_task.yaml`。
+- 执行事实和科学评价分层。
+- Champion 使用当前评价合同精确选择。
+- GET 前后 Artifact 内容和文件修改时间不变。
 
-### 验收
+## 5. 提交三：工作台数据展示
 
-- curl 请求投影接口返回正确 JSON
-- schema 字段值与现有 Store 一致
-- 所有测试通过
+### 5.1 顶部概览
 
----
+显示研究目标、baseline、dataset、Session 状态、环境状态、Baseline 状态、Idea 统计、Attempt 统计、预算、Champion 和异常提醒。
 
-## 提交三：工作台真实数据展示
+研究目标不得使用 `session.task_ref`。
 
-### ExperimentPage 三栏布局
+### 5.2 中文状态
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  Session 概览                                           │
-│  任务 · 状态 · Idea 数 · Attempt 统计 · 预算 · Champion  │
-├─────────────────┬──────────────────────┬────────────────┤
-│  Idea Tree      │  研究动态              │  详情面板       │
-│  嵌套列表       │  Activity Feed        │  Detail Drawer  │
-│                 │  时间线卡片             │                │
-└─────────────────┴──────────────────────┴────────────────┘
+底层值不变，增加确定性中文映射：
+
+```text
+QUEUED       → 等待运行
+RUNNING      → 运行中
+COMPLETED    → 已完成
+FAILED       → 运行失败
+TIMED_OUT    → 运行超时
+CANCELLED    → 已取消
+LOST         → 运行状态丢失
 ```
 
-### 顶部：Session 概览
+Idea 状态按当前 `IdeaNodeStatus` 映射。未知值显示“未知状态（原始值：XXX）”。
 
-| 组件 | 数据来源 |
-|------|----------|
-| 研究任务 | `ExperimentSession.task_ref` |
-| Session 状态 | `ExperimentSession.status` |
-| Environment / Baseline 状态 | `ExperimentSession.environment_status`, `baseline_status` |
-| Idea 数量 | `ExperimentProjection.summary.idea_count` |
-| Attempt 统计 | `summary.attempt_summary`（queued/running/completed/failed 等计数） |
-| 当前 Champion | `summary.champion_summary` |
-| 预算 | `summary.budget` / `summary.budget_consumed` |
-| 异常提醒 | 如有 failed/lost attempt 或有 readiness_blockers |
+### 5.3 Idea Tree
 
-不使用百分比进度条。
+使用 React 嵌套列表；`PRUNED` 默认折叠；Attempt 作为计数徽章；点击节点打开详情；不加入当前 Schema 没有的状态。
 
-### 左侧：Idea Tree
+### 5.4 Activity Feed
 
-- React 嵌套列表组件，依据 `parent_id` / `children` / `depth` 渲染
-- 节点状态视觉映射：
+按后端投影的 ActivityCard 展示当前可靠事实。Idea mutation 不显示具体历史节点变更。WebSocket 只触发重新请求投影，不直接插入卡片。
 
-| Status | 表现 |
-|--------|------|
-| DRAFT | 空心节点 |
-| REVIEWED | 实心，无额外标记 |
-| READY | 实心 + 时钟图标 |
-| RUNNING | 动态边框 |
-| SUPPORTED | 绿色实心 |
-| NOT_SUPPORTED | 降低透明度 |
-| INCONCLUSIVE | 虚线边框 |
-| PRUNED | 灰色，默认折叠 |
-| MERGED | 菱形节点 |
+### 5.5 Attempt 详情
 
-- 每个节点显示 Attempt 计数徽标，不展开所有 Attempt 为独立节点
-- 当前 Champion 路径高亮
-- 已剪枝分支默认折叠
-- 点击节点 → 右侧详情面板
+分为：
 
-### 中间：研究动态
+1. 执行事实：runtime status、command、retry、resource、OutcomeCard；
+2. 科学评价：ScientificAssessment；
+3. 权威边界：AssessmentReconciliation。
 
-- 垂直时间线，最新在上
-- 每张卡片：图标 + 标题 + 摘要 + 时间
-- 点击卡片 → 右侧详情面板
-- 事件驱动刷新（提交四接入后生效）
-- 只展示科研相关事件（不展示: Worker claim, Job lease, prompt hash, PID, 绝对路径）
+评价 Artifact 缺失时不生成文件、不猜结论。
 
-### 右侧：详情面板
+### 5.6 验收
 
-点击 Idea 节点：
-- 假设、机制、观测目标、研究轴、预期成本
-- 证据引用
-- 父子关系
-- 关联 Attempts 列表（purpose + status）
-- 关联 CognitiveCommits（观察 + 判断 + 下一步）
-- Insights
-- 剪枝或保留原因
+- 目标、状态和科学结论来源正确。
+- 中文界面可理解，原始值仍可追踪。
+- 缺少 metrics 或科学评价时仍展示已有事实。
+- Idea、Attempt、Activity 点击详情正确。
+- 普通模式隐藏内部路径和 ID。
+- 讨论按钮只预填，不自动发送。
 
-点击 Attempt：
-- purpose、runtime_status
-- command_plan 摘要
-- OutcomeCard（指标、scientific_effect、primary_delta、protocol_valid）
-- failure_code、failure_classification
-- retry 关系
-- resource usage
+## 6. 提交四：WebSocket 失效通知刷新
 
-点击 Activity 卡片：
-- 事件时间、类型
-- 关联 Idea / Attempt / Commit
-- 用户可读说明
-- 相关 artifact 引用
+### 6.1 后端
 
-### 「在研究助手中讨论」按钮
+不修改 `ws.py`，不扩展 envelope，不增加 broadcast。
 
-每个详情面板底部：
+### 6.2 前端
 
-- 点击 → 切换到 Chat 页面
-- 预填草稿问题，包含明确的 Idea ID / Attempt ID / artifact 引用
-- 用户确认后发送
-- 不得自动发送
+- `App.tsx` 收到 `experiment.*` 时递增刷新计数；
+- `ExperimentPage` 对刷新计数做 300ms 防抖；
+- 防抖后重新请求投影；
+- 重连 replay 多个事件时合并为一次请求；
+- run/session 切换时防止旧请求覆盖新状态。
 
-### 开发者详情
+### 6.3 验收
 
-复用现有「开发者详情」折叠模式：
+- 实验状态变化后工作台能刷新。
+- WS envelope 保持不变。
+- 不根据 payload 维护实验状态。
+- 重连不重复显示事件卡片。
+- 现有 Chat、Sources、Jobs、Evidence、Toast 行为不变。
 
-- 默认隐藏 run_id、session_id、event enum、Job ID、artifact path、prompt version
-- 展开后只读显示
+## 7. 统一测试与交付流程
 
-### 验收
+每个提交编码前：
 
-- Idea Tree 父子关系正确
-- 所有状态映射来自当前 schema
-- OutcomeCard 缺指标时仍能展示失败事实
-- 普通模式不显示原始路径
-- 开发者详情可以查看原始引用
-- 点击 Idea/Attempt 打开正确详情
-- 「在研究助手中讨论」不会自动发送消息
-- 无 Session 时显示空状态
+1. 读取当前源码、测试和配置，核对精确标识符；
+2. 编写对应测试；
+3. 更新当天 `notes/YYYY-MM-DD.md`；
+4. 运行 `bash scripts/verify.sh`；
+5. 通过后运行 `bash scripts/verify_and_push.sh "<message>"`；
+6. 确认 `git status --short --branch`、`git log --oneline -3` 和 GitHub Actions。
 
----
-
-## 提交四：WebSocket 实时刷新
-
-### 后端改动
-
-| 文件 | 改动 |
-|------|------|
-| `src/autoad_researcher/server/routes/ws.py` | WebSocket 消息 envelope 补充 `event_id` 和 `created_at` 字段（向后兼容） |
-
-**不修改**所有实验模块的 `append_event()` 调用。继续保持 `events.jsonl` → ws.py polling 路径。
-
-### 前端改动
-
-| 文件 | 改动 |
-|------|------|
-| `frontend/src/hooks/useWebSocket.ts` | 扩展 `WSMessage` 类型，支持 `experiment.*` 事件 |
-| `frontend/src/App.tsx` | `onWsMessage` 增加 `experiment.*` 处理分支 |
-| `frontend/src/components/ExperimentPage.tsx` | 监听 WS 事件 → 防抖 → 重新请求投影 |
-
-### 前端更新策略
-
-收到 `experiment.*` 事件时：
-
-1. 合并短时间内的重复刷新请求（300ms 防抖）
-2. 重新请求 `GET /api/runs/{run_id}/experiment/projection`
-3. 使用返回的权威状态更新页面
-
-不：
-- 在前端重写完整实验状态机
-- 根据 event payload 直接拼接 UI
-- 在 WebSocket 重连后重复显示事件
-
-### WS 重连恢复
-
-- ExperimentPage mount 时请求初始投影
-- WebSocket 重连后重新请求投影（已有自动重连机制）
-- 不依赖浏览器内存维持页面状态
-
-### 验收
-
-- 后台运行实验时，工作台自动更新
-- 切换 run / session 后只显示对应数据
-- WebSocket 重连后不重复显示事件卡片
-- 关闭再打开页面后恢复最新状态
-- 现有 source / job / assistant / toast 事件不受影响
-
----
-
-## 完成四个提交后的暂缓项
-
-以下内容不由本计划覆盖，根据真实使用反馈决定：
-
-- D3 / Cytoscape 可交互树
-- 拖动或编辑 Idea
-- 独立 Assistant Sidebar
-- 全流程动画回放
-- 新的 Event Bus 或数据库
-- 自动修改实验方向
-- 在实验页面直接运行命令
-- 前端自行判断 KEEP/DISCARD
-- LLM 自动生成动态卡片
-
----
-
-## 验收标准
-
-```
-研究助手
-→ 用户确认实验任务
-→ ExperimentSession 创建
-→ 后端自动运行实验
-→ 实验工作台实时更新
-→ Idea Tree 显示真实演化关系
-→ Attempt 显示真实运行状态
-→ OutcomeCard 显示真实科学结论
-→ 失败和重试不会消失
-→ 当前 Candidate / Champion 可追踪
-→ 用户可以返回研究助手讨论某一项
-```
-
-同时满足：
-
-- 不增加第二套实验状态
-- 不修改实验 Agents 的科研判断规则
-- 不重复广播事件
-- 不依靠关键词猜测科研状态
-- 不根据文件时间猜测当前 Session
-- 不为首版引入大型可视化框架
-- 现有测试继续通过
-- 新增实验工作台专项测试
+不得把审阅报告中的示例字段当成现有代码事实，也不得在未验证参考项目实现的情况下声称“直接复用”。
