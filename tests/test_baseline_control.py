@@ -160,6 +160,38 @@ def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path:
     assert ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)[0].attempt_id == first.started.attempt.attempt_id
 
 
+def test_baseline_control_rejects_unacquired_selected_source(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    from autoad_researcher.ui.sources import append_source_ref
+    append_source_ref(
+        run_dir, kind="dataset", user_label="pending fixture", stored_path=None,
+        status="user_provided_not_ingested", source_id="dataset_pending", intake_status="pending",
+    )
+    with pytest.raises(ValueError, match="selected input source is not acquired"):
+        BaselineControlService().start(
+            run_dir, session_id=session.session_id,
+            contract_input=_contract().model_copy(update={"dataset_source_ids": ["dataset_pending"]}),
+        )
+    assert load_pipeline_jobs(run_dir) == []
+
+
+def test_finalizer_rejects_a_split_changed_after_baseline_freeze(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    started = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    (run_dir / "inputs" / "dev.json").write_text('{"changed": true}\n', encoding="utf-8")
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        attempt = ExperimentAttemptStore().load(run_dir, started.started.attempt.attempt_id)
+        if attempt is not None and attempt.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+    card = json.loads((run_dir / "attempts" / started.started.attempt.attempt_id / "outcome_card.json").read_text())
+    assert card["attempt_category"] == "protocol_violated"
+    assert "inputs/dev.json" in " ".join(card["protocol_errors"])
+
+
 def test_candidate_control_derives_execution_from_completed_baseline(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)

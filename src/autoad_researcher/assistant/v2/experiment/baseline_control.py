@@ -105,7 +105,11 @@ class BaselineControlService:
         task = self._load_input_task(run_dir, session)
         if contract_input.primary_metric not in task.primary_metrics:
             raise ValueError("baseline primary metric must be one of the user-confirmed task metrics")
-        self._require_confirmed_sources(run_dir, contract_input.dataset_source_ids + contract_input.asset_source_ids)
+        self._require_input_files(run_dir, contract_input)
+        selected_sources = self._freeze_selected_sources(
+            run_dir,
+            contract_input.dataset_source_ids + contract_input.asset_source_ids,
+        )
 
         workspace_key = f"baseline-{session_id}"
         workspace = WorktreeManager(run_dir / "experiments" / "executor_worktrees").create(
@@ -139,7 +143,9 @@ class BaselineControlService:
             evaluation_contract_revision=frozen.contract.revision,
         )
         protected_ref, protected_sha = self._freeze_protected_artifacts(run_dir, frozen.contract, session_id)
-        inputs_ref, dataset_sha, asset_sha = self._write_execution_inputs(run_dir, session_id, contract_input)
+        inputs_ref, dataset_sha, asset_sha = self._write_execution_inputs(
+            run_dir, session_id, contract_input, selected_sources=selected_sources,
+        )
         plan, refs = adapter.build_execution(
             adapter_result,
             ExecutorAdapterInputs(
@@ -235,13 +241,37 @@ class BaselineControlService:
         return protected
 
     @staticmethod
-    def _require_confirmed_sources(run_dir: Path, source_ids: list[str]) -> None:
+    def _require_input_files(run_dir: Path, value: BaselineContractInput) -> None:
+        for ref in (value.b_dev_ref, value.b_test_ref):
+            path = run_dir.joinpath(*PurePosixPath(ref).parts).resolve()
+            if not path.is_relative_to(run_dir.resolve()) or not path.is_file():
+                raise ValueError("execution_contract_incomplete: frozen split artifact is missing")
+
+    @staticmethod
+    def _freeze_selected_sources(run_dir: Path, source_ids: list[str]) -> list[dict[str, str]]:
+        """Freeze only explicitly selected, fully acquired run-local materials."""
         from autoad_researcher.ui.sources import load_source_registry
 
-        known = {str(item.get("source_id")) for item in load_source_registry(run_dir).get("sources", []) if isinstance(item, dict)}
-        missing = sorted(set(source_ids) - known)
-        if missing:
-            raise ValueError("execution_contract_incomplete: selected input source is not registered")
+        known = {
+            str(item.get("source_id")): item
+            for item in load_source_registry(run_dir).get("sources", [])
+            if isinstance(item, dict) and isinstance(item.get("source_id"), str)
+        }
+        frozen: list[dict[str, str]] = []
+        for source_id in sorted(set(source_ids)):
+            source = known.get(source_id)
+            if source is None:
+                raise ValueError("execution_contract_incomplete: selected input source is not registered")
+            if source.get("intake_status") != "ok":
+                raise ValueError("execution_contract_incomplete: selected input source is not acquired")
+            ref = source.get("stored_path")
+            if not isinstance(ref, str) or not ref:
+                raise ValueError("execution_contract_incomplete: selected input source has no frozen artifact")
+            path = run_dir.joinpath(*PurePosixPath(ref).parts).resolve()
+            if not path.is_relative_to(run_dir.resolve()) or not path.is_file():
+                raise ValueError("execution_contract_incomplete: selected input artifact is missing")
+            frozen.append({"source_id": source_id, "artifact_ref": ref, "artifact_sha256": sha256_file(path)})
+        return frozen
 
     def _freeze_contract(self, run_dir: Path, *, session_id: str, workspace_ref: str, base_commit: str, protected_paths: list[str], value: BaselineContractInput):
         current = self._contracts.current(run_dir, session_id=session_id)
@@ -261,7 +291,7 @@ class BaselineControlService:
             seeds=value.seeds,
             checkpoint_selection=value.checkpoint_selection,
             resource_budget=EvaluationResourceBudget(max_wall_seconds=value.max_wall_seconds, max_gpu_seconds=value.max_gpu_seconds),
-            protected_paths=[f"{workspace_ref}/{path}" for path in protected_paths],
+            protected_paths=[value.b_dev_ref, value.b_test_ref, *[f"{workspace_ref}/{path}" for path in protected_paths]],
         )
         if current is not None:
             if current.contract != contract:
@@ -278,7 +308,13 @@ class BaselineControlService:
         return str(path.relative_to(run_dir)), sha256_file(path)
 
     @staticmethod
-    def _write_execution_inputs(run_dir: Path, session_id: str, value: BaselineContractInput) -> tuple[str, str, str]:
+    def _write_execution_inputs(
+        run_dir: Path,
+        session_id: str,
+        value: BaselineContractInput,
+        *,
+        selected_sources: list[dict[str, str]],
+    ) -> tuple[str, str, str]:
         payload = {
             "schema_version": 1,
             "session_id": session_id,
@@ -286,10 +322,19 @@ class BaselineControlService:
             "split_identity": value.split_identity,
             "dataset_source_ids": value.dataset_source_ids,
             "asset_source_ids": value.asset_source_ids,
+            "selected_source_artifacts": selected_sources,
+            "split_artifacts": [
+                {"artifact_ref": value.b_dev_ref, "artifact_sha256": sha256_file(run_dir / value.b_dev_ref)},
+                {"artifact_ref": value.b_test_ref, "artifact_sha256": sha256_file(run_dir / value.b_test_ref)},
+            ],
             "baseline_request_sha256": canonical_sha256(value),
         }
-        dataset_sha = canonical_sha256({key: payload[key] for key in ["dataset_identity", "split_identity", "dataset_source_ids"]})
-        asset_sha = canonical_sha256({"asset_source_ids": value.asset_source_ids})
+        dataset_sources = [item for item in selected_sources if item["source_id"] in value.dataset_source_ids]
+        asset_sources = [item for item in selected_sources if item["source_id"] in value.asset_source_ids]
+        dataset_sha = canonical_sha256(
+            {**{key: payload[key] for key in ["dataset_identity", "split_identity", "split_artifacts"]}, "sources": dataset_sources}
+        )
+        asset_sha = canonical_sha256({"sources": asset_sources})
         payload["dataset_manifest_sha256"] = dataset_sha
         payload["asset_manifest_sha256"] = asset_sha
         path = run_dir / "experiments" / "execution_inputs" / f"{session_id}.json"
