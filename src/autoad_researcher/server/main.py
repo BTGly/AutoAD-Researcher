@@ -48,7 +48,7 @@ async def stop_embedded_worker():
     await asyncio.to_thread(reset_llm_call_broker)
 
 
-from autoad_researcher.server.routes import artifacts, chat, evidence, experiment_attempts, experiment_config, experiment_projection, intent_summary, jobs, report_route, reports, runs, sources, ws
+from autoad_researcher.server.routes import artifacts, chat, evidence, experiment_attempts, experiment_config, experiment_projection, intent_summary, jobs, report_collaboration, report_route, reports, runs, sources, ws
 
 app.include_router(chat.router)
 app.include_router(runs.router)
@@ -63,6 +63,7 @@ app.include_router(experiment_attempts.router)
 app.include_router(experiment_projection.router)
 app.include_router(report_route.router)
 app.include_router(reports.router)
+app.include_router(report_collaboration.router)
 
 
 def _spa_fallback_response(full_path: str, frontend_dir: Path):
