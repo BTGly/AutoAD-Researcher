@@ -11,6 +11,7 @@ import pytest
 from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineContractInput, BaselineControlService
 from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateControlService, CandidateLaunchInput
 from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationInput, CandidateConfirmationService
+from autoad_researcher.assistant.v2.experiment.promotion_control import PromotionControlService, PromotionInput
 from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
@@ -238,6 +239,9 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
     )
     assert replay.started.disposition == "reused"
     assert replay.candidate_snapshot_ref == f"experiments/champions/candidates/{snapshot.candidate_id}.json"
+    promoted = PromotionControlService().promote(run_dir, value=PromotionInput(candidate_id=snapshot.candidate_id, approved_by="fixture-user"))
+    assert promoted.champion_event["candidate_id"] == snapshot.candidate_id
+    assert CandidateRegistry().current_by_contract(run_dir)[snapshot.evaluation_contract_hash].candidate_id == snapshot.candidate_id
 
 
 def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):
