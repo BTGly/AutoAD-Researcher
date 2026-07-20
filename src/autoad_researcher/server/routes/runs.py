@@ -71,6 +71,7 @@ class ConfirmExperimentTaskRequest(BaseModel):
         "approve_each_step",
         "agent_assisted_after_approval",
     ]
+    execution_repository_source_id: str | None = Field(default=None, min_length=1)
 
 
 @router.get("", response_model=list[RunInfo])
@@ -177,6 +178,7 @@ async def confirm_experiment_task(
             run_dir,
             task_id=task_id,
             execution_mode=request.execution_mode,
+            execution_repository_source_id=request.execution_repository_source_id,
         )
         effective_mode = task.execution_mode
         if effective_mode == "plan_only":

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
+from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 from autoad_researcher.assistant.v2.job_service import (
     load_pipeline_jobs,
     requeue_stale_running_jobs,
@@ -20,20 +21,36 @@ from autoad_researcher.schemas.intake import InputTask
 from autoad_researcher.worker.main import _process_pending_jobs
 
 
-def _confirmed_task(run_id: str) -> ExperimentTaskDraft:
+def _confirmed_task(run_dir: Path, *, source_id: str = "source_demo") -> ExperimentTaskDraft:
+    binding = ExecutionRepositoryBinding(
+        source_id=source_id,
+        source_kind="local_repo",
+        repository_ref=f"repos/{source_id}",
+        repository_fingerprint="b" * 64,
+        attestation_ref=f"repo_acquisition/{source_id}/repository_attestation.json",
+        attestation_sha256="c" * 64,
+        adapter_manifest_ref=f"repos/{source_id}/autoad_executor_adapter.json",
+        adapter_manifest_sha256="d" * 64,
+        adapter_id="generic_python",
+        adapter_evidence={},
+    )
+    binding_path = run_dir / "task_bridge" / "execution_repository_binding.json"
+    binding_path.parent.mkdir(parents=True, exist_ok=True)
+    binding_path.write_text(binding.model_dump_json(), encoding="utf-8")
     return ExperimentTaskDraft(
         task_id="task_environment",
-        run_id=run_id,
+        run_id=run_dir.name,
         status="confirmed",
         execution_mode="agent_assisted_after_approval",
         input_task=InputTask(
-            run_id=run_id,
+            run_id=run_dir.name,
             request="prepare environment",
             source_ids=["source_demo"],
             user_idea="environment smoke",
             constraints=[],
         ),
         summary_sha256="a" * 64,
+        execution_repository_binding=binding,
         created_at="2026-07-17T00:00:00+00:00",
         confirmed_at="2026-07-17T00:00:00+00:00",
     )
@@ -45,7 +62,7 @@ def test_worker_runs_environment_prepare_to_ready_for_baseline(tmp_path: Path):
     repository.mkdir(parents=True)
     (repository / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
     (repository / "README.md").write_text("demo\n", encoding="utf-8")
-    task = _confirmed_task(run_dir.name)
+    task = _confirmed_task(run_dir)
     started = ExperimentStarter().on_task_confirmed(
         run_dir,
         task,
@@ -75,13 +92,13 @@ def test_worker_runs_environment_prepare_to_ready_for_baseline(tmp_path: Path):
         assert (run_dir / relative_path).is_file(), relative_path
 
 
-def test_worker_blocks_readiness_when_repository_is_ambiguous(tmp_path: Path):
+def test_worker_uses_bound_repository_without_scanning_other_checkouts(tmp_path: Path):
     run_dir = tmp_path / "run_environment_ambiguous"
     for name in ("source_left", "source_right"):
         repository = run_dir / "repos" / name
         repository.mkdir(parents=True)
         (repository / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-    task = _confirmed_task(run_dir.name)
+    task = _confirmed_task(run_dir, source_id="source_left")
     started = ExperimentStarter().on_task_confirmed(
         run_dir,
         task,
@@ -91,15 +108,14 @@ def test_worker_blocks_readiness_when_repository_is_ambiguous(tmp_path: Path):
     assert _process_pending_jobs(run_dir) == 1
     session = ExperimentSessionStore().load(run_dir, started.session.session_id)
     assert session is not None
-    assert session.status == "CREATED"
-    assert session.readiness_status == "blocked"
-    assert "multiple acquired repositories" in session.readiness_blockers[0]
+    assert session.status == "READY_FOR_BASELINE"
+    assert session.repository_ref == "repos/source_left"
     assert load_pipeline_jobs(run_dir)[0]["status"] == "completed"
 
 
 def test_stale_running_job_is_requeued_for_worker_recovery(tmp_path: Path):
     run_dir = tmp_path / "run_environment_recovery"
-    task = _confirmed_task(run_dir.name)
+    task = _confirmed_task(run_dir)
     started = ExperimentStarter().on_task_confirmed(
         run_dir,
         task,
@@ -120,6 +136,32 @@ def test_stale_running_job_is_requeued_for_worker_recovery(tmp_path: Path):
     assert [item["job_id"] for item in recovered] == [started.environment_job["job_id"]]
     assert load_pipeline_jobs(run_dir)[0]["status"] == "queued"
     assert load_pipeline_jobs(run_dir)[0]["recovery_count"] == 1
+
+
+def test_worker_rejects_job_without_frozen_binding_instead_of_scanning_repositories(tmp_path: Path):
+    run_dir = tmp_path / "run_missing_binding"
+    repository = run_dir / "repos" / "source_demo"
+    repository.mkdir(parents=True)
+    (repository / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    task = _confirmed_task(run_dir)
+    started = ExperimentStarter().on_task_confirmed(
+        run_dir,
+        task,
+        execution_mode="agent_assisted_after_approval",
+    )
+    job_path = run_dir / "jobs" / "pipeline_jobs.jsonl"
+    job = load_pipeline_jobs(run_dir)[0]
+    job["payload"].pop("execution_repository_binding_ref")
+    job["payload"].pop("execution_repository_binding_sha256")
+    job_path.write_text(json.dumps(job) + "\n", encoding="utf-8")
+
+    assert _process_pending_jobs(run_dir) == 1
+
+    session = ExperimentSessionStore().load(run_dir, started.session.session_id)
+    assert session is not None
+    assert session.status == "ENVIRONMENT_FAILED"
+    assert session.readiness_status == "blocked"
+    assert "binding" in load_pipeline_jobs(run_dir)[0]["error"]
 
 
 def _revision_plan(run_id: str, *, plan_id: str, revision: int, parent_plan_id: str | None, program: str):
@@ -178,7 +220,7 @@ def test_failed_revision_schedules_child_job_and_preserves_lineage(tmp_path: Pat
     repository = run_dir / "repos" / "source_demo"
     repository.mkdir(parents=True)
     (repository / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-    task = _confirmed_task(run_dir.name)
+    task = _confirmed_task(run_dir)
     started = ExperimentStarter().on_task_confirmed(
         run_dir, task, execution_mode="agent_assisted_after_approval",
     )
@@ -207,7 +249,7 @@ def test_revision_limit_stops_after_two_children(tmp_path: Path):
     repository = run_dir / "repos" / "source_demo"
     repository.mkdir(parents=True)
     (repository / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-    task = _confirmed_task(run_dir.name)
+    task = _confirmed_task(run_dir)
     started = ExperimentStarter().on_task_confirmed(
         run_dir, task, execution_mode="agent_assisted_after_approval",
     )
@@ -235,7 +277,7 @@ def test_gpu_validation_failure_is_explicit_and_never_starts_baseline(tmp_path: 
     repository = run_dir / "repos" / "source_demo"
     repository.mkdir(parents=True)
     (repository / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-    task = _confirmed_task(run_dir.name)
+    task = _confirmed_task(run_dir)
     started = ExperimentStarter().on_task_confirmed(
         run_dir, task, execution_mode="agent_assisted_after_approval",
     )

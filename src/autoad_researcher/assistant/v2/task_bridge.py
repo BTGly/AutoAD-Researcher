@@ -16,6 +16,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.assistant.v2.evidence_service import load_usable_evidence
+from autoad_researcher.assistant.v2.execution_repository import (
+    ExecutionRepositoryBinding,
+    resolve_execution_repository,
+)
+from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     load_research_intent_summary,
@@ -29,6 +34,7 @@ from autoad_researcher.ui.sources import load_source_registry
 BRIDGE_DIR = "task_bridge"
 PENDING_TASK_FILE = "pending_experiment_task.json"
 TASK_REPORT_FILE = "experiment_task_source_report.json"
+EXECUTION_REPOSITORY_BINDING_FILE = "execution_repository_binding.json"
 INPUT_TASK_FILE = "input_task.yaml"
 _SECRET_LIKE_RE = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
 TaskPreparationDisposition = Literal[
@@ -47,6 +53,9 @@ TaskConfirmationConflictCode = Literal[
     "input_task_conflict",
     "source_report_invalid",
     "source_report_conflict",
+    "execution_repository_unresolved",
+    "execution_repository_attestation_invalid",
+    "execution_adapter_unsupported",
     "confirmation_invalid",
 ]
 
@@ -79,6 +88,7 @@ class ExperimentTaskDraft(BaseModel):
     execution_mode: ExecutionMode = "plan_only"
     input_task: InputTask
     evidence_refs: list[str] = Field(default_factory=list)
+    execution_repository_binding: ExecutionRepositoryBinding | None = None
     summary_sha256: str = Field(min_length=64, max_length=64)
     created_at: str
     confirmed_at: str | None = None
@@ -94,6 +104,8 @@ class ExperimentTaskSourceReport(BaseModel):
     source_sha256: str = Field(min_length=64, max_length=64)
     created_output: Literal["input_task.yaml"] = "input_task.yaml"
     evidence_refs: list[str] = Field(default_factory=list)
+    execution_repository_binding_ref: str | None = None
+    execution_repository_binding_sha256: str | None = Field(default=None, min_length=64, max_length=64)
     confirmed_at: str
 
 
@@ -177,6 +189,7 @@ class TaskBridge:
         *,
         task_id: str,
         execution_mode: ExecutionMode,
+        execution_repository_source_id: str | None = None,
     ) -> ExperimentTaskDraft:
         run_id = _validate_run_dir(run_dir)
         with _confirm_lock(run_dir):
@@ -201,11 +214,17 @@ class TaskBridge:
                         "research summary changed after task preparation",
                     )
                 _validate_existing_input_task(run_dir, draft)
+                binding = _require_execution_repository_binding(
+                    run_dir,
+                    execution_mode=execution_mode,
+                    execution_repository_source_id=execution_repository_source_id,
+                )
                 confirmed = draft.model_copy(
                     update={
                         "status": "confirmed",
                         "execution_mode": execution_mode,
                         "confirmed_at": datetime.now(timezone.utc).isoformat(),
+                        "execution_repository_binding": binding,
                     },
                 )
                 # The confirmed draft is the durable write-ahead record. All
@@ -222,6 +241,17 @@ class TaskBridge:
                     )
                 confirmed = draft
 
+                if (
+                    execution_repository_source_id is not None
+                    and confirmed.execution_repository_binding is not None
+                    and execution_repository_source_id != confirmed.execution_repository_binding.source_id
+                ):
+                    raise TaskConfirmationConflict(
+                        "confirmation_invalid",
+                        "execution repository differs from confirmed task",
+                    )
+
+            _materialize_execution_repository_binding(run_dir, confirmed)
             _materialize_input_task(run_dir, confirmed)
             _materialize_source_report(run_dir, run_id, confirmed)
             return confirmed
@@ -233,12 +263,14 @@ class TaskBridge:
         *,
         task_id: str,
         execution_mode: ExecutionMode,
+        execution_repository_source_id: str | None = None,
     ) -> ExperimentTaskDraft:
         """Backward-compatible name for the reconcile-style confirmation API."""
         return cls.confirm_or_load_existing(
             run_dir,
             task_id=task_id,
             execution_mode=execution_mode,
+            execution_repository_source_id=execution_repository_source_id,
         )
 
 
@@ -415,6 +447,16 @@ def _materialize_source_report(
         task_id=confirmed.task_id,
         source_sha256=confirmed.summary_sha256,
         evidence_refs=confirmed.evidence_refs,
+        execution_repository_binding_ref=(
+            f"{BRIDGE_DIR}/{EXECUTION_REPOSITORY_BINDING_FILE}"
+            if confirmed.execution_repository_binding is not None
+            else None
+        ),
+        execution_repository_binding_sha256=(
+            canonical_sha256(confirmed.execution_repository_binding)
+            if confirmed.execution_repository_binding is not None
+            else None
+        ),
         confirmed_at=confirmed.confirmed_at,
     )
     path = run_dir / BRIDGE_DIR / TASK_REPORT_FILE
@@ -433,6 +475,61 @@ def _materialize_source_report(
             )
         return
     _write_json_atomic(path, report.model_dump(mode="json"))
+
+
+def _require_execution_repository_binding(
+    run_dir: Path,
+    *,
+    execution_mode: ExecutionMode,
+    execution_repository_source_id: str | None,
+) -> ExecutionRepositoryBinding | None:
+    if execution_mode == "plan_only":
+        if execution_repository_source_id is not None:
+            raise TaskConfirmationConflict(
+                "confirmation_invalid",
+                "plan_only confirmation must not select an execution repository",
+            )
+        return None
+    if execution_repository_source_id is None:
+        raise TaskConfirmationConflict(
+            "execution_repository_unresolved",
+            "an explicit execution repository selection is required",
+        )
+    admission = resolve_execution_repository(
+        run_dir,
+        execution_source_id=execution_repository_source_id,
+    )
+    if admission.status != "admitted" or admission.binding is None:
+        raise TaskConfirmationConflict(
+            admission.code or "execution_repository_unresolved",
+            admission.blocker or "execution repository is unresolved",
+        )
+    return admission.binding
+
+
+def _materialize_execution_repository_binding(
+    run_dir: Path,
+    confirmed: ExperimentTaskDraft,
+) -> None:
+    binding = confirmed.execution_repository_binding
+    if binding is None:
+        return
+    path = run_dir / BRIDGE_DIR / EXECUTION_REPOSITORY_BINDING_FILE
+    if path.exists():
+        try:
+            existing = ExecutionRepositoryBinding.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise TaskConfirmationConflict(
+                "confirmation_invalid",
+                "existing execution repository binding is invalid",
+            ) from exc
+        if existing != binding:
+            raise TaskConfirmationConflict(
+                "confirmation_invalid",
+                "existing execution repository binding conflicts with confirmed task",
+            )
+        return
+    _write_json_atomic(path, binding.model_dump(mode="json"))
 
 
 def _reject_secret_like_text(text: str) -> None:

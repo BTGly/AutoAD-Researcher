@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,10 +22,59 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmationConflict
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
+from autoad_researcher.repository_intelligence.acquisition import RepositoryAttestation
 from autoad_researcher.server.routes import runs as runs_route
+from autoad_researcher.ui.sources import append_source_ref
+
+
+EXECUTION_SOURCE_ID = "src_execution"
+
+
+def _prepare_executable_source(run_dir: Path) -> None:
+    append_source_ref(
+        run_dir,
+        source_id=EXECUTION_SOURCE_ID,
+        kind="local_repo",
+        user_label="candidate repository",
+        stored_path=f"repos/{EXECUTION_SOURCE_ID}",
+        status="parsed",
+        intake_status="ok",
+    )
+    repository = run_dir / "repos" / EXECUTION_SOURCE_ID
+    repository.mkdir(parents=True)
+    (repository / "run.py").write_text("print('ok')\n", encoding="utf-8")
+    (repository / "evaluation.py").write_text("", encoding="utf-8")
+    (repository / "autoad_executor_adapter.json").write_text(json.dumps({
+        "adapter_id": "generic_python",
+        "entrypoint": "run.py",
+        "smoke_argv": [sys.executable, "run.py"],
+        "metrics_output": "metrics.json",
+        "allowed_paths": ["run.py"],
+        "protected_paths": ["evaluation.py"],
+        "activation_evidence": "observed",
+    }), encoding="utf-8")
+    attestation = RepositoryAttestation(
+        schema_version=1,
+        source_id=EXECUTION_SOURCE_ID,
+        repository_root_label=f"local/{EXECUTION_SOURCE_ID}",
+        canonical_remote_url=None,
+        head_commit=None,
+        git_tree_sha=None,
+        tree_sha="b" * 64,
+        detached_head=None,
+        dirty=False,
+        git_status_porcelain="",
+        symbolic_ref=None,
+        submodule_declarations=[],
+        tool_call_ids=["tool_local_tree_fingerprint"],
+    )
+    path = run_dir / "repo_acquisition" / EXECUTION_SOURCE_ID / "repository_attestation.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(attestation.model_dump_json(), encoding="utf-8")
 
 
 def _draft(run_dir: Path):
+    _prepare_executable_source(run_dir)
     save_research_intent_summary(
         run_dir,
         ResearchIntentSummary(goal="比较候选方法", blocking_question=None),
@@ -37,6 +88,7 @@ def _confirmed(run_dir: Path):
         run_dir,
         task_id=draft.task_id,
         execution_mode="agent_assisted_after_approval",
+        execution_repository_source_id=EXECUTION_SOURCE_ID,
     )
 
 
@@ -98,12 +150,18 @@ def test_starter_repairs_missing_job_after_session_creation(tmp_path: Path):
     run_dir = tmp_path / "run_session_only"
     run_dir.mkdir()
     task = _confirmed(run_dir)
-    task_hash = canonical_sha256(task.input_task)
+    task_hash = canonical_sha256({
+        "input_task": task.input_task.model_dump(mode="json"),
+        "execution_repository_binding": task.execution_repository_binding.model_dump(mode="json"),
+    })
     session, created = ExperimentSessionStore().create_or_get(
         run_dir,
         task_ref="input_task.yaml",
         task_hash=task_hash,
         execution_mode="agent_assisted_after_approval",
+        repository_ref=task.execution_repository_binding.repository_ref,
+        execution_repository_binding_ref="task_bridge/execution_repository_binding.json",
+        execution_repository_binding_sha256=canonical_sha256(task.execution_repository_binding),
     )
 
     result = ExperimentStarter().on_task_confirmed(
@@ -184,6 +242,41 @@ def test_plan_only_confirmation_never_creates_session_or_job(tmp_path: Path):
     assert load_pipeline_jobs(run_dir) == []
 
 
+def test_execution_confirmation_without_source_selection_has_zero_execution_side_effects(tmp_path: Path):
+    run_dir = tmp_path / "run_missing_execution_source"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+
+    with pytest.raises(TaskConfirmationConflict) as excinfo:
+        TaskBridge.confirm_or_load_existing(
+            run_dir,
+            task_id=draft.task_id,
+            execution_mode="agent_assisted_after_approval",
+        )
+
+    assert excinfo.value.code == "execution_repository_unresolved"
+    assert not (run_dir / "input_task.yaml").exists()
+    assert not (run_dir / "task_bridge" / "execution_repository_binding.json").exists()
+    assert not (run_dir / "experiments" / "sessions").exists()
+    assert load_pipeline_jobs(run_dir) == []
+
+
+def test_confirmed_execution_repository_is_immutable_on_replay(tmp_path: Path):
+    run_dir = tmp_path / "run_execution_source_replay"
+    run_dir.mkdir()
+    task = _confirmed(run_dir)
+
+    with pytest.raises(TaskConfirmationConflict) as excinfo:
+        TaskBridge.confirm_or_load_existing(
+            run_dir,
+            task_id=task.task_id,
+            execution_mode="agent_assisted_after_approval",
+            execution_repository_source_id="src_other",
+        )
+
+    assert excinfo.value.code == "confirmation_invalid"
+
+
 def test_confirmed_task_rejects_execution_mode_change(tmp_path: Path):
     run_dir = tmp_path / "run_mode_immutable"
     run_dir.mkdir()
@@ -250,6 +343,7 @@ async def test_confirm_route_returns_control_plane_references(tmp_path: Path, mo
         draft.task_id,
         runs_route.ConfirmExperimentTaskRequest(
             execution_mode="agent_assisted_after_approval",
+            execution_repository_source_id=EXECUTION_SOURCE_ID,
         ),
     )
 

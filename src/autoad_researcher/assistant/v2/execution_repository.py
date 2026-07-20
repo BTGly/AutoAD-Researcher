@@ -133,12 +133,29 @@ def assign_execution_repository_role(
     return assignment
 
 
-def resolve_execution_repository(run_dir: Path) -> ExecutionRepositoryAdmission:
-    """Resolve exactly one explicitly executable repository into a binding."""
+def resolve_execution_repository(
+    run_dir: Path,
+    *,
+    execution_source_id: str | None = None,
+) -> ExecutionRepositoryAdmission:
+    """Resolve one direct confirmation selection or one persisted role into a binding."""
 
     assignments: list[tuple[dict[str, object], RepositoryRoleAssignment]] = []
     for raw_source in load_source_registry(run_dir).get("sources", []):
         if not isinstance(raw_source, dict):
+            continue
+        if execution_source_id is not None:
+            if raw_source.get("source_id") != execution_source_id:
+                continue
+            assignments.append((raw_source, RepositoryRoleAssignment(
+                source_id=execution_source_id,
+                role="executable",
+                authorization=ConfirmedDecision(
+                    value=execution_source_id,
+                    source="user_confirmed",
+                    evidence="explicit experiment confirmation selection",
+                ),
+            )))
             continue
         assignment = _role_assignment(raw_source)
         if assignment is not None and assignment.role == "executable":

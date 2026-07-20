@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.environments.builder import run_environment_build_steps
@@ -33,6 +33,9 @@ from autoad_researcher.environments.revision import build_revision_context
 from autoad_researcher.environments.snapshot import build_observed_environment_snapshot
 from autoad_researcher.environments.validation import validate_environment
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
+
+if TYPE_CHECKING:
+    from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 
 
 class EnvironmentPreparationError(RuntimeError):
@@ -66,25 +69,9 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
         )
         host = probe_host(environment_dir)
         write_probe(environment_dir / "host_probe.json", host)
-        repositories = _candidate_repositories(run_dir)
-        if len(repositories) != 1:
-            blockers = (
-                ["repository target is unresolved: no acquired repository was found"]
-                if not repositories
-                else ["repository target is unresolved: multiple acquired repositories were found"]
-            )
-            _write_json(environment_dir / "readiness_blocked.json", {"blockers": blockers})
-            store.update_environment_state(
-                run_dir,
-                session_id=session_id,
-                status="CREATED",
-                environment_status="not_started",
-                readiness_status="blocked",
-                readiness_blockers=blockers,
-            )
-            return _relative_outputs(run_dir, environment_dir / "host_probe.json", environment_dir / "readiness_blocked.json")
-
-        source_id, repository_path = repositories[0]
+        binding = _load_execution_repository_binding(run_dir, payload, session)
+        source_id = binding.source_id
+        repository_path = run_dir / binding.repository_ref
         repository = probe_repository(repository_path, environment_dir, source_id=source_id)
         write_probe(environment_dir / "repository_probe.json", repository)
         store.update_environment_state(
@@ -93,7 +80,7 @@ def prepare_environment_for_job(run_dir: Path, job: dict[str, Any]) -> list[str]
             status="ENVIRONMENT_RUNNING",
             environment_status="running",
             readiness_status="resolving",
-            repository_ref=f"repos/{source_id}",
+            repository_ref=binding.repository_ref,
         )
         plan = _load_or_build_plan(
             payload,
@@ -253,6 +240,8 @@ def _schedule_revision_if_available(
             "session_id": session_id,
             "task_ref": str(payload.get("task_ref") or "input_task.yaml"),
             "environment_revision": next_plan.revision,
+            "execution_repository_binding_ref": payload.get("execution_repository_binding_ref"),
+            "execution_repository_binding_sha256": payload.get("execution_repository_binding_sha256"),
             "environment_plan": next_plan.model_dump(mode="json"),
             "revision_plans": remaining,
         },
@@ -414,15 +403,41 @@ def _resolve_workspace_path(run_dir: Path, build_dir: Path, revision: int, value
     return value
 
 
-def _candidate_repositories(run_dir: Path) -> list[tuple[str, Path]]:
-    root = run_dir / "repos"
-    if not root.is_dir():
-        return []
-    return [
-        (child.name, child)
-        for child in sorted(root.iterdir())
-        if child.is_dir() and not child.is_symlink()
-    ]
+def _load_execution_repository_binding(
+    run_dir: Path,
+    payload: dict[str, Any],
+    session,
+) -> "ExecutionRepositoryBinding":
+    ref = _required_string(payload, "execution_repository_binding_ref")
+    expected_sha256 = _required_string(payload, "execution_repository_binding_sha256")
+    if (
+        session.execution_repository_binding_ref != ref
+        or session.execution_repository_binding_sha256 != expected_sha256
+    ):
+        raise EnvironmentPreparationError("environment Job binding differs from Session")
+    path = run_dir / ref
+    try:
+        path.resolve().relative_to(run_dir.resolve())
+    except ValueError as exc:
+        raise EnvironmentPreparationError("environment Job binding escapes run directory") from exc
+    if not path.is_file():
+        raise EnvironmentPreparationError("execution repository binding artifact is missing")
+    try:
+        from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
+
+        binding = ExecutionRepositoryBinding.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise EnvironmentPreparationError("execution repository binding artifact is invalid") from exc
+    from autoad_researcher.benchmarks.hashing import canonical_sha256
+
+    if canonical_sha256(binding) != expected_sha256:
+        raise EnvironmentPreparationError("execution repository binding SHA-256 mismatch")
+    if session.repository_ref != binding.repository_ref:
+        raise EnvironmentPreparationError("Session repository differs from execution repository binding")
+    repository_path = run_dir / binding.repository_ref
+    if not repository_path.is_dir() or repository_path.is_symlink():
+        raise EnvironmentPreparationError("bound execution repository checkout is unavailable")
+    return binding
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
