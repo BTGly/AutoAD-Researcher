@@ -35,6 +35,8 @@ JOB_TYPES = {
     "report_snapshot_build": "report_artifact",
     "report_facts_assemble": "report_artifact",
     "report_narrative_generate": "report_artifact",
+    "report_package": "report_artifact",
+    "report_render_pdf": "report_artifact",
 }
 
 

@@ -182,6 +182,16 @@ def _process_pending_jobs(run_dir: Path) -> int:
 
                 outputs = run_narrative_job(run_dir, job)
                 success = True
+            elif job_type == "report_package":
+                from autoad_researcher.reporting.bundle import run_bundle_job
+
+                outputs = run_bundle_job(run_dir, job)
+                success = True
+            elif job_type == "report_render_pdf":
+                from autoad_researcher.reporting.pdf import run_pdf_job
+
+                outputs = run_pdf_job(run_dir, job)
+                success = True
             elif job_type == "experiment_environment_prepare":
                 from autoad_researcher.environments.prepare import prepare_environment_for_job
 
@@ -219,6 +229,9 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error_msg}"})
         except Exception as exc:
             error_msg = str(exc)[:500]
+            if job_type == "report_package" and isinstance(job.get("report_id"), str):
+                from autoad_researcher.reporting.store import ReportStore
+                ReportStore().set_format_status(run_dir, report_id=job["report_id"], format_name="bundle", status="failed")
             _project_job_failure(run_dir, job, error_msg)
             fail_pipeline_job(run_dir, job_id, error=error_msg)
             append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})

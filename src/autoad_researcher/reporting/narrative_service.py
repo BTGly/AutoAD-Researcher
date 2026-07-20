@@ -46,6 +46,8 @@ def run_narrative_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
     store.transition_generation(run_dir, report_id=report_id, target="validating")
     store.transition_generation(run_dir, report_id=report_id, target="content_ready")
     append_event(run_dir, "report.content_ready", {"report_id": report_id})
+    from autoad_researcher.reporting.render_request import request_optional_format
+    request_optional_format(run_dir, report_id=report_id, format_name="bundle")
     return _outputs(run_dir, report_id)
 
 

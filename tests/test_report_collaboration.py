@@ -28,9 +28,10 @@ def test_discussion_is_report_bound_and_rejects_unknown_evidence(tmp_path: Path)
 
 def test_proposal_is_not_handoff_and_accept_is_only_review(tmp_path: Path):
     run_dir, report_id = _ready_report(tmp_path)
+    job_count_before = len((run_dir / "jobs" / "pipeline_jobs.jsonl").read_text().splitlines())
     proposal = create_proposal(run_dir, report_id=report_id, proposal_type="REQUEST_HUMAN", rationale="需要人工判断")
     assert proposal.status == "READY_FOR_CONFIRMATION"
-    assert not list((run_dir / "jobs").glob("pipeline_jobs.jsonl")) or len((run_dir / "jobs" / "pipeline_jobs.jsonl").read_text().splitlines()) == 3
+    assert len((run_dir / "jobs" / "pipeline_jobs.jsonl").read_text().splitlines()) == job_count_before
     review = record_review(run_dir, report_id=report_id, decision="accept")
     assert review.decision == "accept"
     assert ReportStore().load_state(run_dir, report_id).review_status == "accepted"
