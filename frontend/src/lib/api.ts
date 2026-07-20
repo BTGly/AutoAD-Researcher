@@ -226,6 +226,28 @@ export async function getExperimentProjection(runId: string, sessionId?: string,
   return res.json();
 }
 
+export async function confirmCandidate(
+  runId: string,
+  sessionId: string,
+  candidateAttemptId: string,
+  noiseThreshold: number,
+): Promise<unknown> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-confirmations`, {
+    method: 'POST', headers: getHeaders(),
+    body: JSON.stringify({ candidate_attempt_id: candidateAttemptId, noise_threshold: noiseThreshold, idempotency_key: `ui-confirm:${candidateAttemptId}` }),
+  });
+  if (!res.ok) throw await apiError(res, `Candidate confirmation error: ${res.status}`);
+  return res.json();
+}
+
+export async function promoteCandidate(runId: string, candidateId: string, approvedBy: string): Promise<unknown> {
+  const res = await fetch(`/api/runs/${runId}/promotions`, {
+    method: 'POST', headers: getHeaders(), body: JSON.stringify({ candidate_id: candidateId, approved_by: approvedBy }),
+  });
+  if (!res.ok) throw await apiError(res, `Champion promotion error: ${res.status}`);
+  return res.json();
+}
+
 export async function saveExperimentConfig(runId: string, config: any): Promise<any> {
   const res = await fetch(`/api/runs/${runId}/experiment-config`, {
     method: 'PUT',

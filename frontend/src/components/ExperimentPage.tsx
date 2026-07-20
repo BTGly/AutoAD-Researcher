@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityFeed } from './ActivityFeed';
 import { DetailDrawer, type ExperimentDetailSelection } from './DetailDrawer';
 import { IdeaTree } from './IdeaTree';
-import { getExperimentProjection } from '../lib/api';
+import { ApiError, confirmCandidate, getExperimentProjection, promoteCandidate } from '../lib/api';
 import type { ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, ExperimentProjection } from '../lib/types';
 
 interface Props {
@@ -99,6 +99,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
     {runId && projection?.selection_status === 'ambiguous' && <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 18 }}><b>发现多个实验 Session，请明确选择</b><select aria-label="实验 Session" value={sessionId || ''} onChange={event => chooseSession(event.target.value)} style={{ display: 'block', marginTop: 12, width: '100%' }}><option value="">请选择</option>{projection.session_candidates.map(item => <option key={item.session_id} value={item.session_id}>{item.session_id} · {item.status}</option>)}</select></section>}
     {runId && projection?.selection_status === 'selected' && projection.session && projection.summary && <>
       <SessionOverview projection={projection} />
+      <ExperimentActions runId={runId} projection={projection} onChanged={() => void loadProjection(runId, sessionId)} />
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1fr) minmax(230px, 1.1fr) minmax(240px, 1.2fr)', gap: 12, marginTop: 12, alignItems: 'start' }}>
         <Panel title="Idea Tree"><IdeaTree nodes={projection.idea_tree?.nodes || []} championIdeaId={projection.champion?.idea_id || null} selectedId={selection?.kind === 'idea' ? selection.value.node_id : null} onSelect={chooseIdea} /></Panel>
         <Panel title="研究动态"><ActivityFeed activity={projection.activity} truncated={projection.activity_truncated} limit={projection.activity_limit} selectedId={selection?.kind === 'activity' ? selection.value.event_id : null} onSelect={chooseActivity} /></Panel>
@@ -106,6 +107,26 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
       </div>
     </>}
   </main>;
+}
+
+function ExperimentActions({ runId, projection, onChanged }: { runId: string; projection: ExperimentProjection; onChanged: () => void }) {
+  const [noise, setNoise] = useState('');
+  const [approvedBy, setApprovedBy] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (projection.session?.execution_mode !== 'approve_each_step') return null;
+  const candidates = projection.candidates || [];
+  const registeredAttempts = new Set(candidates.map(item => item.attempt_id));
+  const confirmation = projection.attempts.find(item => item.job_type === 'experiment_attempt' && item.runtime_status === 'COMPLETED' && item.scientific_assessment?.scientific_effect === 'IMPROVEMENT' && !registeredAttempts.has(item.attempt_id));
+  const promotable = candidates.find(item => item.b_test_passed && item.guardrails_passed && projection.champion?.candidate_id !== item.candidate_id);
+  const reportError = (reason: unknown) => setError(reason instanceof ApiError ? reason.message : '操作未完成，请保留当前证据后重试。');
+  return <section aria-label="实验确认动作" style={{ border: '1px solid var(--blue)', borderRadius: 8, padding: 14, marginTop: 12, background: 'var(--bg-panel)' }}>
+    <b>需要确认的实验动作</b><div style={{ color: 'var(--text-muted)', fontSize: '0.8em', marginTop: 5 }}>命令、仓库、输入和合并目标均由已冻结工件派生；本页不会接受任意命令。</div>
+    {error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 8 }}>{error}</div>}
+    {confirmation && <div style={{ marginTop: 12 }}><div>候选 {confirmation.attempt_id} 已在 B_dev 获得可比较改进。确认后将消耗一次显式 B_test 评估。</div><label style={{ display: 'block', marginTop: 7 }}>噪声阈值 <input aria-label="噪声阈值" value={noise} onChange={event => setNoise(event.target.value)} inputMode="decimal" /></label><button disabled={busy !== null || !Number.isFinite(Number(noise)) || Number(noise) < 0} onClick={async () => { setBusy('confirm'); setError(null); try { await confirmCandidate(runId, projection.session!.session_id, confirmation.attempt_id, Number(noise)); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>确认 B_test 评估</button></div>}
+    {promotable && <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}><div>候选 {promotable.candidate_id} 已通过 B_test。推广会合并到 run-owned 主 checkout，并记录 Champion journal。</div><label style={{ display: 'block', marginTop: 7 }}>批准人 <input aria-label="批准人" value={approvedBy} onChange={event => setApprovedBy(event.target.value)} /></label><button disabled={busy !== null || !approvedBy.trim()} onClick={async () => { setBusy('promote'); setError(null); try { await promoteCandidate(runId, promotable.candidate_id, approvedBy.trim()); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>批准并推广 Champion</button></div>}
+    {!confirmation && !promotable && <div style={{ color: 'var(--text-muted)', marginTop: 10, fontSize: '0.85em' }}>当前没有需要人工确认的 B_test 或 Champion 推广动作。</div>}
+  </section>;
 }
 
 function SessionOverview({ projection }: { projection: ExperimentProjection }) {

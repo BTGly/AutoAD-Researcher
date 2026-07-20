@@ -149,6 +149,18 @@ class ChampionProjection(BaseModel):
     assessment_error: str | None = None
 
 
+class CandidateProjection(BaseModel):
+    """Read-only candidate evidence available for an explicit promotion action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    idea_id: str
+    attempt_id: str
+    b_test_passed: bool
+    guardrails_passed: bool
+
+
 class ActivityCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -188,6 +200,7 @@ class ExperimentProjection(BaseModel):
     summary: SessionStats | None = None
     idea_tree: IdeaTreeProjection | None = None
     attempts: list[AttemptProjection] = Field(default_factory=list)
+    candidates: list[CandidateProjection] = Field(default_factory=list)
     cognitive_commits: list[CognitiveCommit] = Field(default_factory=list)
     champion_status: ChampionStatus = "absent"
     champion: ChampionProjection | None = None
@@ -225,6 +238,16 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
     related_ideas = _attempt_idea_index(tree)
     attempt_views = [_attempt_projection(run_dir, item, related_ideas.get(item.attempt_id, [])) for item in attempts]
     champion_status, champion = _champion_projection(run_dir, session)
+    candidates = [
+        CandidateProjection(
+            candidate_id=item.candidate_id,
+            idea_id=item.idea_id,
+            attempt_id=item.attempt_id,
+            b_test_passed=item.b_test_passed,
+            guardrails_passed=item.guardrails_passed,
+        )
+        for item in CandidateRegistry().list_candidates(run_dir, session_id=session.session_id)
+    ]
     activity, truncated = _activity(
         run_dir,
         session_id=session.session_id,
@@ -252,6 +275,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
         ),
         idea_tree=_idea_tree_projection(tree, attempts),
         attempts=attempt_views,
+        candidates=candidates,
         cognitive_commits=commits,
         champion_status=champion_status,
         champion=champion,

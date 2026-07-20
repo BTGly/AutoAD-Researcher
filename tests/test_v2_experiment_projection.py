@@ -10,6 +10,7 @@ from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.experiment_projection import build_projection
 from autoad_researcher.experiment.attempt import ExperimentAttempt
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+from autoad_researcher.experiment.promotion import CandidateRegistry, CandidateSnapshot
 from autoad_researcher.experiment.session import ExperimentAuthorization, ExperimentSession
 from autoad_researcher.runner.models import ExperimentCommandPlan, ExperimentInputRefs
 from autoad_researcher.server.routes import experiment_projection as projection_route
@@ -138,6 +139,36 @@ def test_projection_does_not_materialize_missing_scientific_assessment(tmp_path:
 
     assert projection.attempts[0].scientific_assessment_status == "not_materialized"
     assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before
+
+
+def test_projection_exposes_only_durable_candidate_action_facts(tmp_path: Path):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    CandidateRegistry().create_candidate(
+        tmp_path,
+        CandidateSnapshot(
+            candidate_id="candidate_000001",
+            session_id=session.session_id,
+            evaluation_contract_hash="a" * 64,
+            idea_id="idea_000001",
+            attempt_id="attempt_000001",
+            source_branch="executor/fixture",
+            source_commit="b" * 40,
+            patch_sha256="c" * 64,
+            metrics_ref="attempts/attempt_000001/metrics.json",
+            resource_ref="attempts/attempt_000001/execution_result.json",
+            b_dev_evidence_ref="attempts/attempt_000001/scientific_assessment.json",
+            b_test_evidence_ref="attempts/attempt_000002/scientific_assessment.json",
+            b_test_passed=True,
+            guardrails_passed=True,
+            created_at=NOW,
+        ),
+    )
+
+    projection = build_projection(tmp_path)
+
+    assert [item.candidate_id for item in projection.candidates] == ["candidate_000001"]
+    assert projection.candidates[0].b_test_passed is True
 
 
 def test_activity_is_session_bound_and_bounded(tmp_path: Path):

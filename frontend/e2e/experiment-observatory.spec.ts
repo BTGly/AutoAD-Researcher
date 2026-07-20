@@ -12,6 +12,7 @@ const projection = {
     { node_id: 'idea_000001', parent_id: 'idea_000000', is_root: false, depth: 1, mechanism: '局部特征重加权', hypothesis: '可提高 AUROC', observable: 'image AUROC', research_axis: null, minimal_intervention: null, falsification: null, relationship_to_previous_ideas: null, grounding: [], expected_cost: 'low', status: 'SUPPORTED', attempt_refs: ['attempt_000001'], evidence_refs: [], cognitive_commit_refs: [], insights: [{ text: '已记录观察', kind: 'observation', evidence_refs: [], created_at: '2026-07-20T00:00:00Z' }], children: [], attempt_summary: { COMPLETED: 1 } },
   ] },
   attempts: [{ attempt_id: 'attempt_000001', attempt_purpose: 'exploration', runtime_status: 'COMPLETED', job_type: 'experiment_attempt', pipeline_job_id: null, required_device_count: 1, required_vram_mb: 1, retry_of: null, retry_count: 0, max_retries: 0, retry_exhausted: false, failure_code: null, command_plan_summary: 'python run.py', execution_outcome: { execution_status: 'COMPLETED' }, scientific_assessment: null, assessment_reconciliation: null, scientific_assessment_status: 'not_materialized', related_idea_ids: ['idea_000001'], pid: null, heartbeat_at: null, resource_lease_id: null }],
+  candidates: [{ candidate_id: 'candidate_000001', idea_id: 'idea_000001', attempt_id: 'attempt_000001', b_test_passed: true, guardrails_passed: true }],
   cognitive_commits: [], champion_status: 'absent', champion: null,
   activity: [{ event_id: 1, event_type: 'experiment.idea_tree.mutated', created_at: '2026-07-20T00:00:00Z', title: 'Idea Tree 已更新', summary: '树版本：1', card_kind: 'idea_tree', related_idea_id: null, related_attempt_id: null, related_commit_id: null, related_outcome: null, detail: '', evidence_refs: [] }],
   activity_limit: 100, activity_truncated: false,
@@ -45,4 +46,17 @@ test('renders a durable observatory snapshot and only prefills discussion', asyn
   await page.getByRole('button', { name: '在研究助手中讨论' }).click();
   await expect(page.getByPlaceholder('输入问题，或粘贴 URL…')).toHaveValue(/Idea idea_000001/);
   expect(chatCalls).toBe(0);
+});
+
+test('sends an explicit human Champion approval instead of auto-promoting', async ({ page }) => {
+  let requestBody: Record<string, unknown> | null = null;
+  await prepare(page);
+  await page.route(`**/api/runs/${run.run_id}/promotions`, async route => {
+    requestBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: { approval_ref: 'experiments/champions/approvals/approval_000001.json', champion_event: {} } });
+  });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByLabel('批准人').fill('fixture-user');
+  await page.getByRole('button', { name: '批准并推广 Champion' }).click();
+  expect(requestBody).toEqual({ candidate_id: 'candidate_000001', approved_by: 'fixture-user' });
 });

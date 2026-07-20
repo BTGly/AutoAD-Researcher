@@ -219,7 +219,7 @@ export interface ExperimentAttempt {
   failure_code: string | null;
   command_plan_summary: string;
   execution_outcome: Record<string, unknown> | null;
-  scientific_assessment: Record<string, unknown> | null;
+  scientific_assessment: Record<string, any> | null;
   assessment_reconciliation: Record<string, unknown> | null;
   scientific_assessment_status: 'available' | 'not_materialized' | 'invalid';
   related_idea_ids: string[];
@@ -259,6 +259,7 @@ export interface ExperimentProjection {
   } | null;
   idea_tree: { session_id: string; revision: number; root_node_id: string; nodes: ExperimentIdeaNode[] } | null;
   attempts: ExperimentAttempt[];
+  candidates: Array<{ candidate_id: string; idea_id: string; attempt_id: string; b_test_passed: boolean; guardrails_passed: boolean }>;
   champion_status: 'absent' | 'available' | 'assessment_missing' | 'assessment_invalid';
   champion: { candidate_id: string; idea_id: string; attempt_id: string; assessment_error: string | null } | null;
   activity: ExperimentActivity[];
