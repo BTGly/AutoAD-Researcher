@@ -177,6 +177,11 @@ def _process_pending_jobs(run_dir: Path) -> int:
 
                 outputs = run_facts_job(run_dir, job)
                 success = True
+            elif job_type == "report_narrative_generate":
+                from autoad_researcher.reporting.narrative_service import run_narrative_job
+
+                outputs = run_narrative_job(run_dir, job)
+                success = True
             elif job_type == "experiment_environment_prepare":
                 from autoad_researcher.environments.prepare import prepare_environment_for_job
 

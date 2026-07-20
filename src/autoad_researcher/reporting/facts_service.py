@@ -66,6 +66,15 @@ def run_facts_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
         ),
     ]
     store.transition_generation(run_dir, report_id=report_id, target="generating_narrative")
+    from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
+    from autoad_researcher.reporting.narrative_service import REPORT_NARRATIVE_JOB_TYPE
+
+    narrative_job, _ = create_or_get_pipeline_job(
+        run_dir, source_id="", report_id=report_id, job_type=REPORT_NARRATIVE_JOB_TYPE,
+        idempotency_key=f"report:{manifest.session_id}:{manifest.source_snapshot_content_sha256}:{REPORT_NARRATIVE_JOB_TYPE}",
+        evidence_role="report_artifact", payload={"report_id": report_id, "snapshot_content_sha256": manifest.source_snapshot_content_sha256},
+    )
+    store.record_job(run_dir, report_id=report_id, job_id=narrative_job["job_id"])
     append_event(run_dir, "report.facts_assembled", {"report_id": report_id, "facts_content_sha256": facts_hash})
     return [reference.locator for reference in refs]
 
