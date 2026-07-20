@@ -297,7 +297,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 <candidate_actions>
 - source_action 只针对 registered_sources 中逐字存在的唯一 source_id。用户明确要求删除时用 request_source_removal；用户明确要求对已登记的本地 PDF 重新解析时用 request_source_reparse。否定、讨论、来源不唯一或 source 未登记时为 null。
 - dataset_source 只在用户明确把一个已有的服务器本地目录作为数据集来源提供时填写 source_path 和用户给出的 user_label；必须原样保留路径，不从普通路径、文件名或上下文猜测。它只会经过代码的允许目录和目录存在性校验后登记，不能读取、复制或启动实验。否则为 null。
-- task_action 只在用户明确希望准备一份可由界面确认的实验任务草案时填字符串 "prepare_experiment_task"，否则为 null。它不代表用户已经授权修改、训练、评估或使用 GPU。用户要求实际执行但还没有任务合同，也可以提出这个候选；是否准备草案由代码根据持久化 summary、policy 和任务状态决定。
+- task_action 在用户明确希望准备一份可由界面确认的实验任务草案时填 "prepare_experiment_task"。当 `pending_plan_only_task_available` 为 true、用户确认当前草案且没有修改任务内容时，填 "confirm_pending_plan_only_task"；它只确认已有的 plan_only 草案，不能选择仓库、启动 Job 或授权修改、训练、评估或使用 GPU。其余情况为 null。用户要求实际执行但还没有任务合同，也可以提出准备草案候选；是否执行任一候选由代码根据持久化状态、policy 和任务状态决定。
 - target_spec 只转换用户明确给出的受支持 workload 和完整 selectors；不得从 Adapter 目录反推任务或补值。
 - 这些都是候选，代码 Gate 会验证。policy=deny 时三个动作全为 null。request_source_reparse 可以伴随 act，但不等于代码修改或实验执行。
 </candidate_actions>

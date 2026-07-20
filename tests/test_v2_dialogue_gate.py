@@ -360,3 +360,19 @@ def test_pending_task_does_not_remove_task_action_hint(tmp_path: Path):
     )
 
     assert gated.task_action is not None
+
+
+def test_plan_only_confirmation_requires_a_confirm_transition(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        conversation_transition="continue",
+        policy_assessment=_allow_policy(),
+        task_action="confirm_pending_plan_only_task",
+    ))
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert DialogueGate.plan_only_confirmation_allowed(gated) is False

@@ -162,9 +162,21 @@ class DialogueGate:
         return (
             decision.policy == "allow"
             and decision.task_action is not None
+            and decision.task_action.action == "prepare_experiment_task"
             and decision.source_action is None
             and bool(summary.goal.strip())
             and decision.conversation_transition != "cancel"
+        )
+
+    @staticmethod
+    def plan_only_confirmation_allowed(decision: GatedDialogueDecision) -> bool:
+        """Allow chat to confirm only an already-persisted non-executing draft."""
+        return (
+            decision.policy == "allow"
+            and decision.task_action is not None
+            and decision.task_action.action == "confirm_pending_plan_only_task"
+            and decision.source_action is None
+            and decision.conversation_transition == "confirm"
         )
 
     @staticmethod

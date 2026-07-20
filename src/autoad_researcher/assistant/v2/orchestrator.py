@@ -33,7 +33,7 @@ from autoad_researcher.assistant.v2.source_actions import (
     plan_explicit_source_actions,
 )
 from autoad_researcher.assistant.v2.source_service import register_source_intake
-from autoad_researcher.assistant.v2.task_bridge import TaskBridge
+from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmationConflict
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 from autoad_researcher.ui.sources import load_source_registry, register_local_dataset_source
 
@@ -101,6 +101,7 @@ class ResearchOrchestratorV2:
             "created_sources": created_sources,
             "created_jobs": created_jobs,
         }
+        context["pending_plan_only_task_available"] = TaskBridge.pending_plan_only_task_available(run_dir)
         previous = load_research_intent_summary(run_dir)
         candidate = ResearchDecisionAgent.decide(
             run_dir=run_dir,
@@ -153,6 +154,67 @@ class ResearchOrchestratorV2:
                 intent_summary=(
                     (previous or ResearchIntentSummary()).model_dump(mode="json")
                 ),
+                dialogue_mode=decision.dialogue_mode,
+                action_scope=decision.action_scope,
+                policy=decision.policy,
+                evidence_status=decision.evidence_status,
+                conversation_transition=decision.conversation_transition,
+                feasibility=decision.feasibility,
+                numeric_claim_allowed=decision.numeric_claim_allowed,
+                policy_assessment=decision.policy_assessment.model_dump(mode="json"),
+            )
+
+        if DialogueGate.plan_only_confirmation_allowed(decision):
+            try:
+                confirmed = TaskBridge.confirm_pending_plan_only_task(run_dir)
+            except TaskConfirmationConflict as exc:
+                append_event(
+                    run_dir,
+                    "assistant.experiment_task.chat_confirmation_failed",
+                    {"code": exc.code},
+                )
+                reply = "当前没有可安全确认的 plan_only 任务草案；请先在界面中检查或重新准备草案。"
+                if on_reply_delta is not None:
+                    on_reply_delta(reply)
+                return OrchestratorResult(
+                    reply=reply,
+                    created_sources=created_sources,
+                    created_jobs=created_jobs,
+                    evidence_used=context.get("usable_evidence", []),
+                    answerability=context.get("answerability", {}),
+                    intent_summary=(previous or ResearchIntentSummary()).model_dump(mode="json"),
+                    experiment_task=None,
+                    dialogue_mode=decision.dialogue_mode,
+                    action_scope=decision.action_scope,
+                    policy=decision.policy,
+                    evidence_status=decision.evidence_status,
+                    conversation_transition=decision.conversation_transition,
+                    feasibility=decision.feasibility,
+                    numeric_claim_allowed=decision.numeric_claim_allowed,
+                    policy_assessment=decision.policy_assessment.model_dump(mode="json"),
+                )
+            confirmed_summary = load_research_intent_summary(run_dir) or ResearchIntentSummary()
+            append_dialogue_transition(
+                run_dir,
+                decision=decision,
+                summary=confirmed_summary,
+            )
+            append_event(
+                run_dir,
+                "assistant.experiment_task.confirmed_from_chat",
+                {"task_id": confirmed.task_id, "execution_mode": confirmed.execution_mode},
+            )
+            reply = "已确认现有的 plan_only 任务草案；未创建 Session、环境 Job 或实验执行。"
+            if on_reply_delta is not None:
+                on_reply_delta(reply)
+            return OrchestratorResult(
+                reply=reply,
+                created_sources=created_sources,
+                created_jobs=created_jobs,
+                evidence_used=context.get("usable_evidence", []),
+                answerability=context.get("answerability", {}),
+                intent_summary=confirmed_summary.model_dump(mode="json"),
+                experiment_task=confirmed.model_dump(mode="json"),
                 dialogue_mode=decision.dialogue_mode,
                 action_scope=decision.action_scope,
                 policy=decision.policy,

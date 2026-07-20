@@ -280,6 +280,69 @@ def test_orchestrator_explicit_task_action_prepares_pending_input(monkeypatch, t
     assert not (run_dir / "experiments" / "sessions").exists()
 
 
+def test_orchestrator_confirms_existing_plan_only_task_from_chat(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_chat_confirmation"
+    run_dir.mkdir()
+    save_research_intent_summary(run_dir, _ready_summary())
+    draft = TaskBridge.build_experiment_task(run_dir, user_input="准备实验输入")
+
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "plan",
+            "conversation_transition": "confirm",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "task_action": "confirm_pending_plan_only_task",
+        },
+        {"reply_to_user": "unused", "summary": {"goal": "unused"}},
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="确认当前任务草案。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.experiment_task is not None
+    assert result.experiment_task["task_id"] == draft.task_id
+    assert result.experiment_task["status"] == "confirmed"
+    assert result.experiment_task["execution_mode"] == "plan_only"
+    assert (run_dir / "input_task.yaml").is_file()
+    assert load_pipeline_jobs(run_dir) == []
+    assert not (run_dir / "experiments" / "sessions").exists()
+
+
+def test_chat_confirmation_without_a_pending_task_does_not_prepare_one(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_missing_chat_confirmation"
+    run_dir.mkdir()
+
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "plan",
+            "conversation_transition": "confirm",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "task_action": "confirm_pending_plan_only_task",
+        },
+        {"reply_to_user": "unused", "summary": {"goal": "unused"}},
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="确认当前任务草案。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.experiment_task is None
+    assert not (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
+
+
 def test_orchestrator_prepares_plan_draft_with_execution_readiness_question(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_task_readiness_question"
     run_dir.mkdir()

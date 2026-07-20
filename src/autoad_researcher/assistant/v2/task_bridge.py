@@ -69,11 +69,11 @@ class TaskConfirmationConflict(ValueError):
 
 
 class TaskInstruction(BaseModel):
-    """Request to prepare, but not execute, a Pipeline intake task."""
+    """Request to prepare or safely confirm a non-executing Pipeline task."""
 
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["prepare_experiment_task"]
+    action: Literal["prepare_experiment_task", "confirm_pending_plan_only_task"]
 
 
 class ExperimentTaskDraft(BaseModel):
@@ -271,6 +271,41 @@ class TaskBridge:
             task_id=task_id,
             execution_mode=execution_mode,
             execution_repository_source_id=execution_repository_source_id,
+        )
+
+    @classmethod
+    def pending_plan_only_task_available(cls, run_dir: Path) -> bool:
+        """Expose only confirmation availability, never a task identifier, to chat."""
+        try:
+            draft = _load_pending_task(run_dir)
+        except (FileNotFoundError, ValueError):
+            return False
+        return draft.status == "pending_confirmation" and draft.execution_mode == "plan_only"
+
+    @classmethod
+    def confirm_pending_plan_only_task(cls, run_dir: Path) -> ExperimentTaskDraft:
+        """Confirm the persisted plan-only draft without chat-owned identifiers."""
+        try:
+            draft = _load_pending_task(run_dir)
+        except FileNotFoundError as exc:
+            raise TaskConfirmationConflict(
+                "pending_task_invalid",
+                "no pending experiment task is available for chat confirmation",
+            ) from exc
+        except ValueError as exc:
+            raise TaskConfirmationConflict(
+                "pending_task_invalid",
+                "pending experiment task is invalid",
+            ) from exc
+        if draft.execution_mode != "plan_only":
+            raise TaskConfirmationConflict(
+                "confirmation_invalid",
+                "chat confirmation only supports a plan_only task",
+            )
+        return cls.confirm_or_load_existing(
+            run_dir,
+            task_id=draft.task_id,
+            execution_mode="plan_only",
         )
 
 

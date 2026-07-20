@@ -69,7 +69,10 @@ DialoguePolicy = Literal["allow", "ask_permission", "deny"]
 EvidenceStatus = Literal["sufficient", "insufficient", "conflicting", "unavailable"]
 ConversationTransition = Literal["new", "continue", "revise", "confirm", "cancel"]
 Feasibility = Literal["not_assessed", "feasible", "infeasible_as_stated"]
-TaskActionProposal = Literal["prepare_experiment_task"]
+TaskActionProposal = Literal[
+    "prepare_experiment_task",
+    "confirm_pending_plan_only_task",
+]
 PolicyCategory = Literal[
     "none",
     "evaluation_leakage",
