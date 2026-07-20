@@ -9,18 +9,20 @@
 | 输入 | 真实来源 | 报告侧处理 |
 |---|---|---|
 | Session | `ReportSnapshot.frozen_session` | 读取身份、合同、环境和已冻结 revision；Store 只由 R0A Snapshot adapter 读取 |
-| Attempt | `ReportSnapshot.frozen_attempts` | 保留 Snapshot 时刻的运行状态和 retry lineage；执行结果、metrics 仍通过冻结 artifact refs 读取 |
+| Attempt | `ReportSnapshot.frozen_attempts` | 保留 Snapshot 时刻的运行状态和 retry lineage；`execution_result_ref` 必须唯一解析到 `source_refs` 中已校验的 `ArtifactReferenceV2`，执行结果和 metrics 只通过这些冻结引用读取 |
 | Outcome / 执行协议 | `OutcomeCard` | 直接读取执行状态、协议状态和原始执行事实，不重新计算 |
 | 科学比较 | `EffectiveScientificAssessment` | 唯一读取比较性、科学效果和 delta 的决策视图 |
 | 旧 validity | `ScientificValidityReport` | 仅通过 legacy adapter 读取，不与新 Experiment Agents 事实混为一谈 |
 | IdeaTree | `ReportSnapshot.frozen_idea_tree` | 读取 ideas、状态、parent/child、attempt refs、evidence refs 和 insights |
 | Candidate/Champion | `ReportSnapshot.frozen_champion_pointer` 及其中的不可变引用 | 读取已冻结的候选和 Champion 指针 |
-| 认知成本 | `ReportSnapshot.frozen_cognitive_cost_summary` | 读取 Snapshot 时刻的 LLM 调用、token、认知 wall time 和认知预算 |
+| 认知成本 | `ReportSnapshot.frozen_cognitive_cost_summary` + `cognitive_usage_sha256` | 读取同一账本窗口生成的 Snapshot 时刻 LLM 调用、token、认知 wall time 和认知预算；fingerprint 只作为该摘要的绑定证据 |
 | 计算资源 | `ResourceUsageReport` 及现有资源聚合 | 读取 GPU 数量、显存、利用率、实验 wall time 和 GPU-hours |
 | 停止事实 | `ReportSnapshot.frozen_stop_decision` | 读取已冻结的停止原因，不由 assembler 推断 |
 | Artifact | `ReportSnapshot.source_refs` 中的 `ArtifactReferenceV2` | 保存带 SHA 的类型化引用 |
 
 R0A 是唯一可以读取 Session、IdeaTree、Attempt、Candidate/Champion、StopDecision 和 CognitiveCostSummary live 来源并写入冻结副本的边界。R1 及后续阶段只接受 Snapshot 和其中登记的不可变引用；即使生成期间控制面继续变化，也不能回读最新值来“补齐” Facts。
+
+Facts assembler 对 `execution_result_ref` 做确定性绑定校验：引用为空、缺失、对应多个 artifact 或 SHA 不匹配时，保留失败/缺失事实和原因，不从路径名、文件扩展名或自由文本猜测执行结果。
 
 当前仓库确实存在 `IdeaTreeStore`，必须纳入 Snapshot 和 Facts。计划中不使用不存在的 `ChampionStore` 或含义不清的通用 `CostSummary`；如果某个事实在当前仓库没有权威来源，输出为缺失/未确定并记录原因，不自行补齐。
 

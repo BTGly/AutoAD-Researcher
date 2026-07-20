@@ -10,11 +10,12 @@
 |---|---|---|
 | AutoAD `ExperimentSessionStore` | 锁内身份校验、原子写、revision | 直接复用存储模式 `[REFER]` |
 | AutoAD `PipelineJobStore` | `create_or_get_pipeline_job()`、claim/complete/fail | 报告 Job 直接接入 `[REFER]` |
+| AutoAD `CognitiveBudgetStore` | append-only usage ledger、账本锁和可重建 cost summary | 在同一账本锁读取记录、生成冻结摘要并校验 fingerprint `[REFER]` |
 | Arbor | 缺失输入仍可生成 partial report | 采用其容错思想 `[REFER]` |
 | ARIS `run_state.py` | 原子 replace、单 run lock、执行完成与验收分离 | 重实现到报告状态 `[REIMPL]` |
 | Claw-AI-Lab stage contract | 输入、输出、重试和错误码显式化 | 参考，不复制整套 pipeline `[REFER]` |
 
-R0A 的 Snapshot 构造是短时的锁内读和 canonical hash 计算，不为它增加异步排队层。Arbor 的报告生成允许 partial 输入，ARIS 的原子状态和单运行锁用于恢复边界；两者都不要求复制整个运行目录。
+R0A 的 Snapshot 构造是短时的来源读取和 canonical hash 计算，不为它增加异步排队层。认知成本读取复用 `CognitiveBudgetStore` 的账本锁，不新增跨 Store 全局锁。Arbor 的报告生成允许 partial 输入，ARIS 的原子状态和单运行锁用于恢复边界；两者都不要求复制整个运行目录。
 
 ## 3. 报告对象边界
 
@@ -55,6 +56,7 @@ review_status
 format_status
 jobs
 retry_count
+dependency_projection
 last_error
 available_artifacts
 updated_at
@@ -76,6 +78,7 @@ frozen_champion_pointer: canonical object
 frozen_stop_decision: canonical object or explicit missing marker
 frozen_attempts: list[AttemptSnapshotV1]
 frozen_cognitive_cost_summary: canonical object or explicit missing marker
+cognitive_usage_sha256: canonical usage-ledger fingerprint or explicit missing marker
 source_refs: list[ArtifactReferenceV2]
 evaluation_contract_ref
 environment_snapshot_ref
@@ -104,6 +107,8 @@ evaluation_contract_sha256
 created_at
 updated_at_at_snapshot
 ```
+
+`execution_result_ref` 继续保留现有 Attempt 字段语义，但在 Snapshot 中必须解析到 `source_refs` 里唯一的 `ArtifactReferenceV2`：其 `artifact_id`、类型、run-relative locator 和 SHA 必须一致。无法解析、引用不唯一或 SHA 校验失败时，Snapshot 写入显式 missing marker，并由 Facts/Evidence Validator 报告缺失原因；不另造第二套执行结果引用模型。
 
 PID、process group、resource lease 和 heartbeat 不进入报告身份；若以后展示，必须明确是 Snapshot 时刻的运行状态。`CognitiveCostSummary` 是从 append-only usage ledger 重建的派生视图，R0A 冻结其结果，R1 不再调用 live builder。
 
@@ -147,11 +152,15 @@ unreviewed / accepted / needs_more / needs_repair / disputed
 ```text
 校验 Session/readiness
 → 读取各来源的稳定 revision；没有 revision 时计算 canonical content hash
-→ 读取 Attempt inventory 和 CognitiveCostSummary，复制小型控制面对象并 canonicalize，校验大型 artifact refs
-→ 再次读取各来源 revision/hash、Attempt inventory/revision 和 cost ledger fingerprint
+→ 读取 Attempt inventory，复制小型控制面对象并 canonicalize，校验大型 artifact refs
+→ 在 `CognitiveBudgetStore` 现有账本锁内：记录 ledger fingerprint_before，读取同一批 usage records，基于这批 records 生成 CognitiveCostSummary，再记录 fingerprint_after
+→ 只有 fingerprint_before == fingerprint_after 才接受该 summary，并将同一 fingerprint 保存为 `cognitive_usage_sha256`
+→ 再次读取其他来源 revision/hash 和 Attempt inventory/revision
 → 全部未变化：计算 source inventory 和 snapshot_content_sha256，原子写入 Snapshot
 → 任一来源变化：丢弃本轮副本，在有限次数内重试；仍不稳定则返回冲突/稍后重试
 ```
+
+认知账本的“读取记录、生成摘要、前后 fingerprint 校验”必须属于同一个账本读取窗口；不能先读取旧摘要、再用后来的 fingerprint 装饰它。实现时可新增一个返回 records+fingerprint 的小型 Store 操作，具体函数名以实际代码核对为准，不增加全局锁或独立账本数据库。
 
 报告锁只保护 report version 分配和 Snapshot 写入，不保护 Session、IdeaTree 等来源，也不在多个 Store 之间取得锁；这样避免锁顺序和死锁问题。重复请求返回已有 Snapshot；同一请求身份但来源 revision 或内容不一致时，只有双读稳定后才允许创建报告。这里不创建 `report_snapshot_build` Job。
 
@@ -169,6 +178,8 @@ report_facts_assemble
 ```
 
 这是固定的报告 DAG，不新增通用调度器：`report_package` 依赖 HTML ready，PDF 只依赖 Validator。各格式失败不会回退 `content_ready`，也不会阻断另一条已满足依赖的分支。
+
+报告 Job 的依赖失败只做报告侧的依赖投影：下游 `PipelineJob` 保持 `queued`，报告状态记录 `dependency_projection: blocked_by_failed_dependency`，Worker 不把它 claim 后永久置为 `failed`。上游 Job 通过显式报告重试成功后，下一轮依赖检查清除该投影，下游自然具备执行条件。非报告 Job 继续使用当前 Worker 的严格失败传播，不把这条例外推广成通用调度规则。
 
 报告 Job 失败重试必须使用独立的、受限的 failed requeue 操作，而不是让 `create_or_get_pipeline_job()` 隐式改变状态。该操作只允许报告 Job 类型，并在同一把 Job 锁内：
 
@@ -250,13 +261,16 @@ runs/{run_id}/reports/{report_id}/
 - [ ] Snapshot 构造期间并发修改任一来源时，不会写出混合 revision 的 Snapshot；有限重试耗尽后会明确失败。
 - [ ] Attempt 在报告创建后继续 heartbeat 或终止时，旧 Snapshot 的 `frozen_attempts` 不变，且不依赖 live Attempt JSON 的 SHA。
 - [ ] CognitiveCostSummary 在报告创建后重建时，旧 Snapshot 仍使用冻结结果。
+- [ ] Snapshot 的 `frozen_cognitive_cost_summary` 与 `cognitive_usage_sha256` 来自同一账本读取窗口；账本在窗口内变化时不会写出混合摘要和指纹。
 - [ ] Snapshot 引用只允许已登记、SHA 匹配的 artifact。
+- [ ] `execution_result_ref` 能唯一解析到 `source_refs` 中的 `ArtifactReferenceV2`；无法解析时保留显式 missing marker。
 - [ ] 相同 Snapshot 和相同 `report_recipe_hash` 复用报告；配方变化生成新版本。
 - [ ] Snapshot hash 产生前不会创建依赖该 hash 的 Job。
 - [ ] 非法状态转换被拒绝。
 - [ ] 报告 Job 超过普通 300 秒恢复边界时不会被重复 claim。
 - [ ] failed 报告 Job 只能通过显式受限 requeue 重试；普通 `create_or_get_pipeline_job()` 不会暗中重新执行。
 - [ ] PDF 不依赖 Bundle；HTML 失败不会错误地让 PDF 进入依赖失败，Bundle 只在 HTML ready 后生成。
+- [ ] 报告下游依赖失败时保持 queued 和阻塞投影；上游报告 Job 成功重试后，下游可自然恢复执行。
 - [ ] Markdown/Validator 完成后，即使 PDF 不可用，也能进入可审阅条件。
 - [ ] 失败重试通过持久化 Job，而不是进程内后台任务。
 - [ ] 旧报告目录和文件字节不发生改变。

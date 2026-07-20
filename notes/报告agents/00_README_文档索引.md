@@ -40,7 +40,7 @@
 | 组件 | 实际位置 | 报告侧用途 |
 |---|---|---|
 | `ExperimentSession` / `ExperimentSessionStore` | `src/autoad_researcher/experiment/` | Session 身份、状态、合同和原子存储 |
-| `PipelineJobStore` 服务函数 | `src/autoad_researcher/assistant/v2/job_service.py` | 报告 Job 的幂等、claim、complete、fail、受限 failed requeue 和恢复租约 |
+| `PipelineJobStore` 服务函数 | `src/autoad_researcher/assistant/v2/job_service.py` | 直接复用当前 Job 的幂等、claim、complete、fail 和 stale-running 恢复；报告专用 failed requeue 是 PR-R0B 的新增受限操作 |
 | `EventStore` / V2 event service | `src/autoad_researcher/core/events.py`、`src/autoad_researcher/assistant/v2/event_service.py` | 阶段事件和锁内 JSONL 追加 |
 | `ExperimentAttemptService` | `src/autoad_researcher/experiment/attempt_service.py` | confirmatory/retry 的 Attempt/Job 入口 |
 | `Coordinator` / `IdeaTreeStore` / `ExecutorAgent` | `src/autoad_researcher/experiment/` | REFINE 的 Idea、Intervention、patch 和实现证据闭环 |

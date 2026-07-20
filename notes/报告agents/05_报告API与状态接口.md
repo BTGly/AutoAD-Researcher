@@ -7,10 +7,10 @@
 ## 2. 复用现有代码
 
 - 使用 `RUNS_ROOT`；
-- 使用 `run_dir_or_400()` 和现有 run path helper；
+- 复用当前证据路由中 `_run_dir_or_400()` 所代表的 `RUNS_ROOT + run_dir_path` 校验基线；当前报告路由若没有共享 helper，实施时再抽取一个共享实现，不能把它描述成已经存在的公共 `run_dir_or_400()`；
 - 使用报告 Store、PipelineJob Store 和 Event service；
 - 保留当前 `REPORT_PATHS` 兼容读取逻辑；
-- 不重新实现 run_id 校验和路径根目录解析。
+- 不重新实现 run_id 校验和路径根目录解析，也不使用 `Path("runs") / run_id` 另造路径体系。
 
 ## 3. API
 
@@ -125,6 +125,7 @@ GET /api/runs/{run_id}/report
 - [ ] `latest-created` 与 `latest-content-ready` 语义不混淆，排队中的新版本不会遮挡旧的可读版本。
 - [ ] `/manifest` 只返回不可变身份；`/state` 返回可变状态投影。
 - [ ] API 使用 `RUNS_ROOT` 和现有 path helper。
+- [ ] 报告路径校验复用当前 `RUNS_ROOT + run_dir_path` 基线；若抽取共享 helper，测试覆盖现有证据路由和报告路由。
 - [ ] `report_id` 固定绑定，不能在 Agent 请求中隐式切换 latest。
 - [ ] Markdown/HTML 在存在且验证通过时可读取，即使 PDF 失败。
 - [ ] 不存在的制品返回明确的 404/409，而不是目录穿越结果。
