@@ -13,13 +13,34 @@ const projection = {
   ] },
   attempts: [{ attempt_id: 'attempt_000001', attempt_purpose: 'exploration', runtime_status: 'COMPLETED', job_type: 'experiment_attempt', pipeline_job_id: null, required_device_count: 1, required_vram_mb: 1, retry_of: null, retry_count: 0, max_retries: 0, retry_exhausted: false, failure_code: null, command_plan_summary: 'python run.py', execution_outcome: { execution_status: 'COMPLETED' }, scientific_assessment: null, assessment_reconciliation: null, scientific_assessment_status: 'not_materialized', related_idea_ids: ['idea_000001'], pid: null, heartbeat_at: null, resource_lease_id: null }],
   candidates: [{ candidate_id: 'candidate_000001', idea_id: 'idea_000001', attempt_id: 'attempt_000001', b_test_passed: true, guardrails_passed: true }],
+  candidate_inventory_status: 'available',
   cognitive_commits: [], champion_status: 'absent', champion: null,
   activity: [{ event_id: 1, event_type: 'experiment.idea_tree.mutated', created_at: '2026-07-20T00:00:00Z', title: 'Idea Tree 已更新', summary: '树版本：1', card_kind: 'idea_tree', related_idea_id: null, related_attempt_id: null, related_commit_id: null, related_outcome: null, detail: '', evidence_refs: [] }],
   activity_limit: 100, activity_truncated: false,
+  activity_scan_truncated: false,
   developer_refs: { run_id: run.run_id, session_id: 'session_aaaaaaaaaaaaaaaa', event_ids: [1], artifact_paths: [], pipeline_job_ids: [], event_log_path: 'events/events.jsonl' },
 };
 
-async function prepare(page: Page, getProjection: () => object = () => projection) {
+async function prepare(page: Page, getProjection: () => object = () => projection, withWebSocket = false) {
+  if (withWebSocket) {
+    await page.addInitScript(() => {
+      const sockets: Array<{ onmessage: ((event: { data: string }) => void) | null; readyState: number }> = [];
+      class FixtureWebSocket {
+        static CLOSED = 3;
+        readyState = 1;
+        onopen = null;
+        onmessage: ((event: { data: string }) => void) | null = null;
+        onclose = null;
+        onerror = null;
+        constructor() { sockets.push(this); }
+        close() { this.readyState = FixtureWebSocket.CLOSED; }
+      }
+      Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket });
+      (window as typeof window & { emitExperimentEvent: () => void }).emitExperimentEvent = () => {
+        for (const socket of sockets) socket.onmessage?.({ data: JSON.stringify({ type: 'experiment.attempt.finalized' }) });
+      };
+    });
+  }
   await page.addInitScript(() => localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' })));
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
@@ -29,7 +50,13 @@ async function prepare(page: Page, getProjection: () => object = () => projectio
     if (path === `/api/runs/${run.run_id}/jobs`) return route.fulfill({ json: [] });
     if (path === `/api/runs/${run.run_id}/evidence/state`) return route.fulfill({ json: { usable_evidence: [], unusable_parsed_sources: [] } });
     if (path === `/api/runs/${run.run_id}/intent-summary`) return route.fulfill({ json: { goal: '', confirmed_facts: [], inferred_facts: [], unresolved_conflicts: [], blocking_question: null } });
-    if (path === `/api/runs/${run.run_id}/experiment/projection`) return route.fulfill({ json: getProjection() });
+    if (path === `/api/runs/${run.run_id}/experiment/projection`) {
+      try {
+        return route.fulfill({ json: getProjection() });
+      } catch {
+        return route.fulfill({ status: 500, json: { detail: 'fixture refresh failure' } });
+      }
+    }
     return route.fulfill({ json: {} });
   });
   await page.goto('/');
@@ -89,4 +116,37 @@ test('does not present an invalid assessment as not materialized', async ({ page
   await expect(page.getByText('工件无效', { exact: true })).toBeVisible();
   await expect(page.getByText('科学评价工件存在但未通过校验，不能作为研究结论。', { exact: true })).toBeVisible();
   await expect(page.getByText('执行事实已记录，科学评价尚未物化。')).not.toBeVisible();
+});
+
+test('coalesces WebSocket events and refreshes the selected detail', async ({ page }) => {
+  let requests = 0;
+  await prepare(page, () => {
+    requests += 1;
+    const value = structuredClone(projection);
+    if (requests > 1) value.idea_tree.nodes[1].hypothesis = '来自实时刷新的假设';
+    return value;
+  }, true);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '局部特征重加权' }).click();
+  await page.evaluate(() => {
+    (window as any).emitExperimentEvent();
+    (window as any).emitExperimentEvent();
+    (window as any).emitExperimentEvent();
+  });
+  await expect(page.getByText('来自实时刷新的假设', { exact: true })).toBeVisible();
+  expect(requests).toBe(2);
+});
+
+test('keeps the last projection when a WebSocket refresh fails', async ({ page }) => {
+  let serveFailure = false;
+  await prepare(page, () => {
+    if (serveFailure) throw new Error('fixture refresh failure');
+    return projection;
+  }, true);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
+  serveFailure = true;
+  await page.evaluate(() => (window as any).emitExperimentEvent());
+  await expect(page.getByRole('alert')).toHaveText('工作台刷新失败，仍保留上一份有效快照。');
+  await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
 });

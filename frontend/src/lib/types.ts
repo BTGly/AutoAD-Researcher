@@ -260,11 +260,13 @@ export interface ExperimentProjection {
   idea_tree: { session_id: string; revision: number; root_node_id: string; nodes: ExperimentIdeaNode[] } | null;
   attempts: ExperimentAttempt[];
   candidates: Array<{ candidate_id: string; idea_id: string; attempt_id: string; b_test_passed: boolean; guardrails_passed: boolean }>;
+  candidate_inventory_status: 'available' | 'invalid';
   champion_status: 'absent' | 'available' | 'assessment_missing' | 'assessment_invalid' | 'control_plane_invalid';
   champion: { candidate_id: string; idea_id: string; attempt_id: string; assessment_error: string | null } | null;
   activity: ExperimentActivity[];
   activity_limit: number;
   activity_truncated: boolean;
+  activity_scan_truncated: boolean;
   developer_refs: {
     run_id: string; session_id: string; event_ids: number[]; artifact_paths: string[]; pipeline_job_ids: string[]; event_log_path: string;
   } | null;

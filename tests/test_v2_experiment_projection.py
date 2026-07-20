@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ import yaml
 from fastapi import HTTPException
 
 from autoad_researcher.assistant.v2.event_service import append_event
+from autoad_researcher.assistant.v2 import experiment_projection
 from autoad_researcher.assistant.v2.experiment_projection import build_projection
 from autoad_researcher.experiment.attempt import ExperimentAttempt
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
@@ -154,6 +156,51 @@ def test_invalid_champion_pointer_is_not_projected_as_absent(tmp_path: Path):
 
     assert projection.champion_status == "control_plane_invalid"
     assert projection.champion is None
+
+
+def test_invalid_candidate_inventory_degrades_the_projection(tmp_path: Path):
+    session = _session(tmp_path).model_copy(update={
+        "evaluation_contract_ref": "experiments/contracts/contract.json",
+        "evaluation_contract_sha256": "a" * 64,
+    })
+    _write_session(tmp_path, session)
+    directory = tmp_path / "experiments" / "champions"
+    candidates = directory / "candidates"
+    candidates.mkdir(parents=True)
+    (candidates / "candidate_000001.json").write_text("{invalid", encoding="utf-8")
+    (directory / "current_by_contract.json").write_text(json.dumps({
+        "a" * 64: {"candidate_id": "candidate_000001", "event_id": "event_000001", "trunk_commit": "b" * 40, "updated_at": NOW},
+    }), encoding="utf-8")
+
+    projection = build_projection(tmp_path)
+
+    assert projection.candidate_inventory_status == "invalid"
+    assert projection.candidates == []
+    assert projection.champion_status == "control_plane_invalid"
+
+
+def test_activity_scan_limit_is_distinct_from_related_activity_truncation(tmp_path: Path, monkeypatch):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    events = iter({
+        "event_id": index,
+        "type": "experiment.unknown",
+        "created_at": NOW,
+        "payload": {"session_id": "session_other"},
+    } for index in range(experiment_projection.ACTIVITY_SCAN_EVENT_LIMIT + 5))
+    monkeypatch.setattr(experiment_projection, "iter_events_reverse", lambda _: events)
+
+    activity, truncated, scan_truncated = experiment_projection._activity(
+        tmp_path,
+        session_id=session.session_id,
+        attempts={},
+        commits={},
+        candidate_ids=set(),
+    )
+
+    assert activity == []
+    assert truncated is False
+    assert scan_truncated is True
 
 
 def test_projection_does_not_materialize_missing_scientific_assessment(tmp_path: Path):

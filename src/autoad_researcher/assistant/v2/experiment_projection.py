@@ -15,7 +15,7 @@ from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCom
 from autoad_researcher.experiment.cognitive_budget import CognitiveBudgetStore
 from autoad_researcher.experiment.finalizer import OutcomeCard
 from autoad_researcher.experiment.idea_tree import IdeaNode, IdeaTreeStore
-from autoad_researcher.experiment.promotion import CandidateRegistry
+from autoad_researcher.experiment.promotion import CandidateRegistry, CandidateSnapshot
 from autoad_researcher.experiment.scientific_assessment import (
     AssessmentReconciliation,
     ScientificAssessment,
@@ -27,6 +27,7 @@ from autoad_researcher.schemas.intake import InputTask
 
 ChampionStatus = Literal["absent", "available", "assessment_missing", "assessment_invalid", "control_plane_invalid"]
 ACTIVITY_LIMIT = 100
+ACTIVITY_SCAN_EVENT_LIMIT = 10_000
 
 
 class SessionProjection(BaseModel):
@@ -161,6 +162,15 @@ class CandidateProjection(BaseModel):
     guardrails_passed: bool
 
 
+class CandidateInventory(BaseModel):
+    """One validated candidate read shared by every projection consumer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["available", "invalid"] = "available"
+    candidates: list[CandidateSnapshot] = Field(default_factory=list)
+
+
 class ActivityCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -201,12 +211,14 @@ class ExperimentProjection(BaseModel):
     idea_tree: IdeaTreeProjection | None = None
     attempts: list[AttemptProjection] = Field(default_factory=list)
     candidates: list[CandidateProjection] = Field(default_factory=list)
+    candidate_inventory_status: Literal["available", "invalid"] = "available"
     cognitive_commits: list[CognitiveCommit] = Field(default_factory=list)
     champion_status: ChampionStatus = "absent"
     champion: ChampionProjection | None = None
     activity: list[ActivityCard] = Field(default_factory=list)
     activity_limit: int = ACTIVITY_LIMIT
     activity_truncated: bool = False
+    activity_scan_truncated: bool = False
     developer_refs: DeveloperRefs | None = None
 
 
@@ -237,7 +249,8 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
     input_task = _load_input_task(run_dir, session.task_ref)
     related_ideas = _attempt_idea_index(tree)
     attempt_views = [_attempt_projection(run_dir, item, related_ideas.get(item.attempt_id, [])) for item in attempts]
-    champion_status, champion = _champion_projection(run_dir, session)
+    candidate_inventory = _candidate_inventory(run_dir, session_id=session.session_id)
+    champion_status, champion = _champion_projection(run_dir, session, candidate_inventory)
     candidates = [
         CandidateProjection(
             candidate_id=item.candidate_id,
@@ -246,14 +259,14 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
             b_test_passed=item.b_test_passed,
             guardrails_passed=item.guardrails_passed,
         )
-        for item in CandidateRegistry().list_candidates(run_dir, session_id=session.session_id)
+        for item in candidate_inventory.candidates
     ]
-    activity, truncated = _activity(
+    activity, truncated, scan_truncated = _activity(
         run_dir,
         session_id=session.session_id,
         attempts={item.attempt_id: item for item in attempts},
         commits={item.commit_id: item for item in commits},
-        candidate_ids={item.candidate_id for item in CandidateRegistry().list_candidates(run_dir, session_id=session.session_id)},
+        candidate_ids={item.candidate_id for item in candidate_inventory.candidates},
     )
     artifact_paths = _artifact_paths(attempt_views, champion)
     pipeline_job_ids = [item.pipeline_job_id for item in attempts if item.pipeline_job_id]
@@ -276,11 +289,13 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
         idea_tree=_idea_tree_projection(tree, attempts),
         attempts=attempt_views,
         candidates=candidates,
+        candidate_inventory_status=candidate_inventory.status,
         cognitive_commits=commits,
         champion_status=champion_status,
         champion=champion,
         activity=activity,
         activity_truncated=truncated,
+        activity_scan_truncated=scan_truncated,
         developer_refs=DeveloperRefs(
             run_id=run_dir.name,
             session_id=session.session_id,
@@ -472,10 +487,26 @@ def _attempt_projection(run_dir: Path, attempt: Any, related_idea_ids: list[str]
     )
 
 
-def _champion_projection(run_dir: Path, session: ExperimentSession) -> tuple[ChampionStatus, ChampionProjection | None]:
+def _candidate_inventory(run_dir: Path, *, session_id: str) -> CandidateInventory:
+    """Read candidates once, retaining a visible invalid-inventory state."""
+
+    try:
+        candidates = CandidateRegistry().list_candidates(run_dir, session_id=session_id)
+    except (OSError, ValueError):
+        return CandidateInventory(status="invalid")
+    return CandidateInventory(candidates=candidates)
+
+
+def _champion_projection(
+    run_dir: Path,
+    session: ExperimentSession,
+    candidate_inventory: CandidateInventory,
+) -> tuple[ChampionStatus, ChampionProjection | None]:
     contract_hash = session.evaluation_contract_sha256
     if contract_hash is None:
         return "absent", None
+    if candidate_inventory.status == "invalid":
+        return "control_plane_invalid", None
     registry = CandidateRegistry()
     try:
         pointer = registry.current_by_contract(run_dir).get(contract_hash)
@@ -484,8 +515,8 @@ def _champion_projection(run_dir: Path, session: ExperimentSession) -> tuple[Cha
     if pointer is None:
         return "absent", None
     try:
-        candidate = registry.load_candidate(run_dir, pointer.candidate_id)
-    except (FileNotFoundError, ValueError):
+        candidate = next(item for item in candidate_inventory.candidates if item.candidate_id == pointer.candidate_id)
+    except StopIteration:
         return "control_plane_invalid", None
     if candidate.session_id != session.session_id or candidate.evaluation_contract_hash != contract_hash:
         return "control_plane_invalid", None
@@ -531,15 +562,17 @@ def _activity(
     attempts: dict[str, Any],
     commits: dict[str, CognitiveCommit],
     candidate_ids: set[str],
-) -> tuple[list[ActivityCard], bool]:
+) -> tuple[list[ActivityCard], bool, bool]:
     cards = []
-    for event in iter_events_reverse(run_dir):
+    for scanned, event in enumerate(iter_events_reverse(run_dir), start=1):
         card = _activity_card(event, session_id, attempts, commits, candidate_ids)
         if card is not None:
             cards.append(card)
             if len(cards) > ACTIVITY_LIMIT:
-                return cards[:ACTIVITY_LIMIT], True
-    return cards, False
+                return cards[:ACTIVITY_LIMIT], True, False
+        if scanned >= ACTIVITY_SCAN_EVENT_LIMIT:
+            return cards, False, True
+    return cards, False, False
 
 
 def _activity_card(

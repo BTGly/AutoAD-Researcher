@@ -3,6 +3,7 @@ import { ActivityFeed } from './ActivityFeed';
 import { DetailDrawer, type ExperimentDetailSelection } from './DetailDrawer';
 import { IdeaTree } from './IdeaTree';
 import { ApiError, confirmCandidate, getExperimentProjection, promoteCandidate } from '../lib/api';
+import { experimentLabel } from '../lib/experimentLabels';
 import type { ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, ExperimentProjection } from '../lib/types';
 
 interface Props {
@@ -12,22 +13,12 @@ interface Props {
   onDiscuss: (text: string) => void;
 }
 
-const ATTEMPT_STATUS_LABEL: Record<string, string> = {
-  QUEUED: '等待运行', STARTING: '正在启动', RUNNING: '运行中', TERMINATING: '正在终止', COMPLETED: '已完成', FAILED: '运行失败', TIMED_OUT: '运行超时', CANCELLED: '已取消', LOST: '运行状态丢失',
-};
-const IDEA_STATUS_LABEL: Record<string, string> = {
-  DRAFT: '草稿', REVIEWED: '已审阅', READY: '等待实验', RUNNING: '实验中', SUPPORTED: '获得证据支持', NOT_SUPPORTED: '未获得支持', INCONCLUSIVE: '证据不足', PRUNED: '已停止探索', MERGED: '已合并',
-};
 
 type ExperimentDetailSelectionKey =
   | { kind: 'idea'; id: string }
   | { kind: 'attempt'; id: string }
   | { kind: 'activity'; id: number }
   | null;
-
-function label(value: string, labels: Record<string, string>) {
-  return labels[value] || `未知状态（原始值：${value}）`;
-}
 
 export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentSettings, onDiscuss }: Props) {
   const [projection, setProjection] = useState<ExperimentProjection | null>(null);
@@ -39,6 +30,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   const requestId = useRef(0);
   const currentRequest = useRef<AbortController | null>(null);
   const refreshScope = useRef({ runId, sessionId });
+  const lastHandledRefreshTick = useRef(experimentRefreshTick);
   refreshScope.current = { runId, sessionId };
 
   const loadProjection = useCallback(async (targetRunId: string, targetSessionId: string | undefined) => {
@@ -81,7 +73,8 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   }, [loadProjection, runId, sessionId]);
 
   useEffect(() => {
-    if (experimentRefreshTick === 0) return;
+    if (experimentRefreshTick === lastHandledRefreshTick.current) return;
+    lastHandledRefreshTick.current = experimentRefreshTick;
     const timer = window.setTimeout(() => {
       const scope = refreshScope.current;
       if (scope.runId) void loadProjection(scope.runId, scope.sessionId);
@@ -108,13 +101,13 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
     {runId && loading && !projection && <EmptyState title="正在读取实验状态…" />}
     {runId && error && <div role="alert" style={{ color: 'var(--orange)', marginBottom: 12 }}>{error}</div>}
     {runId && projection?.selection_status === 'no_session' && <EmptyState title="实验尚未启动。请先在“研究助手”中确认实验任务。" />}
-    {runId && projection?.selection_status === 'ambiguous' && <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 18 }}><b>发现多个实验 Session，请明确选择</b><select aria-label="实验 Session" value={sessionId || ''} onChange={event => chooseSession(event.target.value)} style={{ display: 'block', marginTop: 12, width: '100%' }}><option value="">请选择</option>{projection.session_candidates.map(item => <option key={item.session_id} value={item.session_id}>{item.session_id} · {item.status}</option>)}</select></section>}
+    {runId && projection?.selection_status === 'ambiguous' && <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 18 }}><b>发现多个实验 Session，请明确选择</b><select aria-label="实验 Session" value={sessionId || ''} onChange={event => chooseSession(event.target.value)} style={{ display: 'block', marginTop: 12, width: '100%' }}><option value="">请选择</option>{projection.session_candidates.map(item => <option key={item.session_id} value={item.session_id}>{item.session_id} · {experimentLabel(item.status)}</option>)}</select></section>}
     {runId && projection?.selection_status === 'selected' && projection.session && projection.summary && <>
       <SessionOverview projection={projection} />
       <ExperimentActions runId={runId} projection={projection} onChanged={() => void loadProjection(runId, sessionId)} />
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1fr) minmax(230px, 1.1fr) minmax(240px, 1.2fr)', gap: 12, marginTop: 12, alignItems: 'start' }}>
         <Panel title="Idea Tree"><IdeaTree nodes={projection.idea_tree?.nodes || []} championIdeaId={projection.champion?.idea_id || null} selectedId={selection?.kind === 'idea' ? selection.id : null} onSelect={chooseIdea} /></Panel>
-        <Panel title="研究动态"><ActivityFeed activity={projection.activity} truncated={projection.activity_truncated} limit={projection.activity_limit} selectedId={selection?.kind === 'activity' ? selection.id : null} onSelect={chooseActivity} /></Panel>
+        <Panel title="研究动态"><ActivityFeed activity={projection.activity} truncated={projection.activity_truncated} scanTruncated={projection.activity_scan_truncated} limit={projection.activity_limit} selectedId={selection?.kind === 'activity' ? selection.id : null} onSelect={chooseActivity} /></Panel>
         <Panel title="详情面板"><DetailDrawer selection={detailSelection} onDiscuss={onDiscuss} /><AttemptList attempts={projection.attempts} selectedId={selection?.kind === 'attempt' ? selection.id : null} onSelect={chooseAttempt} /><DeveloperRefs projection={projection} show={showDeveloper} onToggle={() => setShowDeveloper(value => !value)} /></Panel>
       </div>
     </>}
@@ -165,9 +158,9 @@ function SessionOverview({ projection }: { projection: ExperimentProjection }) {
   return <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--bg-panel)' }}>
     <div style={{ fontWeight: 600 }}>{goal}</div>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 10, fontSize: '0.8em', color: 'var(--text-muted)' }}>
-      <span>Session：{projection.session?.status}</span><span>环境：{projection.session?.environment_status}</span><span>Baseline：{projection.session?.baseline_status}</span><span>Idea：{projection.summary?.idea_count}</span><span>Champion：{champion}</span>
+      <span>Session：{experimentLabel(projection.session?.status || '')}</span><span>环境：{experimentLabel(projection.session?.environment_status || '')}</span><span>Baseline：{experimentLabel(projection.session?.baseline_status || '')}</span><span>Idea：{projection.summary?.idea_count}</span><span>Champion：{champion}</span>
       {task?.baseline && <span>Baseline：{task.baseline}</span>}{task?.dataset && <span>Dataset：{task.dataset}</span>}
-      {Object.entries(projection.summary?.attempt_by_status || {}).map(([status, count]) => <span key={status}>{label(status, ATTEMPT_STATUS_LABEL)}：{count}</span>)}
+      {Object.entries(projection.summary?.attempt_by_status || {}).map(([status, count]) => <span key={status}>{experimentLabel(status)}：{count}</span>)}
     </div>
     {projection.session?.readiness_blockers.length ? <div style={{ marginTop: 8, color: 'var(--orange)', fontSize: '0.8em' }}>阻塞项：{projection.session.readiness_blockers.join('；')}</div> : null}
   </section>;
@@ -175,7 +168,7 @@ function SessionOverview({ projection }: { projection: ExperimentProjection }) {
 
 function AttemptList({ attempts, selectedId, onSelect }: { attempts: ExperimentAttempt[]; selectedId: string | null; onSelect: (item: ExperimentAttempt) => void }) {
   if (!attempts.length) return null;
-  return <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 10 }}><b style={{ fontSize: '0.85em' }}>关联实验</b>{attempts.map(item => <button key={item.attempt_id} onClick={() => onSelect(item)} style={{ display: 'block', width: '100%', marginTop: 6, textAlign: 'left', padding: 6, background: selectedId === item.attempt_id ? 'var(--bg)' : 'transparent', border: `1px solid ${selectedId === item.attempt_id ? 'var(--blue)' : 'var(--border)'}`, borderRadius: 5, color: 'var(--text)', cursor: 'pointer' }}>{item.attempt_id} · {label(item.runtime_status, ATTEMPT_STATUS_LABEL)}</button>)}</div>;
+  return <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 10 }}><b style={{ fontSize: '0.85em' }}>关联实验</b>{attempts.map(item => <button key={item.attempt_id} onClick={() => onSelect(item)} style={{ display: 'block', width: '100%', marginTop: 6, textAlign: 'left', padding: 6, background: selectedId === item.attempt_id ? 'var(--bg)' : 'transparent', border: `1px solid ${selectedId === item.attempt_id ? 'var(--blue)' : 'var(--border)'}`, borderRadius: 5, color: 'var(--text)', cursor: 'pointer' }}>{item.attempt_id} · {experimentLabel(item.runtime_status)}</button>)}</div>;
 }
 
 function DeveloperRefs({ projection, show, onToggle }: { projection: ExperimentProjection; show: boolean; onToggle: () => void }) {
@@ -184,5 +177,3 @@ function DeveloperRefs({ projection, show, onToggle }: { projection: ExperimentP
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) { return <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, minHeight: 260 }}><h2 style={{ margin: '0 0 10px', fontSize: '0.95em' }}>{title}</h2>{children}</section>; }
 function EmptyState({ title }: { title: string }) { return <section style={{ minHeight: 280, display: 'grid', placeItems: 'center', textAlign: 'center', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-muted)', background: 'var(--bg-panel)', padding: 24 }}><div><div style={{ fontSize: '2em', marginBottom: 12 }}>🔬</div><div>{title}</div></div></section>; }
-
-export { IDEA_STATUS_LABEL };
