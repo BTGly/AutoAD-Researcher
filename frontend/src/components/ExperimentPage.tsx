@@ -19,6 +19,12 @@ const IDEA_STATUS_LABEL: Record<string, string> = {
   DRAFT: '草稿', REVIEWED: '已审阅', READY: '等待实验', RUNNING: '实验中', SUPPORTED: '获得证据支持', NOT_SUPPORTED: '未获得支持', INCONCLUSIVE: '证据不足', PRUNED: '已停止探索', MERGED: '已合并',
 };
 
+type ExperimentDetailSelectionKey =
+  | { kind: 'idea'; id: string }
+  | { kind: 'attempt'; id: string }
+  | { kind: 'activity'; id: number }
+  | null;
+
 function label(value: string, labels: Record<string, string>) {
   return labels[value] || `未知状态（原始值：${value}）`;
 }
@@ -28,7 +34,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | undefined>();
-  const [selection, setSelection] = useState<ExperimentDetailSelection>(null);
+  const [selection, setSelection] = useState<ExperimentDetailSelectionKey>(null);
   const [showDeveloper, setShowDeveloper] = useState(false);
   const requestId = useRef(0);
   const currentRequest = useRef<AbortController | null>(null);
@@ -83,9 +89,10 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
     setProjection(null);
     setSessionId(next || undefined);
   };
-  const chooseIdea = (value: ExperimentIdeaNode) => setSelection({ kind: 'idea', value });
-  const chooseAttempt = (value: ExperimentAttempt) => setSelection({ kind: 'attempt', value });
-  const chooseActivity = (value: ExperimentActivity) => setSelection({ kind: 'activity', value });
+  const chooseIdea = (value: ExperimentIdeaNode) => setSelection({ kind: 'idea', id: value.node_id });
+  const chooseAttempt = (value: ExperimentAttempt) => setSelection({ kind: 'attempt', id: value.attempt_id });
+  const chooseActivity = (value: ExperimentActivity) => setSelection({ kind: 'activity', id: value.event_id });
+  const detailSelection = selectDetail(projection, selection);
 
   return <main style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: 20 }}>
     <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
@@ -101,12 +108,29 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
       <SessionOverview projection={projection} />
       <ExperimentActions runId={runId} projection={projection} onChanged={() => void loadProjection(runId, sessionId)} />
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1fr) minmax(230px, 1.1fr) minmax(240px, 1.2fr)', gap: 12, marginTop: 12, alignItems: 'start' }}>
-        <Panel title="Idea Tree"><IdeaTree nodes={projection.idea_tree?.nodes || []} championIdeaId={projection.champion?.idea_id || null} selectedId={selection?.kind === 'idea' ? selection.value.node_id : null} onSelect={chooseIdea} /></Panel>
-        <Panel title="研究动态"><ActivityFeed activity={projection.activity} truncated={projection.activity_truncated} limit={projection.activity_limit} selectedId={selection?.kind === 'activity' ? selection.value.event_id : null} onSelect={chooseActivity} /></Panel>
-        <Panel title="详情面板"><DetailDrawer selection={selection} onDiscuss={onDiscuss} /><AttemptList attempts={projection.attempts} selectedId={selection?.kind === 'attempt' ? selection.value.attempt_id : null} onSelect={chooseAttempt} /><DeveloperRefs projection={projection} show={showDeveloper} onToggle={() => setShowDeveloper(value => !value)} /></Panel>
+        <Panel title="Idea Tree"><IdeaTree nodes={projection.idea_tree?.nodes || []} championIdeaId={projection.champion?.idea_id || null} selectedId={selection?.kind === 'idea' ? selection.id : null} onSelect={chooseIdea} /></Panel>
+        <Panel title="研究动态"><ActivityFeed activity={projection.activity} truncated={projection.activity_truncated} limit={projection.activity_limit} selectedId={selection?.kind === 'activity' ? selection.id : null} onSelect={chooseActivity} /></Panel>
+        <Panel title="详情面板"><DetailDrawer selection={detailSelection} onDiscuss={onDiscuss} /><AttemptList attempts={projection.attempts} selectedId={selection?.kind === 'attempt' ? selection.id : null} onSelect={chooseAttempt} /><DeveloperRefs projection={projection} show={showDeveloper} onToggle={() => setShowDeveloper(value => !value)} /></Panel>
       </div>
     </>}
   </main>;
+}
+
+function selectDetail(
+  projection: ExperimentProjection | null,
+  selection: ExperimentDetailSelectionKey,
+): ExperimentDetailSelection {
+  if (!projection || !selection) return null;
+  if (selection.kind === 'idea') {
+    const value = projection.idea_tree?.nodes.find(item => item.node_id === selection.id);
+    return value ? { kind: 'idea', value } : null;
+  }
+  if (selection.kind === 'attempt') {
+    const value = projection.attempts.find(item => item.attempt_id === selection.id);
+    return value ? { kind: 'attempt', value } : null;
+  }
+  const value = projection.activity.find(item => item.event_id === selection.id);
+  return value ? { kind: 'activity', value } : null;
 }
 
 function ExperimentActions({ runId, projection, onChanged }: { runId: string; projection: ExperimentProjection; onChanged: () => void }) {

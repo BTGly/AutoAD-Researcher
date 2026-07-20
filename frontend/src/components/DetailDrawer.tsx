@@ -11,7 +11,7 @@ export function DetailDrawer({ selection, onDiscuss }: { selection: Selection; o
 
 function IdeaDetail({ item, onDiscuss }: { item: ExperimentIdeaNode; onDiscuss: (text: string) => void }) {
   return <div style={{ display: 'grid', gap: 10 }}>
-    <h3 style={{ margin: 0 }}>{item.mechanism || '未记录机制'}</h3>
+    <h3 style={{ margin: 0 }}>{item.mechanism || (item.is_root ? '研究根节点' : '未记录机制')}</h3>
     <Field label="状态" value={item.status} /><Field label="假设" value={item.hypothesis} /><Field label="可观察量" value={item.observable} />
     <Field label="研究轴" value={item.research_axis} /><Field label="证伪条件" value={item.falsification} /><Field label="预期成本" value={item.expected_cost} />
     <Field label="已记录观察" value={item.insights.length ? JSON.stringify(item.insights) : '暂无已记录原因'} />
@@ -20,13 +20,39 @@ function IdeaDetail({ item, onDiscuss }: { item: ExperimentIdeaNode; onDiscuss: 
 }
 
 function AttemptDetail({ item, onDiscuss }: { item: ExperimentAttempt; onDiscuss: (text: string) => void }) {
+  const assessmentDetail = scientificAssessmentDetail(item);
   return <div style={{ display: 'grid', gap: 12 }}>
     <h3 style={{ margin: 0 }}>实验 {item.attempt_id}</h3>
     <section><b>执行事实</b><Field label="运行状态" value={item.runtime_status} /><Field label="用途" value={item.attempt_purpose} /><Field label="命令" value={item.command_plan_summary} /><Field label="失败码" value={item.failure_code} /><Field label="OutcomeCard" value={item.execution_outcome ? JSON.stringify(item.execution_outcome) : '尚未产生'} /></section>
-    <section><b>科学评价</b><Field label="状态" value={item.scientific_assessment_status} /><Field label="详情" value={item.scientific_assessment ? JSON.stringify(item.scientific_assessment) : '执行结果已产生，科学评价尚未物化'} /></section>
+    <section><b>科学评价</b><Field label="状态" value={assessmentDetail.status} /><Field label="详情" value={assessmentDetail.detail} /></section>
     <section><b>权威边界</b><Field label="Assessment reconciliation" value={item.assessment_reconciliation ? JSON.stringify(item.assessment_reconciliation) : '暂无'} /></section>
     <button onClick={() => onDiscuss(`请讨论实验 ${item.attempt_id} 的结果。`)}>在研究助手中讨论</button>
   </div>;
+}
+
+function scientificAssessmentDetail(item: ExperimentAttempt): { status: string; detail: string } {
+  if (item.scientific_assessment_status === 'not_materialized') {
+    return {
+      status: '尚未物化',
+      detail: item.execution_outcome
+        ? '执行事实已记录，科学评价尚未物化。'
+        : '尚未产生可评价的执行结果。',
+    };
+  }
+  if (item.scientific_assessment_status === 'invalid') {
+    return {
+      status: '工件无效',
+      detail: '科学评价工件存在但未通过校验，不能作为研究结论。',
+    };
+  }
+  const assessment = item.scientific_assessment;
+  if (!assessment) {
+    return { status: '工件无效', detail: '科学评价状态与工件内容不一致，不能作为研究结论。' };
+  }
+  const effect = typeof assessment.scientific_effect === 'string' ? assessment.scientific_effect : '未形成';
+  const delta = typeof assessment.primary_delta === 'number' ? `；主指标变化：${assessment.primary_delta}` : '';
+  const comparison = typeof assessment.evaluation_status === 'string' ? `比较状态：${assessment.evaluation_status}` : '比较状态未记录';
+  return { status: '可用', detail: `${comparison}；科学效应：${effect}${delta}` };
 }
 
 function ActivityDetail({ item, onDiscuss }: { item: ExperimentActivity; onDiscuss: (text: string) => void }) {

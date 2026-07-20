@@ -19,7 +19,7 @@ const projection = {
   developer_refs: { run_id: run.run_id, session_id: 'session_aaaaaaaaaaaaaaaa', event_ids: [1], artifact_paths: [], pipeline_job_ids: [], event_log_path: 'events/events.jsonl' },
 };
 
-async function prepare(page: Page) {
+async function prepare(page: Page, getProjection: () => object = () => projection) {
   await page.addInitScript(() => localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' })));
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
@@ -29,7 +29,7 @@ async function prepare(page: Page) {
     if (path === `/api/runs/${run.run_id}/jobs`) return route.fulfill({ json: [] });
     if (path === `/api/runs/${run.run_id}/evidence/state`) return route.fulfill({ json: { usable_evidence: [], unusable_parsed_sources: [] } });
     if (path === `/api/runs/${run.run_id}/intent-summary`) return route.fulfill({ json: { goal: '', confirmed_facts: [], inferred_facts: [], unresolved_conflicts: [], blocking_question: null } });
-    if (path === `/api/runs/${run.run_id}/experiment/projection`) return route.fulfill({ json: projection });
+    if (path === `/api/runs/${run.run_id}/experiment/projection`) return route.fulfill({ json: getProjection() });
     return route.fulfill({ json: {} });
   });
   await page.goto('/');
@@ -59,4 +59,34 @@ test('sends an explicit human Champion approval instead of auto-promoting', asyn
   await page.getByLabel('批准人').fill('fixture-user');
   await page.getByRole('button', { name: '批准并推广 Champion' }).click();
   expect(requestBody).toEqual({ candidate_id: 'candidate_000001', approved_by: 'fixture-user' });
+});
+
+test('derives a selected detail from the refreshed projection', async ({ page }) => {
+  let serveRefreshed = false;
+  await prepare(page, () => {
+    const value = structuredClone(projection);
+    if (serveRefreshed) {
+      value.idea_tree.nodes[1].mechanism = '刷新后的局部特征重加权';
+      value.idea_tree.nodes[1].hypothesis = '刷新后的可检验假设';
+    }
+    return value;
+  });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '局部特征重加权' }).click();
+  await expect(page.getByText('可提高 AUROC', { exact: true })).toBeVisible();
+  serveRefreshed = true;
+  await page.getByRole('button', { name: '刷新' }).click();
+  await expect(page.getByRole('heading', { name: '刷新后的局部特征重加权' })).toBeVisible();
+  await expect(page.getByText('刷新后的可检验假设', { exact: true })).toBeVisible();
+});
+
+test('does not present an invalid assessment as not materialized', async ({ page }) => {
+  const invalidProjection = structuredClone(projection);
+  invalidProjection.attempts[0].scientific_assessment_status = 'invalid';
+  await prepare(page, () => invalidProjection);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: /attempt_000001/ }).click();
+  await expect(page.getByText('工件无效', { exact: true })).toBeVisible();
+  await expect(page.getByText('科学评价工件存在但未通过校验，不能作为研究结论。', { exact: true })).toBeVisible();
+  await expect(page.getByText('执行事实已记录，科学评价尚未物化。')).not.toBeVisible();
 });
