@@ -5,6 +5,27 @@ import type {
   TaskRun,
 } from './types';
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(status: number, message: string, code: string | null = null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function apiError(res: Response, fallback: string): Promise<ApiError> {
+  const payload = await res.json().catch(() => null);
+  const detail = payload?.detail;
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
+    return new ApiError(res.status, detail.message, typeof detail.code === 'string' ? detail.code : null);
+  }
+  return new ApiError(res.status, typeof detail === 'string' ? detail : fallback);
+}
+
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
   if (!cfg) return { 'Content-Type': 'application/json' };
@@ -67,7 +88,7 @@ export async function confirmExperimentTask(
     headers: getHeaders(),
     body: JSON.stringify({ execution_mode: executionMode }),
   });
-  if (!res.ok) throw new Error(`Experiment task confirmation error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Experiment task confirmation error: ${res.status}`);
   return res.json();
 }
 

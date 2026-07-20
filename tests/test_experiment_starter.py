@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from autoad_researcher.assistant.v2.event_service import load_events_since
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
@@ -16,7 +17,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     save_research_intent_summary,
 )
-from autoad_researcher.assistant.v2.task_bridge import TaskBridge
+from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmationConflict
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.server.routes import runs as runs_route
@@ -193,13 +194,14 @@ def test_confirmed_task_rejects_execution_mode_change(tmp_path: Path):
         execution_mode="plan_only",
     )
 
-    with pytest.raises(ValueError, match="execution mode differs"):
+    with pytest.raises(TaskConfirmationConflict, match="execution mode differs") as excinfo:
         TaskBridge.confirm_or_load_existing(
             run_dir,
             task_id=confirmed.task_id,
             execution_mode="agent_assisted_after_approval",
         )
 
+    assert excinfo.value.code == "execution_mode_mismatch"
     assert confirmed.execution_mode == "plan_only"
     assert load_pipeline_jobs(run_dir) == []
     assert not (run_dir / "experiments" / "sessions").exists()
@@ -211,12 +213,29 @@ def test_existing_confirmed_files_must_match_authoritative_draft(tmp_path: Path)
     task = _confirmed(run_dir)
     (run_dir / "input_task.yaml").write_text("run_id: different\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="existing input_task.yaml"):
+    with pytest.raises(TaskConfirmationConflict, match="existing input_task.yaml") as excinfo:
         TaskBridge.confirm_or_load_existing(
             run_dir,
             task_id=task.task_id,
             execution_mode="agent_assisted_after_approval",
         )
+
+    assert excinfo.value.code == "input_task_invalid"
+
+
+def test_confirmation_reports_task_id_mismatch_with_stable_code(tmp_path: Path):
+    run_dir = tmp_path / "run_task_id_mismatch"
+    run_dir.mkdir()
+    _draft(run_dir)
+
+    with pytest.raises(TaskConfirmationConflict, match="task_id does not match") as excinfo:
+        TaskBridge.confirm_or_load_existing(
+            run_dir,
+            task_id="task_outdated",
+            execution_mode="plan_only",
+        )
+
+    assert excinfo.value.code == "task_mismatch"
 
 
 @pytest.mark.asyncio
@@ -237,3 +256,25 @@ async def test_confirm_route_returns_control_plane_references(tmp_path: Path, mo
     assert result.disposition == "created"
     assert result.session_id is not None
     assert result.environment_job_id == "job_000001"
+
+
+@pytest.mark.asyncio
+async def test_confirm_route_reports_a_stale_summary_with_a_stable_conflict_code(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_confirm_stale_summary"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    save_research_intent_summary(run_dir, ResearchIntentSummary(goal="用户修订了实验目标"))
+    monkeypatch.setattr(runs_route, "RUNS_ROOT", str(tmp_path))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await runs_route.confirm_experiment_task(
+            run_dir.name,
+            draft.task_id,
+            runs_route.ConfirmExperimentTaskRequest(execution_mode="plan_only"),
+        )
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail == {
+        "code": "summary_changed",
+        "message": "research summary changed after task preparation",
+    }

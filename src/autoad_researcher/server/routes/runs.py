@@ -11,6 +11,7 @@ from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
 from autoad_researcher.assistant.v2.task_bridge import (
     ExperimentTaskConfirmationResult,
     TaskBridge,
+    TaskConfirmationConflict,
 )
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
@@ -194,8 +195,16 @@ async def confirm_experiment_task(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TaskConfirmationConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except (FileExistsError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "confirmation_invalid", "message": str(exc)},
+        ) from exc
 
 
 def _existing_run_dir(run_id: str) -> Path:

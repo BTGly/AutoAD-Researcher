@@ -38,6 +38,25 @@ TaskPreparationDisposition = Literal[
     "already_materialized",
     "recovery_required",
 ]
+TaskConfirmationConflictCode = Literal[
+    "task_mismatch",
+    "summary_changed",
+    "execution_mode_mismatch",
+    "pending_task_invalid",
+    "input_task_invalid",
+    "input_task_conflict",
+    "source_report_invalid",
+    "source_report_conflict",
+    "confirmation_invalid",
+]
+
+
+class TaskConfirmationConflict(ValueError):
+    """A user-resolvable confirmation conflict with a stable protocol code."""
+
+    def __init__(self, code: TaskConfirmationConflictCode, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class TaskInstruction(BaseModel):
@@ -161,14 +180,26 @@ class TaskBridge:
     ) -> ExperimentTaskDraft:
         run_id = _validate_run_dir(run_dir)
         with _confirm_lock(run_dir):
-            draft = _load_pending_task(run_dir)
+            try:
+                draft = _load_pending_task(run_dir)
+            except ValueError as exc:
+                raise TaskConfirmationConflict(
+                    "pending_task_invalid",
+                    "pending experiment task is invalid",
+                ) from exc
             if draft.task_id != task_id:
-                raise ValueError("task_id does not match pending experiment task")
+                raise TaskConfirmationConflict(
+                    "task_mismatch",
+                    "task_id does not match pending experiment task",
+                )
 
             if draft.status == "pending_confirmation":
                 summary = load_research_intent_summary(run_dir)
                 if summary is None or _summary_sha256(summary) != draft.summary_sha256:
-                    raise ValueError("research summary changed after task preparation")
+                    raise TaskConfirmationConflict(
+                        "summary_changed",
+                        "research summary changed after task preparation",
+                    )
                 _validate_existing_input_task(run_dir, draft)
                 confirmed = draft.model_copy(
                     update={
@@ -185,7 +216,10 @@ class TaskBridge:
                 )
             else:
                 if execution_mode != draft.execution_mode:
-                    raise ValueError("execution mode differs from confirmed task")
+                    raise TaskConfirmationConflict(
+                        "execution_mode_mismatch",
+                        "execution mode differs from confirmed task",
+                    )
                 confirmed = draft
 
             _materialize_input_task(run_dir, confirmed)
@@ -355,12 +389,18 @@ def _validate_existing_input_task(run_dir: Path, draft: ExperimentTaskDraft) -> 
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         existing = InputTask.model_validate(data)
     except Exception as exc:
-        raise ValueError("existing input_task.yaml is invalid") from exc
+        raise TaskConfirmationConflict(
+            "input_task_invalid",
+            "existing input_task.yaml is invalid",
+        ) from exc
     if existing.model_dump(mode="json", exclude_none=True) != draft.input_task.model_dump(
         mode="json",
         exclude_none=True,
     ):
-        raise ValueError("existing input_task.yaml conflicts with confirmed task")
+        raise TaskConfirmationConflict(
+            "input_task_conflict",
+            "existing input_task.yaml conflicts with confirmed task",
+        )
 
 
 def _materialize_source_report(
@@ -382,9 +422,15 @@ def _materialize_source_report(
         try:
             existing = ExperimentTaskSourceReport.model_validate_json(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise ValueError("existing experiment task source report is invalid") from exc
+            raise TaskConfirmationConflict(
+                "source_report_invalid",
+                "existing experiment task source report is invalid",
+            ) from exc
         if existing != report:
-            raise ValueError("existing experiment task source report conflicts with confirmed task")
+            raise TaskConfirmationConflict(
+                "source_report_conflict",
+                "existing experiment task source report conflicts with confirmed task",
+            )
         return
     _write_json_atomic(path, report.model_dump(mode="json"))
 

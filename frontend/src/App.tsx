@@ -18,6 +18,7 @@ import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
+  ApiError,
   confirmExperimentTask,
   createRun,
   deleteSource,
@@ -308,15 +309,17 @@ export default function App() {
             `任务已按 ${task.execution_mode} 确认。是否恢复缺失的任务材料化？不会重新选择或升级执行模式。\n\n目标：${goal}`,
           );
           if (recover) {
-            const prepared = await confirmExperimentTask(
-              targetRunId,
-              task.task_id,
-              task.execution_mode,
-            ).catch(() => null);
-            addToast(
-              prepared ? `已恢复确认任务（${prepared.disposition}）` : '任务恢复失败',
-              prepared ? 'success' : 'error',
-            );
+            try {
+              const prepared = await confirmExperimentTask(
+                targetRunId,
+                task.task_id,
+                task.execution_mode,
+              );
+              addToast(`已恢复确认任务（${prepared.disposition}）`, 'success');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : '任务恢复失败';
+              addToast(`任务恢复失败：${message}`, 'error');
+            }
           }
         } else {
           const selectedMode = window.prompt(
@@ -338,11 +341,17 @@ export default function App() {
                 : `确认以 ${selectedMode} 启动环境准备？不会启动 baseline 或修改模型代码。`,
             );
             if (confirmed) {
-              const prepared = await confirmExperimentTask(targetRunId, task.task_id, selectedMode).catch(() => null);
-              addToast(
-                prepared ? `实验任务已确认（${prepared.disposition}）` : '实验输入生成失败',
-                prepared ? 'success' : 'error',
-              );
+              try {
+                const prepared = await confirmExperimentTask(targetRunId, task.task_id, selectedMode);
+                addToast(`实验任务已确认（${prepared.disposition}）`, 'success');
+              } catch (error) {
+                if (error instanceof ApiError && error.code === 'summary_changed') {
+                  addToast('研究摘要已在草案生成后更新；当前草案已过期。请先生成最新草案，再次确认。', 'info');
+                } else {
+                  const message = error instanceof Error ? error.message : '实验输入生成失败';
+                  addToast(`实验输入生成失败：${message}`, 'error');
+                }
+              }
             }
           }
         }
