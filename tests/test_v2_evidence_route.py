@@ -36,6 +36,7 @@ from autoad_researcher.worker.main import (
     _run_repo_analyze,
     _run_web_fetch,
     _run_web_markitdown,
+    _project_source_failure,
 )
 
 
@@ -662,6 +663,109 @@ def test_web_fetch_preserves_pdf_bytes_and_routes_to_paper_parse(tmp_path: Path,
     )
     assert superseded_ok is True
     assert superseded_outputs == []
+
+
+def test_web_fetch_does_not_treat_pdf_looking_url_as_pdf_when_payload_is_html(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_web_html"
+    url = "https://example.org/download/paper.pdf"
+    append_source_ref(
+        run_dir,
+        source_id="src_html",
+        kind="webpage",
+        user_label=url,
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    class HtmlProvider:
+        def fetch(self, fetched_url: str) -> WebFetchResult:
+            assert fetched_url == url
+            content = b"<html><title>Access denied</title></html>"
+            return WebFetchResult(
+                url=fetched_url,
+                status_code=200,
+                content=content.decode("utf-8"),
+                content_bytes=content,
+                content_type="text/html; charset=utf-8",
+                content_sha256="b" * 64,
+            )
+
+    import autoad_researcher.tools.providers as providers
+
+    monkeypatch.setattr(providers, "SecureWebFetchProvider", HtmlProvider)
+    ok, outputs = _run_web_fetch(
+        run_dir,
+        {"job_id": "job_000001", "source_id": "src_html", "job_type": "web_fetch", "payload": {}},
+    )
+
+    source = load_source_registry(run_dir)["sources"][0]
+    assert ok is True
+    assert outputs == ["sources/src_html/raw.html"]
+    assert source["kind"] == "webpage"
+    assert source["user_label"] == url
+    assert load_pipeline_jobs(run_dir) == []
+
+
+def test_truncated_pdf_fetch_queues_parse_without_claiming_paper_evidence(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_truncated_web_pdf"
+    append_source_ref(
+        run_dir,
+        source_id="src_truncated_pdf",
+        kind="webpage",
+        user_label="https://example.org/paper",
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    class TruncatedPdfProvider:
+        def fetch(self, url: str) -> WebFetchResult:
+            content = b"%PDF-"
+            return WebFetchResult(
+                url=url,
+                status_code=200,
+                content=content.decode("utf-8"),
+                content_bytes=content,
+                content_type="application/pdf",
+                content_sha256="c" * 64,
+            )
+
+    import autoad_researcher.tools.providers as providers
+
+    monkeypatch.setattr(providers, "SecureWebFetchProvider", TruncatedPdfProvider)
+    ok, outputs = _run_web_fetch(
+        run_dir,
+        {"job_id": "job_000001", "source_id": "src_truncated_pdf", "job_type": "web_fetch", "payload": {}},
+    )
+
+    assert ok is True
+    assert outputs == ["sources/src_truncated_pdf/paper.pdf"]
+    assert [job["job_type"] for job in load_pipeline_jobs(run_dir)] == ["paper_parse_mineru"]
+    assert load_usable_evidence(run_dir) == []
+
+
+def test_remote_source_failure_keeps_url_reference_and_records_upload_guidance(tmp_path: Path):
+    run_dir = tmp_path / "run_remote_unavailable"
+    url = "https://example.org/official-paper"
+    append_source_ref(
+        run_dir,
+        source_id="src_remote",
+        kind="webpage",
+        user_label=url,
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    _project_source_failure(
+        run_dir,
+        {"source_id": "src_remote", "job_type": "web_fetch"},
+        "remote_source_unavailable: 当前无法从该链接取得内容，请直接上传 PDF。",
+    )
+
+    source = load_source_registry(run_dir)["sources"][0]
+    assert source["user_label"] == url
+    assert source["intake_status"] == "failed"
+    assert source["intake_error"]["error_code"] == "remote_source_unavailable"
+    assert "上传 PDF" in source["intake_error"]["error_message"]
 
 
 def test_pdftotext_adapter_extracts_real_uploaded_pdf(tmp_path: Path):

@@ -1722,13 +1722,18 @@ def _project_source_failure(run_dir: Path, job: dict[str, Any], error: str) -> N
         return
     if source.get("intake_status") == "failed":
         return
+    error_code = (
+        "remote_source_unavailable"
+        if str(error).startswith("remote_source_unavailable:")
+        else "source_processing_failed"
+    )
     update_source_intake_result(
         run_dir,
         source_id,
         status="failed",
         intake_status="failed",
         intake_error={
-            "error_code": "source_processing_failed",
+            "error_code": error_code,
             "error_message": str(error)[:500],
         },
         error_message=str(error)[:500],

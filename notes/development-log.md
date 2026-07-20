@@ -8,6 +8,7 @@
 
 | 日期 | 文件 | 主要工作 |
 |---|---|---|
+| 2026-07-20 | [2026-07-20.md](2026-07-20.md) | non-Git repository attestation round-trip、前端显式执行仓库绑定、主指标执行合同门禁、远程论文 URL best-effort 降级 |
 | 2026-07-19 | [2026-07-19.md](2026-07-19.md) | Plan 08B：V2 用户确认参数投影、本地 dataset 目录登记、确认恢复与执行模式边界 |
 | 2026-07-18 | [2026-07-18.md](2026-07-18.md) | 计划 05D/05E：Decision、Candidate、Champion、Reflection 与科学 Context；计划 06：Convergence、Strategy、Stop、Cost、FailurePolicy；AD-AgentBench 与两轮 E2E；07H 真实 PatchCore 基线与 Agent 主链验收 |
 | 2026-07-17 | [2026-07-17.md](2026-07-17.md) | PR-001A ExperimentSession、reconcile-style 确认、幂等环境 Job、授权事件与确认 API/UI |

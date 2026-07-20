@@ -401,6 +401,9 @@ function localizeEvidenceSummary(summary: string): string {
 
 function humanJobError(error: string): string {
   const lowered = error.toLowerCase();
+  if (lowered.includes('remote_source_unavailable')) {
+    return '当前无法从该链接取得内容；链接会保留为来源引用，请直接上传 PDF。';
+  }
   if (error.includes('dependency failed')) return '上游任务失败，所以这个任务没有继续执行。';
   if (lowered.includes('timed_out') || lowered.includes('timeout')) return '连接或拉取超时，当前没有成功拿到远端内容。';
   if (lowered.includes('gnutls') || lowered.includes('tls connection') || lowered.includes('recv error')) return 'TLS/网络传输中断，仓库拉取没有完成。';
