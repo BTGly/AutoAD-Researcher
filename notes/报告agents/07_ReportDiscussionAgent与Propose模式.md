@@ -50,7 +50,7 @@ completed_at
 error
 ```
 
-写入复用 V2 event service 的锁内 JSONL 追加模式：`turn_id` 和 `request_id` 在锁内分配，先持久化 pending turn，再写入 completed/failed 结果，append 后 flush/fsync。重复 request_id 若已有 completed/failed turn，返回该 turn；若已有 pending turn，则由恢复逻辑继续完成或明确返回 pending，不能再次追加一条 user message。进程崩溃后不得把“只有 user 消息、没有 assistant 回复”当作已完成请求。
+写入复用 V2 event service 的锁内 JSONL 追加模式：`request_id` 由客户端或 API gateway 提供，并在网络重试时复用；服务层在锁内校验/占用它，再分配 `turn_id`。先持久化 pending turn，再写入 completed/failed 结果，append 后 flush/fsync。重复 request_id 若已有 completed/failed turn，返回该 turn；若已有 pending turn，则由恢复逻辑继续完成或明确返回 pending，不能再次追加一条 user message。进程崩溃后不得把“只有 user 消息、没有 assistant 回复”当作已完成请求。
 
 同一个 `turn_id` 的 pending 和 completed/failed 记录由读取器按最后状态折叠；如果实现选择单文件原子更新，也必须保留相同的状态和恢复语义，不需要另建复杂的 checkpoint 系统。
 
@@ -174,7 +174,7 @@ PIVOT
 - [ ] 讨论固定绑定 `report_id` 和 snapshot hash。
 - [ ] 多轮 transcript 可恢复但不污染主 Chat。
 - [ ] user turn 已持久化但 assistant 尚未完成时，重放同一 `request_id` 不会重复追加 user message，并能继续、失败或明确返回 pending。
-- [ ] 并发 append、重复 request_id、尾部半行和中间损坏行按契约处理。
+- [ ] 并发 append、客户端重复 request_id、尾部半行和中间损坏行按契约处理。
 - [ ] 预算、超时、并发和有限重试生效。
 - [ ] EXPLAIN/VERIFY/COMPARE 在缺少证据时明确返回证据不足。
 - [ ] Discuss 返回解释，不返回可直接执行的 Job。

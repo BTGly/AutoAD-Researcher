@@ -71,10 +71,11 @@ report_validation.json
 report_manifest.json
 delivery_state_snapshot.json
 snapshot.json
+bundle_exclusions.json
 checksums.sha256
 ```
 
-`delivery_state_snapshot.json` 是打包时生成的不可变交付快照，至少记录 `report_id`、Snapshot hash、打包时的 content readiness、已纳入的 artifact refs、各格式 readiness、`packaged_at` 和 `state_revision_at_package`。Bundle 不携带会继续变化的 live `report_state.json`，也不因后续状态变化而修改已生成的 ZIP。
+`delivery_state_snapshot.json` 是打包时生成的不可变交付快照，至少记录 `report_id`、Snapshot hash、打包时的 content readiness、已纳入的 artifact refs、各格式 readiness、`package_job_id` 和 `packaged_at`。`packaged_at` 固定取 `report_package` Job 首次创建时的 `created_at`，同一 Job 重试时复用，不取每次执行的当前时间。会变化的 `state_revision_at_package` 留在 Bundle 外的 State/Event 或制品交付记录中，不进入确定性 ZIP。Bundle 不携带会继续变化的 live `report_state.json`，也不因后续状态变化而修改已生成的 ZIP。
 
 v1 `report_bundle.zip` 不包含 PDF；PDF 是独立的报告制品和下载项。若以后确实需要“含 PDF 的完整包”，应在 PDF 已 ready 后显式生成另一个 full bundle，而不是让原 Bundle 随 PDF 到达而改变。
 
@@ -91,7 +92,7 @@ Bundle 必须确定性生成：
 
 引用的 Evidence 可以进入 `evidence/` 子目录，但必须依据 allow-list 和大小上限复制；不能把整个 run 目录打包。
 
-报告侧制品交付记录中的每个实际制品都要有 artifact ref 和 SHA；不可变 Manifest 只负责身份，State 负责可用制品投影。ZIP 生成后再次计算 ZIP 自身 SHA，不能只记录打包前文件。
+报告侧制品交付记录中的每个实际制品都要有 artifact ref 和 SHA；不可变 Manifest 只负责身份，State 负责可用制品投影。`checksums.sha256` 校验 Bundle 中除自身外的所有 entry，不循环包含自身。ZIP 生成后再次计算 ZIP 自身 SHA，并把该 SHA 保存在 Bundle 外的 artifact delivery record，不能只记录打包前文件。
 
 ## 7. 状态关系
 
@@ -113,8 +114,11 @@ PDF 或 ZIP 失败不能把已验证的 Markdown 报告改成内容失败。
 - [ ] PDF capability 缺失时有明确失败状态和日志。
 - [ ] PDF 编译检查 return code、timeout 和输出文件，而非只调用 subprocess。
 - [ ] ZIP 包含 Facts、Evidence、Validation 和 checksums。
+- [ ] ZIP 显式包含 `bundle_exclusions.json`，并记录排除制品及原因。
 - [ ] ZIP 使用 `delivery_state_snapshot.json`，不包含 live `report_state.json`。
 - [ ] v1 Bundle 不包含 PDF；PDF 单独下载，不能因 PDF 后生成改变原 Bundle hash。
+- [ ] `packaged_at` 来自稳定的 package Job `created_at`，重试不会改变 ZIP hash。
+- [ ] `checksums.sha256` 不包含自身，ZIP 自身 SHA 保存在 Bundle 外部交付记录。
 - [ ] ZIP 文件排序、timestamp 和内容 hash 稳定，symlink 和敏感/非 allow-list 文件被排除并有记录。
 - [ ] 下载包和页面绑定同一个 `report_id`。
 - [ ] 重复渲染不覆盖已冻结的正文和 Facts。

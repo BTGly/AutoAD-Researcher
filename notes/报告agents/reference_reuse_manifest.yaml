@@ -14,7 +14,7 @@ entries:
       - src/export.py
       - src/cli/companion.py
       - skills/arbor-agent-resume-report/SKILL.md
-    local_target:
+    planned_local_targets:
       - src/autoad_researcher/reporting/renderer_markdown.py
       - src/autoad_researcher/reporting/renderer_html.py
       - src/autoad_researcher/reporting/discussion.py
@@ -36,10 +36,10 @@ entries:
       - backend/agent/researchclaw/pipeline/runner.py
       - backend/agent/researchclaw/experiment/runner.py
       - backend/agent/researchclaw/templates/compiler.py
-    local_target:
-      - src/autoad_researcher/reporting/jobs.py
+    planned_local_targets:
+      - src/autoad_researcher/assistant/v2/job_service.py
+      - src/autoad_researcher/worker/main.py
       - src/autoad_researcher/reporting/bundle.py
-      - src/autoad_researcher/reporting/renderers/pdf.py
     modifications: "只吸收阶段契约、artifact manifest、timeout 和编译结果表达；不复制论文流水线。"
 
   - project: AI-Scientist
@@ -52,7 +52,7 @@ entries:
     reuse_level: REFER
     source_files:
       - ai_scientist/perform_writeup.py
-    local_target:
+    planned_local_targets:
       - src/autoad_researcher/reporting/narrative.py
     modifications: "只参考逐节写作和结果不得臆造；不复制源码。"
 
@@ -69,7 +69,7 @@ entries:
       - src/aisci_core/exporter.py
       - src/aisci_domain_paper/state_manager.py
       - src/aisci_app/cli.py
-    local_target:
+    planned_local_targets:
       - src/autoad_researcher/reporting/narrative.py
     modifications: "只参考科研工作流组织方式；当前不复制代码。"
 
@@ -85,7 +85,7 @@ entries:
       - libs/deepagents/deepagents/graph.py
       - libs/deepagents/deepagents/middleware/filesystem.py
       - libs/deepagents/deepagents/backends/filesystem.py
-    local_target:
+    planned_local_targets:
       - src/autoad_researcher/reporting/discussion.py
       - src/autoad_researcher/reporting/tools.py
     modifications: "只参考公开 API、structured response 和工具排除边界；Report API 不使用通用 FilesystemBackend。"
@@ -100,7 +100,7 @@ entries:
     reuse_level: REFER
     source_files:
       - tools/run_state.py
-    local_target:
+    planned_local_targets:
       - src/autoad_researcher/reporting/store.py
       - src/autoad_researcher/reporting/review.py
     modifications: "按观察到的原子 JSON、单运行锁、恢复和 done/accepted 分离行为独立重实现。"
@@ -116,6 +116,6 @@ entries:
     source_files:
       - README.md
       - cli_guide.md
-    local_target:
+    planned_local_targets:
       - src/autoad_researcher/server/routes/report_route.py
     modifications: "只参考 inspect/report 和多格式查看思路；当前不复制代码。"

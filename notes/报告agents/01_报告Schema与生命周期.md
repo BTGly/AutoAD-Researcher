@@ -74,6 +74,8 @@ frozen_session: canonical object
 frozen_idea_tree: canonical object
 frozen_champion_pointer: canonical object
 frozen_stop_decision: canonical object or explicit missing marker
+frozen_attempts: list[AttemptSnapshotV1]
+frozen_cognitive_cost_summary: canonical object or explicit missing marker
 source_refs: list[ArtifactReferenceV2]
 evaluation_contract_ref
 environment_snapshot_ref
@@ -82,6 +84,28 @@ frozen_at
 ```
 
 不把当前不存在的 Review 对象伪装成 Snapshot 来源；报告自身的 `review_status` 属于 `ReportState`。所有大型 `source_refs` 必须是 run-relative、类型明确、存在且 SHA 匹配的 artifact。解析路径必须拒绝绝对路径、`..`、symlink 逃逸和前缀碰撞。
+
+`ExperimentAttempt` 是会持续更新的运行时控制面对象，不能只在 Snapshot 中保存 live Attempt JSON 的引用。`AttemptSnapshotV1` 只保留报告所需的小型投影：
+
+```text
+attempt_id
+session_id
+attempt_purpose
+job_type
+runtime_status_at_snapshot
+revision
+retry_of
+retry_count
+pipeline_job_id
+failure_code
+execution_result_ref
+evaluation_contract_ref
+evaluation_contract_sha256
+created_at
+updated_at_at_snapshot
+```
+
+PID、process group、resource lease 和 heartbeat 不进入报告身份；若以后展示，必须明确是 Snapshot 时刻的运行状态。`CognitiveCostSummary` 是从 append-only usage ledger 重建的派生视图，R0A 冻结其结果，R1 不再调用 live builder。
 
 ## 4. 三类状态
 
@@ -123,8 +147,8 @@ unreviewed / accepted / needs_more / needs_repair / disputed
 ```text
 校验 Session/readiness
 → 读取各来源的稳定 revision；没有 revision 时计算 canonical content hash
-→ 复制小型控制面对象并 canonicalize，校验大型 artifact refs
-→ 再次读取各来源 revision/hash
+→ 读取 Attempt inventory 和 CognitiveCostSummary，复制小型控制面对象并 canonicalize，校验大型 artifact refs
+→ 再次读取各来源 revision/hash、Attempt inventory/revision 和 cost ledger fingerprint
 → 全部未变化：计算 source inventory 和 snapshot_content_sha256，原子写入 Snapshot
 → 任一来源变化：丢弃本轮副本，在有限次数内重试；仍不稳定则返回冲突/稍后重试
 ```
@@ -139,10 +163,25 @@ unreviewed / accepted / needs_more / needs_repair / disputed
 report_facts_assemble
 → report_narrative_generate
 → report_validate
-→ report_render_html
-→ report_package
-→ report_render_pdf（可选）
+   ├── report_render_html
+   │   └── report_package
+   └── report_render_pdf（可选）
 ```
+
+这是固定的报告 DAG，不新增通用调度器：`report_package` 依赖 HTML ready，PDF 只依赖 Validator。各格式失败不会回退 `content_ready`，也不会阻断另一条已满足依赖的分支。
+
+报告 Job 失败重试必须使用独立的、受限的 failed requeue 操作，而不是让 `create_or_get_pipeline_job()` 隐式改变状态。该操作只允许报告 Job 类型，并在同一把 Job 锁内：
+
+```text
+failed
+→ queued
+→ retry_count + 1
+→ 清理 started_at / completed_at / error
+→ 保留 job_id、payload、idempotency_key
+→ 写 retry event
+```
+
+普通幂等读取仍只返回已有 Job；retry API 必须显式指定目标步骤。
 
 每一步使用现有 `create_or_get_pipeline_job()`，Snapshot 已经存在后，幂等身份采用：
 
@@ -209,11 +248,15 @@ runs/{run_id}/reports/{report_id}/
 - [ ] 创建报告后修改 Session，旧 Snapshot 的 canonical 内容和 hash 不变。
 - [ ] 创建报告后修改 IdeaTree 或 Champion pointer，旧 Snapshot 仍可重建。
 - [ ] Snapshot 构造期间并发修改任一来源时，不会写出混合 revision 的 Snapshot；有限重试耗尽后会明确失败。
+- [ ] Attempt 在报告创建后继续 heartbeat 或终止时，旧 Snapshot 的 `frozen_attempts` 不变，且不依赖 live Attempt JSON 的 SHA。
+- [ ] CognitiveCostSummary 在报告创建后重建时，旧 Snapshot 仍使用冻结结果。
 - [ ] Snapshot 引用只允许已登记、SHA 匹配的 artifact。
 - [ ] 相同 Snapshot 和相同 `report_recipe_hash` 复用报告；配方变化生成新版本。
 - [ ] Snapshot hash 产生前不会创建依赖该 hash 的 Job。
 - [ ] 非法状态转换被拒绝。
 - [ ] 报告 Job 超过普通 300 秒恢复边界时不会被重复 claim。
+- [ ] failed 报告 Job 只能通过显式受限 requeue 重试；普通 `create_or_get_pipeline_job()` 不会暗中重新执行。
+- [ ] PDF 不依赖 Bundle；HTML 失败不会错误地让 PDF 进入依赖失败，Bundle 只在 HTML ready 后生成。
 - [ ] Markdown/Validator 完成后，即使 PDF 不可用，也能进入可审阅条件。
 - [ ] 失败重试通过持久化 Job，而不是进程内后台任务。
 - [ ] 旧报告目录和文件字节不发生改变。

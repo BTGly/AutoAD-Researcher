@@ -19,7 +19,7 @@
 | `[REIMPL]` | 按已观察行为独立实现 | 不复制源码，补充本项目测试 |
 | `[REFER]` | 只参考架构、提示词或交互思想 | 不形成运行时依赖 |
 
-每条复用记录必须能回答：来源仓库 URL、固定 commit、实际文件路径、许可证及 license hash、复制还是重写、AutoAD 的本地差异、是否需要 NOTICE。这里的“已核对”限定为固定上游提交中的文件和行为；本地 checkout 的额外修改、依赖环境和未提交内容仍需实施时复核。完整记录见 `reference_reuse_manifest.yaml`。没有这些信息时只能标 `[REFER]`。
+每条复用记录必须能回答：来源仓库 URL、固定 commit、上游实际文件路径、许可证及 license hash、复制还是重写、AutoAD 的本地差异、是否需要 NOTICE。`planned_local_targets` 只是未来落点，不声称这些文件当前已存在；实施时仍需从当前仓库精确确认目标模块。这里的“已核对”限定为固定上游提交中的文件和行为；本地 checkout 的额外修改、依赖环境和未提交内容仍需实施时复核。完整记录见 `reference_reuse_manifest.yaml`。没有这些信息时只能标 `[REFER]`。
 
 ## 三、已核对的成熟项目
 
@@ -40,7 +40,7 @@
 | 组件 | 实际位置 | 报告侧用途 |
 |---|---|---|
 | `ExperimentSession` / `ExperimentSessionStore` | `src/autoad_researcher/experiment/` | Session 身份、状态、合同和原子存储 |
-| `PipelineJobStore` 服务函数 | `src/autoad_researcher/assistant/v2/job_service.py` | 报告 Job 的幂等、claim、complete、fail 和恢复租约 |
+| `PipelineJobStore` 服务函数 | `src/autoad_researcher/assistant/v2/job_service.py` | 报告 Job 的幂等、claim、complete、fail、受限 failed requeue 和恢复租约 |
 | `EventStore` / V2 event service | `src/autoad_researcher/core/events.py`、`src/autoad_researcher/assistant/v2/event_service.py` | 阶段事件和锁内 JSONL 追加 |
 | `ExperimentAttemptService` | `src/autoad_researcher/experiment/attempt_service.py` | confirmatory/retry 的 Attempt/Job 入口 |
 | `Coordinator` / `IdeaTreeStore` / `ExecutorAgent` | `src/autoad_researcher/experiment/` | REFINE 的 Idea、Intervention、patch 和实现证据闭环 |

@@ -9,18 +9,18 @@
 | 输入 | 真实来源 | 报告侧处理 |
 |---|---|---|
 | Session | `ReportSnapshot.frozen_session` | 读取身份、合同、环境和已冻结 revision；Store 只由 R0A Snapshot adapter 读取 |
-| Attempt | `ReportSnapshot.source_refs` 中登记的 Attempt artifact | 保留每个 Attempt 的运行状态和 retry lineage |
+| Attempt | `ReportSnapshot.frozen_attempts` | 保留 Snapshot 时刻的运行状态和 retry lineage；执行结果、metrics 仍通过冻结 artifact refs 读取 |
 | Outcome / 执行协议 | `OutcomeCard` | 直接读取执行状态、协议状态和原始执行事实，不重新计算 |
 | 科学比较 | `EffectiveScientificAssessment` | 唯一读取比较性、科学效果和 delta 的决策视图 |
 | 旧 validity | `ScientificValidityReport` | 仅通过 legacy adapter 读取，不与新 Experiment Agents 事实混为一谈 |
 | IdeaTree | `ReportSnapshot.frozen_idea_tree` | 读取 ideas、状态、parent/child、attempt refs、evidence refs 和 insights |
 | Candidate/Champion | `ReportSnapshot.frozen_champion_pointer` 及其中的不可变引用 | 读取已冻结的候选和 Champion 指针 |
-| 认知成本 | `CognitiveCostSummary` / `CognitiveCostSummaryBuilder` | 读取 LLM 调用、token、认知 wall time 和认知预算 |
+| 认知成本 | `ReportSnapshot.frozen_cognitive_cost_summary` | 读取 Snapshot 时刻的 LLM 调用、token、认知 wall time 和认知预算 |
 | 计算资源 | `ResourceUsageReport` 及现有资源聚合 | 读取 GPU 数量、显存、利用率、实验 wall time 和 GPU-hours |
 | 停止事实 | `ReportSnapshot.frozen_stop_decision` | 读取已冻结的停止原因，不由 assembler 推断 |
 | Artifact | `ReportSnapshot.source_refs` 中的 `ArtifactReferenceV2` | 保存带 SHA 的类型化引用 |
 
-R0A 是唯一可以读取 Session、IdeaTree、Candidate/Champion 和 StopDecision live Store 并写入冻结副本的边界。R1 及后续阶段只接受 Snapshot 和其中登记的不可变引用；即使生成期间控制面继续变化，也不能回读最新值来“补齐” Facts。
+R0A 是唯一可以读取 Session、IdeaTree、Attempt、Candidate/Champion、StopDecision 和 CognitiveCostSummary live 来源并写入冻结副本的边界。R1 及后续阶段只接受 Snapshot 和其中登记的不可变引用；即使生成期间控制面继续变化，也不能回读最新值来“补齐” Facts。
 
 当前仓库确实存在 `IdeaTreeStore`，必须纳入 Snapshot 和 Facts。计划中不使用不存在的 `ChampionStore` 或含义不清的通用 `CostSummary`；如果某个事实在当前仓库没有权威来源，输出为缺失/未确定并记录原因，不自行补齐。
 
@@ -65,7 +65,7 @@ source_refs
 
 Facts 中的 `execution_status`、`protocol_intact` 等执行/协议值来自 `OutcomeCard`；`scientific_effect`、`evaluation_status`、`primary_delta` 等比较值只能来自 `EffectiveScientificAssessment`。Assembler 不把“提升”“无效”“建议继续”等自然语言结论写入事实字段。
 
-Ideas 必须从 Snapshot 中冻结的 `IdeaTree` 装配，不能回读创建报告之后已经变化的 live IdeaTree。`DRAFT`、`REVIEWED`、`READY`、`RUNNING`、`SUPPORTED`、`NOT_SUPPORTED`、`INCONCLUSIVE`、`PRUNED`、`MERGED` 及其 child relationships 都保留真实状态和 evidence，不因为报告只展示成功结果而丢弃。
+Ideas 和 Attempts 必须从 Snapshot 中冻结的 `IdeaTree`、`frozen_attempts` 装配，不能回读创建报告之后已经变化的 live 对象。`DRAFT`、`REVIEWED`、`READY`、`RUNNING`、`SUPPORTED`、`NOT_SUPPORTED`、`INCONCLUSIVE`、`PRUNED`、`MERGED` 及其 child relationships 都保留真实状态和 evidence，不因为报告只展示成功结果而丢弃。
 
 ## 5. 不完整情况
 

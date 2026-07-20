@@ -85,7 +85,7 @@ GET /api/runs/{run_id}/reports/{report_id}/evidence/{evidence_id}
 进入 Report
 → 读取 latest-content-ready
 → 查询 latest-created 的生成状态
-→ 读取 manifest/status
+→ 分别读取 `/manifest` 和 `/state`
 → 若 report.md 可用则展示
 → digest 作为摘要卡
 → 证据链接按 report_id 请求
