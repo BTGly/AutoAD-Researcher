@@ -709,7 +709,7 @@ export default function App() {
           </>
         )}
 
-        {page === 'experiment' && !showExperimentSettings && (
+        {page === 'experiment' && (
           <ExperimentPage
             runId={runId}
             experimentRefreshTick={experimentRefreshTick}
@@ -723,12 +723,15 @@ export default function App() {
         )}
 
         {page === 'experiment' && showExperimentSettings && (
-          <SettingsPage
-            experiment={config.experiment ?? DEFAULT_EXPERIMENT}
-            defaultApiKey={config.apiKey}
-            onSave={saveExperimentConfig}
-            onBack={() => setShowExperimentSettings(false)}
-          />
+          <div role="dialog" aria-modal="true" aria-label="实验配置" style={{ position: 'fixed', inset: 0, zIndex: 20, overflow: 'auto', background: 'var(--bg)' }}>
+            <SettingsPage
+              experiment={config.experiment ?? DEFAULT_EXPERIMENT}
+              defaultApiKey={config.apiKey}
+              onSave={saveExperimentConfig}
+              onBack={() => setShowExperimentSettings(false)}
+              backLabel="返回工作台"
+            />
+          </div>
         )}
 
         {page === 'report' && (

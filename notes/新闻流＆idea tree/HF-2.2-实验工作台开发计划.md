@@ -4,7 +4,7 @@
 
 将左侧“设置”入口改造成实验工作台，展示当前实验的 Session、Idea Tree、Attempt、科学评价和研究动态。
 
-本功能是只读观察面，不增加实验控制动作，不修改 Coordinator、AttemptExecution、Finalizer、Promotion 等核心逻辑。
+本功能以只读观察面为主，不修改 Coordinator、AttemptExecution、Finalizer、Promotion 等核心逻辑。若保留已有受限审批入口，它只允许 `approve_each_step` Session 对服务端从冻结工件推导出的 B_test / Champion 操作作出显式确认，不接受任意执行或合并输入，也不改变投影 GET 的只读边界。
 
 ## 2. 总体原则
 

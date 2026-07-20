@@ -118,6 +118,56 @@ test('does not present an invalid assessment as not materialized', async ({ page
   await expect(page.getByText('执行事实已记录，科学评价尚未物化。')).not.toBeVisible();
 });
 
+test('uses the projection status vocabulary and preserves complete Session facts', async ({ page }) => {
+  const detailedProjection = structuredClone(projection);
+  detailedProjection.session.budget = { gpu_hours: 10 };
+  detailedProjection.summary.budget = { gpu_hours: 10 };
+  detailedProjection.summary.budget_consumed = { gpu_hours: 2 };
+  detailedProjection.input_task.constraints = ['单卡运行'];
+  detailedProjection.idea_tree.nodes[1].status = 'READY';
+  detailedProjection.attempts[0].runtime_status = 'LOST';
+  await prepare(page, () => detailedProjection);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('Session：就绪')).toBeVisible();
+  await expect(page.getByText('主指标：image AUROC')).toBeVisible();
+  await expect(page.getByText('约束：单卡运行')).toBeVisible();
+  await expect(page.getByText('预算：gpu_hours: 10')).toBeVisible();
+  await expect(page.getByText('异常 Attempt：attempt_000001（运行状态丢失）')).toBeVisible();
+  await page.getByRole('button', { name: '局部特征重加权' }).click();
+  await expect(page.getByText('等待实验', { exact: true })).toBeVisible();
+});
+
+test('filters the experiment list to the selected Idea relations', async ({ page }) => {
+  const relationProjection = structuredClone(projection);
+  relationProjection.attempts.push({ ...relationProjection.attempts[0], attempt_id: 'attempt_unrelated', related_idea_ids: ['idea_000000'] });
+  await prepare(page, () => relationProjection);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '局部特征重加权' }).click();
+  await expect(page.getByRole('button', { name: /attempt_000001/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /attempt_unrelated/ })).toHaveCount(0);
+});
+
+test('reports a bounded activity scan even when no activity card was produced', async ({ page }) => {
+  const boundedProjection = structuredClone(projection);
+  boundedProjection.activity = [];
+  boundedProjection.activity_scan_truncated = true;
+  await prepare(page, () => boundedProjection);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('为控制读取开销，较早动态未完成扫描。')).toBeVisible();
+});
+
+test('returns from experiment configuration without remounting the selected workbench detail', async ({ page }) => {
+  await prepare(page);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '局部特征重加权' }).click();
+  await expect(page.getByRole('heading', { name: '局部特征重加权' })).toBeVisible();
+  await page.getByRole('button', { name: '实验配置' }).click();
+  await expect(page.getByRole('dialog', { name: '实验配置' })).toBeVisible();
+  await page.getByRole('button', { name: '保存配置' }).click();
+  await expect(page.getByRole('dialog', { name: '实验配置' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '局部特征重加权' })).toBeVisible();
+});
+
 test('coalesces WebSocket events and refreshes the selected detail', async ({ page }) => {
   let requests = 0;
   await prepare(page, () => {

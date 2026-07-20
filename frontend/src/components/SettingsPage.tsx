@@ -6,24 +6,22 @@ interface Props {
   defaultApiKey: string;
   onSave: (exp: ExperimentConfig) => void;
   onBack: () => void;
+  backLabel?: string;
 }
 
-export function SettingsPage({ experiment, defaultApiKey, onSave, onBack }: Props) {
+export function SettingsPage({ experiment, defaultApiKey, onSave, onBack, backLabel = '返回' }: Props) {
   const [exp, setExp] = useState<ExperimentConfig>({
     ...experiment,
     apiKey: experiment.apiKey || defaultApiKey,
   });
-  const [saved, setSaved] = useState(false);
 
   const set = (k: keyof ExperimentConfig, v: any) => {
     setExp(p => ({ ...p, [k]: v }));
-    setSaved(false);
   };
 
   const save = () => {
     onSave(exp);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
+    onBack();
   };
 
   const s = {
@@ -86,7 +84,7 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack }: Prop
               fontSize: '0.85em',
             }}
           >
-            Back to Chat
+            {backLabel}
           </button>
         </div>
 
@@ -195,20 +193,20 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack }: Prop
               fontSize: '0.9em',
             }}
           >
-            Cancel
+            取消
           </button>
           <button
             onClick={save}
             disabled={!exp.apiKey.trim()}
             style={{
               padding: '10px 32px', border: 'none', borderRadius: 8,
-              background: saved ? 'var(--green)' : exp.apiKey.trim() ? 'var(--blue)' : 'var(--border)',
+              background: exp.apiKey.trim() ? 'var(--blue)' : 'var(--border)',
               color: '#fff', cursor: exp.apiKey.trim() ? 'pointer' : 'default',
               fontSize: '0.9em', fontWeight: 500,
               transition: 'background 0.3s',
             }}
           >
-            {saved ? 'Saved' : 'Save Settings'}
+            保存配置
           </button>
         </div>
       </div>

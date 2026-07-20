@@ -15,6 +15,7 @@ const STATUS_STYLE: Record<string, React.CSSProperties> = {
   NOT_SUPPORTED: { opacity: 0.62 },
   INCONCLUSIVE: { borderColor: 'var(--orange)', borderStyle: 'dashed' },
   PRUNED: { color: 'var(--text-dim)', opacity: 0.68 },
+  MERGED: { borderColor: 'var(--green)' },
 };
 
 export function IdeaTree({ nodes, championIdeaId, selectedId, onSelect }: Props) {
@@ -56,6 +57,8 @@ function Node({ node, byParent, championIdeaId, selectedId, expanded, setExpande
           background: selectedId === node.node_id ? 'var(--bg)' : 'transparent', color: 'var(--text)', cursor: 'pointer', ...STATUS_STYLE[node.status],
         }}>
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+          {node.status === 'READY' && <span title="等待实验">◷</span>}
+          {node.status === 'MERGED' && <span title="已合并">⇄</span>}
           {championIdeaId === node.node_id && <span title="当前 Champion">★</span>}
           {node.attempt_refs.length > 0 && <span style={{ marginLeft: 'auto', color: 'var(--text-dim)' }}>{node.attempt_refs.length}</span>}
         </button>
