@@ -334,6 +334,15 @@ def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
         if result.status != "success":
             _write_parse_error(run_dir, source_id, "git_clone", result.error_message or "repository acquisition failed")
             return False, []
+        from autoad_researcher.ui.sources import update_source_intake_result
+
+        update_source_intake_result(
+            run_dir,
+            source_id,
+            status="parsed",
+            intake_status="ok",
+            clear_intake_error=True,
+        )
         outputs = [f"repos/{source_id}"]
         for rel in (
             "repo_acquisition/{source_id}/repository_source.json",

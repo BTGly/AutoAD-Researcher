@@ -188,6 +188,26 @@ def update_source_intake_result(
     _save_registry(run_dir, registry)
 
 
+def set_source_metadata(run_dir: Path, source_id: str, updates: dict[str, Any]) -> None:
+    """Merge checked metadata into one registered source entry.
+
+    Callers own their typed metadata schema.  This helper only provides the
+    registry's atomic persistence boundary and never creates a source implicitly.
+    """
+
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("source_id") != source_id:
+            continue
+        metadata = source.get("metadata")
+        merged = dict(metadata) if isinstance(metadata, dict) else {}
+        merged.update(updates)
+        source["metadata"] = merged
+        _save_registry(run_dir, registry)
+        return
+    raise KeyError(f"source not found: {source_id}")
+
+
 def remove_source(run_dir: Path, source_id: str, *, reason: str = "user_removed") -> dict[str, Any] | None:
     """Remove one source and its supported evidence entries.
 

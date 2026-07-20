@@ -967,6 +967,8 @@ def test_worker_git_clone_uses_repository_acquisition_runner(tmp_path: Path, mon
     assert (run_dir / "repos" / "src_repo" / "README.md").is_file()
     assert (run_dir / "repo_acquisition" / "src_repo" / "repository_source.json").is_file()
     assert (run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json").is_file()
+    source = load_source_registry(run_dir)["sources"][0]
+    assert source["intake_status"] == "ok"
 
 
 def test_worker_git_clone_uses_generic_shallow_for_gitlab_url(tmp_path: Path, monkeypatch):
@@ -1013,6 +1015,7 @@ def test_worker_git_clone_uses_generic_shallow_for_gitlab_url(tmp_path: Path, mo
 
     assert ok is True
     assert "repos/src_gitlab" in outputs
+    assert load_source_registry(run_dir)["sources"][0]["intake_status"] == "ok"
 
 
 def test_repo_summary_without_clone_attestation_is_not_supported(tmp_path: Path):
