@@ -172,6 +172,11 @@ def _process_pending_jobs(run_dir: Path) -> int:
 
                 outputs = run_snapshot_job(run_dir, job)
                 success = True
+            elif job_type == "report_facts_assemble":
+                from autoad_researcher.reporting.facts_service import run_facts_job
+
+                outputs = run_facts_job(run_dir, job)
+                success = True
             elif job_type == "experiment_environment_prepare":
                 from autoad_researcher.environments.prepare import prepare_environment_for_job
 

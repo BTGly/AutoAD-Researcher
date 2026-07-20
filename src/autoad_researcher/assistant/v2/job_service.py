@@ -33,6 +33,7 @@ JOB_TYPES = {
     "repo_analyze": "repo_acquired",
     "repo_summarize": "repo_acquired",
     "report_snapshot_build": "report_artifact",
+    "report_facts_assemble": "report_artifact",
 }
 
 

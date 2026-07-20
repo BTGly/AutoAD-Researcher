@@ -75,7 +75,8 @@ def build_report_snapshot(run_dir: Path, *, session_id: str) -> ReportSnapshot:
         sha256=sha256_file(session_path),
         size_bytes=session_path.stat().st_size,
     )
-    source_refs = [source_ref]
+    from autoad_researcher.reporting.inventory import collect_snapshot_sources
+    source_refs = collect_snapshot_sources(run_dir, session_id=session.session_id, session=session, session_ref=source_ref)
     inventory_hash = canonical_sha256([item.model_dump(mode="json") for item in source_refs])
     return ReportSnapshot(
         run_id=run_dir.name,

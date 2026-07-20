@@ -67,6 +67,18 @@ def run_snapshot_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
         store.transition_generation(run_dir, report_id=report_id, target="assembling_facts")
     elif state.generation_status not in {"assembling_facts", "content_ready"}:
         raise ValueError("report cannot build snapshot from its current state")
+    from autoad_researcher.reporting.facts_service import REPORT_FACTS_JOB_TYPE
+
+    facts_job, _ = create_or_get_pipeline_job(
+        run_dir,
+        source_id="",
+        report_id=report_id,
+        job_type=REPORT_FACTS_JOB_TYPE,
+        idempotency_key=f"report:{manifest.session_id}:{manifest.source_snapshot_content_sha256}:{REPORT_FACTS_JOB_TYPE}",
+        evidence_role="report_artifact",
+        payload={"report_id": report_id, "snapshot_content_sha256": manifest.source_snapshot_content_sha256},
+    )
+    store.record_job(run_dir, report_id=report_id, job_id=facts_job["job_id"])
     append_event(run_dir, "report.snapshot_built", {"report_id": report_id})
     report_dir = run_dir / "reports" / report_id
     return [str((report_dir / SNAPSHOT_FILE).relative_to(run_dir)), str((report_dir / MANIFEST_FILE).relative_to(run_dir))]
