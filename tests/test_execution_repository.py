@@ -55,7 +55,10 @@ def _write_acquired_repository(run_dir: Path, source_id: str) -> None:
     )
     path = run_dir / "repo_acquisition" / source_id / "repository_attestation.json"
     path.parent.mkdir(parents=True)
-    path.write_text(attestation.model_dump_json(indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(attestation.model_dump(mode="json", exclude_none=True), indent=2),
+        encoding="utf-8",
+    )
 
 
 def _append_repository(run_dir: Path, source_id: str, *, kind: str) -> None:
