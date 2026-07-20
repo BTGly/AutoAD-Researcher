@@ -73,3 +73,30 @@ def test_manager_rejects_dirty_source_and_keeps_artifacts_outside_cleanup(fixtur
     artifact.write_text("preserved", encoding="utf-8")
     manager.remove(Path(workspace.worktree_path))
     assert artifact.read_text(encoding="utf-8") == "preserved"
+
+
+def test_manager_snapshots_non_git_source_without_mutating_it(tmp_path: Path):
+    source = tmp_path / "acquired_archive_repository"
+    source.mkdir()
+    (source / "train.py").write_text("learning_rate = 0.1\n", encoding="utf-8")
+    (source / "evaluate.py").write_text("protected = True\n", encoding="utf-8")
+
+    manager = WorktreeManager(tmp_path / "run" / "executor_worktrees")
+    workspace = manager.create(
+        repository_path=source,
+        attempt_id="attempt_000001",
+        base_commit="HEAD",
+        protected_paths=["evaluate.py"],
+        environment_snapshot_ref="environment/snapshot.json",
+    )
+
+    snapshot = tmp_path / "run" / "executor_baselines" / "attempt_000001" / "repository"
+    worktree = Path(workspace.worktree_path)
+    (worktree / "train.py").write_text("learning_rate = 0.2\n", encoding="utf-8")
+
+    assert not (source / ".git").exists()
+    assert (snapshot / ".git").is_dir()
+    assert _git(snapshot, "status", "--porcelain") == ""
+    assert (snapshot / "train.py").read_text(encoding="utf-8") == "learning_rate = 0.1\n"
+    assert (source / "train.py").read_text(encoding="utf-8") == "learning_rate = 0.1\n"
+    assert workspace.base_commit == _git(snapshot, "rev-parse", "HEAD")
