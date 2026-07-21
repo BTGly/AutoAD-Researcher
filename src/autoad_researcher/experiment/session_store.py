@@ -32,6 +32,8 @@ class ExperimentSessionStore:
         task_hash: str,
         execution_mode: ExecutionMode,
         repository_ref: str | None = None,
+        execution_repository_binding_ref: str | None = None,
+        execution_repository_binding_sha256: str | None = None,
         budget: dict[str, Any] | None = None,
     ) -> tuple[ExperimentSession, bool]:
         session_id = f"session_{task_hash[:16]}"
@@ -43,6 +45,9 @@ class ExperimentSessionStore:
                     session.run_id != run_dir.name
                     or session.task_ref != task_ref
                     or session.task_hash != task_hash
+                    or session.repository_ref != repository_ref
+                    or session.execution_repository_binding_ref != execution_repository_binding_ref
+                    or session.execution_repository_binding_sha256 != execution_repository_binding_sha256
                 ):
                     raise ValueError("existing Session conflicts with task identity")
                 return session, False
@@ -54,6 +59,8 @@ class ExperimentSessionStore:
                 task_ref=task_ref,
                 task_hash=task_hash,
                 repository_ref=repository_ref,
+                execution_repository_binding_ref=execution_repository_binding_ref,
+                execution_repository_binding_sha256=execution_repository_binding_sha256,
                 budget=budget or {},
                 authorization=ExperimentAuthorization(
                     execution_mode=execution_mode,
@@ -172,6 +179,31 @@ class ExperimentSessionStore:
             if environment_snapshot_ref is not None:
                 updates["environment_snapshot_ref"] = environment_snapshot_ref
             updated = session.model_copy(update=updates)
+            self._write_unlocked(path, updated)
+            return updated
+
+    def update_baseline_state(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        status: SessionStatus,
+        baseline_status: str,
+    ) -> ExperimentSession:
+        """Project one baseline lifecycle transition without altering environment facts."""
+        path = self._session_path(run_dir, session_id)
+        with self._lock(run_dir):
+            if not path.is_file():
+                raise FileNotFoundError("experiment session not found")
+            session = ExperimentSession.model_validate_json(path.read_text(encoding="utf-8"))
+            updated = session.model_copy(
+                update={
+                    "status": status,
+                    "baseline_status": baseline_status,
+                    "updated_at": _utc_now(),
+                    "revision": session.revision + 1,
+                }
+            )
             self._write_unlocked(path, updated)
             return updated
 

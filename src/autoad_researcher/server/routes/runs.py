@@ -7,13 +7,15 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
 from autoad_researcher.assistant.v2.task_bridge import (
+    ExperimentTaskDraft,
     ExperimentTaskConfirmationResult,
     TaskBridge,
+    TaskConfirmationConflict,
 )
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_paths import run_dir_or_400
 from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
 from autoad_researcher.task_workspace.task_profile import (
     archive_task,
@@ -70,6 +72,7 @@ class ConfirmExperimentTaskRequest(BaseModel):
         "approve_each_step",
         "agent_assisted_after_approval",
     ]
+    execution_repository_source_id: str | None = Field(default=None, min_length=1)
 
 
 @router.get("", response_model=list[RunInfo])
@@ -84,11 +87,11 @@ async def create_run(req: CreateRunRequest | None = None):
     now = datetime.now(timezone.utc)
     task_title = req.task_title if req is not None else None
     run_id = build_run_id_from_optional_name(task_name=task_title, now=now)
-    run_dir = run_dir_path(RUNS_ROOT, run_id)
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     if run_dir.exists():
         suffix = now.strftime("%f")
         run_id = f"{run_id}_{suffix}"
-        run_dir = run_dir_path(RUNS_ROOT, run_id)
+        run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "sources").mkdir(exist_ok=True)
     (run_dir / "ui_chat").mkdir(exist_ok=True)
@@ -176,13 +179,15 @@ async def confirm_experiment_task(
             run_dir,
             task_id=task_id,
             execution_mode=request.execution_mode,
+            execution_repository_source_id=request.execution_repository_source_id,
         )
-        if request.execution_mode == "plan_only":
+        effective_mode = task.execution_mode
+        if effective_mode == "plan_only":
             return ExperimentTaskConfirmationResult(task=task, disposition="plan_only")
         started = ExperimentStarter().on_task_confirmed(
             run_dir,
             task,
-            execution_mode=request.execution_mode,
+            execution_mode=effective_mode,
         )
         return ExperimentTaskConfirmationResult(
             task=task,
@@ -193,15 +198,38 @@ async def confirm_experiment_task(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TaskConfirmationConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except (FileExistsError, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "confirmation_invalid", "message": str(exc)},
+        ) from exc
+
+
+@router.get(
+    "/{run_id}/experiment-task/pending",
+    response_model=ExperimentTaskDraft,
+)
+async def get_pending_experiment_task(run_id: str):
+    """Return the durable task draft so a browser refresh preserves consent state."""
+    run_dir = _existing_run_dir(run_id)
+    try:
+        return TaskBridge.load_pending_experiment_task(run_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "confirmation_invalid", "message": str(exc)},
+        ) from exc
 
 
 def _existing_run_dir(run_id: str) -> Path:
-    try:
-        run_dir = run_dir_path(RUNS_ROOT, run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail="run not found")
     return run_dir

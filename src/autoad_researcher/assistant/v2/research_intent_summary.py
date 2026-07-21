@@ -8,6 +8,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.schemas.decisions import ConfirmedDecision
+
 
 SUMMARY_FILE = "summary.json"
 
@@ -21,6 +23,18 @@ class BasedStatement(BaseModel):
     basis: str = Field(min_length=1)
 
 
+class ConfirmedTaskParameters(BaseModel):
+    """User-provided or user-confirmed task values, without text extraction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    baseline: ConfirmedDecision | None = None
+    dataset: ConfirmedDecision | None = None
+    compute_budget: ConfirmedDecision | None = None
+    primary_metrics: list[ConfirmedDecision] = Field(default_factory=list)
+    evaluation_constraints: list[ConfirmedDecision] = Field(default_factory=list)
+
+
 class ResearchIntentSummary(BaseModel):
     """Current research goal, facts, risks, and at most one blocker."""
 
@@ -28,6 +42,7 @@ class ResearchIntentSummary(BaseModel):
 
     goal: str = ""
     confirmed_facts: list[str] = Field(default_factory=list)
+    confirmed_task_parameters: ConfirmedTaskParameters = Field(default_factory=ConfirmedTaskParameters)
     inferred_facts: list[BasedStatement] = Field(default_factory=list)
     unresolved_conflicts: list[BasedStatement] = Field(default_factory=list)
     blocking_question: str | None = None

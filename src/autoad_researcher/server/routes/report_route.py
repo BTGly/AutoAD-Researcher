@@ -2,6 +2,9 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_paths import run_dir_or_400
+
 router = APIRouter(prefix="/api/runs/{run_id}", tags=["report"])
 
 REPORT_PATHS = [
@@ -22,7 +25,7 @@ def _find_report(run_dir: Path) -> str | None:
 
 @router.get("/report")
 async def get_report(run_id: str):
-    run_dir = Path("runs") / run_id
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
     content = _find_report(run_dir)
     if content is not None:
         return {"content": content}

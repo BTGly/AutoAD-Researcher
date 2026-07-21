@@ -172,6 +172,35 @@ class GpuAllocator:
             _write_leases_unlocked(run_dir, leases)
             return updated
 
+    def release_after_attempt_terminal(
+        self,
+        run_dir: Path,
+        *,
+        lease_id: str,
+        attempt_id: str,
+    ) -> ResourceLease:
+        """Release an active lease during durable terminal finalization.
+
+        A restarted Worker cannot prove the original worker identity, but it
+        can prove the persisted terminal Attempt and its bound lease.  This
+        narrow recovery path intentionally checks the Attempt binding instead
+        of granting an arbitrary worker a lease-release capability.
+        """
+        with _leases_lock(run_dir):
+            leases = _load_leases_unlocked(run_dir)
+            for index, lease in enumerate(leases):
+                if lease.lease_id != lease_id:
+                    continue
+                if lease.attempt_id != attempt_id:
+                    raise ValueError("ResourceLease belongs to a different Attempt")
+                if lease.status in {"released", "expired"}:
+                    return lease
+                updated = lease.model_copy(update={"status": "released"})
+                leases[index] = updated
+                _write_leases_unlocked(run_dir, leases)
+                return updated
+            raise FileNotFoundError("ResourceLease not found")
+
     def reclaim_expired(self, run_dir: Path, *, now: datetime | None = None) -> list[ResourceLease]:
         current = _as_utc(now or datetime.now(timezone.utc))
         with _leases_lock(run_dir):

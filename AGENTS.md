@@ -112,7 +112,7 @@ frontend/src/
 ├── components/
 │   ├── LeftSidebar.tsx  — 48px VS Code-style nav (Chat/Settings/Report)
 │   ├── Sidebar.tsx      — Right panel (Sources/Jobs/Evidence/Draft tabs)
-│   ├── SettingsPage.tsx — Experiment config form (LLM/Budget/Search)
+│   ├── ConfigModal.tsx  — Global provider/API connection settings
 │   ├── ReportPage.tsx   — Read-only markdown report viewer
 │   ├── Messages.tsx     — User/Assistant/Welcome message components
 │   └── ...              — ChatInput, ConfigModal, Toast, etc.

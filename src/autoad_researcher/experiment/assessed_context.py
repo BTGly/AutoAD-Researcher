@@ -26,13 +26,17 @@ class AssessedScientificCoordinatorContextBuilder(ScientificCoordinatorContextBu
                 and (attempt_dir / "scientific_evaluation_inputs.json").is_file()
             ):
                 assessed.append(
-                    self._assessments.assessed_card(
+                    self._assessments.effective_assessment(
                         run_dir,
                         attempt_id=attempt_id,
                     ).model_dump(mode="json", exclude_none=True)
                 )
             else:
-                assessed.append(summary)
+                assessed.append({
+                    key: value
+                    for key, value in summary.items()
+                    if key not in {"evaluation_status", "scientific_effect", "primary_delta", "guardrail_deltas"}
+                } | {"assessment_status": "UNASSESSED"})
         values = base.model_dump(mode="json", exclude={"context_sha256"})
         values["outcome_cards"] = assessed
         return ContextPack.create(**values)

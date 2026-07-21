@@ -355,7 +355,7 @@ def test_two_result_driven_cycles_reach_confirmed_champion(tmp_path: Path):
     _process_until_terminal(run_dir, first_attempt_id)
     first_assessed = ScientificAssessmentService().assessed_card(run_dir, attempt_id=first_attempt_id)
     first_decision = DecisionEngine().decide(
-        card=first_assessed,
+        assessment=ScientificAssessmentService().effective_assessment(run_dir, attempt_id=first_attempt_id),
         phase="b_dev",
         noise_threshold=noise.threshold,
     )
@@ -437,7 +437,7 @@ def test_two_result_driven_cycles_reach_confirmed_champion(tmp_path: Path):
     _process_until_terminal(run_dir, second_attempt_id)
     second_assessed = ScientificAssessmentService().assessed_card(run_dir, attempt_id=second_attempt_id)
     second_decision = DecisionEngine().decide(
-        card=second_assessed,
+        assessment=ScientificAssessmentService().effective_assessment(run_dir, attempt_id=second_attempt_id),
         phase="b_dev",
         noise_threshold=noise.threshold,
     )
@@ -481,7 +481,7 @@ def test_two_result_driven_cycles_reach_confirmed_champion(tmp_path: Path):
     assert confirmation_card.metrics == {"score": 0.9}
     assert confirmation_card.protocol_intact
     assert DecisionEngine().decide(
-        card=second_assessed,
+        assessment=ScientificAssessmentService().effective_assessment(run_dir, attempt_id=second_attempt_id),
         phase="b_test",
         noise_threshold=noise.threshold,
     ).action == "ready_for_promotion"

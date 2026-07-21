@@ -316,9 +316,9 @@ def test_gpu_capacity_failure_finalizes_attempt_without_starting_training(tmp_pa
         def allocate(self, *args, **kwargs):
             raise GpuUnavailableError("TEMPORARY_GPU_UNAVAILABLE: fixture")
 
-    import autoad_researcher.experiment.gpu as gpu_module
+    import autoad_researcher.experiment.attempt_execution as execution_module
 
-    monkeypatch.setattr(gpu_module, "GpuAllocator", UnavailableAllocator)
+    monkeypatch.setattr(execution_module, "GpuAllocator", UnavailableAllocator)
     assert _process_pending_jobs(run_dir) == 1
 
     attempt = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)

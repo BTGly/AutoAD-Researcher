@@ -8,7 +8,7 @@ interface Props {
 
 const ITEMS: { id: PageId; icon: string; label: string }[] = [
   { id: 'chat', icon: '💬', label: 'Chat' },
-  { id: 'settings', icon: '⚙', label: 'Settings' },
+  { id: 'experiment', icon: '🔬', label: '实验工作台' },
   { id: 'report', icon: '📊', label: 'Report' },
 ];
 

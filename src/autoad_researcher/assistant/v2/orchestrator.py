@@ -15,6 +15,7 @@ from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueMode,
+    DatasetSourceInstruction,
     GatedDialogueDecision,
     ResearchDecisionAgent,
     ResearchReplyAgent,
@@ -32,9 +33,9 @@ from autoad_researcher.assistant.v2.source_actions import (
     plan_explicit_source_actions,
 )
 from autoad_researcher.assistant.v2.source_service import register_source_intake
-from autoad_researcher.assistant.v2.task_bridge import TaskBridge
+from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmationConflict
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
-from autoad_researcher.ui.sources import load_source_registry
+from autoad_researcher.ui.sources import load_source_registry, register_local_dataset_source
 
 
 @dataclass
@@ -100,6 +101,7 @@ class ResearchOrchestratorV2:
             "created_sources": created_sources,
             "created_jobs": created_jobs,
         }
+        context["pending_plan_only_task_available"] = TaskBridge.pending_plan_only_task_available(run_dir)
         previous = load_research_intent_summary(run_dir)
         candidate = ResearchDecisionAgent.decide(
             run_dir=run_dir,
@@ -117,6 +119,23 @@ class ResearchOrchestratorV2:
             run_dir=run_dir,
             registered_sources=registered_sources,
         )
+        dataset_source_registration_failed = False
+        if decision.dataset_source is not None:
+            try:
+                created_sources.append(
+                    register_local_dataset_source(
+                        run_dir,
+                        decision.dataset_source.source_path,
+                        user_label=decision.dataset_source.user_label,
+                    )
+                )
+            except ValueError as exc:
+                dataset_source_registration_failed = True
+                append_event(
+                    run_dir,
+                    "assistant.dataset_source.registration_failed",
+                    {"exception_type": type(exc).__name__},
+                )
         if not candidate.is_valid:
             if not api_key:
                 failure_reply = "当前没有可用的对话模型连接，材料任务仍可在后台处理。"
@@ -145,7 +164,69 @@ class ResearchOrchestratorV2:
                 policy_assessment=decision.policy_assessment.model_dump(mode="json"),
             )
 
+        if DialogueGate.plan_only_confirmation_allowed(decision):
+            try:
+                confirmed = TaskBridge.confirm_pending_plan_only_task(run_dir)
+            except TaskConfirmationConflict as exc:
+                append_event(
+                    run_dir,
+                    "assistant.experiment_task.chat_confirmation_failed",
+                    {"code": exc.code},
+                )
+                reply = "当前没有可安全确认的 plan_only 任务草案；请先在界面中检查或重新准备草案。"
+                if on_reply_delta is not None:
+                    on_reply_delta(reply)
+                return OrchestratorResult(
+                    reply=reply,
+                    created_sources=created_sources,
+                    created_jobs=created_jobs,
+                    evidence_used=context.get("usable_evidence", []),
+                    answerability=context.get("answerability", {}),
+                    intent_summary=(previous or ResearchIntentSummary()).model_dump(mode="json"),
+                    experiment_task=None,
+                    dialogue_mode=decision.dialogue_mode,
+                    action_scope=decision.action_scope,
+                    policy=decision.policy,
+                    evidence_status=decision.evidence_status,
+                    conversation_transition=decision.conversation_transition,
+                    feasibility=decision.feasibility,
+                    numeric_claim_allowed=decision.numeric_claim_allowed,
+                    policy_assessment=decision.policy_assessment.model_dump(mode="json"),
+                )
+            confirmed_summary = load_research_intent_summary(run_dir) or ResearchIntentSummary()
+            append_dialogue_transition(
+                run_dir,
+                decision=decision,
+                summary=confirmed_summary,
+            )
+            append_event(
+                run_dir,
+                "assistant.experiment_task.confirmed_from_chat",
+                {"task_id": confirmed.task_id, "execution_mode": confirmed.execution_mode},
+            )
+            reply = "已确认现有的 plan_only 任务草案；未创建 Session、环境 Job 或实验执行。"
+            if on_reply_delta is not None:
+                on_reply_delta(reply)
+            return OrchestratorResult(
+                reply=reply,
+                created_sources=created_sources,
+                created_jobs=created_jobs,
+                evidence_used=context.get("usable_evidence", []),
+                answerability=context.get("answerability", {}),
+                intent_summary=confirmed_summary.model_dump(mode="json"),
+                experiment_task=confirmed.model_dump(mode="json"),
+                dialogue_mode=decision.dialogue_mode,
+                action_scope=decision.action_scope,
+                policy=decision.policy,
+                evidence_status=decision.evidence_status,
+                conversation_transition=decision.conversation_transition,
+                feasibility=decision.feasibility,
+                numeric_claim_allowed=decision.numeric_claim_allowed,
+                policy_assessment=decision.policy_assessment.model_dump(mode="json"),
+            )
+
         reply_response = ResearchReplyAgent.respond(
+            run_dir=run_dir,
             user_input=user_input,
             evidence_state=context,
             frozen_decision=decision,
@@ -181,18 +262,37 @@ class ResearchOrchestratorV2:
         if source_job is not None:
             created_jobs.append(source_job)
         experiment_task = None
-        if actions_allowed and DialogueGate.task_action_allowed(
-            decision,
-            reply_response.summary,
-        ):
+        task_preparation_disposition = None
+        task_draft_requested = (
+            DialogueGate.task_action_allowed(decision, reply_response.summary)
+            or DialogueGate.missing_contract_execution_can_prepare_task(
+                decision,
+                reply_response.summary,
+            )
+        ) and not dataset_source_registration_failed
+        if reply_response.should_persist and task_draft_requested:
             try:
-                experiment_task = TaskBridge.build_experiment_task(
+                draft, task_preparation_disposition = TaskBridge.prepare_or_reuse_experiment_task(
                     run_dir,
                     user_input=user_input,
                     transcript_tail=transcript_tail,
-                ).model_dump(mode="json")
-            except (FileExistsError, ValueError):
+                )
+                if draft is not None:
+                    experiment_task = draft.model_dump(mode="json")
+                if task_preparation_disposition == "replaced":
+                    append_event(
+                        run_dir,
+                        "assistant.experiment_task.replaced",
+                        {"task_id": draft.task_id if draft is not None else ""},
+                    )
+            except (FileExistsError, ValueError) as exc:
                 experiment_task = None
+                task_preparation_disposition = "prepare_failed"
+                append_event(
+                    run_dir,
+                    "assistant.experiment_task.prepare_failed",
+                    {"exception_type": type(exc).__name__},
+                )
 
         if reply_response.should_persist:
             append_dialogue_transition(
@@ -201,7 +301,13 @@ class ResearchOrchestratorV2:
                 summary=reply_response.summary,
             )
 
-        reply = _validated_dialogue_reply(decision, reply_response)
+        reply = _validated_dialogue_reply(
+            decision,
+            reply_response,
+            experiment_task=experiment_task,
+            task_preparation_disposition=task_preparation_disposition,
+            dataset_source_registration_failed=dataset_source_registration_failed,
+        )
         if on_reply_delta is not None:
             on_reply_delta(reply)
         return OrchestratorResult(
@@ -232,12 +338,32 @@ class ResearchOrchestratorV2:
 def _validated_dialogue_reply(
     decision: GatedDialogueDecision,
     reply_response: ResearchReplyResponse,
+    *,
+    experiment_task: dict[str, Any] | None = None,
+    task_preparation_disposition: str | None = None,
+    dataset_source_registration_failed: bool = False,
 ) -> str:
+    if dataset_source_registration_failed:
+        return "本地数据集目录未能通过安全登记校验，因此尚未准备任务草案；请检查已配置的数据集目录后重试。"
     assessment = decision.policy_assessment
     if decision.policy == "deny" or assessment.decision == "reject":
         if reply_response.should_persist:
             return reply_response.visible_reply()
         return _policy_fallback(assessment.reason, assessment.safe_alternative)
+    if experiment_task is not None:
+        if reply_response.summary.blocking_question is not None:
+            return (
+                "研究任务草案已准备。"
+                f"{reply_response.summary.blocking_question}"
+                "这不阻止 plan_only 草案；实际运行前仍需完成该前置条件。"
+            )
+        if task_preparation_disposition == "reused":
+            return "已有待确认的研究任务草案。请在界面中检查内容、选择执行模式并确认。"
+        if task_preparation_disposition == "replaced":
+            return "研究任务约束已更新，新的待确认草案已准备。请在界面中检查内容、选择执行模式并确认。"
+        return "研究任务草案已准备。请在界面中检查内容、选择执行模式并确认。"
+    if task_preparation_disposition == "prepare_failed":
+        return "研究任务草案暂时无法准备；系统已保留诊断记录，请检查当前任务状态后重试。"
     if decision.dialogue_mode != "act" or decision.source_action is not None:
         return reply_response.visible_reply()
     if decision.execution_gate == "blocked_missing_contract":

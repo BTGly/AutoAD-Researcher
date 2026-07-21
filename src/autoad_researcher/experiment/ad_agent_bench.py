@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.experiment.convergence import ConvergenceAttempt, ConvergenceConfig, ConvergenceMonitor
 from autoad_researcher.experiment.failure_classifier import DetectorProfile, FailureClassification
 from autoad_researcher.experiment.failure_policy import FailurePolicy, FailurePolicyContext
-from autoad_researcher.experiment.finalizer import OutcomeCard
 from autoad_researcher.experiment.promotion import DecisionEngine
+from autoad_researcher.experiment.scientific_assessment import EffectiveScientificAssessment
 
 
 BenchCaseKind = Literal[
@@ -81,14 +81,14 @@ class ADAgentBench:
     def _dispatch(self, kind: BenchCaseKind) -> tuple[str, dict]:
         if kind == "effective_parameter":
             result = DecisionEngine().decide(
-                card=_card(scientific_effect="IMPROVEMENT", primary_delta=0.05),
+                assessment=_assessment(scientific_effect="IMPROVEMENT", primary_delta=0.05),
                 phase="b_dev",
                 noise_threshold=0.01,
             )
             return result.action, result.model_dump(mode="json")
         if kind == "implementation_invalid":
             result = DecisionEngine().decide(
-                card=_card(patch_applied=False, smoke_passed=False, scientific_effect=None, primary_delta=None),
+                assessment=_assessment(patch_applied=False, smoke_passed=False, scientific_effect=None, primary_delta=None),
                 phase="b_dev",
                 noise_threshold=0.01,
             )
@@ -96,14 +96,14 @@ class ADAgentBench:
             return disposition, result.model_dump(mode="json")
         if kind == "valid_regression":
             result = DecisionEngine().decide(
-                card=_card(scientific_effect="REGRESSION", primary_delta=-0.03),
+                assessment=_assessment(scientific_effect="REGRESSION", primary_delta=-0.03),
                 phase="b_dev",
                 noise_threshold=0.01,
             )
             return result.action, result.model_dump(mode="json")
         if kind == "within_noise":
             result = DecisionEngine().decide(
-                card=_card(scientific_effect="IMPROVEMENT", primary_delta=0.005),
+                assessment=_assessment(scientific_effect="IMPROVEMENT", primary_delta=0.005),
                 phase="b_dev",
                 noise_threshold=0.01,
             )
@@ -160,22 +160,16 @@ class ADAgentBench:
             ).evaluate(session_id="session", attempts=attempts)
             return alert.level, alert.model_dump(mode="json")
         result = DecisionEngine().decide(
-            card=_card(attempt_category="protocol_violated", protocol_intact=False, protocol_valid=False, scientific_effect=None, primary_delta=None),
+            assessment=_assessment(attempt_category="protocol_violated", protocol_intact=False, scientific_effect=None, primary_delta=None),
             phase="b_dev",
             noise_threshold=0.01,
         )
         return result.action, result.model_dump(mode="json")
 
 
-def _card(**updates) -> OutcomeCard:
+def _assessment(**updates) -> EffectiveScientificAssessment:
     values = {
-        "attempt_id": "attempt_000001",
-        "runtime_status": "COMPLETED",
         "attempt_category": "scientifically_evaluable",
-        "execution_result_ref": "attempts/attempt_000001/execution_result.json",
-        "metrics": {"score": 0.9},
-        "protocol_valid": True,
-        "protocol_errors": [],
         "execution_status": "COMPLETED",
         "patch_applied": True,
         "smoke_passed": True,
@@ -187,7 +181,15 @@ def _card(**updates) -> OutcomeCard:
         "guardrail_deltas": {},
     }
     values.update(updates)
-    return OutcomeCard.model_validate(values)
+    return EffectiveScientificAssessment(
+        attempt_id="attempt_000001",
+        outcome_card_ref="attempts/attempt_000001/outcome_card.json",
+        outcome_card_sha256="a" * 64,
+        scientific_assessment_ref="attempts/attempt_000001/scientific_assessment.json",
+        scientific_assessment_sha256="b" * 64,
+        evidence_refs=["attempts/attempt_000001/execution_result.json"],
+        **values,
+    )
 
 
 def _failure(code: str, *, retryable: bool = False) -> FailureClassification:

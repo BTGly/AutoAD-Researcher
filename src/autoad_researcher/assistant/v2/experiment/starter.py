@@ -40,7 +40,15 @@ class ExperimentStarter:
         *,
         execution_mode: ExecutionMode,
     ) -> ExperimentStartResult:
-        task_hash = canonical_sha256(confirmed_task.input_task)
+        binding = confirmed_task.execution_repository_binding
+        if execution_mode != "plan_only" and binding is None:
+            raise ValueError("confirmed execution task is missing an execution repository binding")
+        task_hash = canonical_sha256({
+            "input_task": confirmed_task.input_task.model_dump(mode="json"),
+            "execution_repository_binding": (
+                binding.model_dump(mode="json") if binding is not None else None
+            ),
+        })
         append_event(
             run_dir,
             "experiment.start_requested",
@@ -51,6 +59,14 @@ class ExperimentStarter:
             task_ref="input_task.yaml",
             task_hash=task_hash,
             execution_mode=execution_mode,
+            repository_ref=binding.repository_ref if binding is not None else None,
+            execution_repository_binding_ref=(
+                "task_bridge/execution_repository_binding.json"
+                if binding is not None else None
+            ),
+            execution_repository_binding_sha256=(
+                canonical_sha256(binding) if binding is not None else None
+            ),
         )
         if session_created:
             append_event(
@@ -89,6 +105,8 @@ class ExperimentStarter:
             "session_id": session.session_id,
             "task_ref": session.task_ref,
             "environment_revision": session.environment_revision,
+            "execution_repository_binding_ref": session.execution_repository_binding_ref,
+            "execution_repository_binding_sha256": session.execution_repository_binding_sha256,
         }
         job, job_created = create_or_get_pipeline_job(
             run_dir,

@@ -3,12 +3,18 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from autoad_researcher.repository_intelligence import (
     RepositoryAcquisitionRequest,
     RepositoryAcquisitionRunner,
     read_evidence_index,
 )
-from autoad_researcher.repository_intelligence.acquisition import _validate_git_argv
+from autoad_researcher.repository_intelligence.acquisition import (
+    RepositoryAttestation,
+    _validate_git_argv,
+)
 
 
 def make_remote_repo(tmp_path: Path) -> tuple[Path, str]:
@@ -181,3 +187,24 @@ def test_local_non_git_source_gets_stable_tree_fingerprint(tmp_path: Path):
     assert result.source.resolved_commit is None
     assert result.attestation is not None
     assert result.attestation.detached_head is None
+    attestation_path = tmp_path / "run" / "repository_attestation.json"
+    persisted = attestation_path.read_text(encoding="utf-8")
+    assert "detached_head" not in persisted
+
+    reloaded = RepositoryAttestation.model_validate_json(persisted)
+    assert reloaded.detached_head is None
+    assert reloaded.attestation_sha256 == result.attestation.attestation_sha256
+
+
+def test_attestation_still_rejects_missing_required_tree_sha():
+    payload = {
+        "schema_version": 1,
+        "source_id": "source_006",
+        "repository_root_label": "local/source_006",
+        "dirty": False,
+        "git_status_porcelain": "",
+        "tool_call_ids": ["tool_local_tree_fingerprint"],
+    }
+
+    with pytest.raises(ValidationError, match="tree_sha"):
+        RepositoryAttestation.model_validate(payload)

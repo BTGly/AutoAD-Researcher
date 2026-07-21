@@ -91,3 +91,28 @@ def test_lease_heartbeat_release_and_expiry_recovery(tmp_path: Path):
     )
     released = allocator.release(tmp_path, lease_id=replacement.lease_id, worker_id="worker_two")
     assert released.status == "released"
+
+
+def test_finalizer_can_release_active_lease_after_worker_restart(tmp_path: Path):
+    allocator = GpuAllocator(probe=lambda: _devices()[:1])
+    lease = allocator.allocate(
+        tmp_path,
+        attempt_id="attempt_000001",
+        worker_id="worker_original",
+        required_device_count=1,
+        required_vram_mb=10_000,
+    )
+
+    released = allocator.release_after_attempt_terminal(
+        tmp_path,
+        lease_id=lease.lease_id,
+        attempt_id="attempt_000001",
+    )
+
+    assert released.status == "released"
+    with pytest.raises(ValueError, match="different Attempt"):
+        allocator.release_after_attempt_terminal(
+            tmp_path,
+            lease_id=lease.lease_id,
+            attempt_id="attempt_000002",
+        )

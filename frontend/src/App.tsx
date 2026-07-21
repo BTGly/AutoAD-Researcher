@@ -9,15 +9,18 @@ import { FirstRunSetup } from './components/FirstRunSetup';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
 import { LeftSidebar } from './components/LeftSidebar';
-import { SettingsPage } from './components/SettingsPage';
+import { ExperimentPage } from './components/ExperimentPage';
 import { ReportPage } from './components/ReportPage';
 import { DevMockPanel } from './components/DevMockPanel';
 import { MarkdownContent } from './components/MarkdownContent';
 import { TaskMenu } from './components/TaskMenu';
+import { ExperimentTaskConfirmation } from './components/ExperimentTaskConfirmation';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
+  ApiError,
+  confirmPrimaryMetrics,
   confirmExperimentTask,
   createRun,
   deleteSource,
@@ -27,6 +30,7 @@ import {
   getEvidenceState,
   getIntentSummary,
   getJobs,
+  getPendingExperimentTask,
   getRuns,
   getSources,
   getTranscript,
@@ -35,12 +39,17 @@ import {
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary } from './lib/types';
+import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary, ExperimentTaskDraft } from './lib/types';
 
 interface ArtifactEntry {
   path: string;
   label: string;
   content?: string;
+}
+
+interface PendingExperimentTaskConfirmation {
+  runId: string;
+  task: ExperimentTaskDraft;
 }
 
 function hasIntentSummary(summary: IntentSummary | null): boolean {
@@ -59,19 +68,21 @@ function hasIntentSummary(summary: IntentSummary | null): boolean {
 const MAX_VISIBLE_TOASTS = 3;
 
 export default function App() {
-  const { config, saveConfig, saveExperimentConfig, showConfig, openConfig, closeConfig, DEFAULT_EXPERIMENT } = useConfig();
+  const { config, saveConfig, showConfig, openConfig, closeConfig } = useConfig();
   const [runId, setRunId] = useState<string>('');
   const [tasks, setTasks] = useState<TaskRun[]>([]);
   const [taskStatus, setTaskStatus] = useState<string>('Ready');
   const [messages, setMessages] = useState<Message[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [sources, setSources] = useState<SourceItem[]>([]);
+  const [pendingExperimentTaskConfirmation, setPendingExperimentTaskConfirmation] = useState<PendingExperimentTaskConfirmation | null>(null);
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [unusableParsedSources, setUnusableParsedSources] = useState<UnusableParsedSource[]>([]);
   const [intentSummary, setIntentSummary] = useState<IntentSummary | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
+  const [experimentRefreshTick, setExperimentRefreshTick] = useState(0);
   const [page, setPage] = useState<PageId>('chat');
   const [composerText, setComposerText] = useState('');
   const [queuedMessagesByRun, setQueuedMessagesByRun] = useState<Record<string, QueuedChatMessage[]>>({});
@@ -119,7 +130,13 @@ export default function App() {
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
     if (currentRunIdRef.current && currentRunIdRef.current !== nextRunId) return;
-    setSources(s.map((src: any) => ({ sourceId: src.source_id || generateId(), kind: src.kind || 'unknown', label: src.user_label || src.source_id || 'source', status: src.status || 'unknown' })));
+    setSources(s.map((src: any) => ({
+      sourceId: src.source_id || generateId(),
+      kind: src.kind || 'unknown',
+      label: src.user_label || src.source_id || 'source',
+      status: src.status || 'unknown',
+      intakeStatus: typeof src.intake_status === 'string' ? src.intake_status : null,
+    })));
     setJobs(j.map((job: any) => ({ jobId: job.job_id || generateId(), jobType: job.job_type || 'unknown', status: job.status || 'unknown', sourceLabel: job.outputs?.[0] || '', error: job.error || '' })));
     setEvidence(e.map(normalizeEvidence));
     setUnusableParsedSources((evidenceState.unusable_parsed_sources || []).map(normalizeUnusableParsedSource));
@@ -141,6 +158,7 @@ export default function App() {
     setRunId(nextRunId);
     setTaskStatus('Ready');
     setSources([]);
+    setPendingExperimentTaskConfirmation(null);
     setJobs([]);
     setEvidence([]);
     setUnusableParsedSources([]);
@@ -156,7 +174,11 @@ export default function App() {
       timestamp: entry.created_at ? new Date(entry.created_at).getTime() : Date.now(),
     })));
     await refreshSidebarForRun(nextRunId);
+    const pendingTask = await getPendingExperimentTask(nextRunId).catch(() => null);
     if (currentRunIdRef.current === nextRunId) {
+      if (pendingTask?.status === 'pending_confirmation') {
+        setPendingExperimentTaskConfirmation({ runId: nextRunId, task: pendingTask });
+      }
       setLoadedRunId(nextRunId);
       setRunLoading(false);
     }
@@ -303,31 +325,25 @@ export default function App() {
       if (currentRunIdRef.current === targetRunId && res.experiment_task) {
         const task = res.experiment_task;
         const goal = task.input_task.user_idea || task.input_task.request;
-        const selectedMode = window.prompt(
-          `选择执行模式：\n- plan_only：仅生成实验输入\n- approve_each_step：每一步都需要确认\n- agent_assisted_after_approval：确认后由 Agent 协助准备环境\n\n目标：${goal}\n材料：${task.input_task.source_ids.length} 项`,
-          'plan_only',
-        );
-        if (selectedMode === null) {
-          // Closing the mode dialog is a deliberate no-op.
-        } else if (
-          selectedMode !== 'plan_only'
-          && selectedMode !== 'approve_each_step'
-          && selectedMode !== 'agent_assisted_after_approval'
-        ) {
-          addToast('未确认有效的执行模式', 'error');
-        } else {
-          const confirmed = window.confirm(
-            selectedMode === 'plan_only'
-              ? '确认生成 input_task.yaml？不会修改代码或运行实验。'
-              : `确认以 ${selectedMode} 启动环境准备？不会启动 baseline 或修改模型代码。`,
+        if (task.status === 'confirmed') {
+          const recover = window.confirm(
+            `任务已按 ${task.execution_mode} 确认。是否恢复缺失的任务材料化？不会重新选择或升级执行模式。\n\n目标：${goal}`,
           );
-          if (confirmed) {
-            const prepared = await confirmExperimentTask(targetRunId, task.task_id, selectedMode).catch(() => null);
-            addToast(
-              prepared ? `实验任务已确认（${prepared.disposition}）` : '实验输入生成失败',
-              prepared ? 'success' : 'error',
-            );
+          if (recover) {
+            try {
+              const prepared = await confirmExperimentTask(
+                targetRunId,
+                task.task_id,
+                task.execution_mode,
+              );
+              addToast(`已恢复确认任务（${prepared.disposition}）`, 'success');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : '任务恢复失败';
+              addToast(`任务恢复失败：${message}`, 'error');
+            }
           }
+        } else {
+          setPendingExperimentTaskConfirmation({ runId: targetRunId, task });
         }
       }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
@@ -428,7 +444,13 @@ export default function App() {
       if (source.source_id) {
         setSources(prev => prev.some(s => s.sourceId === source.source_id)
           ? prev
-          : [...prev, { sourceId: source.source_id, kind: source.kind || 'unknown', label: source.stored_path || file.name, status: 'uploaded_not_parsed' }]);
+          : [...prev, {
+            sourceId: source.source_id,
+            kind: source.kind || 'unknown',
+            label: source.stored_path || file.name,
+            status: 'uploaded_not_parsed',
+            intakeStatus: typeof source.intake_status === 'string' ? source.intake_status : null,
+          }]);
       }
       await refreshSidebarForRun(targetRunId);
       setTaskStatus('Ready');
@@ -454,6 +476,10 @@ export default function App() {
 
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
+    if (msg.type.startsWith('experiment.')) {
+      setExperimentRefreshTick(value => value + 1);
+      return;
+    }
     const jobId = msg.jobId || msg.job_id;
     const jobType = msg.jobType || msg.job_type;
     const sourceId = msg.sourceId || msg.source_id;
@@ -462,7 +488,7 @@ export default function App() {
       if (!sourceId) return;
       setSources(prev => {
         if (prev.some(source => source.sourceId === sourceId)) return prev;
-        return [...prev, { sourceId, kind: msg.kind || 'unknown', label: storedPath || sourceId, status: 'registered' }];
+        return [...prev, { sourceId, kind: msg.kind || 'unknown', label: storedPath || sourceId, status: 'registered', intakeStatus: null }];
       });
     }
     if (msg.type === 'source.deleted') {
@@ -537,6 +563,43 @@ export default function App() {
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
       {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} />}
+      {pendingExperimentTaskConfirmation && (
+        <ExperimentTaskConfirmation
+          task={pendingExperimentTaskConfirmation.task}
+          sources={sources}
+          onClose={() => setPendingExperimentTaskConfirmation(null)}
+          onConfirm={async (executionMode, executionRepositorySourceId) => {
+            try {
+              const prepared = await confirmExperimentTask(
+                pendingExperimentTaskConfirmation.runId,
+                pendingExperimentTaskConfirmation.task.task_id,
+                executionMode,
+                executionRepositorySourceId,
+              );
+              setPendingExperimentTaskConfirmation(null);
+              addToast(`实验任务已确认（${prepared.disposition}）`, 'success');
+              await refreshSidebarForRun(pendingExperimentTaskConfirmation.runId);
+            } catch (error) {
+              if (error instanceof ApiError && error.code === 'summary_changed') {
+                addToast('研究摘要已在草案生成后更新；当前草案已过期。请先生成最新草案，再次确认。', 'info');
+              }
+              throw error;
+            }
+          }}
+          onConfirmPrimaryMetrics={async primaryMetrics => {
+            const updatedTask = await confirmPrimaryMetrics(
+              pendingExperimentTaskConfirmation.runId,
+              primaryMetrics,
+            );
+            setPendingExperimentTaskConfirmation(current => current && {
+              ...current,
+              task: updatedTask,
+            });
+            addToast('主指标已确认；请检查刷新后的任务草案后再确认执行。', 'success');
+            await refreshSidebarForRun(pendingExperimentTaskConfirmation.runId);
+          }}
+        />
+      )}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
 
       {/* Header */}
@@ -641,12 +704,14 @@ export default function App() {
           </>
         )}
 
-        {page === 'settings' && (
-          <SettingsPage
-            experiment={config.experiment ?? DEFAULT_EXPERIMENT}
-            defaultApiKey={config.apiKey}
-            onSave={saveExperimentConfig}
-            onBack={() => setPage('chat')}
+        {page === 'experiment' && (
+          <ExperimentPage
+            runId={runId}
+            experimentRefreshTick={experimentRefreshTick}
+            onDiscuss={text => {
+              setComposerText(text);
+              setPage('chat');
+            }}
           />
         )}
 

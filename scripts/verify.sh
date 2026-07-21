@@ -145,11 +145,14 @@ test -f src/autoad_researcher/schemas/benchmark.py
 test -f src/autoad_researcher/benchmarks/config.py
 test -f scripts/benchmark/validate_case.py
 test -f configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml
+test -f configs/benchmarks/internal_patchcore_mvtec_bottle_smoke_v1.yaml
 test -f docs/adr/0001-internal-benchmark-selection.md
 test -f docs/internal_benchmark_case.md
 test -f docs/agent-guides/pytorch-cuda-environment.md
 "$UV_BIN" run python scripts/benchmark/validate_case.py \
   configs/benchmarks/internal_patchcore_mvtec_bottle_v1.yaml >/dev/null
+"$UV_BIN" run python scripts/benchmark/validate_case.py \
+  configs/benchmarks/internal_patchcore_mvtec_bottle_smoke_v1.yaml >/dev/null
 echo "[verify] benchmark config ok."
 
 echo "[verify] checking benchmark preflight files..."
@@ -159,6 +162,10 @@ test -f src/autoad_researcher/benchmarks/environment.py
 test -f src/autoad_researcher/benchmarks/preflight.py
 test -f scripts/benchmark/preflight.py
 test -f scripts/benchmark/run_internal_patchcore_attempt.py
+test -f src/autoad_researcher/benchmarks/patchcore_07h_data.py
+test -f scripts/benchmark/prepare_patchcore_07h_data.py
+test -f src/autoad_researcher/benchmarks/patchcore_07h_readiness.py
+test -f scripts/benchmark/check_patchcore_07h_physical_readiness.py
 echo "[verify] checking benchmark environment lock..."
 test -f src/autoad_researcher/benchmarks/environment_lock.py
 test -f configs/benchmarks/environments/patchcore_linux_gpu/environment.yaml

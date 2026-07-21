@@ -88,7 +88,7 @@ class RepositoryAttestation(BaseModel):
     head_commit: str | None = Field(default=None, pattern=GitCommitPattern)
     git_tree_sha: str | None = Field(default=None, pattern=GitCommitPattern)
     tree_sha: str = Field(pattern=Sha256Pattern)
-    detached_head: bool | None
+    detached_head: bool | None = None
     dirty: bool
     git_status_porcelain: str
     symbolic_ref: str | None = None

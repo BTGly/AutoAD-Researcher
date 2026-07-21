@@ -4,6 +4,7 @@ import pytest
 
 from autoad_researcher.experiment.evaluation_contract import (
     EvaluationContract,
+    EvaluationSeedPolicy,
     EvaluationContractStore,
     EvaluationMetric,
     EvaluationResourceBudget,
@@ -57,6 +58,23 @@ def test_contract_rejects_btest_invariants_and_ambiguous_metrics():
         EvaluationContract.model_validate(_contract().model_dump() | {"guardrails": ["auroc"]})
     with pytest.raises(ValueError, match="must be a non-empty relative path"):
         EvaluationMetric(name="auroc", direction="maximize", implementation_ref="../eval.py")
+
+
+def test_v2_contract_requires_explicit_forward_seed_policy():
+    v2 = _contract(revision=1, contract_id="evaluation_contract_000002").model_copy(
+        update={
+            "schema_version": 2,
+            "seeds": [0, 1, 2],
+            "seed_policy": EvaluationSeedPolicy(
+                baseline_calibration_seeds=[0, 1, 2],
+                exploration_seed=0,
+                confirmation_seed_policy="explicit",
+            ),
+        }
+    )
+    assert v2.seed_policy is not None
+    with pytest.raises(ValueError, match="seed_policy"):
+        EvaluationContract.model_validate(v2.model_dump() | {"seed_policy": None})
 
 
 def test_freeze_protected_artifacts_requires_exact_existing_relative_paths(tmp_path: Path):

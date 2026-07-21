@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from autoad_researcher.assistant.v2.evidence_service import load_unusable_parsed_sources, load_usable_evidence
-from autoad_researcher.core.run_id import run_dir_path
 from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_paths import run_dir_or_400
 
 router = APIRouter(prefix="/api/runs", tags=["evidence"])
 
@@ -29,7 +29,4 @@ async def get_evidence_state(run_id: str):
 
 
 def _run_dir_or_400(run_id: str) -> Path:
-    try:
-        return run_dir_path(RUNS_ROOT, run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return run_dir_or_400(RUNS_ROOT, run_id)

@@ -10,6 +10,8 @@ from fastapi import APIRouter, Request
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.server.models import ChatRequest, ChatResponse
 from autoad_researcher.assistant.v2.event_service import append_event
+from autoad_researcher.server.config import RUNS_ROOT
+from autoad_researcher.server.run_paths import run_dir_or_400
 from autoad_researcher.server.ws_manager import manager
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -65,7 +67,7 @@ def _extract_experiment_headers(request: Request) -> dict[str, str]:
 
 @router.post("/send", response_model=ChatResponse)
 async def chat_send(req: ChatRequest, request: Request):
-    run_dir = Path("runs") / req.run_id
+    run_dir = run_dir_or_400(RUNS_ROOT, req.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     api_key, provider_url, model = _extract_api_headers(request)

@@ -33,6 +33,7 @@ export interface SourceItem {
   kind: string;
   label: string;
   status: string;
+  intakeStatus: string | null;
 }
 
 export interface BasedStatement {
@@ -64,6 +65,7 @@ export interface PipelineInputTask {
   baseline: string | null;
   dataset: string | null;
   compute_budget: string | null;
+  primary_metrics: string[];
   constraints: string[];
 }
 
@@ -153,19 +155,133 @@ export interface WSMessage {
   delay?: number;
 }
 
-export interface ExperimentConfig {
-  provider: string;
-  model: string;
-  apiKey: string;
-  baseUrl: string;
-  reasoningEffort: string;
-  maxCycles: number;
-  maxTurns: number;
-  executorTimeout: number;
-  searchEnabled: boolean;
-  autoSearch: boolean;
+export interface ExperimentProjectionSession {
+  session_id: string;
+  task_ref: string;
+  task_hash: string;
+  status: string;
+  execution_mode: string;
+  readiness_status: string;
+  readiness_blockers: string[];
+  environment_status: string;
+  baseline_status: string;
+  evaluation_contract_ref: string | null;
+  evaluation_contract_sha256: string | null;
+  budget: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExperimentIdeaNode {
+  node_id: string;
+  parent_id: string | null;
+  is_root: boolean;
+  depth: number;
+  mechanism: string | null;
+  hypothesis: string | null;
+  observable: string | null;
+  research_axis: string | null;
+  minimal_intervention: string | null;
+  falsification: string | null;
+  relationship_to_previous_ideas: string | null;
+  grounding: string[];
+  expected_cost: string;
+  status: string;
+  attempt_refs: string[];
+  evidence_refs: string[];
+  cognitive_commit_refs: string[];
+  insights: Array<Record<string, unknown>>;
+  children: string[];
+  attempt_summary: Record<string, number>;
+}
+
+export interface ExperimentAttempt {
+  attempt_id: string;
+  attempt_purpose: string;
+  runtime_status: string;
+  job_type: string;
+  pipeline_job_id: string | null;
+  required_device_count: number;
+  required_vram_mb: number;
+  retry_of: string | null;
+  retry_count: number;
+  max_retries: number;
+  retry_exhausted: boolean;
+  failure_code: string | null;
+  command_plan_summary: string;
+  execution_outcome: Record<string, unknown> | null;
+  scientific_assessment: Record<string, any> | null;
+  assessment_reconciliation: Record<string, unknown> | null;
+  scientific_assessment_status: 'available' | 'not_materialized' | 'invalid';
+  related_idea_ids: string[];
+  pid: number | null;
+  heartbeat_at: string | null;
+  resource_lease_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExperimentActivity {
+  event_id: number;
+  event_type: string;
+  created_at: string;
+  title: string;
+  summary: string;
+  card_kind: string;
+  related_idea_id: string | null;
+  related_attempt_id: string | null;
+  related_commit_id: string | null;
+  related_outcome: Record<string, unknown> | null;
+  detail: string;
+  evidence_refs: string[];
+}
+
+export interface ExperimentProjection {
+  schema_version: 1;
+  selection_status: 'no_session' | 'selected' | 'ambiguous';
+  session: ExperimentProjectionSession | null;
+  session_candidates: Array<{ session_id: string; task_hash: string; status: string; created_at: string }>;
+  input_task: PipelineInputTask | null;
+  summary: {
+    status: string;
+    readiness_status: string;
+    environment_status: string;
+    baseline_status: string;
+    idea_count: number;
+    idea_rooted_count: number;
+    attempt_by_status: Record<string, number>;
+    budget: Record<string, unknown>;
+    budget_consumed: Record<string, unknown> | null;
+    champion_status: string;
+  } | null;
+  idea_tree: { session_id: string; revision: number; root_node_id: string; nodes: ExperimentIdeaNode[] } | null;
+  attempts: ExperimentAttempt[];
+  candidates: Array<{ candidate_id: string; idea_id: string; attempt_id: string; b_test_passed: boolean; guardrails_passed: boolean }>;
+  candidate_inventory_status: 'available' | 'invalid';
+  actions: {
+    candidate_confirmations: Array<{ candidate_attempt_id: string }>;
+    candidate_promotions: Array<{ candidate_id: string }>;
+  };
+  champion_status: 'absent' | 'available' | 'assessment_missing' | 'assessment_invalid' | 'control_plane_invalid';
+  champion: {
+    candidate_id: string;
+    session_id: string;
+    evaluation_contract_hash: string;
+    idea_id: string;
+    attempt_id: string;
+    scientific_assessment: Record<string, unknown> | null;
+    assessment_reconciliation: Record<string, unknown> | null;
+    assessment_error: string | null;
+  } | null;
+  activity: ExperimentActivity[];
+  activity_limit: number;
+  activity_truncated: boolean;
+  activity_scan_truncated: boolean;
+  developer_refs: {
+    run_id: string; session_id: string; event_ids: number[]; artifact_paths: string[]; pipeline_job_ids: string[]; event_log_path: string;
+  } | null;
 }
 
 export type TabId = 'sources' | 'jobs' | 'evidence' | 'summary';
 
-export type PageId = 'chat' | 'settings' | 'report';
+export type PageId = 'chat' | 'experiment' | 'report';

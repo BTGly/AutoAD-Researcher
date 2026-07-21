@@ -55,12 +55,30 @@ class EvaluationResourceBudget(BaseModel):
     max_gpu_seconds: int = Field(gt=0)
 
 
+class EvaluationSeedPolicy(BaseModel):
+    """Forward-frozen seed roles for an EvaluationContract v2 or later."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    baseline_calibration_seeds: list[int] = Field(min_length=1)
+    exploration_seed: int
+    confirmation_seed_policy: Literal["explicit"]
+
+    @model_validator(mode="after")
+    def _validate_seeds(self):
+        if len(self.baseline_calibration_seeds) != len(set(self.baseline_calibration_seeds)):
+            raise ValueError("baseline_calibration_seeds must be unique")
+        if self.exploration_seed not in self.baseline_calibration_seeds:
+            raise ValueError("exploration_seed must be included in baseline_calibration_seeds")
+        return self
+
+
 class EvaluationContract(BaseModel):
     """Immutable scientific protocol for one Session revision."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     contract_id: str = Field(pattern=r"^evaluation_contract_[0-9]{6}$")
     session_id: str = Field(min_length=1)
     revision: int = Field(ge=0)
@@ -75,6 +93,7 @@ class EvaluationContract(BaseModel):
     guardrails: list[str] = Field(default_factory=list)
     aggregation: Literal["mean"]
     seeds: list[int] = Field(min_length=1)
+    seed_policy: EvaluationSeedPolicy | None = None
     checkpoint_selection: str = Field(min_length=1)
     resource_budget: EvaluationResourceBudget
     protected_paths: list[str] = Field(min_length=1)
@@ -94,6 +113,13 @@ class EvaluationContract(BaseModel):
             raise ValueError("primary_metric cannot also be a guardrail")
         if len(self.seeds) != len(set(self.seeds)):
             raise ValueError("seeds must be unique")
+        if self.schema_version == 1 and self.seed_policy is not None:
+            raise ValueError("seed_policy requires EvaluationContract schema_version 2")
+        if self.schema_version == 2:
+            if self.seed_policy is None:
+                raise ValueError("EvaluationContract schema_version 2 requires seed_policy")
+            if self.seeds != self.seed_policy.baseline_calibration_seeds:
+                raise ValueError("seeds must exactly match seed_policy.baseline_calibration_seeds")
         if len(self.category_set) != len(set(self.category_set)):
             raise ValueError("category_set must be unique")
         for path in self.protected_paths:
