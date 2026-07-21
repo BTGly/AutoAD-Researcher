@@ -41,6 +41,7 @@ import {
 } from './lib/api';
 import { generateId } from './lib/mock';
 import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary, ExperimentTaskDraft } from './lib/types';
+import { Settings } from 'lucide-react';
 
 interface ArtifactEntry {
   path: string;
@@ -562,7 +563,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="app-shell">
       {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} />}
       {pendingExperimentTaskConfirmation && (
         <ExperimentTaskConfirmation
@@ -603,10 +604,9 @@ export default function App() {
       )}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-          <span style={{ fontWeight: 600, fontSize: '1.05em', color: 'var(--blue)' }}>AutoAD Researcher</span>
+      <header className="app-toolbar">
+        <div className="app-toolbar-leading">
+          <span className="app-brand">AutoAD Researcher</span>
           <TaskMenu
             activeTask={activeTask}
             tasks={tasks}
@@ -615,28 +615,25 @@ export default function App() {
             onRename={handleRenameTask}
             onDelete={handleDeleteTask}
           />
-          <span style={{
-            fontSize: '0.75em', padding: '2px 8px', borderRadius: 4,
-            background: visibleTaskStatus === 'Ready' ? '#1a3a1a' : visibleTaskStatus === 'Working' ? '#3a2a0a' : visibleTaskStatus === 'Error' ? '#3a1a1a' : '#1a1a3a',
-            color: visibleTaskStatus === 'Ready' ? 'var(--green)' : visibleTaskStatus === 'Working' ? 'var(--orange)' : visibleTaskStatus === 'Error' ? 'var(--red)' : 'var(--blue)',
-          }}>
+          <span className={`app-status app-status-${visibleTaskStatus.toLowerCase()}`}>
             {visibleTaskStatus}
           </span>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="app-toolbar-actions">
           <ThemeToggle />
-          <button onClick={openConfig} title="配置" style={{ padding: '6px 10px' }}>⚙</button>
+          <button className="toolbar-icon-button" onClick={openConfig} title="配置" aria-label="配置">
+            <Settings size={17} strokeWidth={1.8} aria-hidden="true" />
+          </button>
         </div>
-      </div>
+      </header>
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div className="app-workspace">
         <LeftSidebar page={page} onPage={setPage} />
 
         {page === 'chat' && (
           <>
-            {/* Chat area */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-              <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
+            <section className="chat-workspace" aria-label="研究对话">
+              <div className="chat-document-flow">
                 {messages.length === 0 && <WelcomeMessage />}
                 {messages.map(msg =>
                   msg.role === 'user'
@@ -645,14 +642,14 @@ export default function App() {
                 )}
                 {messages.length > 0 && <div ref={bottomRef} />}
               </div>
-              <div style={{ padding: '0 16px', flexShrink: 0 }}>
+              <div className="chat-composer-area">
                 <FollowupQueue
                   items={queuedMessages}
                   paused={queuePaused}
                   onRestore={handleRestoreQueuedMessage}
                 />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ flex: 1 }}>
+                <div className="chat-composer-row">
+                  <div className="chat-composer-fill">
                     <ChatInput
                       value={composerText}
                       onChange={setComposerText}
@@ -662,10 +659,10 @@ export default function App() {
                   </div>
                   <PlusMenu onFile={handleFile} />
                 </div>
-                <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
+                <div className="kbd-hint chat-keyboard-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
                 <StatusBar sources={sources} jobs={jobs} evidenceCount={evidence.length} summaryAvailable={hasIntentSummary(intentSummary)} />
               </div>
-            </div>
+            </section>
 
             {/* Right sidebar */}
             <Sidebar

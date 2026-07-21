@@ -74,6 +74,6 @@ async function openReportRun(page: Page) {
   await page.locator('.session-row-title').filter({ hasText: '真实报告全栈验收' }).click();
   await expect(page.getByText('当前任务：真实报告全栈验收', { exact: true })).toBeVisible();
   await history.click();
-  await page.getByTitle('Report', { exact: true }).click();
+  await page.getByTitle('研究报告', { exact: true }).click();
   await expect(page.getByText('生成：content_ready', { exact: true })).toBeVisible();
 }

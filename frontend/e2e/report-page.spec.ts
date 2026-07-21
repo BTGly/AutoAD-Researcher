@@ -52,7 +52,7 @@ async function prepare(page: Page) {
 
 test('renders separated report states, core metrics, and the HTML delivery', async ({ page }) => {
   await prepare(page);
-  await page.getByRole('button', { name: 'Report' }).click();
+  await page.getByRole('button', { name: '研究报告' }).click();
 
   await expect(page.getByText('工程：READY', { exact: true })).toBeVisible();
   await expect(page.getByText('执行：COMPLETED', { exact: true })).toBeVisible();
@@ -63,7 +63,7 @@ test('renders separated report states, core metrics, and the HTML delivery', asy
 
 test('updates review and isolates human proposals by selected report version', async ({ page }) => {
   await prepare(page);
-  await page.getByRole('button', { name: 'Report' }).click();
+  await page.getByRole('button', { name: '研究报告' }).click();
   await page.getByRole('button', { name: '接受' }).click();
   await expect(page.getByText('审阅：accepted', { exact: true })).toBeVisible();
 

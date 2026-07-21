@@ -1,4 +1,5 @@
 import type { KeyboardEvent } from 'react';
+import { AppButton } from './ui/AppButton';
 
 interface Props {
   value: string;
@@ -23,7 +24,7 @@ export function ChatInput({ value, onChange, onSend, disabled }: Props) {
   };
 
   return (
-    <div style={{ display: 'flex', gap: 8, padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+    <div className="chat-composer">
       <textarea
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -31,11 +32,11 @@ export function ChatInput({ value, onChange, onSend, disabled }: Props) {
         placeholder="输入问题，或粘贴 URL…"
         rows={1}
         disabled={disabled}
-        style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
+        className="chat-composer-input"
       />
-      <button onClick={send} disabled={disabled || !value.trim()} className="primary" style={{ padding: '6px 16px' }}>
+      <AppButton variant="primary" onClick={send} disabled={disabled || !value.trim()}>
         发送
-      </button>
+      </AppButton>
     </div>
   );
 }
