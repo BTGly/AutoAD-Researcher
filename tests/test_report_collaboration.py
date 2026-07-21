@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import append_message, load_messages
+from autoad_researcher.reporting.discussion import DiscussionResponse, append_message, complete_turn, load_messages, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -24,6 +24,22 @@ def test_discussion_is_report_bound_and_rejects_unknown_evidence(tmp_path: Path)
     assert load_messages(run_dir, report_id=report_id)[0].message_id == item.message_id
     with pytest.raises(ValueError, match="unknown Evidence"):
         append_message(run_dir, report_id=report_id, role="user", content="x", evidence_ids=["evidence_missing"])
+
+
+def test_discussion_turn_replay_completion_and_tail_recovery(tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    first = start_turn(run_dir, report_id=report_id, request_id="turn_1", content="解释结论")
+    replay = start_turn(run_dir, report_id=report_id, request_id="turn_1", content="解释结论")
+    assert replay.turn_id == first.turn_id and replay.status == "pending"
+    completed = complete_turn(run_dir, report_id=report_id, turn_id=first.turn_id, response=DiscussionResponse(answer="当前报告没有可核验的提升结论。", response_kind="insufficient_evidence"))
+    assert completed.status == "completed"
+    assert [item.role for item in load_messages(run_dir, report_id=report_id)] == ["user", "assistant"]
+    path = run_dir / "reports" / report_id / "discussion" / "turns.jsonl"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"incomplete"')
+    assert len(load_messages(run_dir, report_id=report_id)) == 2
+    with pytest.raises(ValueError, match="request_id conflicts"):
+        start_turn(run_dir, report_id=report_id, request_id="turn_1", content="不同消息")
 
 
 def test_proposal_is_not_handoff_and_accept_is_only_review(tmp_path: Path):

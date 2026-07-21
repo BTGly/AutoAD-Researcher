@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.reporting.discussion import append_message, load_messages
+from autoad_researcher.reporting.discussion import load_messages, load_turns, start_turn
 from autoad_researcher.reporting.review import (
     PivotTaskContext,
     confirm_proposal,
@@ -22,6 +22,7 @@ router = APIRouter(prefix="/api/runs/{run_id}/reports/{report_id}", tags=["repor
 
 class DiscussionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$")
     content: str = Field(min_length=1, max_length=8000)
     evidence_ids: list[str] = Field(default_factory=list)
 
@@ -56,7 +57,8 @@ class ReviewRequest(BaseModel):
 @router.get("/discussion")
 async def get_discussion(run_id: str, report_id: str):
     try:
-        return {"messages": [item.model_dump(mode="json") for item in load_messages(run_dir_or_400(RUNS_ROOT, run_id), report_id=report_id)]}
+        root = run_dir_or_400(RUNS_ROOT, run_id)
+        return {"turns": [item.model_dump(mode="json") for item in load_turns(root, report_id=report_id)], "messages": [item.model_dump(mode="json") for item in load_messages(root, report_id=report_id)]}
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(404, "report discussion not found") from exc
 
@@ -65,7 +67,7 @@ async def get_discussion(run_id: str, report_id: str):
 async def post_discussion(run_id: str, report_id: str, request: DiscussionRequest):
     try:
         # A discussion never invokes jobs or exposes filesystem/executor tools.
-        item = append_message(run_dir_or_400(RUNS_ROOT, run_id), report_id=report_id, role="user", content=request.content, evidence_ids=request.evidence_ids)
+        item = start_turn(run_dir_or_400(RUNS_ROOT, run_id), report_id=report_id, request_id=request.request_id, content=request.content, evidence_ids=request.evidence_ids)
         return item.model_dump(mode="json")
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
