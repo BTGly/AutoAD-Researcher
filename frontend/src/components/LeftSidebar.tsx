@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { BarChart3, FlaskConical, MessageSquare, type LucideIcon } from 'lucide-react';
 import type { PageId } from '../lib/types';
 
 interface Props {
@@ -6,27 +7,19 @@ interface Props {
   onPage: (p: PageId) => void;
 }
 
-const ITEMS: { id: PageId; icon: string; label: string }[] = [
-  { id: 'chat', icon: '💬', label: 'Chat' },
-  { id: 'experiment', icon: '🔬', label: '实验工作台' },
-  { id: 'report', icon: '📊', label: 'Report' },
+const ITEMS: { id: PageId; icon: LucideIcon; label: string }[] = [
+  { id: 'chat', icon: MessageSquare, label: '研究对话' },
+  { id: 'experiment', icon: FlaskConical, label: '实验工作台' },
+  { id: 'report', icon: BarChart3, label: '研究报告' },
 ];
 
 export function LeftSidebar({ page, onPage }: Props) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div
-      style={{
-        width: expanded ? 160 : 48,
-        flexShrink: 0,
-        borderRight: '1px solid var(--border)',
-        background: 'var(--bg-panel)',
-        display: 'flex',
-        flexDirection: 'column',
-        transition: 'width 0.15s ease',
-        overflow: 'hidden',
-      }}
+    <nav
+      className={`project-sidebar${expanded ? ' expanded' : ''}`}
+      aria-label="主要导航"
       onMouseEnter={() => setExpanded(true)}
       onMouseLeave={() => setExpanded(false)}
     >
@@ -34,31 +27,14 @@ export function LeftSidebar({ page, onPage }: Props) {
         <button
           key={item.id}
           onClick={() => onPage(item.id)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            width: '100%',
-            padding: '12px 14px',
-            border: 'none',
-            background: page === item.id ? 'var(--bg)' : 'transparent',
-            color: page === item.id ? 'var(--blue)' : 'var(--text-muted)',
-            fontSize: '0.85em',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-            borderLeft: page === item.id ? '2px solid var(--blue)' : '2px solid transparent',
-          }}
+          className={`project-sidebar-item${page === item.id ? ' active' : ''}`}
+          aria-current={page === item.id ? 'page' : undefined}
           title={item.label}
         >
-          <span style={{ fontSize: '1.2em', flexShrink: 0 }}>{item.icon}</span>
-          <span style={{
-            opacity: expanded ? 1 : 0,
-            transition: 'opacity 0.1s ease',
-          }}>
-            {item.label}
-          </span>
+          <item.icon size={18} strokeWidth={1.8} aria-hidden="true" />
+          <span className="project-sidebar-label">{item.label}</span>
         </button>
       ))}
-    </div>
+    </nav>
   );
 }

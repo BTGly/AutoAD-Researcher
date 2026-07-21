@@ -16,3 +16,12 @@ test('follows system color-scheme changes only when system is selected', async (
   await page.emulateMedia({ colorScheme: 'light' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 });
+
+test('changes and persists the selected appearance from the application toolbar', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' })));
+  await page.goto('/');
+  await page.getByRole('button', { name: '深色外观' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.getByRole('button', { name: '深色外观' })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('autoad_theme_preference'))).toBe('dark');
+});

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { Settings } from 'lucide-react';
 import { ChatInput } from './components/ChatInput';
 import { FollowupQueue } from './components/FollowupQueue';
 import { PlusMenu } from './components/PlusMenu';
@@ -16,6 +17,7 @@ import { DevMockPanel } from './components/DevMockPanel';
 import { MarkdownContent } from './components/MarkdownContent';
 import { TaskMenu } from './components/TaskMenu';
 import { ExperimentTaskConfirmation } from './components/ExperimentTaskConfirmation';
+import { ThemeToggle } from './theme/ThemeToggle';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -563,7 +565,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="app-shell">
       {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} />}
       {pendingExperimentTaskConfirmation && (
         <ExperimentTaskConfirmation
@@ -604,10 +606,9 @@ export default function App() {
       )}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
-          <span style={{ fontWeight: 600, fontSize: '1.05em', color: 'var(--blue)' }}>AutoAD Researcher</span>
+      <header className="app-toolbar">
+        <div className="app-toolbar-leading">
+          <span className="app-brand">AutoAD Researcher</span>
           <TaskMenu
             activeTask={activeTask}
             tasks={tasks}
@@ -616,20 +617,19 @@ export default function App() {
             onRename={handleRenameTask}
             onDelete={handleDeleteTask}
           />
-          <span style={{
-            fontSize: '0.75em', padding: '2px 8px', borderRadius: 4,
-            background: visibleTaskStatus === 'Ready' ? '#1a3a1a' : visibleTaskStatus === 'Working' ? '#3a2a0a' : visibleTaskStatus === 'Error' ? '#3a1a1a' : '#1a1a3a',
-            color: visibleTaskStatus === 'Ready' ? 'var(--green)' : visibleTaskStatus === 'Working' ? 'var(--orange)' : visibleTaskStatus === 'Error' ? 'var(--red)' : 'var(--blue)',
-          }}>
+          <span className={`app-status app-status-${visibleTaskStatus.toLowerCase()}`}>
             {visibleTaskStatus}
           </span>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button onClick={openConfig} title="配置" style={{ padding: '6px 10px' }}>⚙</button>
+        <div className="app-toolbar-actions">
+          <ThemeToggle />
+          <button className="toolbar-icon-button" onClick={openConfig} title="配置" aria-label="配置">
+            <Settings size={17} strokeWidth={1.8} aria-hidden="true" />
+          </button>
         </div>
-      </div>
+      </header>
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div className="app-workspace">
         <LeftSidebar page={page} onPage={nextPage => {
           setPage(nextPage);
           if (nextPage !== 'experiment') setShowExperimentSettings(false);
