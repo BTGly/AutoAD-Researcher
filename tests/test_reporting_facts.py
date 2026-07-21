@@ -8,6 +8,7 @@ import pytest
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.default_narrative import build_default_narrative
 from autoad_researcher.reporting.digest import build_report_digest
+from autoad_researcher.reporting.evidence import _fact_refs_for_source
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1, assemble_facts
 from autoad_researcher.reporting.facts_enrichment import enrich_facts
 from autoad_researcher.reporting.inventory import _add_registered_patch_diffs, _add_registered_resource_reports
@@ -92,6 +93,36 @@ def test_digest_separates_engineering_execution_and_insufficient_scientific_stat
     assert digest.execution_status == "COMPLETED"
     assert digest.scientific_status == "EVIDENCE_INSUFFICIENT"
     assert digest.primary_metrics == [{"attempt_id": "attempt_000001", "metric": "image_auroc", "value": 0.91}]
+
+
+def test_evidence_projection_maps_candidate_attempt_metrics_baseline_and_validity_fields():
+    attempt_id = "attempt_000001"
+    facts = ExperimentReportFactsV1.model_validate({
+        "run_id": "run_projection", "session_id": "session_projection", "research_objective": {}, "evaluation_contract": {},
+        "repository_and_environment": {},
+        "baseline": [{"attempt_id": attempt_id}],
+        "candidate_and_champion": {"candidates": [{"candidate_id": "candidate_000001"}]},
+        "ideas": [],
+        "attempts": [{"attempt_id": attempt_id, "outcome": {"metrics": {"auroc": 0.91}}, "assessment": {"evaluation_status": "COMPARABLE"}}],
+        "primary_metrics": [{"attempt_id": attempt_id, "metric": "auroc", "value": 0.91}], "guardrail_metrics": [],
+        "validity": [{"attempt_id": attempt_id}], "failed_attempts": [{"attempt_id": attempt_id}],
+        "non_comparable_attempts": [{"attempt_id": attempt_id}], "stop_decision": {}, "cognitive_cost_summary": {},
+        "compute_resource_summary": {}, "uncertainties": [], "source_refs": [],
+    })
+
+    assert _fact_refs_for_source(facts, "candidate_snapshot", "candidate_snapshot:candidate_000001", "$") == ["candidate_and_champion.candidates.0"]
+    assert set(_fact_refs_for_source(facts, "experiment_attempt", f"experiment_attempt:{attempt_id}", "$")) == {
+        "attempts.0", "baseline.0", "failed_attempts.0", "non_comparable_attempts.0",
+    }
+    assert set(_fact_refs_for_source(facts, "outcome_card", f"outcome_card:{attempt_id}", "metrics.auroc")) == {
+        "attempts.0.outcome.metrics.auroc", "baseline.0.outcome.metrics.auroc",
+        "failed_attempts.0.outcome.metrics.auroc", "non_comparable_attempts.0.outcome.metrics.auroc",
+        "primary_metrics.0.value",
+    }
+    assert set(_fact_refs_for_source(facts, "scientific_assessment", f"scientific_assessment:{attempt_id}", "$")) == {
+        "attempts.0.assessment", "baseline.0.assessment", "failed_attempts.0.assessment",
+        "non_comparable_attempts.0.assessment", "validity.0",
+    }
 
 
 def test_execution_result_is_sha_bound_and_metrics_render_as_values(tmp_path: Path):

@@ -147,7 +147,8 @@ def _session_fact_refs(field_path: str) -> list[str]:
 
 
 def _candidate_fact_refs(facts, artifact_id: str, field_path: str) -> list[str]:
-    candidate_id = _id_part(artifact_id, "candidate_")
+    prefix = "candidate_snapshot:"
+    candidate_id = artifact_id.removeprefix(prefix) if artifact_id.startswith(prefix) else ""
     index = next(
         (i for i, item in enumerate(facts.candidate_and_champion.get("candidates", [])) if item.get("candidate_id") == candidate_id),
         None,
