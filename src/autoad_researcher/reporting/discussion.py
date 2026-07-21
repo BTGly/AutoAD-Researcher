@@ -20,6 +20,18 @@ MAX_TURNS = 40
 MAX_MESSAGE_CHARS = 8000
 
 
+class ReportDiscussionBudget(BaseModel):
+    """Service-side limits for one report-bound LLM response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_llm_calls: int = Field(default=1, ge=1, le=1)
+    max_output_tokens: int = Field(default=700, ge=64, le=2000)
+    max_wall_time_seconds: int = Field(default=30, ge=1, le=60)
+    max_concurrent_requests: int = Field(default=1, ge=1, le=1)
+    max_retries: int = Field(default=0, ge=0, le=1)
+
+
 class DiscussionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     answer: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
@@ -91,12 +103,48 @@ def fail_turn(run_dir: Path, *, report_id: str, turn_id: str, error: str) -> Dis
         return failed
 
 
-def respond_to_turn(run_dir: Path, *, report_id: str, turn_id: str, api_key: str, provider_url: str, model: str) -> DiscussionTurn:
+def respond_to_turn(
+    run_dir: Path,
+    *,
+    report_id: str,
+    turn_id: str,
+    api_key: str,
+    provider_url: str,
+    model: str,
+    budget: ReportDiscussionBudget | None = None,
+) -> DiscussionTurn:
     """Complete one persisted turn using only frozen report summaries and evidence."""
     turn = _require_turn(load_turns(run_dir, report_id=report_id), turn_id)
     if turn.status != "pending": return turn
     if not api_key or not model:
         return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error="report discussion model is not configured")
+    limits = budget or ReportDiscussionBudget()
+    if not _try_response_slot(run_dir, report_id):
+        return turn
+    try:
+        return _respond_with_slot(
+            run_dir,
+            report_id=report_id,
+            turn=turn,
+            api_key=api_key,
+            provider_url=provider_url,
+            model=model,
+            budget=limits,
+        )
+    finally:
+        _release_response_slot(run_dir, report_id)
+
+
+def _respond_with_slot(
+    run_dir: Path,
+    *,
+    report_id: str,
+    turn: DiscussionTurn,
+    api_key: str,
+    provider_url: str,
+    model: str,
+    budget: ReportDiscussionBudget,
+) -> DiscussionTurn:
     directory = run_dir / "reports" / report_id
     digest = json.loads((directory / "report_digest.json").read_text(encoding="utf-8"))
     index = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
@@ -106,14 +154,26 @@ def respond_to_turn(run_dir: Path, *, report_id: str, turn_id: str, api_key: str
         {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "question": turn.user_message}, ensure_ascii=False)},
     ]
     from autoad_researcher.ui.chat_client import call_research_chat
-    result = call_research_chat(api_key, provider_url, messages, model=model, timeout_s=30, priority="interactive", response_format_json=True, max_tokens=700, temperature=0.1)
+    result = call_research_chat(
+        api_key,
+        provider_url,
+        messages,
+        model=model,
+        timeout_s=budget.max_wall_time_seconds,
+        priority="interactive",
+        response_format_json=True,
+        max_tokens=budget.max_output_tokens,
+        temperature=0.1,
+    )
     try:
         if result.get("error"): raise ValueError(str(result["error"]))
         response = DiscussionResponse.model_validate_json(str(result.get("reply") or ""))
         _validated_evidence_ids(run_dir, report_id, response.evidence_ids)
+        if response.response_kind in {"explain", "verify", "compare"} and not response.evidence_ids:
+            raise ValueError("factual report discussion responses require Evidence IDs")
     except Exception as exc:
-        return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error=str(exc))
-    return complete_turn(run_dir, report_id=report_id, turn_id=turn_id, response=response)
+        return fail_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, error=str(exc))
+    return complete_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, response=response)
 
 
 def load_turns(run_dir: Path, *, report_id: str) -> list[DiscussionTurn]:
@@ -174,6 +234,34 @@ def _append_unlocked(path: Path, value: DiscussionTurn) -> None:
 def _manifest(run_dir: Path, report_id: str): return ReportStore().load_manifest(run_dir, report_id)
 def _path(run_dir: Path, report_id: str) -> Path: return run_dir / "reports" / report_id / "discussion" / "turns.jsonl"
 def _utc_now() -> str: return datetime.now(timezone.utc).isoformat()
+
+
+def _response_lock_path(run_dir: Path, report_id: str) -> Path:
+    return run_dir / "reports" / report_id / "discussion" / ".response.lock"
+
+
+def _try_response_slot(run_dir: Path, report_id: str) -> bool:
+    path = _response_lock_path(run_dir, report_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except FileExistsError:
+        try:
+            if time.time() - path.stat().st_mtime > ReportDiscussionBudget().max_wall_time_seconds + 5:
+                path.unlink()
+                return _try_response_slot(run_dir, report_id)
+        except OSError:
+            pass
+        return False
+    os.close(fd)
+    return True
+
+
+def _release_response_slot(run_dir: Path, report_id: str) -> None:
+    try:
+        _response_lock_path(run_dir, report_id).unlink()
+    except OSError:
+        pass
 
 
 @contextmanager

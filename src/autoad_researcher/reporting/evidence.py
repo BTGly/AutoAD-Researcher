@@ -41,10 +41,28 @@ def build_evidence_index(
     """Create stable root-level evidence entries after verifying each snapshot ref."""
 
     entries: list[EvidenceEntry] = []
+    snapshot_path = run_dir / "reports" / report_id / "report_snapshot.json"
+    snapshot_ref = ArtifactReferenceV2(
+        artifact_id=f"report_snapshot:{report_id}",
+        artifact_type="report_snapshot",
+        locator=str(snapshot_path.relative_to(run_dir)),
+        sha256=sha256_file(snapshot_path),
+        size_bytes=snapshot_path.stat().st_size,
+    )
+    frozen_types = set(snapshot.frozen_control_plane)
     for reference in snapshot.source_refs:
-        resolved = resolve_run_relative_file(run_dir, reference.locator)
-        if sha256_file(resolved) != reference.sha256:
-            raise ValueError("snapshot artifact SHA-256 no longer matches")
+        if reference.artifact_type in frozen_types:
+            evidence_reference = snapshot_ref.model_copy(
+                update={
+                    "artifact_id": f"{reference.artifact_id}:frozen",
+                    "artifact_type": f"frozen_{reference.artifact_type}",
+                }
+            )
+        else:
+            resolved = resolve_run_relative_file(run_dir, reference.locator)
+            if sha256_file(resolved) != reference.sha256:
+                raise ValueError("snapshot artifact SHA-256 no longer matches")
+            evidence_reference = reference
         identity = {
             "source_object_id": reference.artifact_id,
             "artifact_id": reference.artifact_id,
@@ -53,8 +71,8 @@ def build_evidence_index(
         entries.append(
             EvidenceEntry(
                 evidence_id=f"evidence_{canonical_sha256(identity)[:24]}",
-                evidence_kind=reference.artifact_type,
-                artifact_ref=reference,
+                evidence_kind=evidence_reference.artifact_type,
+                artifact_ref=evidence_reference,
                 source_object_id=reference.artifact_id,
                 field_path="$",
                 attempt_id=_attempt_id(reference),

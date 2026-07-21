@@ -26,6 +26,9 @@ def run_facts_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
     if payload.get("snapshot_content_sha256") != manifest.source_snapshot_content_sha256:
         raise ValueError("report Facts Job identity conflicts with manifest")
     state = store.load_state(run_dir, report_id)
+    if state.generation_status == "queued":
+        store.transition_generation(run_dir, report_id=report_id, target="assembling_facts")
+        state = store.load_state(run_dir, report_id)
     if state.generation_status == "generating_narrative":
         return _existing_outputs(run_dir, report_id)
     if state.generation_status != "assembling_facts":
@@ -71,8 +74,8 @@ def run_facts_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
 
     narrative_job, _ = create_or_get_pipeline_job(
         run_dir, source_id="", report_id=report_id, job_type=REPORT_NARRATIVE_JOB_TYPE,
-        idempotency_key=f"report:{manifest.session_id}:{manifest.source_snapshot_content_sha256}:{REPORT_NARRATIVE_JOB_TYPE}",
-        evidence_role="report_artifact", payload={"report_id": report_id, "snapshot_content_sha256": manifest.source_snapshot_content_sha256},
+        idempotency_key=f"report:{report_id}:{manifest.source_snapshot_content_sha256}:{REPORT_NARRATIVE_JOB_TYPE}",
+        evidence_role="report_artifact", payload={"report_id": report_id, "snapshot_content_sha256": manifest.source_snapshot_content_sha256, "report_recipe_hash": manifest.report_recipe_hash},
     )
     store.record_job(run_dir, report_id=report_id, job_id=narrative_job["job_id"])
     append_event(run_dir, "report.facts_assembled", {"report_id": report_id, "facts_content_sha256": facts_hash})

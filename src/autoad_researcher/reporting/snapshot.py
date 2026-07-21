@@ -12,6 +12,20 @@ from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.models import ReportSnapshot
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
+_FROZEN_CONTROL_PLANE_TYPES = frozenset(
+    {
+        "experiment_session",
+        "experiment_attempt",
+        "idea_tree",
+        "cognitive_cost_summary",
+        "stop_decision",
+        "candidate_snapshot",
+        "champion_pointers",
+    }
+)
+SNAPSHOT_POLICY_VERSION = "v1"
+SNAPSHOT_FREEZE_ATTEMPTS = 3
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -58,17 +72,66 @@ def resolve_run_relative_file(run_dir: Path, locator: str) -> Path:
 
 
 def build_report_snapshot(run_dir: Path, *, session_id: str) -> ReportSnapshot:
-    """Freeze the Session record first; later phases extend the inventory safely."""
+    """Freeze control-plane copies after a bounded optimistic stability check."""
 
+    for _ in range(SNAPSHOT_FREEZE_ATTEMPTS):
+        session, source_refs = _session_and_sources(run_dir, session_id)
+        frozen_control_plane = _freeze_control_plane(run_dir, source_refs)
+        current, current_refs = _session_and_sources(run_dir, session_id)
+        if session.revision != current.revision or source_refs != current_refs:
+            continue
+        inventory_hash = canonical_sha256([item.model_dump(mode="json") for item in source_refs])
+        return ReportSnapshot(
+            run_id=run_dir.name,
+            session_id=session.session_id,
+            source_refs=source_refs,
+            frozen_control_plane=frozen_control_plane,
+            session_revision=session.revision,
+            evaluation_contract_ref=session.evaluation_contract_ref,
+            environment_snapshot_ref=session.environment_snapshot_ref,
+            source_inventory_sha256=inventory_hash,
+            frozen_at=utc_now(),
+        )
+    raise ValueError("report sources changed while the Snapshot was being frozen")
+
+
+def snapshot_content_sha256(snapshot: ReportSnapshot) -> str:
+    return canonical_sha256(snapshot.model_dump(mode="json"), volatile_keys=frozenset({"frozen_at"}))
+
+
+def _freeze_control_plane(run_dir: Path, references: list[ArtifactReferenceV2]) -> dict[str, list[dict]]:
+    """Copy only small mutable control-plane JSON; artifacts remain SHA-bound refs."""
+
+    frozen: dict[str, list[dict]] = {}
+    for reference in references:
+        if reference.artifact_type not in _FROZEN_CONTROL_PLANE_TYPES:
+            continue
+        path = resolve_run_relative_file(run_dir, reference.locator)
+        if sha256_file(path) != reference.sha256:
+            raise ValueError("report source changed while freezing Snapshot")
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("report control-plane source is not readable JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError("report control-plane source must be a JSON object")
+        frozen.setdefault(reference.artifact_type, []).append(value)
+    return {key: frozen[key] for key in sorted(frozen)}
+
+
+def snapshot_policy_hash() -> str:
+    return canonical_sha256({"policy_version": SNAPSHOT_POLICY_VERSION, "frozen_types": sorted(_FROZEN_CONTROL_PLANE_TYPES)})
+
+
+def _session_and_sources(run_dir: Path, session_id: str):
     session = ExperimentSessionStore().load(run_dir, session_id)
     if session is None:
         raise FileNotFoundError("experiment session not found")
     if session.run_id != run_dir.name:
         raise ValueError("Session does not belong to run directory")
-
     session_locator = f"experiments/sessions/{session.session_id}.json"
     session_path = resolve_run_relative_file(run_dir, session_locator)
-    source_ref = ArtifactReferenceV2(
+    session_ref = ArtifactReferenceV2(
         artifact_id=f"experiment_session:{session.session_id}",
         artifact_type="experiment_session",
         locator=session_locator,
@@ -76,19 +139,5 @@ def build_report_snapshot(run_dir: Path, *, session_id: str) -> ReportSnapshot:
         size_bytes=session_path.stat().st_size,
     )
     from autoad_researcher.reporting.inventory import collect_snapshot_sources
-    source_refs = collect_snapshot_sources(run_dir, session_id=session.session_id, session=session, session_ref=source_ref)
-    inventory_hash = canonical_sha256([item.model_dump(mode="json") for item in source_refs])
-    return ReportSnapshot(
-        run_id=run_dir.name,
-        session_id=session.session_id,
-        source_refs=source_refs,
-        session_revision=session.revision,
-        evaluation_contract_ref=session.evaluation_contract_ref,
-        environment_snapshot_ref=session.environment_snapshot_ref,
-        source_inventory_sha256=inventory_hash,
-        frozen_at=utc_now(),
-    )
 
-
-def snapshot_content_sha256(snapshot: ReportSnapshot) -> str:
-    return canonical_sha256(snapshot.model_dump(mode="json"), volatile_keys=frozenset({"frozen_at"}))
+    return session, collect_snapshot_sources(run_dir, session_id=session.session_id, session=session, session_ref=session_ref)

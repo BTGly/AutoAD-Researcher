@@ -18,9 +18,14 @@ _BUNDLE_FILES = (
     "evidence_index.json",
     "report_digest.json",
     "report_validation.json",
+    "claim_evidence_map.json",
     "narrative_sections.json",
     "report_manifest.json",
+    "report_snapshot.json",
+    "delivery_state_snapshot.json",
+    "bundle_exclusions.json",
 )
+_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
 def run_bundle_job(run_dir: Path, job: dict[str, object]) -> list[str]:
@@ -31,19 +36,35 @@ def run_bundle_job(run_dir: Path, job: dict[str, object]) -> list[str]:
     state = store.load_state(run_dir, report_id)
     if state.generation_status != "content_ready":
         raise ValueError("report package requires content_ready")
+    if state.format_status.html != "ready":
+        raise ValueError("report package requires HTML readiness")
     if state.format_status.bundle == "ready":
         return _outputs(run_dir, report_id)
     directory = run_dir / "reports" / report_id
+    _write_delivery_snapshots(run_dir, report_id=report_id, job=job)
     names = [name for name in _BUNDLE_FILES if (directory / name).is_file()]
-    required = {"report.md", "report_facts.json", "evidence_index.json", "report_digest.json", "report_validation.json", "report_manifest.json"}
+    required = {
+        "report.md",
+        "report_facts.json",
+        "evidence_index.json",
+        "report_digest.json",
+        "report_validation.json",
+        "claim_evidence_map.json",
+        "report_manifest.json",
+        "report_snapshot.json",
+        "delivery_state_snapshot.json",
+        "bundle_exclusions.json",
+    }
     if not required.issubset(names):
         raise ValueError("report package is missing required immutable artifacts")
+    if any((directory / name).is_symlink() for name in names):
+        raise ValueError("report package refuses symlink artifacts")
     checksums = "".join(f"{_sha256(directory / name)}  {name}\n" for name in names)
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for name in names:
-            archive.writestr(name, (directory / name).read_bytes())
-        archive.writestr("checksums.sha256", checksums.encode("utf-8"))
+        for name in sorted(names):
+            _write_stable_entry(archive, name, (directory / name).read_bytes())
+        _write_stable_entry(archive, "checksums.sha256", checksums.encode("utf-8"))
     write_immutable_report_bytes(run_dir, report_id=report_id, filename="checksums.sha256", artifact_type="report_checksums", content=checksums.encode("utf-8"))
     write_immutable_report_bytes(run_dir, report_id=report_id, filename="report_bundle.zip", artifact_type="report_bundle", content=payload.getvalue())
     _verify_bundle(run_dir, report_id)
@@ -68,3 +89,56 @@ def _outputs(run_dir: Path, report_id: str) -> list[str]:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_stable_entry(archive: zipfile.ZipFile, name: str, content: bytes) -> None:
+    entry = zipfile.ZipInfo(name, date_time=_ZIP_TIMESTAMP)
+    entry.compress_type = zipfile.ZIP_DEFLATED
+    entry.external_attr = 0o100644 << 16
+    archive.writestr(entry, content, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+
+def _write_delivery_snapshots(run_dir: Path, *, report_id: str, job: dict[str, object]) -> None:
+    """Freeze delivery facts once; later State/PDF changes never alter this bundle."""
+
+    store = ReportStore()
+    manifest = store.load_manifest(run_dir, report_id)
+    state = store.load_state(run_dir, report_id)
+    package_job_id = job.get("job_id")
+    packaged_at = job.get("created_at")
+    if not isinstance(package_job_id, str) or not isinstance(packaged_at, str):
+        raise ValueError("report Package Job lacks stable identity")
+    delivery = {
+        "schema_version": 1,
+        "report_id": report_id,
+        "snapshot_content_sha256": manifest.source_snapshot_content_sha256,
+        "generation_status": state.generation_status,
+        "format_status": state.format_status.model_dump(mode="json"),
+        "artifact_refs": [item.model_dump(mode="json") for item in state.artifact_refs],
+        "package_job_id": package_job_id,
+        "packaged_at": packaged_at,
+    }
+    exclusions = {
+        "schema_version": 1,
+        "excluded": [
+            {"path": "report.pdf", "reason": "v1 bundle keeps PDF as a separate optional download"},
+            {"path": "report_state.json", "reason": "mutable delivery state is not part of an immutable bundle"},
+            {"path": "runs/", "reason": "report bundle uses a fixed report-artifact allow-list"},
+        ],
+    }
+    from autoad_researcher.reporting.persistence import write_immutable_report_json
+
+    write_immutable_report_json(
+        run_dir,
+        report_id=report_id,
+        filename="delivery_state_snapshot.json",
+        artifact_type="report_delivery_snapshot",
+        value=delivery,
+    )
+    write_immutable_report_json(
+        run_dir,
+        report_id=report_id,
+        filename="bundle_exclusions.json",
+        artifact_type="report_bundle_exclusions",
+        value=exclusions,
+    )

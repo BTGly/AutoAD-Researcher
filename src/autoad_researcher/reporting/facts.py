@@ -14,13 +14,15 @@ from autoad_researcher.reporting.models import ReportSnapshot
 from autoad_researcher.reporting.snapshot import canonical_sha256, resolve_run_relative_file, sha256_file
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
+REPORT_FACTS_SCHEMA_VERSION = 1
+
 
 class ExperimentReportFactsV1(BaseModel):
     """A report-ready projection; scientific values are copied, never recomputed."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: int = 1
+    schema_version: int = REPORT_FACTS_SCHEMA_VERSION
     run_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     research_objective: dict[str, Any]
@@ -87,7 +89,25 @@ def facts_content_sha256(facts: ExperimentReportFactsV1) -> str:
 
 def _verified_snapshot_objects(run_dir: Path, snapshot: ReportSnapshot) -> list[tuple[ArtifactReferenceV2, dict[str, Any]]]:
     result: list[tuple[ArtifactReferenceV2, dict[str, Any]]] = []
+    frozen_types = set(snapshot.frozen_control_plane)
+    for artifact_type, values in snapshot.frozen_control_plane.items():
+        for index, value in enumerate(values):
+            object_id = value.get("attempt_id") or value.get("session_id") or value.get("candidate_id") or str(index)
+            result.append(
+                (
+                    ArtifactReferenceV2(
+                        artifact_id=f"frozen:{artifact_type}:{object_id}",
+                        artifact_type=artifact_type,
+                        locator=f"reports/{snapshot.session_id}/frozen/{artifact_type}/{index}",
+                        sha256=canonical_sha256(value),
+                        size_bytes=0,
+                    ),
+                    value,
+                )
+            )
     for reference in snapshot.source_refs:
+        if reference.artifact_type in frozen_types:
+            continue
         path = resolve_run_relative_file(run_dir, reference.locator)
         if sha256_file(path) != reference.sha256:
             raise ValueError("snapshot artifact SHA-256 no longer matches")

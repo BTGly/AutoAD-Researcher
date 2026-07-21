@@ -17,7 +17,7 @@ from autoad_researcher.reporting.models import (
     ReportState,
     ReviewStatus,
 )
-from autoad_researcher.reporting.snapshot import snapshot_content_sha256, utc_now
+from autoad_researcher.reporting.snapshot import snapshot_content_sha256, snapshot_policy_hash, utc_now
 
 REPORTS_DIR = "reports"
 MANIFEST_FILE = "report_manifest.json"
@@ -25,27 +25,33 @@ STATE_FILE = "report_state.json"
 SNAPSHOT_FILE = "report_snapshot.json"
 
 _GENERATION_TRANSITIONS: dict[GenerationStatus, set[GenerationStatus]] = {
-    "queued": {"building_snapshot", "failed"},
+    "queued": {"building_snapshot", "assembling_facts", "failed"},
     "building_snapshot": {"assembling_facts", "failed"},
     "assembling_facts": {"generating_narrative", "failed"},
     "generating_narrative": {"validating", "failed"},
     "validating": {"content_ready", "failed"},
     "content_ready": set(),
-    "failed": {"queued"},
+    "failed": {"queued", "assembling_facts", "generating_narrative", "validating"},
 }
 
 
 class ReportStore:
     """Own report identity, state transitions and atomic files for a run."""
 
-    def create_or_get(self, run_dir: Path, *, snapshot: ReportSnapshot) -> tuple[ReportManifest, bool]:
+    def create_or_get(
+        self,
+        run_dir: Path,
+        *,
+        snapshot: ReportSnapshot,
+        report_recipe_hash: str,
+    ) -> tuple[ReportManifest, bool]:
         content_sha = snapshot_content_sha256(snapshot)
         with self._lock(run_dir):
-            existing = self._find_by_snapshot_unlocked(run_dir, snapshot.session_id, content_sha)
+            existing = self._find_by_snapshot_unlocked(run_dir, snapshot.session_id, content_sha, report_recipe_hash)
             if existing is not None:
                 return existing, False
             version = self._next_version_unlocked(run_dir, snapshot.session_id)
-            report_id = f"report_v{version:03d}_{content_sha[:12]}"
+            report_id = f"report_v{version:03d}_{content_sha[:8]}_{report_recipe_hash[:8]}"
             now = utc_now()
             manifest = ReportManifest(
                 run_id=run_dir.name,
@@ -53,8 +59,9 @@ class ReportStore:
                 report_id=report_id,
                 version=version,
                 source_snapshot_content_sha256=content_sha,
+                snapshot_policy_hash=snapshot_policy_hash(),
+                report_recipe_hash=report_recipe_hash,
                 created_at=now,
-                updated_at=now,
             )
             state = ReportState(report_id=report_id, updated_at=now)
             directory = self._report_dir(run_dir, report_id)
@@ -99,7 +106,7 @@ class ReportStore:
             if target not in _GENERATION_TRANSITIONS[state.generation_status]:
                 raise ValueError(f"invalid report generation transition: {state.generation_status} -> {target}")
             update = {"generation_status": target, "last_error": None if target != "failed" else state.last_error}
-            if state.generation_status == "failed" and target == "queued":
+            if state.generation_status == "failed":
                 update["retry_count"] = state.retry_count + 1
             return state.model_copy(update=update)
 
@@ -143,17 +150,6 @@ class ReportStore:
             now = utc_now()
             updated = updated.model_copy(update={"updated_at": now, "revision": state.revision + 1})
             self._write_json_unlocked(directory / STATE_FILE, updated.model_dump(mode="json"))
-            manifest = ReportManifest.model_validate_json(self._read_required(directory / MANIFEST_FILE))
-            manifest = manifest.model_copy(
-                update={
-                    "generation_status": updated.generation_status,
-                    "review_status": updated.review_status,
-                    "format_status": updated.format_status,
-                    "updated_at": now,
-                    "revision": manifest.revision + 1,
-                }
-            )
-            self._write_json_unlocked(directory / MANIFEST_FILE, manifest.model_dump(mode="json"))
             return updated
 
     @staticmethod
@@ -164,13 +160,22 @@ class ReportStore:
 
     @staticmethod
     def _report_dir(run_dir: Path, report_id: str) -> Path:
-        if not report_id or "/" in report_id or "\\" in report_id or report_id in {".", ".."}:
+        if not report_id or "\x00" in report_id or "/" in report_id or "\\" in report_id or report_id in {".", ".."}:
             raise ValueError("invalid report_id")
         return run_dir / REPORTS_DIR / report_id
 
-    def _find_by_snapshot_unlocked(self, run_dir: Path, session_id: str, content_sha: str) -> ReportManifest | None:
+    def _find_by_snapshot_unlocked(
+        self,
+        run_dir: Path,
+        session_id: str,
+        content_sha: str,
+        report_recipe_hash: str,
+    ) -> ReportManifest | None:
         for manifest in self.list_manifests(run_dir, session_id=session_id):
-            if manifest.source_snapshot_content_sha256 == content_sha:
+            if (
+                manifest.source_snapshot_content_sha256 == content_sha
+                and manifest.report_recipe_hash == report_recipe_hash
+            ):
                 return manifest
         return None
 

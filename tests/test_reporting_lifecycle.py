@@ -5,9 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job, load_pipeline_jobs
+from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job, fail_pipeline_job, load_pipeline_jobs
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.service import REPORT_SNAPSHOT_JOB_TYPE, ReportRequestService
+from autoad_researcher.reporting.recipe import report_recipe_hash
+from autoad_researcher.reporting.facts_service import REPORT_FACTS_JOB_TYPE
+from autoad_researcher.reporting.service import ReportRequestService, retry_failed_report_job
 from autoad_researcher.reporting.snapshot import build_report_snapshot, resolve_run_relative_file
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.worker.main import _process_pending_jobs
@@ -36,7 +38,7 @@ def test_report_request_is_idempotent_and_uses_report_job_identity(tmp_path: Pat
     assert first["manifest"].report_id == second["manifest"].report_id
     jobs = load_pipeline_jobs(run_dir)
     assert len(jobs) == 1
-    assert jobs[0]["job_type"] == REPORT_SNAPSHOT_JOB_TYPE
+    assert jobs[0]["job_type"] == REPORT_FACTS_JOB_TYPE
     assert jobs[0]["report_id"] == first["manifest"].report_id
     assert jobs[0]["source_id"] == ""
 
@@ -55,17 +57,74 @@ def test_report_request_concurrent_replay_allocates_one_version(tmp_path: Path):
     assert len(load_pipeline_jobs(run_dir)) == 1
 
 
-def test_snapshot_job_advances_only_to_facts_stage(tmp_path: Path):
+def test_report_recipe_change_allocates_a_new_version(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_reporting"
+    run_dir.mkdir()
+    session = _session(run_dir)
+    first, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    monkeypatch.setattr("autoad_researcher.reporting.service.report_recipe_hash", lambda: "b" * 64)
+    second, created = ReportRequestService().request(run_dir, session_id=session.session_id)
+
+    assert created is True
+    assert first["manifest"].report_id != second["manifest"].report_id
+    assert first["manifest"].report_recipe_hash == report_recipe_hash()
+    assert second["manifest"].report_recipe_hash == "b" * 64
+    assert len(ReportStore().list_manifests(run_dir, session_id=session.session_id)) == 2
+
+
+def test_explicit_report_retry_requeues_only_the_failed_job(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting"
+    run_dir.mkdir()
+    session = _session(run_dir)
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = result["manifest"].report_id
+    job_id = result["job"]["job_id"]
+    ReportStore().mark_failed(run_dir, report_id=report_id, error="fixture failure")
+    fail_pipeline_job(run_dir, job_id, error="fixture failure")
+
+    requeued = retry_failed_report_job(run_dir, report_id=report_id, job_id=job_id)
+
+    assert requeued["status"] == "queued"
+    assert requeued["retry_count"] == 1
+    assert requeued["idempotency_key"] == result["job"]["idempotency_key"]
+    assert ReportStore().load_state(run_dir, report_id).generation_status == "assembling_facts"
+    with pytest.raises(ValueError, match="only failed"):
+        retry_failed_report_job(run_dir, report_id=report_id, job_id=job_id)
+
+
+def test_validate_retry_returns_only_the_failed_validate_stage_to_its_phase(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_validate_retry"
+    run_dir.mkdir()
+    session = _session(run_dir)
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = result["manifest"].report_id
+    _process_pending_jobs(run_dir)
+    _process_pending_jobs(run_dir)
+    validate_job = next(item for item in load_pipeline_jobs(run_dir) if item["job_type"] == "report_validate")
+    ReportStore().mark_failed(run_dir, report_id=report_id, error="fixture validation failure")
+    fail_pipeline_job(run_dir, validate_job["job_id"], error="fixture validation failure")
+
+    requeued = retry_failed_report_job(run_dir, report_id=report_id, job_id=validate_job["job_id"])
+
+    assert requeued["job_type"] == "report_validate"
+    state = ReportStore().load_state(run_dir, report_id)
+    assert state.generation_status == "validating"
+    assert state.retry_count == 1
+
+
+def test_synchronously_frozen_snapshot_starts_with_facts_job(tmp_path: Path):
     run_dir = tmp_path / "run_reporting"
     run_dir.mkdir()
     session = _session(run_dir)
     result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
 
+    snapshot = ReportStore().load_snapshot(run_dir, result["manifest"].report_id)
+    assert snapshot.session_id == session.session_id
     assert _process_pending_jobs(run_dir) == 1
 
     store = ReportStore()
     state = store.load_state(run_dir, result["manifest"].report_id)
-    assert state.generation_status == "assembling_facts"
+    assert state.generation_status == "generating_narrative"
     assert load_pipeline_jobs(run_dir)[0]["status"] == "completed"
 
 
@@ -76,7 +135,7 @@ def test_report_job_idempotency_rejects_different_report_owner(tmp_path: Path):
         run_dir,
         source_id="",
         report_id="report_a",
-        job_type=REPORT_SNAPSHOT_JOB_TYPE,
+        job_type=REPORT_FACTS_JOB_TYPE,
         idempotency_key="report:one",
         evidence_role="report_artifact",
     )
@@ -85,7 +144,7 @@ def test_report_job_idempotency_rejects_different_report_owner(tmp_path: Path):
             run_dir,
             source_id="",
             report_id="report_b",
-            job_type=REPORT_SNAPSHOT_JOB_TYPE,
+            job_type=REPORT_FACTS_JOB_TYPE,
             idempotency_key="report:one",
             evidence_role="report_artifact",
         )

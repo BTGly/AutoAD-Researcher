@@ -35,9 +35,22 @@ JOB_TYPES = {
     "report_snapshot_build": "report_artifact",
     "report_facts_assemble": "report_artifact",
     "report_narrative_generate": "report_artifact",
+    "report_validate": "report_artifact",
+    "report_render_html": "report_artifact",
     "report_package": "report_artifact",
     "report_render_pdf": "report_artifact",
 }
+REPORT_JOB_TYPES = frozenset(
+    {
+        "report_snapshot_build",
+        "report_facts_assemble",
+        "report_narrative_generate",
+        "report_validate",
+        "report_render_html",
+        "report_package",
+        "report_render_pdf",
+    }
+)
 
 
 def _jobs_path(run_dir: Path) -> Path:
@@ -247,6 +260,28 @@ def fail_pipeline_job(run_dir: Path, job_id: str, *, error: str) -> dict[str, An
                 _write_jobs_unlocked(run_dir, jobs)
                 return j
     return None
+
+
+def requeue_failed_report_job(run_dir: Path, job_id: str) -> dict[str, Any]:
+    """Requeue exactly one failed report Job while preserving its identity."""
+
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        for job in jobs:
+            if job.get("job_id") != job_id:
+                continue
+            if job.get("job_type") not in REPORT_JOB_TYPES:
+                raise ValueError("only report Jobs may be explicitly requeued")
+            if job.get("status") != "failed":
+                raise ValueError("only failed report Jobs may be requeued")
+            job["status"] = "queued"
+            job["started_at"] = None
+            job["completed_at"] = None
+            job["error"] = None
+            job["retry_count"] = int(job.get("retry_count", 0)) + 1
+            _write_jobs_unlocked(run_dir, jobs)
+            return dict(job)
+    raise FileNotFoundError("pipeline Job not found")
 
 
 def requeue_stale_running_jobs(

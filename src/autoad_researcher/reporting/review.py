@@ -376,10 +376,7 @@ def _validate_claim_ids(
     if not path.is_file():
         raise ValueError("report narrative is unavailable for claim review")
     narrative = NarrativeSectionsV1.model_validate_json(path.read_text(encoding="utf-8"))
-    available = {
-        section.claim_id or f"claim_{section.section_id}"
-        for section in narrative.sections
-    }
+    available = {claim.claim_id for claim in narrative.claims}
     unknown = sorted(set(requested).difference(available))
     if unknown:
         raise ValueError("review references unknown claim IDs: " + ", ".join(unknown))

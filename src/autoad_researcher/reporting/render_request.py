@@ -17,6 +17,8 @@ def request_optional_format(run_dir: Path, *, report_id: str, format_name: Optio
     if state.generation_status != "content_ready":
         raise ValueError("optional report rendering requires content_ready")
     job_type = _JOB_TYPES[format_name]
+    if format_name == "bundle" and state.format_status.html != "ready":
+        raise ValueError("report bundle requires HTML readiness")
     if getattr(state.format_status, format_name) == "missing":
         store.set_format_status(run_dir, report_id=report_id, format_name=format_name, status="queued")
     job, created = create_or_get_pipeline_job(
@@ -24,9 +26,9 @@ def request_optional_format(run_dir: Path, *, report_id: str, format_name: Optio
         source_id="",
         report_id=report_id,
         job_type=job_type,
-        idempotency_key=f"report:{manifest.session_id}:{manifest.source_snapshot_content_sha256}:{job_type}",
+        idempotency_key=f"report:{report_id}:{manifest.source_snapshot_content_sha256}:{job_type}",
         evidence_role="report_artifact",
-        payload={"report_id": report_id, "snapshot_content_sha256": manifest.source_snapshot_content_sha256},
+        payload={"report_id": report_id, "snapshot_content_sha256": manifest.source_snapshot_content_sha256, "report_recipe_hash": manifest.report_recipe_hash},
     )
     store.record_job(run_dir, report_id=report_id, job_id=str(job["job_id"]))
     return job, created

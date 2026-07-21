@@ -182,6 +182,16 @@ def _process_pending_jobs(run_dir: Path) -> int:
 
                 outputs = run_narrative_job(run_dir, job)
                 success = True
+            elif job_type == "report_validate":
+                from autoad_researcher.reporting.validation_service import run_validate_job
+
+                outputs = run_validate_job(run_dir, job)
+                success = True
+            elif job_type == "report_render_html":
+                from autoad_researcher.reporting.html_service import run_html_job
+
+                outputs = run_html_job(run_dir, job)
+                success = True
             elif job_type == "report_package":
                 from autoad_researcher.reporting.bundle import run_bundle_job
 

@@ -31,7 +31,7 @@ def _ready_report(tmp_path: Path) -> tuple[Path, str]:
         execution_mode="approve_each_step",
     )
     result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
-    for _ in range(3):
+    for _ in range(5):
         _process_pending_jobs(run_dir)
     return run_dir, result["manifest"].report_id
 

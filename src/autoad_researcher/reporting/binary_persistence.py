@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 
 from autoad_researcher.reporting.snapshot import utc_now
-from autoad_researcher.reporting.store import MANIFEST_FILE, ReportStore
+from autoad_researcher.reporting.delivery import build_delivery
+from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
 
@@ -46,16 +47,23 @@ def write_immutable_report_bytes(
             sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
             size_bytes=path.stat().st_size,
         )
-        manifest = store.load_manifest(run_dir, report_id)
-        existing = {item.artifact_id: item for item in manifest.artifact_refs}
+        state = store.load_state(run_dir, report_id)
+        existing = {item.artifact_id: item for item in state.artifact_refs}
         previous = existing.get(reference.artifact_id)
         if previous is not None and previous != reference:
-            raise ValueError("report manifest already binds this artifact ID differently")
+            raise ValueError("report State already binds this artifact ID differently")
         existing[reference.artifact_id] = reference
-        updated = manifest.model_copy(update={
+        delivery = build_delivery(report_id, reference)
+        deliveries = {item.artifact_ref.artifact_id: item for item in state.deliveries}
+        previous_delivery = deliveries.get(reference.artifact_id)
+        if previous_delivery is not None and previous_delivery != delivery:
+            raise ValueError("report State already binds this artifact delivery differently")
+        deliveries[reference.artifact_id] = delivery
+        updated = state.model_copy(update={
             "artifact_refs": [existing[key] for key in sorted(existing)],
+            "deliveries": [deliveries[key] for key in sorted(deliveries)],
             "updated_at": utc_now(),
-            "revision": manifest.revision + 1,
+            "revision": state.revision + 1,
         })
-        store._write_json_unlocked(directory / MANIFEST_FILE, updated.model_dump(mode="json"))
+        store._write_json_unlocked(directory / "report_state.json", updated.model_dump(mode="json"))
         return reference

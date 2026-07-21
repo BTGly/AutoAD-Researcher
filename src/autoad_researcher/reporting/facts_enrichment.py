@@ -61,8 +61,10 @@ def enrich_facts(run_dir: Path, *, snapshot: ReportSnapshot, facts: ExperimentRe
 
 
 def _values_by_type(run_dir: Path, snapshot: ReportSnapshot) -> dict[str, list[dict[str, Any]]]:
-    values: dict[str, list[dict[str, Any]]] = {}
+    values: dict[str, list[dict[str, Any]]] = {key: list(items) for key, items in snapshot.frozen_control_plane.items()}
     for reference in snapshot.source_refs:
+        if reference.artifact_type in values:
+            continue
         path = resolve_run_relative_file(run_dir, reference.locator)
         if sha256_file(path) != reference.sha256:
             raise ValueError("snapshot artifact SHA-256 no longer matches")

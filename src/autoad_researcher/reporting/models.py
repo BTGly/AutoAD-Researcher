@@ -41,6 +41,7 @@ class ReportSnapshot(BaseModel):
     run_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     source_refs: list[ArtifactReferenceV2]
+    frozen_control_plane: dict[str, list[dict]] = Field(default_factory=dict)
     session_revision: int = Field(ge=0)
     evaluation_contract_ref: str | None = None
     environment_snapshot_ref: str | None = None
@@ -49,9 +50,11 @@ class ReportSnapshot(BaseModel):
 
 
 class ReportManifest(BaseModel):
-    """Identity and current projection for one immutable report version."""
+    """Immutable identity and lineage for one report version."""
 
-    model_config = ConfigDict(extra="forbid")
+    # Earlier report files carried mutable fields. Ignore those only on read;
+    # all new manifests are emitted from this immutable contract.
+    model_config = ConfigDict(extra="ignore")
 
     schema_version: Literal[1] = 1
     run_id: str = Field(min_length=1)
@@ -59,16 +62,22 @@ class ReportManifest(BaseModel):
     report_id: str = Field(min_length=1)
     version: int = Field(ge=1)
     source_snapshot_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    facts_content_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    snapshot_policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    report_recipe_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     created_at: str
-    updated_at: str
-    generation_status: GenerationStatus = "queued"
-    review_status: ReviewStatus = "unreviewed"
-    format_status: ReportFormatStatus = Field(default_factory=ReportFormatStatus)
-    artifact_refs: list[ArtifactReferenceV2] = Field(default_factory=list)
     previous_report_id: str | None = None
     parent_report_id: str | None = None
-    revision: int = Field(default=0, ge=0)
+
+
+class ReportArtifactDelivery(BaseModel):
+    """Download metadata bound to one SHA-bearing report artifact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_ref: ArtifactReferenceV2
+    media_type: str = Field(min_length=1)
+    download_filename: str = Field(min_length=1)
+    content_disposition_type: Literal["attachment", "inline"]
 
 
 class ReportState(BaseModel):
@@ -81,6 +90,9 @@ class ReportState(BaseModel):
     generation_status: GenerationStatus = "queued"
     review_status: ReviewStatus = "unreviewed"
     format_status: ReportFormatStatus = Field(default_factory=ReportFormatStatus)
+    facts_content_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    artifact_refs: list[ArtifactReferenceV2] = Field(default_factory=list)
+    deliveries: list[ReportArtifactDelivery] = Field(default_factory=list)
     job_ids: list[str] = Field(default_factory=list)
     retry_count: int = Field(default=0, ge=0)
     last_error: str | None = None

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import html
 
+HTML_RENDERER_VERSION = "v1"
+
 
 def render_html(*, report_id: str, markdown: str) -> str:
     """Preserve Markdown as escaped text; no CDN, scripts, or untrusted HTML."""

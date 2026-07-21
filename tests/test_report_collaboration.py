@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import DiscussionResponse, append_message, complete_turn, load_messages, respond_to_turn, start_turn
+from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, append_message, complete_turn, load_messages, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -14,7 +15,7 @@ def _ready_report(tmp_path: Path):
     run_dir = tmp_path / "run_report_collaboration"; run_dir.mkdir()
     session = ExperimentSessionStore().create_or_get(run_dir, task_ref="tasks/task.json", task_hash="e" * 64, execution_mode="approve_each_step")[0]
     result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
-    for _ in range(3): _process_pending_jobs(run_dir)
+    for _ in range(5): _process_pending_jobs(run_dir)
     return run_dir, result["manifest"].report_id
 
 
@@ -49,6 +50,34 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
     assert completed.status == "completed"
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
+
+
+def test_discussion_budget_and_factual_evidence_requirements(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    evidence_id = json.loads((run_dir / "reports" / report_id / "evidence_index.json").read_text())["entries"][0]["evidence_id"]
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_budget", content="请核查证据")
+    captured = {}
+
+    def fake_call(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"reply": '{"answer":"已登记的证据支持此解释。","response_kind":"verify","evidence_ids":["' + evidence_id + '"],"unsupported_claims":[]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    completed = respond_to_turn(
+        run_dir,
+        report_id=report_id,
+        turn_id=turn.turn_id,
+        api_key="test",
+        provider_url="https://example.test",
+        model="test",
+        budget=ReportDiscussionBudget(max_output_tokens=128, max_wall_time_seconds=12),
+    )
+    assert completed.status == "completed"
+    assert captured["max_tokens"] == 128 and captured["timeout_s"] == 12
+
+    missing = start_turn(run_dir, report_id=report_id, request_id="turn_missing_evidence", content="请解释")
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", lambda *_args, **_kwargs: {"reply": '{"answer":"解释。","response_kind":"explain","evidence_ids":[],"unsupported_claims":[]}', "error": ""})
+    assert respond_to_turn(run_dir, report_id=report_id, turn_id=missing.turn_id, api_key="test", provider_url="https://example.test", model="test").status == "failed"
 
 
 def test_proposal_is_not_handoff_and_accept_is_only_review(tmp_path: Path):
