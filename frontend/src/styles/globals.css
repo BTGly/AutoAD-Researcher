@@ -706,8 +706,49 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .chat-composer-row { display: flex; align-items: center; gap: 8px; }
 .chat-composer-fill { flex: 1; min-width: 0; }
 .chat-composer { display: flex; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); }
-.chat-composer-input { flex: 1; resize: none; max-height: 120px; min-height: 38px; }
+.chat-composer {
+  margin-bottom: 4px;
+  padding: 8px;
+  border: 1px solid var(--glass-rim);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--scrim) 20%, transparent);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+}
+.chat-composer-input { flex: 1; resize: none; max-height: 120px; min-height: 38px; border-color: transparent; background: transparent; }
+.chat-composer-input:focus { border-color: transparent; }
 .chat-keyboard-hint { text-align: center; padding: 2px 0 4px; }
+.message { max-width: 860px; margin: 0 auto 18px; }
+.msg-role { font-size: 11px; margin-bottom: 5px; letter-spacing: 0; font-weight: 650; }
+.message-user { display: grid; justify-items: end; }
+.message-user .msg-role, .message-user .msg-content { width: min(78%, 620px); }
+.message-user .msg-content { padding: 10px 13px; border: 1px solid var(--separator); border-radius: 10px 10px 3px 10px; background: var(--surface-secondary); }
+.message-assistant .msg-content { color: var(--text); }
+.chat-inspector {
+  margin: 0;
+  border: 1px solid var(--glass-rim);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+}
+.plus-menu { position: relative; flex-shrink: 0; }
+.plus-menu-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 100;
+  width: 200px;
+  padding: 12px;
+  border: 1px solid var(--glass-rim);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--scrim) 46%, transparent);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+}
+.plus-menu-title { margin-bottom: 10px; color: var(--text-muted); font-size: .82em; }
 
 @media (max-width: 760px) {
   .app-toolbar { margin: 6px 6px 0; }

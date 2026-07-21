@@ -4,17 +4,17 @@ import { ToolLineComponent } from './ToolLine';
 
 export function UserMessage({ msg }: { msg: Message }) {
   return (
-    <div className="message">
-      <div className="msg-role user">You</div>
+    <article className="message message-user">
+      <div className="msg-role user">研究者</div>
       <div className="msg-content">{msg.content}</div>
-    </div>
+    </article>
   );
 }
 
 export function AssistantMessage({ msg }: { msg: Message }) {
   return (
-    <div className="message">
-      <div className="msg-role assistant">Assistant</div>
+    <article className="message message-assistant">
+      <div className="msg-role assistant">AutoAD Researcher</div>
       {msg.toolLines?.map(tl => (
         <ToolLineComponent key={tl.id} tool={tl} />
       ))}
@@ -23,14 +23,14 @@ export function AssistantMessage({ msg }: { msg: Message }) {
           {msg.content}
         </MarkdownContent>
       )}
-    </div>
+    </article>
   );
 }
 
 export function WelcomeMessage() {
   return (
-    <div className="message welcome-message">
-      <div className="msg-role assistant">Assistant</div>
+    <article className="message message-assistant welcome-message">
+      <div className="msg-role assistant">AutoAD Researcher</div>
       <div className="msg-content">
         <p>你好！我是 AutoAD Researcher，专门帮助你把异常检测或深度学习相关的研究想法、论文复现或实验构思整理清楚，然后输出可落地的研究方案。</p>
 
@@ -50,6 +50,6 @@ export function WelcomeMessage() {
 
         <p>现在你想从哪儿开始？告诉我你的研究背景、想做的方向，或者直接贴一个你想深入的文章链接都可以。</p>
       </div>
-    </div>
+    </article>
   );
 }
