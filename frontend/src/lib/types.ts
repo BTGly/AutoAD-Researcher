@@ -261,6 +261,10 @@ export interface ExperimentProjection {
   attempts: ExperimentAttempt[];
   candidates: Array<{ candidate_id: string; idea_id: string; attempt_id: string; b_test_passed: boolean; guardrails_passed: boolean }>;
   candidate_inventory_status: 'available' | 'invalid';
+  actions: {
+    candidate_confirmations: Array<{ candidate_attempt_id: string }>;
+    candidate_promotions: Array<{ candidate_id: string }>;
+  };
   champion_status: 'absent' | 'available' | 'assessment_missing' | 'assessment_invalid' | 'control_plane_invalid';
   champion: { candidate_id: string; idea_id: string; attempt_id: string; assessment_error: string | null } | null;
   activity: ExperimentActivity[];

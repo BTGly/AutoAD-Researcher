@@ -14,6 +14,7 @@ const projection = {
   attempts: [{ attempt_id: 'attempt_000001', attempt_purpose: 'exploration', runtime_status: 'COMPLETED', job_type: 'experiment_attempt', pipeline_job_id: null, required_device_count: 1, required_vram_mb: 1, retry_of: null, retry_count: 0, max_retries: 0, retry_exhausted: false, failure_code: null, command_plan_summary: 'python run.py', execution_outcome: { execution_status: 'COMPLETED' }, scientific_assessment: null, assessment_reconciliation: null, scientific_assessment_status: 'not_materialized', related_idea_ids: ['idea_000001'], pid: null, heartbeat_at: null, resource_lease_id: null }],
   candidates: [{ candidate_id: 'candidate_000001', idea_id: 'idea_000001', attempt_id: 'attempt_000001', b_test_passed: true, guardrails_passed: true }],
   candidate_inventory_status: 'available',
+  actions: { candidate_confirmations: [], candidate_promotions: [{ candidate_id: 'candidate_000001' }] },
   cognitive_commits: [], champion_status: 'absent', champion: null,
   activity: [{ event_id: 1, event_type: 'experiment.idea_tree.mutated', created_at: '2026-07-20T00:00:00Z', title: 'Idea Tree 已更新', summary: '树版本：1', card_kind: 'idea_tree', related_idea_id: null, related_attempt_id: null, related_commit_id: null, related_outcome: null, detail: '', evidence_refs: [] }],
   activity_limit: 100, activity_truncated: false,
@@ -239,7 +240,7 @@ test('does not duplicate a Session load when a pending refresh tick changes scop
           { session_id: 'session_aaaaaaaaaaaaaaaa', task_hash: 'a'.repeat(64), status: 'READY', created_at: '2026-07-20T00:00:00Z' },
           { session_id: 'session_bbbbbbbbbbbbbbbb', task_hash: 'b'.repeat(64), status: 'READY', created_at: '2026-07-20T00:00:00Z' },
         ],
-        input_task: null, summary: null, idea_tree: null, attempts: [], candidates: [], candidate_inventory_status: 'available', cognitive_commits: [], champion_status: 'absent', champion: null, activity: [], activity_limit: 100, activity_truncated: false, activity_scan_truncated: false, developer_refs: null,
+        input_task: null, summary: null, idea_tree: null, attempts: [], candidates: [], candidate_inventory_status: 'available', actions: { candidate_confirmations: [], candidate_promotions: [] }, cognitive_commits: [], champion_status: 'absent', champion: null, activity: [], activity_limit: 100, activity_truncated: false, activity_scan_truncated: false, developer_refs: null,
       };
     }
     const value = structuredClone(projection);

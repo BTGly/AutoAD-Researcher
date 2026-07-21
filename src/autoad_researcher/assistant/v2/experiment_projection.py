@@ -9,6 +9,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.assistant.v2.event_service import iter_events_reverse
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCommitStore
@@ -171,6 +172,31 @@ class CandidateInventory(BaseModel):
     candidates: list[CandidateSnapshot] = Field(default_factory=list)
 
 
+class CandidateConfirmationAction(BaseModel):
+    """A server-owned B_test request target; the threshold remains user input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_attempt_id: str
+
+
+class CandidatePromotionAction(BaseModel):
+    """A server-owned Candidate target for the existing human promotion action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+
+
+class ExperimentActionsProjection(BaseModel):
+    """Restricted human actions derived from the durable projection only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_confirmations: list[CandidateConfirmationAction] = Field(default_factory=list)
+    candidate_promotions: list[CandidatePromotionAction] = Field(default_factory=list)
+
+
 class ActivityCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -212,6 +238,7 @@ class ExperimentProjection(BaseModel):
     attempts: list[AttemptProjection] = Field(default_factory=list)
     candidates: list[CandidateProjection] = Field(default_factory=list)
     candidate_inventory_status: Literal["available", "invalid"] = "available"
+    actions: ExperimentActionsProjection = Field(default_factory=ExperimentActionsProjection)
     cognitive_commits: list[CognitiveCommit] = Field(default_factory=list)
     champion_status: ChampionStatus = "absent"
     champion: ChampionProjection | None = None
@@ -261,6 +288,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
         )
         for item in candidate_inventory.candidates
     ]
+    actions = _actions_projection(session, attempt_views, candidate_inventory)
     activity, truncated, scan_truncated = _activity(
         run_dir,
         session_id=session.session_id,
@@ -290,6 +318,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
         attempts=attempt_views,
         candidates=candidates,
         candidate_inventory_status=candidate_inventory.status,
+        actions=actions,
         cognitive_commits=commits,
         champion_status=champion_status,
         champion=champion,
@@ -443,23 +472,7 @@ def _idea_node_projection(node: IdeaNode, attempt_summary: dict[str, int]) -> Id
 
 
 def _attempt_projection(run_dir: Path, attempt: Any, related_idea_ids: list[str]) -> AttemptProjection:
-    directory = run_dir / "attempts" / attempt.attempt_id
-    outcome = _read_model(directory / "outcome_card.json", OutcomeCard)
-    assessment = _read_model(directory / "scientific_assessment.json", ScientificAssessment)
-    reconciliation = _read_model(directory / "assessment_reconciliation.json", AssessmentReconciliation)
-    if outcome is not None and outcome.attempt_id != attempt.attempt_id:
-        outcome = None
-    if assessment is not None and assessment.attempt_id != attempt.attempt_id:
-        assessment = None
-    if reconciliation is not None and reconciliation.attempt_id != attempt.attempt_id:
-        reconciliation = None
-    assessment_status: Literal["available", "not_materialized", "invalid"]
-    if not (directory / "scientific_assessment.json").is_file():
-        assessment_status = "not_materialized"
-    elif assessment is None or reconciliation is None:
-        assessment_status = "invalid"
-    else:
-        assessment_status = "available"
+    outcome, assessment, reconciliation, assessment_status = _assessment_artifacts(run_dir, attempt.attempt_id)
     return AttemptProjection(
         attempt_id=attempt.attempt_id,
         attempt_purpose=attempt.attempt_purpose,
@@ -484,6 +497,91 @@ def _attempt_projection(run_dir: Path, attempt: Any, related_idea_ids: list[str]
         resource_lease_id=attempt.resource_lease_id,
         created_at=attempt.created_at,
         updated_at=attempt.updated_at,
+    )
+
+
+def _assessment_artifacts(
+    run_dir: Path,
+    attempt_id: str,
+) -> tuple[
+    OutcomeCard | None,
+    ScientificAssessment | None,
+    AssessmentReconciliation | None,
+    Literal["available", "not_materialized", "invalid"],
+]:
+    """Read and bind assessment sidecars without creating or repairing artifacts."""
+
+    directory = run_dir / "attempts" / attempt_id
+    outcome_path = directory / "outcome_card.json"
+    inputs_path = directory / "scientific_evaluation_inputs.json"
+    assessment_path = directory / "scientific_assessment.json"
+    reconciliation_path = directory / "assessment_reconciliation.json"
+    outcome = _read_model(outcome_path, OutcomeCard)
+    assessment = _read_model(assessment_path, ScientificAssessment)
+    reconciliation = _read_model(reconciliation_path, AssessmentReconciliation)
+    if outcome is not None and outcome.attempt_id != attempt_id:
+        outcome = None
+    if assessment is not None and assessment.attempt_id != attempt_id:
+        assessment = None
+    if reconciliation is not None and reconciliation.attempt_id != attempt_id:
+        reconciliation = None
+    if not assessment_path.is_file():
+        status: Literal["available", "not_materialized", "invalid"] = (
+            "invalid" if reconciliation_path.is_file() else "not_materialized"
+        )
+        return outcome, None, None, status
+    if outcome is None or assessment is None or reconciliation is None:
+        return outcome, None, None, "invalid"
+    expected_outcome_ref = f"attempts/{attempt_id}/outcome_card.json"
+    expected_inputs_ref = f"attempts/{attempt_id}/scientific_evaluation_inputs.json"
+    expected_assessment_ref = f"attempts/{attempt_id}/scientific_assessment.json"
+    if (
+        not inputs_path.is_file()
+        or assessment.outcome_card_ref != expected_outcome_ref
+        or assessment.inputs_ref != expected_inputs_ref
+        or reconciliation.outcome_card_ref != expected_outcome_ref
+        or reconciliation.scientific_assessment_ref != expected_assessment_ref
+        or assessment.outcome_card_sha256 != sha256_file(outcome_path)
+        or assessment.inputs_sha256 != sha256_file(inputs_path)
+        or reconciliation.outcome_card_sha256 != assessment.outcome_card_sha256
+        or reconciliation.scientific_assessment_sha256 != sha256_file(assessment_path)
+    ):
+        return outcome, None, None, "invalid"
+    return outcome, assessment, reconciliation, "available"
+
+
+def _actions_projection(
+    session: ExperimentSession,
+    attempts: list[AttemptProjection],
+    candidate_inventory: CandidateInventory,
+) -> ExperimentActionsProjection:
+    if session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available":
+        return ExperimentActionsProjection()
+    registered_attempts = {item.attempt_id for item in candidate_inventory.candidates}
+    confirmations = [
+        CandidateConfirmationAction(candidate_attempt_id=item.attempt_id)
+        for item in attempts
+        if (
+            item.job_type == "experiment_attempt"
+            and item.runtime_status == "COMPLETED"
+            and item.scientific_assessment is not None
+            and item.scientific_assessment.scientific_effect == "IMPROVEMENT"
+            and item.attempt_id not in registered_attempts
+        )
+    ]
+    promotions = [
+        CandidatePromotionAction(candidate_id=item.candidate_id)
+        for item in candidate_inventory.candidates
+        if (
+            item.session_id == session.session_id
+            and item.evaluation_contract_hash == session.evaluation_contract_sha256
+            and item.b_test_passed
+            and item.guardrails_passed
+        )
+    ]
+    return ExperimentActionsProjection(
+        candidate_confirmations=confirmations,
+        candidate_promotions=promotions,
     )
 
 
@@ -520,14 +618,7 @@ def _champion_projection(
         return "control_plane_invalid", None
     if candidate.session_id != session.session_id or candidate.evaluation_contract_hash != contract_hash:
         return "control_plane_invalid", None
-    directory = run_dir / "attempts" / candidate.attempt_id
-    assessment_path = directory / "scientific_assessment.json"
-    assessment = _read_model(assessment_path, ScientificAssessment)
-    reconciliation = _read_model(directory / "assessment_reconciliation.json", AssessmentReconciliation)
-    if assessment is not None and assessment.attempt_id != candidate.attempt_id:
-        assessment = None
-    if reconciliation is not None and reconciliation.attempt_id != candidate.attempt_id:
-        reconciliation = None
+    _, assessment, reconciliation, assessment_status = _assessment_artifacts(run_dir, candidate.attempt_id)
     base = {
         "candidate_id": candidate.candidate_id,
         "session_id": candidate.session_id,
@@ -535,9 +626,9 @@ def _champion_projection(
         "idea_id": candidate.idea_id,
         "attempt_id": candidate.attempt_id,
     }
-    if not assessment_path.is_file():
+    if assessment_status == "not_materialized":
         return "assessment_missing", ChampionProjection(**base, assessment_error="scientific assessment is not materialized")
-    if assessment is None or reconciliation is None:
+    if assessment_status != "available":
         return "assessment_invalid", ChampionProjection(**base, assessment_error="scientific assessment artifacts are invalid")
     return "available", ChampionProjection(
         **base,

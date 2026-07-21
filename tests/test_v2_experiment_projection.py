@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2 import experiment_projection
 from autoad_researcher.assistant.v2.experiment_projection import build_projection
+from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.experiment.attempt import ExperimentAttempt
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.cognition import CognitiveCommitStore
@@ -95,12 +96,27 @@ def _write_assessment_artifacts(run_dir: Path, attempt_id: str, *, valid: bool =
     if not valid:
         (directory / "scientific_assessment.json").write_text("{invalid", encoding="utf-8")
         return
+    outcome = OutcomeCard(
+        attempt_id=attempt_id,
+        runtime_status="COMPLETED",
+        attempt_category="scientifically_evaluable",
+        execution_result_ref=f"attempts/{attempt_id}/execution_result.json",
+        metrics={"score": 0.9},
+        execution_status="COMPLETED",
+        metrics_parsed=True,
+        protocol_intact=True,
+        evaluation_status="COMPARABLE",
+    )
+    outcome_path = directory / "outcome_card.json"
+    inputs_path = directory / "scientific_evaluation_inputs.json"
+    outcome_path.write_text(outcome.model_dump_json(), encoding="utf-8")
+    inputs_path.write_text("{}", encoding="utf-8")
     assessment = ScientificAssessment(
         attempt_id=attempt_id,
         outcome_card_ref=f"attempts/{attempt_id}/outcome_card.json",
-        outcome_card_sha256="a" * 64,
+        outcome_card_sha256=sha256_file(outcome_path),
         inputs_ref=f"attempts/{attempt_id}/scientific_evaluation_inputs.json",
-        inputs_sha256="b" * 64,
+        inputs_sha256=sha256_file(inputs_path),
         patch_applied=True,
         smoke_passed=True,
         metrics_parsed=True,
@@ -109,16 +125,17 @@ def _write_assessment_artifacts(run_dir: Path, attempt_id: str, *, valid: bool =
         scientific_effect="IMPROVEMENT",
         primary_delta=0.1,
     )
+    assessment_path = directory / "scientific_assessment.json"
+    assessment_path.write_text(assessment.model_dump_json(), encoding="utf-8")
     reconciliation = AssessmentReconciliation(
         attempt_id=attempt_id,
         outcome_card_ref=assessment.outcome_card_ref,
         outcome_card_sha256=assessment.outcome_card_sha256,
         scientific_assessment_ref=f"attempts/{attempt_id}/scientific_assessment.json",
-        scientific_assessment_sha256="c" * 64,
+        scientific_assessment_sha256=sha256_file(assessment_path),
         comparison_status_at_finalization="COMPARABLE",
         effective_evaluation_status="COMPARABLE",
     )
-    (directory / "scientific_assessment.json").write_text(assessment.model_dump_json(), encoding="utf-8")
     (directory / "assessment_reconciliation.json").write_text(reconciliation.model_dump_json(), encoding="utf-8")
 
 
@@ -403,6 +420,105 @@ def test_projection_marks_invalid_existing_scientific_assessment(tmp_path: Path)
     assert projection.attempts[0].scientific_assessment_status == "invalid"
     assert projection.attempts[0].scientific_assessment is None
     assert projection.attempts[0].assessment_reconciliation is None
+
+
+@pytest.mark.parametrize("artifact", ["outcome_card_sha256", "inputs_sha256"])
+def test_projection_rejects_assessment_hash_mismatch(tmp_path: Path, artifact: str):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    attempt = _attempt(tmp_path, session.session_id)
+    _write_attempt(tmp_path, attempt)
+    _write_assessment_artifacts(tmp_path, attempt.attempt_id)
+    directory = tmp_path / "attempts" / attempt.attempt_id
+    assessment = ScientificAssessment.model_validate_json((directory / "scientific_assessment.json").read_text(encoding="utf-8"))
+    (directory / "scientific_assessment.json").write_text(
+        assessment.model_copy(update={artifact: "f" * 64}).model_dump_json(), encoding="utf-8"
+    )
+
+    projection = build_projection(tmp_path)
+
+    assert projection.attempts[0].scientific_assessment_status == "invalid"
+
+
+@pytest.mark.parametrize(
+    ("artifact", "ref"),
+    [
+        ("outcome_card_ref", "attempts/attempt_000999/outcome_card.json"),
+        ("inputs_ref", "attempts/attempt_000999/scientific_evaluation_inputs.json"),
+    ],
+)
+def test_projection_rejects_cross_attempt_assessment_reference(tmp_path: Path, artifact: str, ref: str):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    attempt = _attempt(tmp_path, session.session_id)
+    _write_attempt(tmp_path, attempt)
+    _write_assessment_artifacts(tmp_path, attempt.attempt_id)
+    directory = tmp_path / "attempts" / attempt.attempt_id
+    assessment = ScientificAssessment.model_validate_json((directory / "scientific_assessment.json").read_text(encoding="utf-8"))
+    (directory / "scientific_assessment.json").write_text(
+        assessment.model_copy(update={artifact: ref}).model_dump_json(), encoding="utf-8"
+    )
+
+    projection = build_projection(tmp_path)
+
+    assert projection.attempts[0].scientific_assessment_status == "invalid"
+
+
+def test_projection_rejects_reconciliation_bound_to_another_assessment(tmp_path: Path):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    attempt = _attempt(tmp_path, session.session_id)
+    _write_attempt(tmp_path, attempt)
+    _write_assessment_artifacts(tmp_path, attempt.attempt_id)
+    directory = tmp_path / "attempts" / attempt.attempt_id
+    reconciliation = AssessmentReconciliation.model_validate_json((directory / "assessment_reconciliation.json").read_text(encoding="utf-8"))
+    (directory / "assessment_reconciliation.json").write_text(
+        reconciliation.model_copy(update={"scientific_assessment_ref": "attempts/attempt_000999/scientific_assessment.json"}).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    projection = build_projection(tmp_path)
+
+    assert projection.attempts[0].scientific_assessment_status == "invalid"
+
+
+@pytest.mark.parametrize("missing", ["scientific_assessment.json", "assessment_reconciliation.json"])
+def test_projection_rejects_incomplete_assessment_sidecars(tmp_path: Path, missing: str):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    attempt = _attempt(tmp_path, session.session_id)
+    _write_attempt(tmp_path, attempt)
+    _write_assessment_artifacts(tmp_path, attempt.attempt_id)
+    (tmp_path / "attempts" / attempt.attempt_id / missing).unlink()
+
+    projection = build_projection(tmp_path)
+
+    assert projection.attempts[0].scientific_assessment_status == "invalid"
+
+
+def test_projection_exposes_server_owned_approval_actions(tmp_path: Path):
+    contract_hash = "a" * 64
+    session = _session(tmp_path).model_copy(update={
+        "status": "READY",
+        "baseline_status": "completed",
+        "evaluation_contract_ref": "experiments/contracts/current.json",
+        "evaluation_contract_sha256": contract_hash,
+    })
+    _write_session(tmp_path, session)
+    attempt = _attempt(tmp_path, session.session_id).model_copy(update={"runtime_status": "COMPLETED"})
+    _write_attempt(tmp_path, attempt)
+    _write_assessment_artifacts(tmp_path, attempt.attempt_id)
+
+    projection = build_projection(tmp_path)
+
+    assert [item.candidate_attempt_id for item in projection.actions.candidate_confirmations] == [attempt.attempt_id]
+    assert projection.actions.candidate_promotions == []
+    CandidateRegistry().create_candidate(tmp_path, _candidate(session.session_id, contract_hash, "candidate_000001", attempt.attempt_id))
+
+    projection = build_projection(tmp_path)
+
+    assert projection.actions.candidate_confirmations == []
+    assert [item.candidate_id for item in projection.actions.candidate_promotions] == ["candidate_000001"]
 
 
 def test_projection_exposes_only_durable_candidate_action_facts(tmp_path: Path):
