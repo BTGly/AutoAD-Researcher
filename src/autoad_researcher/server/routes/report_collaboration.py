@@ -2,10 +2,11 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.reporting.discussion import load_messages, load_turns, start_turn
+from autoad_researcher.reporting.discussion import load_messages, load_turns, respond_to_turn, start_turn
+from autoad_researcher.server.routes.chat import _extract_api_headers
 from autoad_researcher.reporting.review import (
     PivotTaskContext,
     confirm_proposal,
@@ -64,10 +65,13 @@ async def get_discussion(run_id: str, report_id: str):
 
 
 @router.post("/discussion")
-async def post_discussion(run_id: str, report_id: str, request: DiscussionRequest):
+async def post_discussion(run_id: str, report_id: str, request: DiscussionRequest, http_request: Request):
     try:
         # A discussion never invokes jobs or exposes filesystem/executor tools.
-        item = start_turn(run_dir_or_400(RUNS_ROOT, run_id), report_id=report_id, request_id=request.request_id, content=request.content, evidence_ids=request.evidence_ids)
+        root = run_dir_or_400(RUNS_ROOT, run_id)
+        item = start_turn(root, report_id=report_id, request_id=request.request_id, content=request.content, evidence_ids=request.evidence_ids)
+        api_key, provider_url, model = _extract_api_headers(http_request)
+        item = respond_to_turn(root, report_id=report_id, turn_id=item.turn_id, api_key=api_key, provider_url=provider_url, model=model)
         return item.model_dump(mode="json")
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc

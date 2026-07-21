@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import DiscussionResponse, append_message, complete_turn, load_messages, start_turn
+from autoad_researcher.reporting.discussion import DiscussionResponse, append_message, complete_turn, load_messages, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -40,6 +40,15 @@ def test_discussion_turn_replay_completion_and_tail_recovery(tmp_path: Path):
     assert len(load_messages(run_dir, report_id=report_id)) == 2
     with pytest.raises(ValueError, match="request_id conflicts"):
         start_turn(run_dir, report_id=report_id, request_id="turn_1", content="不同消息")
+
+
+def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_model", content="请解释当前证据")
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", lambda *args, **kwargs: {"reply": '{"answer":"报告当前没有已登记的提升证据。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":["提升结论"]}', "error": ""})
+    completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
+    assert completed.status == "completed"
+    assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
 
 
 def test_proposal_is_not_handoff_and_accept_is_only_review(tmp_path: Path):

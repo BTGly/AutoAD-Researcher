@@ -91,6 +91,31 @@ def fail_turn(run_dir: Path, *, report_id: str, turn_id: str, error: str) -> Dis
         return failed
 
 
+def respond_to_turn(run_dir: Path, *, report_id: str, turn_id: str, api_key: str, provider_url: str, model: str) -> DiscussionTurn:
+    """Complete one persisted turn using only frozen report summaries and evidence."""
+    turn = _require_turn(load_turns(run_dir, report_id=report_id), turn_id)
+    if turn.status != "pending": return turn
+    if not api_key or not model:
+        return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error="report discussion model is not configured")
+    directory = run_dir / "reports" / report_id
+    digest = json.loads((directory / "report_digest.json").read_text(encoding="utf-8"))
+    index = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id} for item in index.entries[:24]]
+    messages = [
+        {"role": "system", "content": "You answer only from the frozen report context. Return one JSON object with answer, response_kind, evidence_ids, unsupported_claims. Never claim execution, file access, new metrics, or unlisted evidence."},
+        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "question": turn.user_message}, ensure_ascii=False)},
+    ]
+    from autoad_researcher.ui.chat_client import call_research_chat
+    result = call_research_chat(api_key, provider_url, messages, model=model, timeout_s=30, priority="interactive", response_format_json=True, max_tokens=700, temperature=0.1)
+    try:
+        if result.get("error"): raise ValueError(str(result["error"]))
+        response = DiscussionResponse.model_validate_json(str(result.get("reply") or ""))
+        _validated_evidence_ids(run_dir, report_id, response.evidence_ids)
+    except Exception as exc:
+        return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error=str(exc))
+    return complete_turn(run_dir, report_id=report_id, turn_id=turn_id, response=response)
+
+
 def load_turns(run_dir: Path, *, report_id: str) -> list[DiscussionTurn]:
     _manifest(run_dir, report_id)
     return _load_turns_unlocked(run_dir, report_id)
