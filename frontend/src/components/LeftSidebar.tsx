@@ -16,15 +16,19 @@ const ITEMS: { id: PageId; icon: LucideIcon; label: string }[] = [
 export function LeftSidebar({ page, onPage }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [pinned, setPinned] = useState(false);
+  const [hoverSuppressed, setHoverSuppressed] = useState(false);
   const isExpanded = expanded || pinned;
 
   return (
     <nav
       className={`project-sidebar${isExpanded ? ' expanded' : ''}`}
       aria-label="主要导航"
-      onMouseEnter={() => setExpanded(true)}
-      onMouseLeave={() => { if (!pinned) setExpanded(false); }}
-      onFocusCapture={() => setExpanded(true)}
+      onMouseEnter={() => { if (!hoverSuppressed) setExpanded(true); }}
+      onMouseLeave={() => { setHoverSuppressed(false); if (!pinned) setExpanded(false); }}
+      onFocusCapture={event => {
+        if ((event.target as HTMLElement).closest('.project-sidebar-toggle')) return;
+        setExpanded(true);
+      }}
       onBlurCapture={event => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null) && !pinned) setExpanded(false);
       }}
@@ -36,8 +40,10 @@ export function LeftSidebar({ page, onPage }: Props) {
         aria-label={isExpanded ? '收起导航' : '展开导航'}
         title={isExpanded ? '收起导航' : '展开导航'}
         onClick={() => {
-          setPinned(value => !value);
-          setExpanded(true);
+          const nextExpanded = !isExpanded;
+          setPinned(nextExpanded);
+          setExpanded(nextExpanded);
+          setHoverSuppressed(!nextExpanded);
         }}
       >
         {isExpanded ? <PanelLeftClose size={18} strokeWidth={1.8} aria-hidden="true" /> : <PanelLeftOpen size={18} strokeWidth={1.8} aria-hidden="true" />}

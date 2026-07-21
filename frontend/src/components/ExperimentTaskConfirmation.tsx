@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ExperimentTaskDraft, SourceItem } from '../lib/types';
 import { AppButton } from './ui/AppButton';
 
@@ -30,6 +30,14 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
   const requiresRepository = executionMode !== 'plan_only';
   const selectedRepository = availableRepositories.find(source => source.sourceId === executionRepositorySourceId);
   const goal = task.input_task.user_idea || task.input_task.request;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !submitting) onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, submitting]);
 
   const submit = async () => {
     if (requiresRepository && !selectedRepository) return;

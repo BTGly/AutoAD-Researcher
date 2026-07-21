@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AppConfig } from '../hooks/useConfig';
 import { AppButton } from './ui/AppButton';
 import { Surface } from './ui/Surface';
@@ -13,6 +13,14 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
   const [key, setKey] = useState(config.apiKey);
   const [url, setUrl] = useState(config.baseUrl);
   const [model, setModel] = useState(config.model);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="配置 API Key">

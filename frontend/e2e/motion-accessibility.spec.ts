@@ -1,4 +1,4 @@
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { devices, expect, test, type Page, type TestInfo } from '@playwright/test';
 
 const run = {
   run_id: 'run_motion', created_at: null, updated_at: null, sources_count: 0,
@@ -13,7 +13,13 @@ const noSessionProjection = {
   developer_refs: null,
 };
 
-async function prepare(page: Page, options: { reducedMotion?: 'reduce' | 'no-preference' } = {}) {
+const pendingTask = {
+  schema_version: 1, task_id: 'task_motion_000001', run_id: run.run_id, status: 'pending_confirmation', execution_mode: 'plan_only',
+  input_task: { run_id: run.run_id, request: '验证异步确认焦点', source_ids: [], target_domain: null, user_idea: null, baseline: null, dataset: null, compute_budget: null, primary_metrics: ['image_auroc'], constraints: [] },
+  evidence_refs: [], summary_sha256: 'a'.repeat(64), created_at: '2026-07-21T00:00:00Z', confirmed_at: null,
+};
+
+async function prepare(page: Page, options: { reducedMotion?: 'reduce' | 'no-preference'; chatTask?: object | null } = {}) {
   if (options.reducedMotion) await page.emulateMedia({ reducedMotion: options.reducedMotion });
   await page.addInitScript(() => {
     localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' }));
@@ -29,6 +35,7 @@ async function prepare(page: Page, options: { reducedMotion?: 'reduce' | 'no-pre
     if (path === `/api/runs/${run.run_id}/experiment/projection`) return route.fulfill({ json: noSessionProjection });
     if (path === `/api/runs/${run.run_id}/experiment-task/pending`) return route.fulfill({ status: 404, json: { detail: 'not found' } });
     if (path === `/api/runs/${run.run_id}/report`) return route.fulfill({ json: { content: '' } });
+    if (path === '/api/chat/send') return route.fulfill({ json: { reply: '已生成实验草案。', reply_kind: 'answer', source_action: null, experiment_task: options.chatTask || null } });
     return route.fulfill({ json: {} });
   });
   await page.goto('/');
@@ -49,7 +56,11 @@ test('keeps the Sidebar footprint fixed and supports keyboard and touch-safe exp
   expect(leftAfter).toBe(leftBefore);
   await expect(sidebar).toHaveClass(/expanded/);
   await page.screenshot({ path: testInfo.outputPath('sidebar-expanded.png'), fullPage: true });
+  await page.getByRole('button', { name: '收起导航' }).click();
+  await expect(page.getByRole('button', { name: '展开导航' })).toHaveAttribute('aria-expanded', 'false');
+  await expect(sidebar).not.toHaveClass(/expanded/);
 
+  await page.mouse.move(1000, 500);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(page.getByRole('button', { name: '展开导航' })).toBeVisible();
@@ -68,6 +79,15 @@ test('keeps non-vestibular feedback under Reduced Motion', async ({ page }) => {
   });
   expect(motion.transform).toBe('none');
   expect(Number.parseFloat(motion.duration)).toBeGreaterThan(0);
+  const panelTransform = await page.locator('.project-sidebar').evaluate(element => getComputedStyle(element, '::before').transform);
+  expect(panelTransform).toBe('none');
+
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '实验配置' }).click();
+  const searchSwitch = page.getByRole('switch', { name: '启用文献检索' });
+  await expect(searchSwitch).toHaveAttribute('aria-checked', 'false');
+  const thumbMotion = await page.locator('.settings-toggle-thumb').first().evaluate(element => getComputedStyle(element).transitionDuration);
+  expect(Number.parseFloat(thumbMotion)).toBeLessThan(0.02);
 });
 
 test('can rapidly reverse anchored Popovers without a stuck scrim', async ({ page }) => {
@@ -126,4 +146,39 @@ test('keeps repeated Toast feedback interruptible and restores Modal focus', asy
   await expect(page.getByRole('dialog', { name: '实验配置' })).toBeVisible();
   await page.getByRole('button', { name: '返回工作台' }).click();
   await expect(experimentSettings).toBeFocused();
+});
+
+test('restores focus for an asynchronously opened experiment confirmation', async ({ page }) => {
+  await prepare(page, { chatTask: pendingTask });
+  const composer = page.getByPlaceholder('输入问题，或粘贴 URL…');
+  const send = page.getByRole('button', { name: '发送' });
+  await composer.fill('请生成实验草案');
+  await send.click();
+  await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
+  await expect(page.getByLabel('执行模式')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '确认实验任务' })).toHaveCount(0);
+  await expect(composer).toBeFocused();
+});
+
+test.describe('real touch input', () => {
+  test.use({
+    hasTouch: true,
+    isMobile: true,
+    viewport: { width: 390, height: 844 },
+    userAgent: devices['iPhone 13'].userAgent,
+  });
+
+  test('expands, collapses, and navigates with real touch input', async ({ page }) => {
+    await prepare(page);
+    const expand = page.getByRole('button', { name: '展开导航' });
+    await expand.tap();
+    const collapse = page.getByRole('button', { name: '收起导航' });
+    await expect(collapse).toHaveAttribute('aria-expanded', 'true');
+    await collapse.tap();
+    await expect(page.getByRole('button', { name: '展开导航' })).toHaveAttribute('aria-expanded', 'false');
+    await expand.tap();
+    await page.getByRole('button', { name: '实验工作台' }).tap();
+    await expect(page.getByText('实验尚未启动。')).toBeVisible();
+  });
 });

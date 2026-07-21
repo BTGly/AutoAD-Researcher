@@ -720,13 +720,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue); }
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
   }
-  .project-sidebar-label, .toast, .plus-menu-popover, .session-history-panel, .modal-overlay, .modal {
+  .project-sidebar::before, .project-sidebar-label, .toast, .plus-menu-popover, .session-history-panel, .modal-overlay, .modal, .settings-toggle-thumb {
     transition-duration: 100ms !important;
   }
-  .project-sidebar-label, .plus-menu-popover, .session-history-panel, .modal {
+  .project-sidebar::before, .project-sidebar-label, .plus-menu-popover, .session-history-panel, .modal {
     transform: none !important;
   }
   .toast.is-leaving { transform: none !important; }
+  .settings-toggle-thumb { transition-duration: 0.01ms !important; }
 }
 
 @media (prefers-reduced-transparency: reduce) {

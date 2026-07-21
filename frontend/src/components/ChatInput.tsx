@@ -30,6 +30,7 @@ export function ChatInput({ value, onChange, onSend, disabled }: Props) {
         onChange={e => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="输入问题，或粘贴 URL…"
+        data-modal-focus-fallback="chat-composer"
         rows={1}
         disabled={disabled}
         className="chat-composer-input"

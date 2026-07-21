@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useEffect } from 'react';
 import type { ExperimentConfig } from '../lib/types';
 
 interface Props {
@@ -23,6 +24,14 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack, backLa
     onSave(exp);
     onBack();
   };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onBack();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onBack]);
 
   const s = {
     card: {
@@ -77,6 +86,7 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack, backLa
             </div>
           </div>
           <button
+            autoFocus
             onClick={onBack}
             style={{
               padding: '6px 14px', border: '1px solid var(--border)', borderRadius: 6,
@@ -168,8 +178,8 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack, backLa
               <div style={{ fontSize: '0.85em' }}>Enable Search</div>
               <div style={s.hint}>Query alphaXiv API before dispatching experiments</div>
             </div>
-            <button style={s.toggle(exp.searchEnabled)} onClick={() => set('searchEnabled', !exp.searchEnabled)}>
-              <div style={s.dot(exp.searchEnabled)} />
+            <button type="button" role="switch" aria-checked={exp.searchEnabled} aria-label="启用文献检索" className="settings-toggle" style={s.toggle(exp.searchEnabled)} onClick={() => set('searchEnabled', !exp.searchEnabled)}>
+              <div className="settings-toggle-thumb" style={s.dot(exp.searchEnabled)} />
             </button>
           </div>
           <div style={{ ...s.row, marginBottom: 0 }}>
@@ -177,8 +187,8 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack, backLa
               <div style={{ fontSize: '0.85em' }}>Auto-check Idea Novelty</div>
               <div style={s.hint}>Check each new idea against prior art before running it</div>
             </div>
-            <button style={s.toggle(exp.autoSearch)} onClick={() => set('autoSearch', !exp.autoSearch)}>
-              <div style={s.dot(exp.autoSearch)} />
+            <button type="button" role="switch" aria-checked={exp.autoSearch} aria-label="自动检查 Idea 新颖性" className="settings-toggle" style={s.toggle(exp.autoSearch)} onClick={() => set('autoSearch', !exp.autoSearch)}>
+              <div className="settings-toggle-thumb" style={s.dot(exp.autoSearch)} />
             </button>
           </div>
         </div>

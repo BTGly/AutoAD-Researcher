@@ -112,8 +112,11 @@ export default function App() {
   }, []);
   const restoreModalTrigger = useCallback(() => {
     const trigger = modalTriggerRef.current;
+    const fallback = document.querySelector<HTMLElement>('[data-modal-focus-fallback]');
     modalTriggerRef.current = null;
-    if (trigger?.isConnected) window.requestAnimationFrame(() => trigger.focus());
+    const triggerIsDisabled = trigger instanceof HTMLButtonElement && trigger.disabled;
+    const focusTarget = trigger?.isConnected && !triggerIsDisabled ? trigger : fallback;
+    if (focusTarget?.isConnected) window.requestAnimationFrame(() => focusTarget.focus());
   }, []);
 
   useEffect(() => {
@@ -173,6 +176,7 @@ export default function App() {
     setTaskStatus('Ready');
     setSources([]);
     setPendingExperimentTaskConfirmation(null);
+    modalTriggerRef.current = null;
     setJobs([]);
     setEvidence([]);
     setUnusableParsedSources([]);
@@ -315,6 +319,7 @@ export default function App() {
       setMessages(prev => [...prev, userMsg, assistantMsg]);
     }
 
+    let openedTaskConfirmation = false;
     try {
       const res = await sendChat(text, targetRunId, assistantId, transcriptTail);
       if (
@@ -357,6 +362,7 @@ export default function App() {
             }
           }
         } else {
+          openedTaskConfirmation = true;
           setPendingExperimentTaskConfirmation({ runId: targetRunId, task });
         }
       }
@@ -373,6 +379,7 @@ export default function App() {
       }
       return false;
     } finally {
+      if (!openedTaskConfirmation) modalTriggerRef.current = null;
       activeChatTurnRunIdsRef.current.delete(assistantId);
       streamingHadDeltaIdsRef.current.delete(assistantId);
       if (currentRunIdRef.current === targetRunId) {
@@ -409,8 +416,9 @@ export default function App() {
       return;
     }
     setQueuePausedByRun(prev => ({ ...prev, [targetRunId]: false }));
+    rememberModalTrigger();
     void runChatTurn(text, targetRunId);
-  }, [enqueueChatMessage, queuePausedByRun, queuedMessagesByRun, runChatTurn, runId]);
+  }, [enqueueChatMessage, queuePausedByRun, queuedMessagesByRun, rememberModalTrigger, runChatTurn, runId]);
 
   const handleRestoreQueuedMessage = useCallback((id: string) => {
     const item = (queuedMessagesByRun[runId] || []).find(entry => entry.id === id);

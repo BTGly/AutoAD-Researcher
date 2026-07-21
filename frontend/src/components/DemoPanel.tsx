@@ -20,9 +20,9 @@ export function DemoPanel({ onParsePdf, onUrl, onClone, onSearch, onToast }: Pro
         <>
           <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={() => setOpen(false)} />
           <div style={{
-            position: 'absolute', top: '110%', right: 0, zIndex: 100,
+            position: 'absolute', top: 'auto', bottom: '110%', right: 0, zIndex: 100,
             background: 'var(--bg-panel)', border: '1px solid var(--border)',
-            borderRadius: 10, padding: 16, width: 260,
+            borderRadius: 10, padding: 16, width: 260, maxHeight: 'min(420px, calc(100vh - 32px))', overflowY: 'auto',
           }}>
             <div style={{ fontSize: '0.82em', color: 'var(--text-muted)', marginBottom: 10 }}>点一下看完整模拟</div>
             <button onClick={() => { onParsePdf(); setOpen(false); }} style={{ width: '100%', marginBottom: 6 }}>
