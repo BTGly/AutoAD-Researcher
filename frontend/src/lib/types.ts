@@ -153,6 +153,22 @@ export interface ReportEvidence {
   artifact_ref: { locator: string; sha256: string; artifact_type: string };
 }
 
+export interface DiscussionMessage {
+  message_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  evidence_ids: string[];
+}
+
+export interface DiscussionTurn {
+  turn_id: string;
+  request_id: string;
+  status: 'pending' | 'completed' | 'failed';
+  user_message: string;
+  response: { answer: string; response_kind: string; evidence_ids: string[]; unsupported_claims: string[] } | null;
+  error: string | null;
+}
+
 export interface UnusableParsedSource {
   sourceId: string;
   label: string;

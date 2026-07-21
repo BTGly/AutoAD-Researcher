@@ -7,6 +7,8 @@ import type {
   ReportEvidence,
   ReportManifest,
   ReportState,
+  DiscussionMessage,
+  DiscussionTurn,
   TaskRun,
 } from './types';
 
@@ -298,3 +300,5 @@ export async function getReportState(runId: string, reportId: string): Promise<R
 export async function getReportDigest(runId: string, reportId: string): Promise<ReportDigest | null> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/digest`); if (res.status === 409) return null; if (!res.ok) throw await apiError(res, 'Report digest unavailable'); return res.json(); }
 export async function getReportContent(runId: string, reportId: string): Promise<string | null> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/content?format=md`); if (res.status === 409) return null; if (!res.ok) throw await apiError(res, 'Report content unavailable'); return (await res.json()).content || null; }
 export async function listReportEvidence(runId: string, reportId: string): Promise<ReportEvidence[]> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/evidence`); if (res.status === 409) return []; if (!res.ok) throw await apiError(res, 'Report evidence unavailable'); return (await res.json()).entries; }
+export async function getReportDiscussion(runId: string, reportId: string): Promise<{ messages: DiscussionMessage[]; turns: DiscussionTurn[] }> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/discussion`); if (!res.ok) throw await apiError(res, 'Discussion unavailable'); return res.json(); }
+export async function sendReportDiscussion(runId: string, reportId: string, requestId: string, content: string): Promise<DiscussionTurn> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/discussion`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ request_id: requestId, content }) }); if (!res.ok) throw await apiError(res, 'Discussion request failed'); return res.json(); }
