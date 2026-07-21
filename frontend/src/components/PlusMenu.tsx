@@ -23,11 +23,11 @@ export function PlusMenu({ onFile }: Props) {
   };
 
   return (
-    <div className="plus-menu">
+    <div className={`plus-menu${open ? ' open' : ''}`}>
       <IconButton onClick={() => setOpen(!open)} label="上传文件"><Plus size={18} aria-hidden="true" /></IconButton>
       {present && (
         <>
-          <div className="plus-menu-scrim" aria-hidden="true" onClick={() => setOpen(false)} />
+          <div className="plus-menu-scrim" data-state={state} aria-hidden="true" onClick={() => setOpen(false)} />
           <div className="plus-menu-popover" data-state={state} aria-hidden={!open}>
             <div className="plus-menu-title">上传资料</div>
             <input ref={fileRef} type="file" accept=".pdf,.txt,.md,.markdown" onChange={handleFile} style={{ display: 'none' }} />

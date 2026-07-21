@@ -458,7 +458,10 @@ html, body, #root {
 .chat-composer-input:focus { border-color: transparent; }
 .chat-keyboard-hint { max-width: 920px; margin: 2px auto 0; text-align: left; }
 .plus-menu { position: relative; }
+.plus-menu.open { z-index: 101; }
+.plus-menu.open > .icon-button { position: relative; z-index: 102; }
 .plus-menu-scrim { position: fixed; inset: 0; z-index: 99; }
+.plus-menu-scrim[data-state='closed'] { pointer-events: none; }
 .plus-menu-popover { position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 100; width: 220px; padding: 14px; border: 1px solid var(--glass-rim); border-radius: var(--radius-md); background: var(--glass-bg); box-shadow: 0 16px 40px var(--scrim); backdrop-filter: blur(24px) saturate(160%); -webkit-backdrop-filter: blur(24px) saturate(160%); transform-origin: bottom right; opacity: 1; transform: translateY(0) scale(1); transition: transform var(--duration-popover) var(--ease-out), opacity var(--duration-popover) var(--ease-out); }
 .plus-menu-popover[data-state='closed'] { opacity: 0; transform: translateY(4px) scale(0.95); pointer-events: none; }
 .plus-menu-popover {
