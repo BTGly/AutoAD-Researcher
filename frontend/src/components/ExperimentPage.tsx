@@ -96,8 +96,8 @@ export function ExperimentPage({ runId, experimentRefreshTick, onDiscuss }: Prop
   const chooseActivity = (value: ExperimentActivity) => setSelection({ kind: 'activity', id: value.event_id });
   const detailSelection = selectDetail(projection, selection);
 
-  return <main style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: 20 }}>
-    <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+  return <main className="observatory">
+    <header className="observatory-header">
       <div><h1 style={{ margin: 0, fontSize: '1.25em' }}>实验工作台</h1><div style={{ color: 'var(--text-muted)', fontSize: '0.82em', marginTop: 4 }}>持久化实验状态的只读观测 + 受限显式审批动作</div></div>
       <div style={{ display: 'flex', gap: 8 }}><button onClick={() => void loadProjection(runId, sessionId)} disabled={!runId || loading}>刷新</button></div>
     </header>
@@ -105,11 +105,11 @@ export function ExperimentPage({ runId, experimentRefreshTick, onDiscuss }: Prop
     {runId && loading && !projection && <EmptyState title="正在读取实验状态…" />}
     {runId && error && <div role="alert" style={{ color: 'var(--orange)', marginBottom: 12 }}>{error}</div>}
     {runId && projection?.selection_status === 'no_session' && <EmptyState title="实验尚未启动。请先在“研究助手”中确认实验任务。" />}
-    {runId && projection?.selection_status === 'ambiguous' && <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 18 }}><b>发现多个实验 Session，请明确选择</b><select aria-label="实验 Session" value={sessionId || ''} onChange={event => chooseSession(event.target.value)} style={{ display: 'block', marginTop: 12, width: '100%' }}><option value="">请选择</option>{projection.session_candidates.map(item => <option key={item.session_id} value={item.session_id}>{item.session_id} · {sessionStatusLabel(item.status)}</option>)}</select></section>}
+    {runId && projection?.selection_status === 'ambiguous' && <section className="observatory-session-picker surface"><b>发现多个实验 Session，请明确选择</b><select aria-label="实验 Session" value={sessionId || ''} onChange={event => chooseSession(event.target.value)}><option value="">请选择</option>{projection.session_candidates.map(item => <option key={item.session_id} value={item.session_id}>{item.session_id} · {sessionStatusLabel(item.status)}</option>)}</select></section>}
     {runId && projection?.selection_status === 'selected' && projection.session && projection.summary && <>
       <SessionOverview projection={projection} />
       <ExperimentActions runId={runId} projection={projection} onChanged={() => void loadProjection(runId, sessionId)} />
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1fr) minmax(230px, 1.1fr) minmax(240px, 1.2fr)', gap: 12, marginTop: 12, alignItems: 'start' }}>
+      <div className="observatory-layout">
         <Panel title="Idea Tree"><IdeaTree nodes={projection.idea_tree?.nodes || []} championIdeaId={projection.champion?.idea_id || null} selectedId={selection?.kind === 'idea' ? selection.id : null} onSelect={chooseIdea} /></Panel>
         <Panel title="研究动态"><ActivityFeed activity={projection.activity} truncated={projection.activity_truncated} scanTruncated={projection.activity_scan_truncated} limit={projection.activity_limit} selectedId={selection?.kind === 'activity' ? selection.id : null} onSelect={chooseActivity} /></Panel>
         <Panel title="详情面板"><DetailDrawer selection={detailSelection} onDiscuss={onDiscuss} /><AttemptList attempts={projection.attempts} selectedIdeaId={selection?.kind === 'idea' ? selection.id : null} selectedId={selection?.kind === 'attempt' ? selection.id : null} onSelect={chooseAttempt} /><DeveloperRefs projection={projection} show={showDeveloper} onToggle={() => setShowDeveloper(value => !value)} /></Panel>
@@ -144,7 +144,7 @@ function ExperimentActions({ runId, projection, onChanged }: { runId: string; pr
   const confirmations = projection.actions.candidate_confirmations;
   const promotions = projection.actions.candidate_promotions;
   const reportError = (reason: unknown) => setError(reason instanceof ApiError ? reason.message : '操作未完成，请保留当前证据后重试。');
-  return <section aria-label="实验确认动作" style={{ border: '1px solid var(--blue)', borderRadius: 8, padding: 14, marginTop: 12, background: 'var(--bg-panel)' }}>
+  return <section className="experiment-actions surface" aria-label="实验确认动作">
     <b>需要确认的实验动作</b><div style={{ color: 'var(--text-muted)', fontSize: '0.8em', marginTop: 5 }}>命令、仓库、输入和合并目标均由已冻结工件派生；本页不会接受任意命令。</div>
     {error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 8 }}>{error}</div>}
     {confirmations.map(confirmation => <div key={confirmation.candidate_attempt_id} style={{ marginTop: 12 }}><div>候选 {confirmation.candidate_attempt_id} 已记录 B_dev 比较结果。提交阈值后，服务端会重新验证是否可进行 B_test。</div><label style={{ display: 'block', marginTop: 7 }}>噪声阈值 <input aria-label={`噪声阈值 ${confirmation.candidate_attempt_id}`} value={noise} onChange={event => setNoise(event.target.value)} inputMode="decimal" /></label><button disabled={busy !== null || !Number.isFinite(Number(noise)) || Number(noise) < 0} onClick={async () => { setBusy(`confirm:${confirmation.candidate_attempt_id}`); setError(null); try { await confirmCandidate(runId, projection.session!.session_id, confirmation.candidate_attempt_id, Number(noise)); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>确认 B_test 评估</button></div>)}
@@ -157,7 +157,7 @@ function SessionOverview({ projection }: { projection: ExperimentProjection }) {
   const task = projection.input_task;
   const goal = task?.user_idea || task?.request || '未能读取已确认研究目标';
   const champion = projection.champion_status === 'absent' ? '暂未产生' : projection.champion_status === 'available' ? '已登记' : projection.champion_status === 'assessment_missing' ? 'Champion 已登记，但科学评价详情缺失' : projection.champion_status === 'assessment_invalid' ? 'Champion 已登记，但科学评价详情无效' : 'Champion 控制面记录无效，不能据此判断不存在 Champion';
-  return <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--bg-panel)' }}>
+  return <section className="session-overview surface">
     <div style={{ fontWeight: 600 }}>{goal}</div>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginTop: 10, fontSize: '0.8em', color: 'var(--text-muted)' }}>
       <span>Session：{sessionStatusLabel(projection.session?.status || '')}</span><span>环境：{environmentStatusLabel(projection.session?.environment_status || '')}</span><span>Baseline 状态：{baselineStatusLabel(projection.session?.baseline_status || '')}</span><span>Idea：{projection.summary?.idea_count}</span><span>Champion：{champion}</span>
@@ -183,5 +183,5 @@ function DeveloperRefs({ projection, show, onToggle }: { projection: ExperimentP
   return <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 8 }}><button onClick={onToggle} style={{ background: 'transparent', border: 0, color: 'var(--text-dim)', padding: 0 }}>{show ? '▼' : '▶'} 开发者详情</button>{show && projection.developer_refs && <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '0.72em', color: 'var(--text-dim)' }}>{JSON.stringify(projection.developer_refs, null, 2)}</pre>}</div>;
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) { return <section style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, minHeight: 260 }}><h2 style={{ margin: '0 0 10px', fontSize: '0.95em' }}>{title}</h2>{children}</section>; }
+function Panel({ title, children }: { title: string; children: React.ReactNode }) { return <section className="observatory-panel surface"><h2>{title}</h2>{children}</section>; }
 function EmptyState({ title }: { title: string }) { return <section style={{ minHeight: 280, display: 'grid', placeItems: 'center', textAlign: 'center', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-muted)', background: 'var(--bg-panel)', padding: 24 }}><div><div style={{ fontSize: '2em', marginBottom: 12 }}>🔬</div><div>{title}</div></div></section>; }

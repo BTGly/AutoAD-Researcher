@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ExperimentTaskDraft, SourceItem } from '../lib/types';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 
 interface Props {
   task: ExperimentTaskDraft;
@@ -24,6 +25,8 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [primaryMetricsText, setPrimaryMetricsText] = useState(task.input_task.primary_metrics.join('\n'));
+  const executionModeRef = useRef<HTMLSelectElement>(null);
+  useDialogFocus(executionModeRef);
   const repositories = sources.filter(source => source.kind === 'github_repo' || source.kind === 'local_repo');
   const availableRepositories = repositories.filter(source => source.intakeStatus === 'ok');
   const requiresRepository = executionMode !== 'plan_only';
@@ -65,7 +68,7 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
 
         <label style={{ display: 'block', marginBottom: 16 }}>
           <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 4 }}>执行模式</div>
-          <select value={executionMode} onChange={event => {
+          <select ref={executionModeRef} value={executionMode} onChange={event => {
             setExecutionMode(event.target.value as ExperimentTaskDraft['execution_mode']);
             setExecutionRepositorySourceId('');
           }}>

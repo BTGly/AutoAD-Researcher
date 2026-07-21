@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { History, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import type { TaskRun } from '../lib/types';
+import { usePresence } from '../hooks/usePresence';
 
 interface Props {
   activeTask: TaskRun | null;
@@ -25,6 +26,7 @@ export function TaskMenu({
   const [renameTitle, setRenameTitle] = useState('');
   const ref = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const { present, state } = usePresence(open, 180);
 
   useEffect(() => {
     setRenameTitle(activeTask?.task_title || '');
@@ -86,6 +88,8 @@ export function TaskMenu({
         }}
         title="Session history"
         aria-label="Session history"
+        aria-expanded={open}
+        aria-controls="session-history-panel"
       >
         <History size={16} strokeWidth={1.8} />
       </button>
@@ -98,8 +102,8 @@ export function TaskMenu({
         <Plus size={17} strokeWidth={1.8} />
       </button>
 
-      {open && (
-        <div className="session-history-panel">
+      {present && (
+        <div id="session-history-panel" className="session-history-panel" data-state={state} aria-hidden={!open}>
           <div className="session-search">
             <Search size={15} strokeWidth={1.8} />
             <input

@@ -4,7 +4,7 @@ import { attemptPurposeLabel, attemptStatusLabel, costLabel, evaluationStatusLab
 type Selection = { kind: 'idea'; value: ExperimentIdeaNode } | { kind: 'attempt'; value: ExperimentAttempt } | { kind: 'activity'; value: ExperimentActivity } | null;
 
 export function DetailDrawer({ selection, onDiscuss }: { selection: Selection; onDiscuss: (text: string) => void }) {
-  if (!selection) return <div style={{ color: 'var(--text-muted)', padding: 12 }}>选择一个 Idea、实验或动态以查看详情。</div>;
+  if (!selection) return <div className="detail-empty">选择一个 Idea、实验或动态以查看详情。</div>;
   if (selection.kind === 'idea') return <IdeaDetail item={selection.value} onDiscuss={onDiscuss} />;
   if (selection.kind === 'attempt') return <AttemptDetail item={selection.value} onDiscuss={onDiscuss} />;
   return <ActivityDetail item={selection.value} onDiscuss={onDiscuss} />;

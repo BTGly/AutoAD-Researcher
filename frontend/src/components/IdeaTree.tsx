@@ -28,7 +28,7 @@ export function IdeaTree({ nodes, championIdeaId, selectedId, onSelect }: Props)
   }
   const roots = nodes.filter(node => node.is_root);
   return (
-    <div style={{ fontSize: '0.82em' }}>
+    <div className="idea-tree">
       {roots.map(node => <Node key={node.node_id} node={node} byParent={byParent} championIdeaId={championIdeaId} selectedId={selectedId} expanded={expanded} setExpanded={setExpanded} onSelect={onSelect} />)}
     </div>
   );

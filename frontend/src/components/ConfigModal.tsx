@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { AppConfig } from '../hooks/useConfig';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 
 interface Props {
   config: AppConfig;
@@ -11,9 +12,11 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
   const [key, setKey] = useState(config.apiKey);
   const [url, setUrl] = useState(config.baseUrl);
   const [model, setModel] = useState(config.model);
+  const keyRef = useRef<HTMLInputElement>(null);
+  useDialogFocus(keyRef);
 
   return (
-    <div className="modal-overlay">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="配置 API Key">
       <div className="modal">
         <h2 style={{ fontSize: '1.2em', marginBottom: 20, color: 'var(--blue)' }}>🔑 配置 API Key</h2>
         <p style={{ fontSize: '0.85em', color: 'var(--text-muted)', marginBottom: 16 }}>
@@ -22,7 +25,7 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
 
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 4 }}>API Key</div>
-          <input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder="sk-…" />
+        <input ref={keyRef} type="password" value={key} onChange={e => setKey(e.target.value)} placeholder="sk-…" />
         </div>
 
         <div style={{ marginBottom: 12 }}>
