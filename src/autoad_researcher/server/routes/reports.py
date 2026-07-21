@@ -112,10 +112,34 @@ async def get_state(run_id: str, report_id: str):
     payload.update(
         {
             "available_artifacts": _available_artifacts(run_dir, report_id, state),
-            "jobs": [item for item in load_pipeline_jobs(run_dir) if item.get("job_id") in state.job_ids and item.get("report_id") == report_id],
+            "jobs": _project_report_jobs(
+                [item for item in load_pipeline_jobs(run_dir) if item.get("job_id") in state.job_ids and item.get("report_id") == report_id]
+            ),
         }
     )
     return payload
+
+
+def _project_report_jobs(jobs: list[dict]) -> list[dict]:
+    """Expose a read-only dependency projection without changing Job storage."""
+
+    by_id = {str(item.get("job_id")): item for item in jobs}
+    result = []
+    for item in jobs:
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        dependency_id = payload.get("depends_on")
+        dependency = by_id.get(str(dependency_id)) if dependency_id else None
+        dependency_status = None if dependency_id is None else (dependency.get("status") if dependency else "missing")
+        projected = dict(item)
+        projected["depends_on"] = dependency_id
+        projected["dependency_status"] = dependency_status
+        projected["blocked_reason"] = (
+            "waiting for dependency" if dependency_status in {"queued", "running"}
+            else "dependency failed" if dependency_status in {"failed", "missing"}
+            else None
+        )
+        result.append(projected)
+    return result
 
 
 @router.get("/{report_id}/digest")

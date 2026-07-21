@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+
 from autoad_researcher.reporting.default_narrative import NARRATIVE_MODEL_PROFILE, NARRATIVE_TEMPLATE_VERSION
 from autoad_researcher.reporting.facts import REPORT_FACTS_SCHEMA_VERSION
 from autoad_researcher.reporting.renderer_html import HTML_RENDERER_VERSION
@@ -10,7 +13,27 @@ from autoad_researcher.reporting.snapshot import canonical_sha256
 from autoad_researcher.reporting.validator import REPORT_VALIDATOR_VERSION
 
 
-def report_recipe_hash() -> str:
+def report_generation_profile() -> dict[str, str]:
+    """Capture the non-secret provider behavior that changes report content."""
+
+    model = os.environ.get("AUTOAD_REPORT_MODEL", "").strip()
+    base_url = os.environ.get("AUTOAD_REPORT_BASE_URL", "").strip().rstrip("/")
+    configured = bool(os.environ.get("AUTOAD_REPORT_API_KEY", "").strip() and model and base_url)
+    prompt_hash = hashlib.sha256(_narrative_prompt_contract().encode("utf-8")).hexdigest()
+    return {
+        "profile_version": "v1",
+        "mode": "model" if configured else "deterministic_fallback",
+        "model": model if configured else "",
+        "provider_base_url": base_url if configured else "",
+        "prompt_sha256": prompt_hash,
+    }
+
+
+def _narrative_prompt_contract() -> str:
+    return "AutoAD NarrativeSectionsV1 frozen facts/evidence structured contract v1"
+
+
+def report_recipe_hash(generation_profile: dict[str, str] | None = None) -> str:
     """Hash every component whose behavior can change a report version."""
 
     return canonical_sha256(
@@ -19,6 +42,7 @@ def report_recipe_hash() -> str:
             "narrative": {
                 "model_profile": NARRATIVE_MODEL_PROFILE,
                 "template_version": NARRATIVE_TEMPLATE_VERSION,
+                "generation_profile": generation_profile or report_generation_profile(),
             },
             "validator_version": REPORT_VALIDATOR_VERSION,
             "renderers": {

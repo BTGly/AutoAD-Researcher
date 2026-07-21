@@ -137,3 +137,33 @@ def test_validator_rejects_improvement_claim_for_non_comparable_attempt(tmp_path
     validation = validate_report(facts=facts, evidence=evidence, narrative=narrative)
     assert not validation.passed
     assert any("non-comparable" in error for error in validation.errors)
+
+
+def test_validator_requires_evidence_for_the_same_fact_field(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_fact_evidence"
+    run_dir.mkdir()
+    session = ExperimentSessionStore().create_or_get(
+        run_dir, task_ref="tasks/task.json", task_hash="a" * 64, execution_mode="approve_each_step"
+    )[0]
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    assert _process_pending_jobs(run_dir) == 1
+    directory = run_dir / "reports" / result["manifest"].report_id
+    facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
+    evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    correct = next(item.evidence_id for item in evidence.entries if "repository_and_environment.status" in item.fact_refs)
+    wrong = next(item.evidence_id for item in evidence.entries if item.evidence_id != correct)
+    narrative = NarrativeSectionsV1(
+        sections=[
+            NarrativeSectionV1(section_id="summary", paragraphs=[NarrativeParagraphV1(paragraph_id="s", paragraph_kind="background", prose_template="摘要")]),
+            NarrativeSectionV1(section_id="interpretation", paragraphs=[NarrativeParagraphV1(paragraph_id="i", paragraph_kind="interpretation", prose_template="解释", claim_ids=["c"])]),
+            NarrativeSectionV1(section_id="limitations", paragraphs=[NarrativeParagraphV1(paragraph_id="l", paragraph_kind="limitation", prose_template="限制", claim_ids=["c"])]),
+            NarrativeSectionV1(section_id="next_steps", paragraphs=[NarrativeParagraphV1(paragraph_id="n", paragraph_kind="recommendation", prose_template="下一步")]),
+        ],
+        claims=[StructuredClaimV1(claim_id="c", claim_kind="explanation", statement_template="来源状态", fact_refs=["repository_and_environment.status"], evidence_ids=[wrong])],
+    )
+    validation = validate_report(facts=facts, evidence=evidence, narrative=narrative)
+    assert not validation.passed
+    assert any("does not correspond to Fact" in error for error in validation.errors)
+
+    valid = narrative.model_copy(update={"claims": [narrative.claims[0].model_copy(update={"evidence_ids": [correct]})]})
+    assert validate_report(facts=facts, evidence=evidence, narrative=valid).passed

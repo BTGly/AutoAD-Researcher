@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 from pathlib import Path
 from typing import Literal
 
@@ -31,6 +32,7 @@ class CognitiveCostSummary(BaseModel):
     remaining_tokens: int = Field(ge=0)
     remaining_wall_seconds: float = Field(ge=0)
     exceeded_limits: list[str] = Field(default_factory=list)
+    cognitive_usage_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class CognitiveCostSummaryBuilder:
@@ -44,42 +46,10 @@ class CognitiveCostSummaryBuilder:
         session_id: str,
         budget: CognitiveBudget,
     ) -> CognitiveCostSummary:
-        usage = self._store.load(run_dir, session_id=session_id)
-        calls = len(usage)
-        tokens = sum(item.input_tokens + item.output_tokens for item in usage)
-        wall = sum(item.wall_seconds for item in usage)
-        compact = sum(item.cycle_kind == "compact" for item in usage)
-        exploratory = sum(item.cycle_kind == "exploratory" for item in usage)
-        coordinator = sum(item.role == "coordinator" for item in usage)
-        specialists = calls - coordinator
-        exceeded = []
-        if calls > budget.max_calls:
-            exceeded.append("max_calls")
-        if tokens > budget.max_tokens:
-            exceeded.append("max_tokens")
-        if compact > budget.max_compact_cycles:
-            exceeded.append("max_compact_cycles")
-        if exploratory > budget.max_exploratory_cycles:
-            exceeded.append("max_exploratory_cycles")
-        if specialists > budget.max_subagent_calls:
-            exceeded.append("max_subagent_calls")
-        if wall > budget.max_wall_seconds:
-            exceeded.append("max_wall_seconds")
-        return CognitiveCostSummary(
-            session_id=session_id,
-            total_calls=calls,
-            total_tokens=tokens,
-            total_wall_seconds=wall,
-            compact_cycles=compact,
-            exploratory_cycles=exploratory,
-            coordinator_calls=coordinator,
-            specialist_calls=specialists,
-            compact_to_exploratory_ratio=None if exploratory == 0 else compact / exploratory,
-            remaining_calls=max(0, budget.max_calls - calls),
-            remaining_tokens=max(0, budget.max_tokens - tokens),
-            remaining_wall_seconds=max(0, budget.max_wall_seconds - wall),
-            exceeded_limits=exceeded,
-        )
+        with self._store._lock(run_dir, session_id):
+            usage = self._store.load(run_dir, session_id=session_id)
+            usage_sha256 = _usage_sha256(run_dir, session_id)
+        return _summary(session_id, budget, usage, usage_sha256)
 
     def build_and_persist(
         self,
@@ -88,10 +58,58 @@ class CognitiveCostSummaryBuilder:
         session_id: str,
         budget: CognitiveBudget,
     ) -> CognitiveCostSummary:
-        summary = self.build(run_dir, session_id=session_id, budget=budget)
-        path = run_dir / "experiments" / "cognition" / session_id / "cost_summary.json"
-        _write_json_atomic(path, summary.model_dump(mode="json"))
+        """Persist a summary and the ledger fingerprint from one locked window."""
+
+        with self._store._lock(run_dir, session_id):
+            usage = self._store.load(run_dir, session_id=session_id)
+            summary = _summary(session_id, budget, usage, _usage_sha256(run_dir, session_id))
+            path = run_dir / "experiments" / "cognition" / session_id / "cost_summary.json"
+            _write_json_atomic(path, summary.model_dump(mode="json"))
         return summary
+
+
+def _summary(session_id: str, budget: CognitiveBudget, usage, usage_sha256: str) -> CognitiveCostSummary:
+    calls = len(usage)
+    tokens = sum(item.input_tokens + item.output_tokens for item in usage)
+    wall = sum(item.wall_seconds for item in usage)
+    compact = sum(item.cycle_kind == "compact" for item in usage)
+    exploratory = sum(item.cycle_kind == "exploratory" for item in usage)
+    coordinator = sum(item.role == "coordinator" for item in usage)
+    specialists = calls - coordinator
+    exceeded = []
+    if calls > budget.max_calls:
+        exceeded.append("max_calls")
+    if tokens > budget.max_tokens:
+        exceeded.append("max_tokens")
+    if compact > budget.max_compact_cycles:
+        exceeded.append("max_compact_cycles")
+    if exploratory > budget.max_exploratory_cycles:
+        exceeded.append("max_exploratory_cycles")
+    if specialists > budget.max_subagent_calls:
+        exceeded.append("max_subagent_calls")
+    if wall > budget.max_wall_seconds:
+        exceeded.append("max_wall_seconds")
+    return CognitiveCostSummary(
+        session_id=session_id,
+        total_calls=calls,
+        total_tokens=tokens,
+        total_wall_seconds=wall,
+        compact_cycles=compact,
+        exploratory_cycles=exploratory,
+        coordinator_calls=coordinator,
+        specialist_calls=specialists,
+        compact_to_exploratory_ratio=None if exploratory == 0 else compact / exploratory,
+        remaining_calls=max(0, budget.max_calls - calls),
+        remaining_tokens=max(0, budget.max_tokens - tokens),
+        remaining_wall_seconds=max(0, budget.max_wall_seconds - wall),
+        exceeded_limits=exceeded,
+        cognitive_usage_sha256=usage_sha256,
+    )
+
+
+def _usage_sha256(run_dir: Path, session_id: str) -> str:
+    path = CognitiveBudgetStore._path(run_dir, session_id)
+    return hashlib.sha256(path.read_bytes() if path.is_file() else b"").hexdigest()
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:

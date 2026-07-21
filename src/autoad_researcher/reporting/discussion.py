@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.store import ReportStore
+from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, TOOL_CATALOG, ReportToolCall, execute_tools
 
 MAX_TURNS = 40
 MAX_MESSAGE_CHARS = 8000
@@ -25,7 +26,7 @@ class ReportDiscussionBudget(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    max_llm_calls: int = Field(default=1, ge=1, le=1)
+    max_llm_calls: int = Field(default=2, ge=1, le=2)
     max_output_tokens: int = Field(default=700, ge=64, le=2000)
     max_wall_time_seconds: int = Field(default=30, ge=1, le=60)
     max_concurrent_requests: int = Field(default=1, ge=1, le=1)
@@ -150,8 +151,8 @@ def _respond_with_slot(
     index = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
     evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id} for item in index.entries[:24]]
     messages = [
-        {"role": "system", "content": "You answer only from the frozen report context. Return one JSON object with answer, response_kind, evidence_ids, unsupported_claims. Never claim execution, file access, new metrics, or unlisted evidence."},
-        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "question": turn.user_message}, ensure_ascii=False)},
+        {"role": "system", "content": "You answer only from frozen report context. Return either DiscussionResponse JSON, or {tool_calls:[{name,arguments}]}. Use typed tools for deep details; never claim file access, execution, or unlisted evidence."},
+        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "tool_catalog": TOOL_CATALOG, "max_tool_calls": MAX_TOOL_CALLS, "question": turn.user_message}, ensure_ascii=False)},
     ]
     from autoad_researcher.ui.chat_client import call_research_chat
     result = call_research_chat(
@@ -167,13 +168,44 @@ def _respond_with_slot(
     )
     try:
         if result.get("error"): raise ValueError(str(result["error"]))
-        response = DiscussionResponse.model_validate_json(str(result.get("reply") or ""))
+        reply = str(result.get("reply") or "")
+        try:
+            response = DiscussionResponse.model_validate_json(reply)
+        except Exception:
+            plan = _tool_plan(reply)
+            if budget.max_llm_calls < 2:
+                raise ValueError("report discussion budget does not allow a typed deep-read response")
+            tool_results = execute_tools(run_dir, report_id=report_id, calls=plan)
+            final = call_research_chat(
+                api_key,
+                provider_url,
+                [*messages, {"role": "tool", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False)}, {"role": "system", "content": "Return only DiscussionResponse JSON. Cite only evidence_ids from the frozen report."}],
+                model=model,
+                timeout_s=budget.max_wall_time_seconds,
+                priority="interactive",
+                response_format_json=True,
+                max_tokens=budget.max_output_tokens,
+                temperature=0.1,
+            )
+            if final.get("error"):
+                raise ValueError(str(final["error"]))
+            response = DiscussionResponse.model_validate_json(str(final.get("reply") or ""))
         _validated_evidence_ids(run_dir, report_id, response.evidence_ids)
         if response.response_kind in {"explain", "verify", "compare"} and not response.evidence_ids:
             raise ValueError("factual report discussion responses require Evidence IDs")
     except Exception as exc:
         return fail_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, error=str(exc))
     return complete_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, response=response)
+
+
+def _tool_plan(reply: str) -> list[ReportToolCall]:
+    raw = json.loads(reply)
+    if not isinstance(raw, dict) or not isinstance(raw.get("tool_calls"), list):
+        raise ValueError("discussion response was neither a structured answer nor a typed tool plan")
+    calls = [ReportToolCall.model_validate(item) for item in raw["tool_calls"]]
+    if not calls:
+        raise ValueError("typed tool plan must request at least one tool")
+    return calls
 
 
 def load_turns(run_dir: Path, *, report_id: str) -> list[DiscussionTurn]:

@@ -54,7 +54,7 @@ def assemble_facts(run_dir: Path, *, snapshot: ReportSnapshot) -> ExperimentRepo
     non_comparable = [
         item
         for item in attempts
-        if isinstance(item.get("outcome"), dict) and item["outcome"].get("evaluation_status") == "NON_COMPARABLE"
+        if isinstance(item.get("assessment"), dict) and item["assessment"].get("evaluation_status") == "NON_COMPARABLE"
     ]
     baseline = [item for item in attempts if item.get("attempt_purpose") == "baseline"]
     uncertainties = _uncertainties(session, attempts, non_comparable)
@@ -148,6 +148,7 @@ def _attempt_facts(raw: list[tuple[ArtifactReferenceV2, dict[str, Any]]]) -> lis
             "scientific_evaluation_inputs",
             "attempt_metrics",
             "failure_classification",
+            "resource_usage_report",
         }:
             entry[reference.artifact_type] = value
             if reference.artifact_type == "execution_result":

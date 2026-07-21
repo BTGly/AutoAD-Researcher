@@ -20,6 +20,8 @@ class EvidenceEntry(BaseModel):
     artifact_ref: ArtifactReferenceV2
     source_object_id: str = Field(min_length=1)
     field_path: str = Field(min_length=1)
+    # Fact paths are an explicit projection, not inferred from Narrative text.
+    fact_refs: list[str] = Field(default_factory=list)
     attempt_id: str | None = None
     idea_id: str | None = None
     summary: str
@@ -40,6 +42,7 @@ def build_evidence_index(
     report_id: str,
     snapshot_content_sha256: str,
     snapshot: ReportSnapshot,
+    facts=None,
 ) -> EvidenceIndex:
     """Create stable root and leaf-field evidence from verified snapshot values."""
 
@@ -75,6 +78,9 @@ def build_evidence_index(
                 artifact_ref=evidence_reference,
                 source_object_id=reference.artifact_id,
                 field_path=field_path,
+                fact_refs=_fact_refs_for_source(
+                    facts, reference.artifact_type, reference.artifact_id, field_path
+                ),
                 attempt_id=_attempt_id(reference),
                 idea_id=_idea_id(reference),
                 summary=f"Verified {reference.artifact_type} field {field_path}",
@@ -84,6 +90,47 @@ def build_evidence_index(
         snapshot_content_sha256=snapshot_content_sha256,
         entries=entries,
     )
+
+
+def _fact_refs_for_source(facts, artifact_type: str, artifact_id: str, field_path: str) -> list[str]:
+    """Return the report-Facts paths directly projected from one source field."""
+
+    if facts is None:
+        return []
+    attempt_id = _id_part(artifact_id, "attempt_")
+    if attempt_id is not None:
+        index = next((str(i) for i, item in enumerate(facts.attempts) if item.get("attempt_id") == attempt_id), None)
+        if index is None:
+            return []
+        prefixes = {
+            "experiment_attempt": f"attempts.{index}",
+            "outcome_card": f"attempts.{index}.outcome",
+            "scientific_assessment": f"attempts.{index}.assessment",
+            "assessment_reconciliation": f"attempts.{index}.assessment_reconciliation",
+            "scientific_evaluation_inputs": f"attempts.{index}.scientific_evaluation_inputs",
+            "attempt_metrics": f"attempts.{index}.attempt_metrics",
+            "failure_classification": f"attempts.{index}.failure_classification",
+            "execution_result": f"attempts.{index}.execution_result",
+            "resource_usage_report": f"attempts.{index}.resource_usage_report",
+        }
+        prefix = prefixes.get(artifact_type)
+        if prefix is not None:
+            return [prefix if field_path == "$" else f"{prefix}.{field_path}"]
+    direct = {
+        "experiment_session": "repository_and_environment",
+        "evaluation_contract": "evaluation_contract",
+        "cognitive_cost_summary": "cognitive_cost_summary",
+        "stop_decision": "stop_decision",
+        "champion_pointers": "candidate_and_champion.current_by_contract",
+        "idea_tree": "ideas",
+    }.get(artifact_type)
+    if direct is None:
+        return []
+    return [direct if field_path == "$" else f"{direct}.{field_path}"]
+
+
+def _id_part(artifact_id: str, prefix: str) -> str | None:
+    return next((part for part in artifact_id.split(":") if part.startswith(prefix)), None)
 
 
 def _attempt_id(reference: ArtifactReferenceV2) -> str | None:
@@ -104,6 +151,8 @@ def _snapshot_value(run_dir, snapshot: ReportSnapshot, reference: ArtifactRefere
             {},
         )
     path = resolve_run_relative_file(run_dir, reference.locator)
+    if reference.artifact_type.endswith("_log") or reference.artifact_type == "patch_diff":
+        return {"registered_text_artifact": True}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:

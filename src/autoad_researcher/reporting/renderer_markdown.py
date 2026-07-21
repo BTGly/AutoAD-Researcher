@@ -40,11 +40,12 @@ def _attempt_table(items: list[dict]) -> str:
     rows = []
     for item in items:
         outcome = item.get("outcome") if isinstance(item.get("outcome"), dict) else {}
+        assessment = item.get("assessment") if isinstance(item.get("assessment"), dict) else {}
         failure = item.get("failure_classification") if isinstance(item.get("failure_classification"), dict) else {}
         rows.append([
             item.get("attempt_id", ""), item.get("attempt_purpose", ""), item.get("runtime_status", ""),
-            outcome.get("execution_status", ""), outcome.get("evaluation_status", ""),
-            outcome.get("scientific_effect", ""), outcome.get("primary_delta", ""),
+            outcome.get("execution_status", ""), assessment.get("evaluation_status", ""),
+            assessment.get("scientific_effect", ""), assessment.get("primary_delta", ""),
             failure.get("failure_code", item.get("failure_code", "")),
             item.get("execution_result_binding", {}).get("status", "") if isinstance(item.get("execution_result_binding"), dict) else "",
         ])
@@ -76,8 +77,9 @@ def _failure_table(items: list[dict]) -> str:
             continue
         seen.add(attempt_id)
         outcome = item.get("outcome") if isinstance(item.get("outcome"), dict) else {}
+        assessment = item.get("assessment") if isinstance(item.get("assessment"), dict) else {}
         failure = item.get("failure_classification") if isinstance(item.get("failure_classification"), dict) else {}
-        rows.append([attempt_id, item.get("runtime_status", ""), outcome.get("evaluation_status", ""), failure.get("failure_code", item.get("failure_code", "")), _display(outcome.get("protocol_errors", ""))])
+        rows.append([attempt_id, item.get("runtime_status", ""), assessment.get("evaluation_status", ""), failure.get("failure_code", item.get("failure_code", "")), _display(outcome.get("protocol_errors", ""))])
     return _table(["Attempt", "Runtime", "Validity", "Failure", "Protocol errors"], rows)
 
 

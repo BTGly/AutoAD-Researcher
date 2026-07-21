@@ -70,7 +70,7 @@ def test_report_recipe_change_allocates_a_new_version(tmp_path: Path, monkeypatc
     run_dir.mkdir()
     session = _session(run_dir)
     first, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
-    monkeypatch.setattr("autoad_researcher.reporting.service.report_recipe_hash", lambda: "b" * 64)
+    monkeypatch.setattr("autoad_researcher.reporting.service.report_recipe_hash", lambda _profile: "b" * 64)
     second, created = ReportRequestService().request(run_dir, session_id=session.session_id)
 
     assert created is True
@@ -78,6 +78,28 @@ def test_report_recipe_change_allocates_a_new_version(tmp_path: Path, monkeypatc
     assert first["manifest"].report_recipe_hash == report_recipe_hash()
     assert second["manifest"].report_recipe_hash == "b" * 64
     assert len(ReportStore().list_manifests(run_dir, session_id=session.session_id)) == 2
+
+
+def test_generation_profile_participates_in_report_identity(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_reporting_profile"
+    run_dir.mkdir()
+    session = _session(run_dir)
+    monkeypatch.delenv("AUTOAD_REPORT_API_KEY", raising=False)
+    monkeypatch.delenv("AUTOAD_REPORT_BASE_URL", raising=False)
+    monkeypatch.delenv("AUTOAD_REPORT_MODEL", raising=False)
+    fallback, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+
+    monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "not-persisted")
+    monkeypatch.setenv("AUTOAD_REPORT_BASE_URL", "https://provider.test/")
+    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "model-a")
+    model, created = ReportRequestService().request(run_dir, session_id=session.session_id)
+    replay, replayed = ReportRequestService().request(run_dir, session_id=session.session_id)
+
+    assert created is True and replayed is False
+    assert fallback["manifest"].report_id != model["manifest"].report_id == replay["manifest"].report_id
+    profile = model["job"]["payload"]["generation_profile"]
+    assert profile["mode"] == "model" and profile["model"] == "model-a"
+    assert "not-persisted" not in str(profile)
 
 
 def test_explicit_report_retry_requeues_only_the_failed_job(tmp_path: Path):

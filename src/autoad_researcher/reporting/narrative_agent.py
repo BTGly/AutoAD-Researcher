@@ -21,18 +21,21 @@ class NarrativeGeneration:
     mode: str
     model: str | None
     fallback_reason: str | None = None
+    profile: dict[str, str] | None = None
 
 
-def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex) -> NarrativeGeneration:
+def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, profile: dict[str, str] | None = None) -> NarrativeGeneration:
     """Generate only structured prose bound to a frozen Facts/Evidence context."""
 
-    config = _configured_provider()
+    selected = profile or _configured_profile()
+    config = _configured_provider(selected)
     if config is None:
         return NarrativeGeneration(
             narrative=build_default_narrative(facts),
             mode="deterministic_fallback",
             model=None,
             fallback_reason="report narrative provider is not configured",
+            profile=selected,
         )
     api_key, provider_url, model = config
     result = call_research_chat(
@@ -47,19 +50,34 @@ def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceInde
     )
     reply = result.get("reply")
     if result.get("error") or not isinstance(reply, str):
-        return _fallback(facts, model, "provider call did not return a structured response")
+        return _fallback(facts, model, selected, "provider call did not return a structured response")
     try:
         narrative = NarrativeSectionsV1.model_validate(json.loads(reply))
     except (json.JSONDecodeError, ValueError):
-        return _fallback(facts, model, "provider response did not match NarrativeSectionsV1")
-    return NarrativeGeneration(narrative=narrative, mode="model", model=model)
+        return _fallback(facts, model, selected, "provider response did not match NarrativeSectionsV1")
+    return NarrativeGeneration(narrative=narrative, mode="model", model=model, profile=selected)
 
 
-def _configured_provider() -> tuple[str, str, str] | None:
+def _configured_profile() -> dict[str, str]:
     api_key = os.environ.get("AUTOAD_REPORT_API_KEY", "").strip()
     provider_url = os.environ.get("AUTOAD_REPORT_BASE_URL", "").strip()
     model = os.environ.get("AUTOAD_REPORT_MODEL", "").strip()
-    if not api_key or not provider_url or not model:
+    return {
+        "profile_version": "v1",
+        "mode": "model" if api_key and provider_url and model else "deterministic_fallback",
+        "model": model if api_key and provider_url and model else "",
+        "provider_base_url": provider_url.rstrip("/") if api_key and provider_url and model else "",
+        "prompt_sha256": "runtime-legacy-profile",
+    }
+
+
+def _configured_provider(profile: dict[str, str]) -> tuple[str, str, str] | None:
+    api_key = os.environ.get("AUTOAD_REPORT_API_KEY", "").strip()
+    if profile.get("mode") != "model" or not api_key:
+        return None
+    provider_url = profile.get("provider_base_url", "").strip()
+    model = profile.get("model", "").strip()
+    if not provider_url or not model:
         return None
     return api_key, provider_url, model
 
@@ -84,10 +102,11 @@ def _messages(facts: ExperimentReportFactsV1, evidence: EvidenceIndex) -> list[d
     ]
 
 
-def _fallback(facts: ExperimentReportFactsV1, model: str, reason: str) -> NarrativeGeneration:
+def _fallback(facts: ExperimentReportFactsV1, model: str, profile: dict[str, str], reason: str) -> NarrativeGeneration:
     return NarrativeGeneration(
         narrative=build_default_narrative(facts),
         mode="deterministic_fallback",
         model=model,
         fallback_reason=reason,
+        profile=profile,
     )

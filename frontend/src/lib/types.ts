@@ -124,7 +124,7 @@ export interface ReportState {
   review_status: string;
   format_status: { markdown: string; html: string; pdf: string; bundle: string };
   job_ids: string[];
-  jobs: Array<{ job_id: string; job_type: string; status: string; error: string | null }>;
+  jobs: Array<{ job_id: string; job_type: string; status: string; error: string | null; depends_on: string | null; dependency_status: string | null; blocked_reason: string | null }>;
   retry_count: number;
   last_error: string | null;
   available_artifacts: string[];

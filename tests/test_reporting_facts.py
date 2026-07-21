@@ -8,6 +8,7 @@ import pytest
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.default_narrative import build_default_narrative
 from autoad_researcher.reporting.facts import assemble_facts
+from autoad_researcher.reporting.facts_enrichment import enrich_facts
 from autoad_researcher.reporting.models import ReportSnapshot
 from autoad_researcher.reporting.renderer_markdown import render_markdown
 from autoad_researcher.reporting.service import ReportRequestService
@@ -15,6 +16,9 @@ from autoad_researcher.reporting.snapshot import sha256_file
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.worker.main import _process_pending_jobs
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
+from autoad_researcher.schemas.execution import ResourceUsageReport
+from autoad_researcher.experiment.cognitive_budget import CognitiveBudget, CognitiveBudgetStore, new_usage
+from autoad_researcher.experiment.cost_summary import CognitiveCostSummaryBuilder
 
 
 def _session(run_dir: Path):
@@ -103,3 +107,32 @@ def test_execution_result_is_sha_bound_and_metrics_render_as_values(tmp_path: Pa
         narrative=build_default_narrative(facts),
     )
     assert "| attempt_000001 | auroc | 0.91 |" in markdown
+
+
+def test_resource_reports_are_projected_only_from_registered_snapshot_refs(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_resource"
+    run_dir.mkdir()
+    path = run_dir / "attempts" / "attempt_000001" / "resource.json"
+    path.parent.mkdir(parents=True)
+    report = ResourceUsageReport(
+        attempt_id="attempt_000001", unit_id="unit_1", subject_type="baseline", measurement_kind="measured",
+        measurement_tool="nvidia-smi", gpu_count_used=1, peak_gpu_memory_mb=10, avg_gpu_memory_mb=8,
+        peak_gpu_utilization_pct=90, avg_gpu_utilization_pct=70, wall_time_seconds=7200,
+        cpu_time_seconds=7000, peak_cpu_memory_mb=100,
+    )
+    path.write_text(report.model_dump_json(), encoding="utf-8")
+    ref = ArtifactReferenceV2(artifact_id="resource_usage_report:attempt_000001:resource.json", artifact_type="resource_usage_report", locator="attempts/attempt_000001/resource.json", sha256=sha256_file(path), size_bytes=path.stat().st_size)
+    snapshot = ReportSnapshot(run_id=run_dir.name, session_id="session_fixture", source_refs=[ref], frozen_control_plane={}, session_revision=0, source_inventory_sha256="a" * 64, frozen_at="2026-01-01T00:00:00+00:00")
+    facts = enrich_facts(run_dir, snapshot=snapshot, facts=assemble_facts(run_dir, snapshot=snapshot))
+    assert facts.compute_resource_summary["status"] == "available"
+    assert facts.compute_resource_summary["total_gpu_hours"] == 2.0
+
+
+def test_cognitive_summary_binds_the_usage_ledger_fingerprint(tmp_path: Path):
+    budget = CognitiveBudget(max_calls=4, max_tokens=100, max_compact_cycles=4, max_exploratory_cycles=4, max_subagent_calls=4, max_wall_seconds=100)
+    store = CognitiveBudgetStore()
+    store.append(tmp_path, session_id="session_cost", budget=budget, usage=new_usage(cycle_id="cycle_1", cycle_kind="compact", role="coordinator", input_tokens=3, output_tokens=4, wall_seconds=1))
+    summary = CognitiveCostSummaryBuilder(store=store).build_and_persist(tmp_path, session_id="session_cost", budget=budget)
+    assert summary.cognitive_usage_sha256 is not None
+    payload = json.loads((tmp_path / "experiments" / "cognition" / "session_cost" / "cost_summary.json").read_text(encoding="utf-8"))
+    assert payload["cognitive_usage_sha256"] == summary.cognitive_usage_sha256

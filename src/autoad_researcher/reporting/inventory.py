@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -61,6 +62,8 @@ def collect_snapshot_sources(
             ("execution_result.json", "execution_result"),
         ):
             add(f"attempts/{attempt_id}/{filename}", artifact_type, f"{artifact_type}:{attempt_id}")
+        _add_registered_resource_reports(run_dir, attempt_id, add)
+        _add_registered_execution_logs(run_dir, attempt_id, add)
     candidates = CandidateRegistry().list_candidates(run_dir, session_id=session_id)
     for candidate in candidates:
         add(
@@ -72,3 +75,56 @@ def collect_snapshot_sources(
     if candidates:
         add("experiments/champions/current_by_contract.json", "champion_pointers", "champion_pointers:current")
     return sorted(refs, key=lambda item: (item.locator, item.artifact_id))
+
+
+def _add_registered_resource_reports(run_dir: Path, attempt_id: str, add) -> None:
+    """Discover resource reports only through the execution output manifest."""
+
+    from autoad_researcher.runner.models import ExperimentExecutionResult, OutputManifest
+    from autoad_researcher.schemas.execution import ResourceUsageReport
+
+    result_path = run_dir / "attempts" / attempt_id / "execution_result.json"
+    if not result_path.is_file():
+        return
+    try:
+        result = ExperimentExecutionResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return
+    if not result.output_manifest_path:
+        return
+    manifest_path = run_dir / "attempts" / attempt_id / result.output_manifest_path
+    if not manifest_path.is_file():
+        return
+    try:
+        manifest = OutputManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return
+    for output in manifest.outputs:
+        locator = f"attempts/{attempt_id}/{output.path}"
+        path = run_dir.joinpath(*PurePosixPath(locator).parts)
+        if not path.is_file():
+            continue
+        if sha256_file(path) != output.sha256:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                payload.pop("actual_gpu_hours", None)
+            ResourceUsageReport.model_validate(payload)
+        except ValueError:
+            continue
+        add(locator, "resource_usage_report", f"resource_usage_report:{attempt_id}:{output.path}", required=True)
+
+
+def _add_registered_execution_logs(run_dir: Path, attempt_id: str, add) -> None:
+    from autoad_researcher.runner.models import ExperimentExecutionResult
+
+    path = run_dir / "attempts" / attempt_id / "execution_result.json"
+    if not path.is_file():
+        return
+    try:
+        result = ExperimentExecutionResult.model_validate_json(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return
+    for stream, locator in (("stdout", result.stdout_path), ("stderr", result.stderr_path)):
+        add(f"attempts/{attempt_id}/{locator}", f"attempt_{stream}_log", f"attempt_{stream}_log:{attempt_id}")

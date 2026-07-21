@@ -42,6 +42,7 @@ def run_facts_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
         report_id=report_id,
         snapshot_content_sha256=manifest.source_snapshot_content_sha256,
         snapshot=snapshot,
+        facts=facts,
     )
     digest = build_report_digest(report_id=report_id, facts=facts)
     refs = [

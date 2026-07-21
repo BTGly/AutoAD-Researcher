@@ -35,7 +35,7 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
         errors.append("Narrative claim IDs must be unique")
     evidence_ids = {item.evidence_id for item in evidence.entries}
     _validate_evidence_bindings(facts, evidence, errors)
-    attempt_ids = {item.get("attempt_id") for item in facts.attempts if isinstance(item.get("attempt_id"), str)}
+    attempt_by_id = {item["attempt_id"] for item in facts.attempts if isinstance(item.get("attempt_id"), str)}
     for section in narrative.sections:
         for paragraph in section.paragraphs:
             if paragraph.paragraph_kind in {"interpretation", "limitation"} and not paragraph.claim_ids:
@@ -48,23 +48,31 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
         unknown_evidence = set(claim.evidence_ids).difference(evidence_ids)
         if unknown_evidence:
             errors.append(f"claim {claim.claim_id} references unknown Evidence IDs")
+        if not claim.fact_refs:
+            errors.append(f"claim {claim.claim_id} must bind at least one Fact")
         for fact_ref in claim.fact_refs:
             if _resolve_fact(facts, fact_ref) is _MISSING:
                 errors.append(f"claim {claim.claim_id} references an unknown Fact")
-        if claim.fact_refs and not claim.evidence_ids:
+        if not claim.evidence_ids:
             errors.append(f"claim {claim.claim_id} binds Facts without Evidence IDs")
-        unknown_attempts = set(claim.attempt_ids).difference(attempt_ids)
+        _validate_claim_fact_evidence(claim, evidence, errors)
+        inferred_attempts = _attempt_ids_from_fact_refs(facts, claim.fact_refs)
+        if set(claim.attempt_ids) != inferred_attempts:
+            errors.append(f"claim {claim.claim_id} Attempt IDs must match its Fact bindings")
+        unknown_attempts = set(claim.attempt_ids).difference(attempt_by_id)
         if unknown_attempts:
             errors.append(f"claim {claim.claim_id} references unknown Attempt IDs")
         for attempt_id, asserted_effect in claim.asserted_scientific_effects.items():
-            if attempt_id not in attempt_ids:
+            if attempt_id not in attempt_by_id:
                 errors.append(f"claim {claim.claim_id} asserts an unknown Attempt ID")
                 continue
             attempt = next(item for item in facts.attempts if item.get("attempt_id") == attempt_id)
-            outcome = attempt.get("outcome") if isinstance(attempt.get("outcome"), dict) else {}
-            if outcome.get("evaluation_status") == "NON_COMPARABLE":
+            # Legacy frozen reports may not yet contain a dedicated assessment
+            # projection. Prefer it when present; do not reinterpret its values.
+            assessment = attempt.get("assessment") if isinstance(attempt.get("assessment"), dict) else attempt.get("outcome") if isinstance(attempt.get("outcome"), dict) else {}
+            if assessment.get("evaluation_status") == "NON_COMPARABLE":
                 errors.append(f"claim {claim.claim_id} asserts scientific effect for a non-comparable Attempt")
-            elif outcome.get("scientific_effect") != asserted_effect:
+            elif assessment.get("scientific_effect") != asserted_effect:
                 errors.append(f"claim {claim.claim_id} scientific effect conflicts with frozen Facts")
         _validate_placeholders(facts, claim.statement_template, f"claim {claim.claim_id}", errors)
     if facts.non_comparable_attempts:
@@ -72,6 +80,32 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
     if not facts.failed_attempts and not facts.non_comparable_attempts:
         warnings.append("No failed or non-comparable Attempt is present in the frozen Facts")
     return ReportValidationResult(passed=not errors, errors=errors, warnings=warnings)
+
+
+def _validate_claim_fact_evidence(claim, evidence: EvidenceIndex, errors: list[str]) -> None:
+    by_id = {item.evidence_id: item for item in evidence.entries}
+    for fact_ref in claim.fact_refs:
+        matching = {item.evidence_id for item in evidence.entries if fact_ref in item.fact_refs}
+        if not matching:
+            errors.append(f"claim {claim.claim_id} Fact has no registered field Evidence: {fact_ref}")
+        elif not matching.intersection(claim.evidence_ids):
+            errors.append(f"claim {claim.claim_id} Evidence does not correspond to Fact: {fact_ref}")
+    if any(item not in by_id for item in claim.evidence_ids):
+        return
+
+
+def _attempt_ids_from_fact_refs(facts: ExperimentReportFactsV1, refs: list[str]) -> set[str]:
+    result: set[str] = set()
+    for ref in refs:
+        parts = ref.split(".")
+        if len(parts) < 2 or parts[0] != "attempts" or not parts[1].isdigit():
+            continue
+        index = int(parts[1])
+        if index < len(facts.attempts):
+            attempt_id = facts.attempts[index].get("attempt_id")
+            if isinstance(attempt_id, str):
+                result.add(attempt_id)
+    return result
 
 
 def _validate_evidence_bindings(facts: ExperimentReportFactsV1, evidence: EvidenceIndex, errors: list[str]) -> None:

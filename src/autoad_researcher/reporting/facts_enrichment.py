@@ -11,6 +11,7 @@ from autoad_researcher.experiment.evaluation_contract import EvaluationContract
 from autoad_researcher.experiment.idea_tree import IdeaTree
 from autoad_researcher.experiment.promotion import CandidateSnapshot
 from autoad_researcher.experiment.stop_policy import StopDecision
+from autoad_researcher.schemas.execution import ResourceUsageReport
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
 from autoad_researcher.reporting.models import ReportSnapshot
 from autoad_researcher.reporting.snapshot import resolve_run_relative_file, sha256_file
@@ -26,6 +27,7 @@ def enrich_facts(run_dir: Path, *, snapshot: ReportSnapshot, facts: ExperimentRe
     cost = _parse_one(values, "cognitive_cost_summary", CognitiveCostSummary)
     candidates = _parse_all(values, "candidate_snapshot", CandidateSnapshot)
     pointers = _one(values, "champion_pointers")
+    resources = _parse_all(values, "resource_usage_report", ResourceUsageReport)
 
     evaluation_contract = (
         contract.model_dump(mode="json")
@@ -55,9 +57,26 @@ def enrich_facts(run_dir: Path, *, snapshot: ReportSnapshot, facts: ExperimentRe
             "guardrail_metrics": guardrails,
             "stop_decision": stop_value,
             "cognitive_cost_summary": cost_value,
+            "compute_resource_summary": _resource_summary(resources),
             "uncertainties": sorted(set(uncertainties)),
         }
     )
+
+
+def _resource_summary(items: list[ResourceUsageReport]) -> dict[str, Any]:
+    if not items:
+        return {"status": "unknown", "reason": "No registered ResourceUsageReport is in this snapshot"}
+    gpu_hours = [item.actual_gpu_hours for item in items if item.actual_gpu_hours is not None]
+    measured = [item for item in items if item.measurement_kind == "measured"]
+    return {
+        "status": "available",
+        "report_count": len(items),
+        "measurement_kinds": sorted({item.measurement_kind for item in items}),
+        "total_gpu_hours": sum(gpu_hours) if gpu_hours else None,
+        "max_gpu_count_used": max((item.gpu_count_used or 0 for item in items), default=0),
+        "fully_measured_report_count": len(measured),
+        "reports": [item.model_dump(mode="json") for item in items],
+    }
 
 
 def _values_by_type(run_dir: Path, snapshot: ReportSnapshot) -> dict[str, list[dict[str, Any]]]:
@@ -89,7 +108,15 @@ def _parse_one(values, kind, model):
 
 
 def _parse_all(values, kind, model):
-    return [model.model_validate(item) for item in values.get(kind, [])]
+    parsed = []
+    for item in values.get(kind, []):
+        # Pydantic serializes ResourceUsageReport's computed GPU-hours field,
+        # while its strict input schema intentionally derives it.
+        value = dict(item)
+        if model is ResourceUsageReport:
+            value.pop("actual_gpu_hours", None)
+        parsed.append(model.model_validate(value))
+    return parsed
 
 
 def _metric_projection(attempts: list[dict[str, Any]], contract: EvaluationContract | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

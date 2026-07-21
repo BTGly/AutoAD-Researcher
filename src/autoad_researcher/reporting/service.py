@@ -12,7 +12,7 @@ from autoad_researcher.assistant.v2.job_service import (
     load_pipeline_jobs,
     requeue_failed_report_job,
 )
-from autoad_researcher.reporting.recipe import report_recipe_hash
+from autoad_researcher.reporting.recipe import report_generation_profile, report_recipe_hash
 from autoad_researcher.reporting.snapshot import build_report_snapshot, snapshot_content_sha256
 from autoad_researcher.reporting.store import MANIFEST_FILE, SNAPSHOT_FILE, ReportStore
 from autoad_researcher.reporting.facts_service import REPORT_FACTS_JOB_TYPE
@@ -34,13 +34,15 @@ class ReportRequestService:
 
     def request(self, run_dir: Path, *, session_id: str) -> tuple[dict[str, Any], bool]:
         snapshot = build_report_snapshot(run_dir, session_id=session_id)
-        recipe_hash = report_recipe_hash()
+        generation_profile = report_generation_profile()
+        recipe_hash = report_recipe_hash(generation_profile)
         manifest, created = self._store.create_or_get(run_dir, snapshot=snapshot, report_recipe_hash=recipe_hash)
         common_payload = {
             "report_id": manifest.report_id,
             "session_id": session_id,
             "snapshot_content_sha256": manifest.source_snapshot_content_sha256,
             "report_recipe_hash": manifest.report_recipe_hash,
+            "generation_profile": generation_profile,
         }
         job_types = (
             REPORT_FACTS_JOB_TYPE,

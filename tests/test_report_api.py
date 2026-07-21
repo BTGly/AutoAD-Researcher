@@ -35,11 +35,15 @@ async def test_versioned_report_api_reads_only_fixed_report_artifacts(tmp_path: 
     assert state["generation_status"] == "content_ready"
     assert "report.md" in state["available_artifacts"]
     assert {item["job_type"] for item in state["jobs"]} >= {"report_facts_assemble", "report_validate", "report_render_html"}
+    narrative_job = next(item for item in state["jobs"] if item["job_type"] == "report_narrative_generate")
+    assert narrative_job["dependency_status"] == "completed"
+    assert narrative_job["blocked_reason"] is None
     assert (await reports.get_digest(run_id, report_id))["report_id"] == report_id
     assert (await reports.get_content(run_id, report_id))["format"] == "md"
     download = await reports.download_report_artifact(run_id, report_id, "report.html")
     assert download.media_type == "text/html"
     assert download.headers["content-disposition"].startswith("inline;")
+    assert "<section><h2>Evidence</h2>" in (run_dir / "reports" / report_id / "report.html").read_text(encoding="utf-8")
     state_delivery = await reports.get_state(run_id, report_id)
     assert any(item["media_type"] == "text/html" for item in state_delivery["deliveries"])
     evidence_id = (await reports.get_evidence(run_id, report_id, (await reports.get_evidence.__wrapped__ if False else ""))) if False else None
