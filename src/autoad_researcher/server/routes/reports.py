@@ -1,5 +1,6 @@
 """Version-bound API for immutable report artifacts and optional render jobs."""
 
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -54,8 +55,8 @@ async def create_report(run_id: str, request: ReportCreateRequest):
     return {"created": created, "manifest": result["manifest"].model_dump(mode="json"), "job": result["job"]}
 
 
-@router.get("/latest")
-async def latest_report(run_id: str, session_id: str | None = None):
+@router.get("/latest-created")
+async def latest_created_report(run_id: str, session_id: str | None = None):
     run_dir, store = _store(run_id)
     reports = store.list_manifests(run_dir, session_id=session_id)
     if not reports:
@@ -63,17 +64,59 @@ async def latest_report(run_id: str, session_id: str | None = None):
     return reports[-1].model_dump(mode="json")
 
 
+@router.get("/latest-content-ready")
+async def latest_content_ready_report(run_id: str, session_id: str | None = None):
+    run_dir, store = _store(run_id)
+    reports = store.list_manifests(run_dir, session_id=session_id)
+    for manifest in reversed(reports):
+        if manifest.generation_status != "content_ready":
+            continue
+        try:
+            _verified_artifact_path(run_dir, manifest.report_id, manifest, "report.md")
+        except (FileNotFoundError, ValueError):
+            continue
+        return manifest.model_dump(mode="json")
+    raise HTTPException(404, "content-ready report not found")
+
+
+@router.get("/latest", include_in_schema=False)
+async def latest_report_compat(run_id: str, session_id: str | None = None):
+    """Temporary route compatibility; clients should use explicit latest semantics."""
+    return await latest_content_ready_report(run_id, session_id)
+
+
 @router.get("/{report_id}/manifest")
 async def get_manifest(run_id: str, report_id: str):
+    run_dir, store = _store(run_id)
+    try:
+        manifest = store.load_manifest(run_dir, report_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(404, "report not found") from exc
+    return manifest.model_dump(mode="json")
+
+
+@router.get("/{report_id}/state")
+async def get_state(run_id: str, report_id: str):
     run_dir, store = _store(run_id)
     try:
         manifest = store.load_manifest(run_dir, report_id)
         state = store.load_state(run_dir, report_id)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(404, "report not found") from exc
-    payload = manifest.model_dump(mode="json")
-    payload.update({"jobs": state.job_ids, "retry_count": state.retry_count, "last_error": state.last_error, "available_artifacts": _available_artifacts(run_dir, report_id, manifest)})
+    payload = state.model_dump(mode="json")
+    payload.update({"available_artifacts": _available_artifacts(run_dir, report_id, manifest)})
     return payload
+
+
+@router.get("/{report_id}/digest")
+async def get_digest(run_id: str, report_id: str):
+    run_dir, store = _store(run_id)
+    try:
+        manifest = store.load_manifest(run_dir, report_id)
+        path = _verified_artifact_path(run_dir, report_id, manifest, "report_digest.json")
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(409, "report digest is not available") from exc
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @router.post("/{report_id}/render/{format_name}")
@@ -96,8 +139,9 @@ async def get_content(run_id: str, report_id: str, format: Literal["md", "html"]
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(404, "report not found") from exc
     filename = "report.md" if format == "md" else "report.html"
-    path = run_dir / "reports" / report_id / filename
-    if filename not in _registered_names(manifest) or not path.is_file():
+    try:
+        path = _verified_artifact_path(run_dir, report_id, manifest, filename)
+    except (FileNotFoundError, ValueError):
         raise HTTPException(409, "requested report format is not available")
     return {"report_id": report_id, "format": format, "content": path.read_text(encoding="utf-8")}
 
@@ -116,6 +160,20 @@ async def get_evidence(run_id: str, report_id: str, evidence_id: str):
     return entry.model_dump(mode="json")
 
 
+@router.get("/{report_id}/evidence")
+async def list_evidence(run_id: str, report_id: str):
+    run_dir, store = _store(run_id)
+    try:
+        manifest = store.load_manifest(run_dir, report_id)
+        path = _verified_artifact_path(run_dir, report_id, manifest, "evidence_index.json")
+        index = EvidenceIndex.model_validate_json(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(409, "report evidence is not available") from exc
+    if index.report_id != report_id or index.snapshot_content_sha256 != manifest.source_snapshot_content_sha256:
+        raise HTTPException(409, "report evidence identity conflicts with manifest")
+    return {"report_id": report_id, "entries": [entry.model_dump(mode="json") for entry in index.entries]}
+
+
 @router.get("/{report_id}/download/{artifact}")
 async def download_report_artifact(run_id: str, report_id: str, artifact: str):
     if artifact not in _DOWNLOAD_ARTIFACTS:
@@ -125,12 +183,9 @@ async def download_report_artifact(run_id: str, report_id: str, artifact: str):
         manifest = store.load_manifest(run_dir, report_id)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(404, "report not found") from exc
-    path = run_dir / "reports" / report_id / artifact
-    if artifact != "report_manifest.json":
-        ref = next((item for item in manifest.artifact_refs if Path(item.locator).name == artifact), None)
-        if ref is None or not path.is_file() or sha256_file(path) != ref.sha256:
-            raise HTTPException(404, "report artifact not found")
-    elif not path.is_file():
+    try:
+        path = _verified_artifact_path(run_dir, report_id, manifest, artifact)
+    except (FileNotFoundError, ValueError):
         raise HTTPException(404, "report artifact not found")
     media_type = _MIME_TYPES.get(artifact, "application/json")
     return FileResponse(path, media_type=media_type, filename=f"{report_id}-{artifact}")
@@ -141,4 +196,29 @@ def _registered_names(manifest) -> set[str]:
 
 
 def _available_artifacts(run_dir: Path, report_id: str, manifest) -> list[str]:
-    return sorted(name for name in _registered_names(manifest) if (run_dir / "reports" / report_id / name).is_file())
+    available: list[str] = []
+    for name in _registered_names(manifest):
+        try:
+            _verified_artifact_path(run_dir, report_id, manifest, name)
+        except (FileNotFoundError, ValueError):
+            continue
+        available.append(name)
+    return sorted(available)
+
+
+def _verified_artifact_path(run_dir: Path, report_id: str, manifest, name: str) -> Path:
+    if name == "report_manifest.json":
+        path = run_dir / "reports" / report_id / name
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(name)
+        return path
+    ref = next((item for item in manifest.artifact_refs if Path(item.locator).name == name), None)
+    if ref is None:
+        raise FileNotFoundError(name)
+    path = run_dir / "reports" / report_id / name
+    root = (run_dir / "reports" / report_id).resolve()
+    if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):
+        raise ValueError("report artifact escapes its report directory")
+    if sha256_file(path) != ref.sha256:
+        raise ValueError("report artifact checksum differs from manifest")
+    return path

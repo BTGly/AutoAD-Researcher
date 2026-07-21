@@ -3,6 +3,10 @@ import type {
   ExperimentTaskDraft,
   ExperimentProjection,
   SourceInstruction,
+  ReportDigest,
+  ReportEvidence,
+  ReportManifest,
+  ReportState,
   TaskRun,
 } from './types';
 
@@ -277,7 +281,7 @@ export function wsUrl(runId: string): string {
 }
 
 export async function getLatestVersionedReport(runId: string): Promise<{ content: string; reportId?: string }> {
-  const latest = await fetch(`/api/runs/${runId}/reports/latest`);
+  const latest = await fetch(`/api/runs/${runId}/reports/latest-content-ready`);
   if (latest.status === 404) return getReport(runId);
   if (!latest.ok) throw new Error(`Latest report error: ${latest.status}`);
   const manifest = await latest.json();
@@ -286,3 +290,11 @@ export async function getLatestVersionedReport(runId: string): Promise<{ content
   const payload = await content.json();
   return { content: payload.content || "", reportId: manifest.report_id };
 }
+
+export async function listReports(runId: string): Promise<ReportManifest[]> { const res = await fetch(`/api/runs/${runId}/reports`); if (!res.ok) throw await apiError(res, 'Report list unavailable'); return (await res.json()).reports; }
+export async function getLatestCreatedReport(runId: string): Promise<ReportManifest | null> { const res = await fetch(`/api/runs/${runId}/reports/latest-created`); if (res.status === 404) return null; if (!res.ok) throw await apiError(res, 'Latest report unavailable'); return res.json(); }
+export async function getLatestContentReadyReport(runId: string): Promise<ReportManifest | null> { const res = await fetch(`/api/runs/${runId}/reports/latest-content-ready`); if (res.status === 404) return null; if (!res.ok) throw await apiError(res, 'Readable report unavailable'); return res.json(); }
+export async function getReportState(runId: string, reportId: string): Promise<ReportState> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/state`); if (!res.ok) throw await apiError(res, 'Report state unavailable'); return res.json(); }
+export async function getReportDigest(runId: string, reportId: string): Promise<ReportDigest | null> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/digest`); if (res.status === 409) return null; if (!res.ok) throw await apiError(res, 'Report digest unavailable'); return res.json(); }
+export async function getReportContent(runId: string, reportId: string): Promise<string | null> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/content?format=md`); if (res.status === 409) return null; if (!res.ok) throw await apiError(res, 'Report content unavailable'); return (await res.json()).content || null; }
+export async function listReportEvidence(runId: string, reportId: string): Promise<ReportEvidence[]> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/evidence`); if (res.status === 409) return []; if (!res.ok) throw await apiError(res, 'Report evidence unavailable'); return (await res.json()).entries; }

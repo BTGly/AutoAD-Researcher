@@ -108,6 +108,51 @@ export interface EvidenceItem {
   raw?: Record<string, any>;
 }
 
+export interface ReportManifest {
+  report_id: string;
+  version: number;
+  generation_status: string;
+  review_status: string;
+  format_status: { markdown: string; html: string; pdf: string; bundle: string };
+  source_snapshot_content_sha256: string;
+  facts_content_sha256: string | null;
+}
+
+export interface ReportState {
+  report_id: string;
+  generation_status: string;
+  review_status: string;
+  format_status: { markdown: string; html: string; pdf: string; bundle: string };
+  job_ids: string[];
+  retry_count: number;
+  last_error: string | null;
+  available_artifacts: string[];
+}
+
+export interface ReportDigest {
+  report_id: string;
+  facts_content_sha256: string;
+  research_objective: Record<string, unknown>;
+  execution_status: string | null;
+  attempt_count: number;
+  failed_attempt_count: number;
+  non_comparable_attempt_count: number;
+  champion: Record<string, unknown>;
+  stop_decision: Record<string, unknown>;
+  uncertainties: string[];
+}
+
+export interface ReportEvidence {
+  evidence_id: string;
+  evidence_kind: string;
+  source_object_id: string;
+  field_path: string;
+  attempt_id: string | null;
+  idea_id: string | null;
+  summary: string;
+  artifact_ref: { locator: string; sha256: string; artifact_type: string };
+}
+
 export interface UnusableParsedSource {
   sourceId: string;
   label: string;

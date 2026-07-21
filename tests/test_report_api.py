@@ -23,7 +23,15 @@ async def test_versioned_report_api_reads_only_fixed_report_artifacts(tmp_path: 
 
     listed = await reports.list_reports(run_id)
     assert listed["reports"][0]["report_id"] == report_id
-    assert (await reports.latest_report(run_id))["report_id"] == report_id
+    assert (await reports.latest_created_report(run_id))["report_id"] == report_id
+    assert (await reports.latest_content_ready_report(run_id))["report_id"] == report_id
+    manifest = await reports.get_manifest(run_id, report_id)
+    assert manifest["report_id"] == report_id
+    assert "jobs" not in manifest
+    state = await reports.get_state(run_id, report_id)
+    assert state["generation_status"] == "content_ready"
+    assert "report.md" in state["available_artifacts"]
+    assert (await reports.get_digest(run_id, report_id))["report_id"] == report_id
     assert (await reports.get_content(run_id, report_id))["format"] == "md"
     evidence_id = (await reports.get_evidence(run_id, report_id, (await reports.get_evidence.__wrapped__ if False else ""))) if False else None
     with pytest.raises(HTTPException) as missing:
