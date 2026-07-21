@@ -7,7 +7,7 @@ import pytest
 
 from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job, fail_pipeline_job, load_pipeline_jobs
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.recipe import report_recipe_hash
+from autoad_researcher.reporting.recipe import report_generation_profile, report_recipe_hash
 from autoad_researcher.reporting.facts_service import REPORT_FACTS_JOB_TYPE
 from autoad_researcher.reporting.service import ReportRequestService, retry_failed_report_job
 from autoad_researcher.reporting.snapshot import build_report_snapshot, resolve_run_relative_file
@@ -100,6 +100,15 @@ def test_generation_profile_participates_in_report_identity(tmp_path: Path, monk
     profile = model["job"]["payload"]["generation_profile"]
     assert profile["mode"] == "model" and profile["model"] == "model-a"
     assert "not-persisted" not in str(profile)
+
+
+def test_generation_profile_hashes_the_actual_prompt_and_schema(monkeypatch):
+    import autoad_researcher.reporting.recipe as recipe
+
+    baseline = report_generation_profile()["prompt_sha256"]
+    monkeypatch.setattr(recipe, "narrative_system_prompt", lambda: "changed prompt")
+
+    assert report_generation_profile()["prompt_sha256"] != baseline
 
 
 def test_explicit_report_retry_requeues_only_the_failed_job(tmp_path: Path):

@@ -44,6 +44,16 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
             if unknown_claims:
                 errors.append(f"paragraph {paragraph.paragraph_id} references unknown claim IDs")
             _validate_placeholders(facts, paragraph.prose_template, f"paragraph {paragraph.paragraph_id}", errors)
+            if paragraph.paragraph_kind in {"interpretation", "limitation"}:
+                bound_facts = {
+                    fact_ref
+                    for claim_id in paragraph.claim_ids
+                    if claim_id in claims
+                    for fact_ref in claims[claim_id].fact_refs
+                }
+                unbound = set(_PLACEHOLDER.findall(paragraph.prose_template)).difference(bound_facts)
+                if unbound:
+                    errors.append(f"paragraph {paragraph.paragraph_id} template placeholders are not bound by its Claims")
     for claim in narrative.claims:
         unknown_evidence = set(claim.evidence_ids).difference(evidence_ids)
         if unknown_evidence:
@@ -62,6 +72,10 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
         unknown_attempts = set(claim.attempt_ids).difference(attempt_by_id)
         if unknown_attempts:
             errors.append(f"claim {claim.claim_id} references unknown Attempt IDs")
+        if claim.assertion_scope == "scientific_assessment" and not claim.attempt_ids:
+            errors.append(f"scientific claim {claim.claim_id} must bind an Attempt")
+        if claim.assertion_scope == "scientific_assessment" and set(claim.asserted_scientific_effects) != set(claim.attempt_ids):
+            errors.append(f"scientific claim {claim.claim_id} must assert every bound Attempt effect")
         for attempt_id, asserted_effect in claim.asserted_scientific_effects.items():
             if attempt_id not in attempt_by_id:
                 errors.append(f"claim {claim.claim_id} asserts an unknown Attempt ID")
@@ -75,6 +89,9 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
             elif assessment.get("scientific_effect") != asserted_effect:
                 errors.append(f"claim {claim.claim_id} scientific effect conflicts with frozen Facts")
         _validate_placeholders(facts, claim.statement_template, f"claim {claim.claim_id}", errors)
+        unresolved = set(_PLACEHOLDER.findall(claim.statement_template)).difference(claim.fact_refs)
+        if unresolved:
+            errors.append(f"claim {claim.claim_id} template placeholders are not bound Facts")
     if facts.non_comparable_attempts:
         warnings.append("Non-comparable Attempts remain in deterministic result tables.")
     if not facts.failed_attempts and not facts.non_comparable_attempts:

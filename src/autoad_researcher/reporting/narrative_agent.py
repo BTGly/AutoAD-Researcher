@@ -15,6 +15,10 @@ from autoad_researcher.ui.chat_client import call_research_chat
 NARRATIVE_AGENT_PROFILE = "structured-chat-v1"
 
 
+class NarrativeGenerationError(RuntimeError):
+    """A selected model profile could not produce a publishable Narrative."""
+
+
 @dataclass(frozen=True)
 class NarrativeGeneration:
     narrative: NarrativeSectionsV1
@@ -28,15 +32,17 @@ def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceInde
     """Generate only structured prose bound to a frozen Facts/Evidence context."""
 
     selected = profile or _configured_profile()
-    config = _configured_provider(selected)
-    if config is None:
+    if selected.get("mode") == "deterministic_fallback":
         return NarrativeGeneration(
             narrative=build_default_narrative(facts),
             mode="deterministic_fallback",
             model=None,
-            fallback_reason="report narrative provider is not configured",
+            fallback_reason="report narrative provider was not configured at report creation",
             profile=selected,
         )
+    config = _configured_provider(selected)
+    if config is None:
+        raise NarrativeGenerationError("selected report Narrative model profile is unavailable at execution time")
     api_key, provider_url, model = config
     result = call_research_chat(
         api_key,
@@ -50,11 +56,11 @@ def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceInde
     )
     reply = result.get("reply")
     if result.get("error") or not isinstance(reply, str):
-        return _fallback(facts, model, selected, "provider call did not return a structured response")
+        raise NarrativeGenerationError("report Narrative provider did not return a structured response")
     try:
         narrative = NarrativeSectionsV1.model_validate(json.loads(reply))
     except (json.JSONDecodeError, ValueError):
-        return _fallback(facts, model, selected, "provider response did not match NarrativeSectionsV1")
+        raise NarrativeGenerationError("report Narrative provider response did not match NarrativeSectionsV1")
     return NarrativeGeneration(narrative=narrative, mode="model", model=model, profile=selected)
 
 
@@ -90,23 +96,19 @@ def _messages(facts: ExperimentReportFactsV1, evidence: EvidenceIndex) -> list[d
     return [
         {
             "role": "system",
-            "content": (
-                "You are AutoAD's Narrative Agent. Use only the supplied frozen Facts and Evidence. "
-                "Return JSON only, matching NarrativeSectionsV1. It must contain summary, interpretation, "
-                "limitations, and next_steps exactly once. Every factual claim must include fact_refs and "
-                "evidence_ids from the supplied index. Do not state improvement for NON_COMPARABLE attempts. "
-                "Do not create actions, metrics, attempts, or evidence IDs."
-            ),
+            "content": narrative_system_prompt(),
         },
         {"role": "user", "content": json.dumps(context, ensure_ascii=False, sort_keys=True)},
     ]
 
 
-def _fallback(facts: ExperimentReportFactsV1, model: str, profile: dict[str, str], reason: str) -> NarrativeGeneration:
-    return NarrativeGeneration(
-        narrative=build_default_narrative(facts),
-        mode="deterministic_fallback",
-        model=model,
-        fallback_reason=reason,
-        profile=profile,
+def narrative_system_prompt() -> str:
+    """The exact static system prompt committed into the report recipe."""
+
+    return (
+        "You are AutoAD's Narrative Agent. Use only the supplied frozen Facts and Evidence. "
+        "Return JSON only, matching NarrativeSectionsV1. It must contain summary, interpretation, "
+        "limitations, and next_steps exactly once. Every factual claim must include fact_refs and "
+        "evidence_ids from the supplied index. Do not state improvement for NON_COMPARABLE attempts. "
+        "Do not create actions, metrics, attempts, or evidence IDs."
     )

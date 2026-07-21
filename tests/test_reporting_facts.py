@@ -9,10 +9,11 @@ from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.default_narrative import build_default_narrative
 from autoad_researcher.reporting.facts import assemble_facts
 from autoad_researcher.reporting.facts_enrichment import enrich_facts
+from autoad_researcher.reporting.inventory import _add_registered_patch_diffs, _add_registered_resource_reports
 from autoad_researcher.reporting.models import ReportSnapshot
 from autoad_researcher.reporting.renderer_markdown import render_markdown
 from autoad_researcher.reporting.service import ReportRequestService
-from autoad_researcher.reporting.snapshot import sha256_file
+from autoad_researcher.reporting.snapshot import canonical_sha256, sha256_file
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.worker.main import _process_pending_jobs
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
@@ -136,3 +137,41 @@ def test_cognitive_summary_binds_the_usage_ledger_fingerprint(tmp_path: Path):
     assert summary.cognitive_usage_sha256 is not None
     payload = json.loads((tmp_path / "experiments" / "cognition" / "session_cost" / "cost_summary.json").read_text(encoding="utf-8"))
     assert payload["cognitive_usage_sha256"] == summary.cognitive_usage_sha256
+
+
+def test_inventory_verifies_output_manifest_hash_and_registers_handoff_patch_diffs(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_inventory"
+    attempt_id = "attempt_000001"
+    attempt_dir = run_dir / "attempts" / attempt_id
+    attempt_dir.mkdir(parents=True)
+    resource = ResourceUsageReport(
+        attempt_id=attempt_id, unit_id="unit_1", subject_type="baseline", measurement_kind="measured",
+        measurement_tool="nvidia-smi", gpu_count_used=1, peak_gpu_memory_mb=10, avg_gpu_memory_mb=8,
+        peak_gpu_utilization_pct=90, avg_gpu_utilization_pct=70, wall_time_seconds=60,
+        cpu_time_seconds=50, peak_cpu_memory_mb=100,
+    )
+    resource_path = attempt_dir / "resource.json"
+    resource_path.write_text(resource.model_dump_json(), encoding="utf-8")
+    manifest_payload = {
+        "schema_version": 1,
+        "outputs": [{"path": "resource.json", "sha256": sha256_file(resource_path), "size_bytes": resource_path.stat().st_size}],
+    }
+    manifest_payload["manifest_sha256"] = "0" * 64
+    (attempt_dir / "outputs.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
+    (attempt_dir / "execution_result.json").write_text(json.dumps({
+        "schema_version": 1, "run_id": run_dir.name, "attempt": attempt_id, "command_id": "command_1",
+        "command_sha256": "a" * 64, "status": "success", "exit_code": 0, "timed_out": False,
+        "stdout_path": "stdout.log", "stderr_path": "stderr.log", "output_manifest_path": "outputs.json",
+    }), encoding="utf-8")
+    recorded = []
+    _add_registered_resource_reports(run_dir, attempt_id, lambda locator, artifact_type, artifact_id, **_kwargs: recorded.append((locator, artifact_type, artifact_id)))
+    assert recorded == []
+
+    manifest_payload["manifest_sha256"] = canonical_sha256({key: value for key, value in manifest_payload.items() if key != "manifest_sha256"})
+    (attempt_dir / "outputs.json").write_text(json.dumps(manifest_payload), encoding="utf-8")
+    _add_registered_resource_reports(run_dir, attempt_id, lambda locator, artifact_type, artifact_id, **_kwargs: recorded.append((locator, artifact_type, artifact_id)))
+    assert recorded == [(f"attempts/{attempt_id}/resource.json", "resource_usage_report", f"resource_usage_report:{attempt_id}:resource.json")]
+
+    (attempt_dir / "final_patch.diff").write_text("diff --git a/a b/a\n", encoding="utf-8")
+    _add_registered_patch_diffs(run_dir, attempt_id, lambda locator, artifact_type, artifact_id, **_kwargs: recorded.append((locator, artifact_type, artifact_id)))
+    assert recorded[-1] == (f"attempts/{attempt_id}/final_patch.diff", "patch_diff", f"patch_diff:{attempt_id}:final_patch.diff")

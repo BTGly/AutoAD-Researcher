@@ -97,9 +97,15 @@ def _fact_refs_for_source(facts, artifact_type: str, artifact_id: str, field_pat
 
     if facts is None:
         return []
+    if artifact_type == "experiment_session":
+        return _session_fact_refs(field_path)
+    if artifact_type == "candidate_snapshot":
+        return _candidate_fact_refs(facts, artifact_id, field_path)
+    if artifact_type == "idea_tree":
+        return _idea_fact_refs(field_path)
     attempt_id = _id_part(artifact_id, "attempt_")
     if attempt_id is not None:
-        index = next((str(i) for i, item in enumerate(facts.attempts) if item.get("attempt_id") == attempt_id), None)
+        index = next((i for i, item in enumerate(facts.attempts) if item.get("attempt_id") == attempt_id), None)
         if index is None:
             return []
         prefixes = {
@@ -115,9 +121,10 @@ def _fact_refs_for_source(facts, artifact_type: str, artifact_id: str, field_pat
         }
         prefix = prefixes.get(artifact_type)
         if prefix is not None:
-            return [prefix if field_path == "$" else f"{prefix}.{field_path}"]
+            refs = [prefix if field_path == "$" else f"{prefix}.{field_path}"]
+            refs.extend(_attempt_projection_refs(facts, attempt_id, artifact_type, field_path))
+            return sorted(set(refs))
     direct = {
-        "experiment_session": "repository_and_environment",
         "evaluation_contract": "evaluation_contract",
         "cognitive_cost_summary": "cognitive_cost_summary",
         "stop_decision": "stop_decision",
@@ -127,6 +134,69 @@ def _fact_refs_for_source(facts, artifact_type: str, artifact_id: str, field_pat
     if direct is None:
         return []
     return [direct if field_path == "$" else f"{direct}.{field_path}"]
+
+
+def _session_fact_refs(field_path: str) -> list[str]:
+    direct = {
+        "task_ref": "research_objective.task_ref",
+        "status": "repository_and_environment.status",
+        "repository_ref": "repository_and_environment.repository_ref",
+        "session_id": "session_id",
+    }.get(field_path)
+    return [direct] if direct else []
+
+
+def _candidate_fact_refs(facts, artifact_id: str, field_path: str) -> list[str]:
+    candidate_id = _id_part(artifact_id, "candidate_")
+    index = next(
+        (i for i, item in enumerate(facts.candidate_and_champion.get("candidates", [])) if item.get("candidate_id") == candidate_id),
+        None,
+    )
+    if index is None:
+        return []
+    prefix = f"candidate_and_champion.candidates.{index}"
+    return [prefix if field_path == "$" else f"{prefix}.{field_path}"]
+
+
+def _idea_fact_refs(field_path: str) -> list[str]:
+    if field_path == "$":
+        return ["ideas"]
+    parts = field_path.split(".")
+    if len(parts) >= 2 and parts[0] == "nodes" and parts[1].isdigit():
+        return ["ideas." + ".".join(parts[1:])]
+    return []
+
+
+def _attempt_projection_refs(facts, attempt_id: str, artifact_type: str, field_path: str) -> list[str]:
+    """Map deterministic list projections back to the authoritative Attempt field."""
+
+    suffix = "" if field_path == "$" else f".{field_path}"
+    refs: list[str] = []
+    for name in ("baseline", "failed_attempts", "non_comparable_attempts"):
+        values = getattr(facts, name)
+        derived_index = next((i for i, item in enumerate(values) if item.get("attempt_id") == attempt_id), None)
+        if derived_index is None:
+            continue
+        if artifact_type == "experiment_attempt":
+            refs.append(f"{name}.{derived_index}{suffix}")
+        elif artifact_type == "outcome_card":
+            refs.append(f"{name}.{derived_index}.outcome{suffix}")
+        elif artifact_type == "scientific_assessment":
+            refs.append(f"{name}.{derived_index}.assessment{suffix}")
+    if artifact_type == "scientific_assessment":
+        validity_index = next((i for i, item in enumerate(facts.validity) if item.get("attempt_id") == attempt_id), None)
+        if validity_index is not None:
+            refs.append(f"validity.{validity_index}{suffix}")
+    if artifact_type == "outcome_card" and field_path.startswith("metrics."):
+        metric = field_path.split(".", 1)[1]
+        for name in ("primary_metrics", "guardrail_metrics"):
+            metric_index = next(
+                (i for i, item in enumerate(getattr(facts, name)) if item.get("attempt_id") == attempt_id and item.get("metric") == metric),
+                None,
+            )
+            if metric_index is not None:
+                refs.append(f"{name}.{metric_index}.value")
+    return refs
 
 
 def _id_part(artifact_id: str, prefix: str) -> str | None:

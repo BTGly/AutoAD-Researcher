@@ -73,29 +73,40 @@ def _context(run_dir, report_id: str):
 def _execute(run_dir, call: ReportToolCall, facts, evidence, digest, markdown: str) -> dict[str, Any]:
     name, args = call.name, call.arguments
     if name == "get_report_digest":
-        return digest.model_dump(mode="json")
+        value = digest.model_dump(mode="json")
+        return _with_provenance(
+            {**value, "status": "available", "value": value},
+            evidence,
+            ["research_objective", "repository_and_environment", "attempts", "candidate_and_champion", "primary_metrics", "stop_decision", "cognitive_cost_summary", "compute_resource_summary"],
+        )
     if name == "get_report_section":
-        return _section(markdown, args.get("section"))
+        return _with_provenance(_section(markdown, args.get("section")), evidence, [])
     if name == "list_attempts":
-        return {"attempts": [_attempt_summary(item) for item in facts.attempts]}
+        value = {"attempts": [_attempt_summary(item) for item in facts.attempts]}
+        return _with_provenance({**value, "status": "available", "value": value}, evidence, ["attempts"])
     if name in {"get_outcome_card", "get_scientific_assessment", "get_metrics"}:
         attempt = _attempt(facts, args)
         key = {"get_outcome_card": "outcome", "get_scientific_assessment": "assessment", "get_metrics": "attempt_metrics"}[name]
         value = attempt.get(key)
         if name == "get_metrics" and value is None:
             value = (attempt.get("outcome") or {}).get("metrics") if isinstance(attempt.get("outcome"), dict) else None
-        return {"attempt_id": attempt["attempt_id"], "value": value, "status": "available" if value is not None else "unavailable"}
+        index = next(index for index, item in enumerate(facts.attempts) if item.get("attempt_id") == attempt["attempt_id"])
+        refs = [f"attempts.{index}.{key}"]
+        if name == "get_metrics" and value is not None:
+            refs.append(f"attempts.{index}.outcome.metrics")
+        return _with_provenance({"attempt_id": attempt["attempt_id"], "value": value, "status": "available" if value is not None else "unavailable"}, evidence, refs)
     if name == "get_evaluation_contract":
-        return facts.evaluation_contract
+        return _with_provenance({**facts.evaluation_contract, "value": facts.evaluation_contract}, evidence, ["evaluation_contract"])
     if name == "get_environment_snapshot":
-        return facts.repository_and_environment
+        return _with_provenance({**facts.repository_and_environment, "value": facts.repository_and_environment}, evidence, ["repository_and_environment"])
     if name == "get_champion":
-        return facts.candidate_and_champion
+        return _with_provenance({**facts.candidate_and_champion, "value": facts.candidate_and_champion}, evidence, ["candidate_and_champion"])
     if name == "get_budget_usage":
-        return {"cognitive_cost_summary": facts.cognitive_cost_summary, "compute_resource_summary": facts.compute_resource_summary}
+        value = {"cognitive_cost_summary": facts.cognitive_cost_summary, "compute_resource_summary": facts.compute_resource_summary}
+        return _with_provenance({**value, "status": "available", "value": value}, evidence, ["cognitive_cost_summary", "compute_resource_summary"])
     if name == "resolve_evidence":
         entry = _evidence(evidence, args)
-        return entry.model_dump(mode="json")
+        return {"status": "available", "value": entry.model_dump(mode="json"), "fact_refs": entry.fact_refs, "evidence_ids": [entry.evidence_id]}
     if name == "get_patch_diff":
         return _text_evidence(run_dir, evidence, args, expected=("patch", "diff"), query=None, start=None, end=None)
     if name == "search_log":
@@ -103,6 +114,23 @@ def _execute(run_dir, call: ReportToolCall, facts, evidence, digest, markdown: s
     if name == "read_log_range":
         return _text_evidence(run_dir, evidence, args, expected=("log",), query=None, start=args.get("start_line"), end=args.get("end_line"))
     raise ValueError("unsupported report discussion tool")
+
+
+def _with_provenance(value: dict[str, Any], evidence: EvidenceIndex, fact_refs: list[str]) -> dict[str, Any]:
+    result = dict(value)
+    result.setdefault("status", "available")
+    result.setdefault("value", {key: item for key, item in result.items() if key not in {"status", "value"}})
+    refs = sorted(set(fact_refs))
+    evidence_ids = sorted(
+        item.evidence_id
+        for item in evidence.entries
+        if any(_fact_ref_matches(item_ref, fact_ref) for item_ref in item.fact_refs for fact_ref in refs)
+    )
+    return {**result, "fact_refs": refs, "evidence_ids": evidence_ids}
+
+
+def _fact_ref_matches(entry_ref: str, requested_ref: str) -> bool:
+    return entry_ref == requested_ref or entry_ref.startswith(requested_ref + ".")
 
 
 def _attempt(facts, args: dict[str, Any]) -> dict[str, Any]:
@@ -135,7 +163,7 @@ def _text_evidence(run_dir, index: EvidenceIndex, args, *, expected: tuple[str, 
     entry = _text_entry(index, args)
     kind = entry.evidence_kind.lower()
     if not any(value in kind for value in expected):
-        return {"status": "unavailable", "reason": "requested evidence is not a registered compatible text artifact"}
+        return {"status": "unavailable", "value": None, "reason": "requested evidence is not a registered compatible text artifact", "fact_refs": entry.fact_refs, "evidence_ids": [entry.evidence_id]}
     path = resolve_run_relative_file(run_dir, entry.artifact_ref.locator)
     if sha256_file(path) != entry.artifact_ref.sha256:
         raise ValueError("registered text Evidence SHA-256 no longer matches")
@@ -145,12 +173,14 @@ def _text_evidence(run_dir, index: EvidenceIndex, args, *, expected: tuple[str, 
         if not isinstance(query, str) or not query:
             raise ValueError("search_log requires a non-empty query")
         matches = [{"line": index + 1, "text": line} for index, line in enumerate(lines) if query in line][:MAX_LOG_RESULTS]
-        return {"status": "available", "evidence_id": entry.evidence_id, "matches": matches, "truncated": len(path.read_bytes()) > MAX_TEXT_BYTES}
+        value = {"evidence_id": entry.evidence_id, "matches": matches, "truncated": len(path.read_bytes()) > MAX_TEXT_BYTES}
+        return {"status": "available", **value, "value": value, "fact_refs": entry.fact_refs, "evidence_ids": [entry.evidence_id]}
     first = 1 if start is None else start
     last = min(len(lines), first + MAX_LOG_LINES - 1) if end is None else end
     if not isinstance(first, int) or not isinstance(last, int) or first < 1 or last < first or last - first >= MAX_LOG_LINES:
         raise ValueError("read_log_range requires a bounded positive line range")
-    return {"status": "available", "evidence_id": entry.evidence_id, "lines": [{"line": index + 1, "text": line} for index, line in enumerate(lines[first - 1:last])], "truncated": len(path.read_bytes()) > MAX_TEXT_BYTES}
+    value = {"evidence_id": entry.evidence_id, "lines": [{"line": index + 1, "text": line} for index, line in enumerate(lines[first - 1:last])], "truncated": len(path.read_bytes()) > MAX_TEXT_BYTES}
+    return {"status": "available", **value, "value": value, "fact_refs": entry.fact_refs, "evidence_ids": [entry.evidence_id]}
 
 
 def _text_entry(index: EvidenceIndex, args: dict[str, Any]):

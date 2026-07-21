@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 
 from autoad_researcher.reporting.default_narrative import NARRATIVE_MODEL_PROFILE, NARRATIVE_TEMPLATE_VERSION
 from autoad_researcher.reporting.facts import REPORT_FACTS_SCHEMA_VERSION
+from autoad_researcher.reporting.narrative import NarrativeSectionsV1
+from autoad_researcher.reporting.narrative_agent import NARRATIVE_AGENT_PROFILE, narrative_system_prompt
 from autoad_researcher.reporting.renderer_html import HTML_RENDERER_VERSION
 from autoad_researcher.reporting.renderer_markdown import MARKDOWN_RENDERER_VERSION
 from autoad_researcher.reporting.snapshot import canonical_sha256
@@ -19,7 +20,13 @@ def report_generation_profile() -> dict[str, str]:
     model = os.environ.get("AUTOAD_REPORT_MODEL", "").strip()
     base_url = os.environ.get("AUTOAD_REPORT_BASE_URL", "").strip().rstrip("/")
     configured = bool(os.environ.get("AUTOAD_REPORT_API_KEY", "").strip() and model and base_url)
-    prompt_hash = hashlib.sha256(_narrative_prompt_contract().encode("utf-8")).hexdigest()
+    prompt_hash = canonical_sha256(
+        {
+            "agent_profile": NARRATIVE_AGENT_PROFILE,
+            "system_prompt": narrative_system_prompt(),
+            "schema": NarrativeSectionsV1.model_json_schema(),
+        }
+    )
     return {
         "profile_version": "v1",
         "mode": "model" if configured else "deterministic_fallback",
@@ -27,12 +34,6 @@ def report_generation_profile() -> dict[str, str]:
         "provider_base_url": base_url if configured else "",
         "prompt_sha256": prompt_hash,
     }
-
-
-def _narrative_prompt_contract() -> str:
-    return "AutoAD NarrativeSectionsV1 frozen facts/evidence structured contract v1"
-
-
 def report_recipe_hash(generation_profile: dict[str, str] | None = None) -> str:
     """Hash every component whose behavior can change a report version."""
 

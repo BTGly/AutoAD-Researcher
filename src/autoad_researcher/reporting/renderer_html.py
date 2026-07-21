@@ -17,7 +17,7 @@ def render_html(*, report_id: str, markdown: str, evidence: EvidenceIndex) -> st
     renderer = MarkdownIt("commonmark", {"html": False}).enable("table")
     content = renderer.render(markdown)
     evidence_rows = "".join(
-        "<li id=\"" + html.escape(item.evidence_id, quote=True) + "\"><code>"
+        "<li id=\"evidence-" + html.escape(item.evidence_id, quote=True) + "\"><code>"
         + html.escape(item.evidence_id)
         + "</code> <span>"
         + html.escape(item.summary)

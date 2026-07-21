@@ -2,6 +2,8 @@ from pathlib import Path
 
 import json
 
+import pytest
+
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
@@ -9,6 +11,7 @@ from autoad_researcher.reporting.narrative import NarrativeParagraphV1, Narrativ
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.validator import validate_report
+from autoad_researcher.reporting.renderer_markdown import render_markdown
 from autoad_researcher.worker.main import _process_pending_jobs
 
 
@@ -109,6 +112,54 @@ def test_narrative_agent_uses_only_frozen_context_when_configured(tmp_path: Path
     context = observed["messages"][1]["content"]
     assert "test-key" not in context
     assert "uncertainties" in context
+
+
+def test_selected_model_failure_does_not_publish_a_fallback(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_reporting_model_failure"
+    run_dir.mkdir()
+    session = ExperimentSessionStore().create_or_get(
+        run_dir, task_ref="tasks/task.json", task_hash="1" * 64, execution_mode="approve_each_step"
+    )[0]
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = result["manifest"].report_id
+    assert _process_pending_jobs(run_dir) == 1
+    directory = run_dir / "reports" / report_id
+    facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
+    evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    profile = {"mode": "model", "model": "test-model", "provider_base_url": "https://provider.test", "prompt_sha256": "a" * 64}
+    monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "test-key")
+    monkeypatch.setattr("autoad_researcher.reporting.narrative_agent.call_research_chat", lambda *_args, **_kwargs: {"error": "down"})
+    from autoad_researcher.reporting.narrative_agent import NarrativeGenerationError, generate_narrative
+
+    with pytest.raises(NarrativeGenerationError, match="did not return"):
+        generate_narrative(facts=facts, evidence=evidence, profile=profile)
+
+
+def test_interpretation_renders_claim_template_not_raw_paragraph(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_render_claim"
+    run_dir.mkdir()
+    session = ExperimentSessionStore().create_or_get(
+        run_dir, task_ref="tasks/task.json", task_hash="2" * 64, execution_mode="approve_each_step"
+    )[0]
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    assert _process_pending_jobs(run_dir) == 1
+    directory = run_dir / "reports" / result["manifest"].report_id
+    facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
+    evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    status_evidence = next(item.evidence_id for item in evidence.entries if "repository_and_environment.status" in item.fact_refs)
+    narrative = NarrativeSectionsV1(
+        sections=[
+            NarrativeSectionV1(section_id="summary", paragraphs=[NarrativeParagraphV1(paragraph_id="summary", paragraph_kind="background", prose_template="摘要")]),
+            NarrativeSectionV1(section_id="interpretation", paragraphs=[NarrativeParagraphV1(paragraph_id="interpretation", paragraph_kind="interpretation", prose_template="unpublished paragraph", claim_ids=["claim"])]),
+            NarrativeSectionV1(section_id="limitations", paragraphs=[NarrativeParagraphV1(paragraph_id="limitations", paragraph_kind="limitation", prose_template="限制", claim_ids=["claim"])]),
+            NarrativeSectionV1(section_id="next_steps", paragraphs=[NarrativeParagraphV1(paragraph_id="next", paragraph_kind="recommendation", prose_template="下一步")]),
+        ],
+        claims=[StructuredClaimV1(claim_id="claim", claim_kind="explanation", statement_template="已绑定事实：{{fact:repository_and_environment.status}}", fact_refs=["repository_and_environment.status"], evidence_ids=[status_evidence])],
+    )
+    assert validate_report(facts=facts, evidence=evidence, narrative=narrative).passed
+    markdown = render_markdown(facts=facts, narrative=narrative, evidence=evidence)
+    assert "unpublished paragraph" not in markdown
+    assert "已绑定事实：" in markdown
 
 
 def test_validator_rejects_improvement_claim_for_non_comparable_attempt(tmp_path: Path):

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, append_message, complete_turn, load_messages, respond_to_turn, start_turn
+from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, _recent_history, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -50,6 +50,25 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
     assert completed.status == "completed"
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
+
+
+def test_discussion_response_receives_bounded_completed_history(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    earlier = start_turn(run_dir, report_id=report_id, request_id="turn_earlier", content="刚才的实验")
+    complete_turn(run_dir, report_id=report_id, turn_id=earlier.turn_id, response=DiscussionResponse(answer="先前回答", response_kind="insufficient_evidence"))
+    current = start_turn(run_dir, report_id=report_id, request_id="turn_current", content="继续解释")
+    captured = {}
+
+    def fake_call(*args, **_kwargs):
+        captured["messages"] = args[2]
+        return {"reply": '{"answer":"上下文已加载。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":[]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    assert respond_to_turn(run_dir, report_id=report_id, turn_id=current.turn_id, api_key="test", provider_url="https://example.test", model="test").status == "completed"
+    contents = [item["content"] for item in captured["messages"]]
+    assert "刚才的实验" in contents and "先前回答" in contents and contents[-1] == "继续解释"
+    history = _recent_history(load_turns(run_dir, report_id=report_id), current_turn_id="missing")
+    assert sum(len(item["content"].encode("utf-8")) for item in history) <= 16 * 1024 + len(history[0]["content"].encode("utf-8"))
 
 
 def test_discussion_budget_and_factual_evidence_requirements(monkeypatch, tmp_path: Path):

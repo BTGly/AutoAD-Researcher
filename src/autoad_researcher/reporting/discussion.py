@@ -19,6 +19,8 @@ from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, TOOL_CATALOG, Repo
 
 MAX_TURNS = 40
 MAX_MESSAGE_CHARS = 8000
+MAX_HISTORY_MESSAGES = 12
+MAX_HISTORY_BYTES = 16 * 1024
 
 
 class ReportDiscussionBudget(BaseModel):
@@ -152,7 +154,10 @@ def _respond_with_slot(
     evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id} for item in index.entries[:24]]
     messages = [
         {"role": "system", "content": "You answer only from frozen report context. Return either DiscussionResponse JSON, or {tool_calls:[{name,arguments}]}. Use typed tools for deep details; never claim file access, execution, or unlisted evidence."},
-        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "tool_catalog": TOOL_CATALOG, "max_tool_calls": MAX_TOOL_CALLS, "question": turn.user_message}, ensure_ascii=False)},
+        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "tool_catalog": TOOL_CATALOG, "max_tool_calls": MAX_TOOL_CALLS}, ensure_ascii=False)},
+        {"role": "assistant", "content": "I will use only this frozen report context and registered Evidence."},
+        *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id),
+        {"role": "user", "content": turn.user_message},
     ]
     from autoad_researcher.ui.chat_client import call_research_chat
     result = call_research_chat(
@@ -196,6 +201,34 @@ def _respond_with_slot(
     except Exception as exc:
         return fail_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, error=str(exc))
     return complete_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, response=response)
+
+
+def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str) -> list[dict[str, str]]:
+    """Keep the latest completed dialogue as data within a fixed request budget."""
+
+    messages: list[dict[str, str]] = []
+    for item in turns:
+        if item.turn_id == current_turn_id or item.status != "completed" or item.response is None:
+            continue
+        messages.extend((
+            {"role": "user", "content": item.user_message},
+            {"role": "assistant", "content": item.response.answer},
+        ))
+    selected: list[dict[str, str]] = []
+    used = 0
+    for item in reversed(messages[-MAX_HISTORY_MESSAGES:]):
+        size = len(item["content"].encode("utf-8"))
+        if selected and used + size > MAX_HISTORY_BYTES:
+            break
+        if size > MAX_HISTORY_BYTES:
+            selected.append({"role": item["role"], "content": item["content"].encode("utf-8")[-MAX_HISTORY_BYTES:].decode("utf-8", errors="ignore")})
+            break
+        selected.append(item)
+        used += size
+    selected.reverse()
+    if len(selected) < len(messages):
+        return [{"role": "system", "content": "Earlier report discussion turns were omitted to preserve the bounded context window."}, *selected]
+    return selected
 
 
 def _tool_plan(reply: str) -> list[ReportToolCall]:

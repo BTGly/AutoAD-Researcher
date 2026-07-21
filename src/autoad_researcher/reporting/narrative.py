@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 SectionId = Literal["summary", "interpretation", "limitations", "next_steps"]
 ParagraphKind = Literal["background", "interpretation", "limitation", "recommendation"]
 ClaimKind = Literal["explanation", "limitation", "recommendation"]
+ClaimScope = Literal["general", "scientific_assessment"]
 
 
 class StructuredClaimV1(BaseModel):
@@ -16,6 +17,7 @@ class StructuredClaimV1(BaseModel):
 
     claim_id: str = Field(min_length=1)
     claim_kind: ClaimKind
+    assertion_scope: ClaimScope = "general"
     statement_template: str = Field(min_length=1)
     fact_refs: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)

@@ -134,11 +134,14 @@ export interface ReportDigest {
   report_id: string;
   facts_content_sha256: string;
   research_objective: Record<string, unknown>;
+  engineering_status: string | null;
   execution_status: string | null;
+  scientific_status: string | null;
   attempt_count: number;
   failed_attempt_count: number;
   non_comparable_attempt_count: number;
   champion: Record<string, unknown>;
+  primary_metrics: Array<{ attempt_id: string; metric: string; value: unknown }>;
   stop_decision: Record<string, unknown>;
   uncertainties: string[];
 }

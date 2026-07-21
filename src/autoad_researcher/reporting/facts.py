@@ -198,4 +198,6 @@ def _uncertainties(session: dict[str, Any], attempts: list[dict[str, Any]], non_
         messages.append("One or more attempts are non-comparable under their recorded evaluation status.")
     if any("outcome" not in item for item in attempts):
         messages.append("One or more attempts have no frozen OutcomeCard.")
+    if any("assessment" not in item for item in attempts):
+        messages.append("One or more attempts have no frozen ScientificAssessment; scientific comparison is evidence-insufficient.")
     return messages

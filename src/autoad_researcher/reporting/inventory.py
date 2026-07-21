@@ -6,7 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from autoad_researcher.reporting.snapshot import resolve_run_relative_file, sha256_file
+from autoad_researcher.reporting.snapshot import canonical_sha256, resolve_run_relative_file, sha256_file
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
 
@@ -64,6 +64,7 @@ def collect_snapshot_sources(
             add(f"attempts/{attempt_id}/{filename}", artifact_type, f"{artifact_type}:{attempt_id}")
         _add_registered_resource_reports(run_dir, attempt_id, add)
         _add_registered_execution_logs(run_dir, attempt_id, add)
+        _add_registered_patch_diffs(run_dir, attempt_id, add)
     candidates = CandidateRegistry().list_candidates(run_dir, session_id=session_id)
     for candidate in candidates:
         add(
@@ -99,6 +100,8 @@ def _add_registered_resource_reports(run_dir: Path, attempt_id: str, add) -> Non
         manifest = OutputManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     except ValueError:
         return
+    if manifest.manifest_sha256 != canonical_sha256(manifest.model_dump(mode="json", exclude={"manifest_sha256"})):
+        return
     for output in manifest.outputs:
         locator = f"attempts/{attempt_id}/{output.path}"
         path = run_dir.joinpath(*PurePosixPath(locator).parts)
@@ -128,3 +131,10 @@ def _add_registered_execution_logs(run_dir: Path, attempt_id: str, add) -> None:
         return
     for stream, locator in (("stdout", result.stdout_path), ("stderr", result.stderr_path)):
         add(f"attempts/{attempt_id}/{locator}", f"attempt_{stream}_log", f"attempt_{stream}_log:{attempt_id}")
+
+
+def _add_registered_patch_diffs(run_dir: Path, attempt_id: str, add) -> None:
+    """Register only the patch artifacts copied by the existing handoff services."""
+
+    for filename in ("patch.diff", "final_patch.diff"):
+        add(f"attempts/{attempt_id}/{filename}", "patch_diff", f"patch_diff:{attempt_id}:{filename}")

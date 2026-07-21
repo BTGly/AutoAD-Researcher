@@ -97,6 +97,9 @@ summary
 - locator 必须 run-relative；
 - 类型必须属于允许的 artifact 类型；
 - 证据大小和日志读取范围受上限约束。
+- Evidence 的 `fact_refs` 必须覆盖事实投影，而不只覆盖根 Attempt：Candidate、baseline、失败/不可比 Attempt、主/guardrail 指标和 validity 均应保持到冻结 Facts 字段的可解析映射。
+- 从 `OutputManifest` 接入 output 前，先复核 manifest 自身的 canonical SHA-256；不在 reporting 层另建摘要算法。
+- `patch_diff` 只允许既有 handoff 已复制到 Attempt 制品目录的 `patch.diff` 或 `final_patch.diff`。未登记制品不以 Git worktree diff 补齐。
 
 ## 7. Digest
 
@@ -115,6 +118,8 @@ Attempt 数量和失败数量
 
 Digest 必须从 Facts 确定性生成，并保留 `facts_content_sha256` 和 `report_id`。
 
+Digest 和 ReportPage 还必须分别呈现工程、执行和科学状态，以及核心指标。没有 `ScientificAssessment` 时写入 `evidence-insufficient` 不确定性；该状态不等同于失败、无效或无效果。
+
 ## 8. Hash 和写入
 
 Facts 的 canonical 内容 hash 排除 `generated_at`、`updated_at` 等 volatile 字段；实际写出的文件另算 artifact hash。输出采用 AutoAD 现有原子写模式，不能覆盖已经冻结的事实文件。
@@ -124,8 +129,10 @@ Facts 的 canonical 内容 hash 排除 `generated_at`、`updated_at` 等 volatil
 - [ ] 相同 Snapshot 输入得到相同 Facts content hash。
 - [ ] 失败、超时、OOM、不可比较 Attempt 都保留。
 - [ ] NON_COMPARABLE Attempt 的 delta 为 `null`。
-- [ ] 所有 Facts 中的关键事实都能解析到 Evidence。
+- [ ] 所有 Facts 中的关键事实都能解析到 Evidence，包括 Candidate、baseline、指标和 validity 投影。
 - [ ] Evidence 不能引用 Snapshot 外的 artifact。
+- [ ] OutputManifest 本身及其中每个 output 的 SHA 都通过复核后才进入 inventory。
+- [ ] 没有已登记 patch artifact 时不制造 Git diff Evidence。
 - [ ] Champion 使用 `CandidateRegistry` / `ChampionPointer` 的真实数据。
 - [ ] 缺失事实显式标记，不通过默认字符串或示例数值补齐。
 - [ ] 输出文件原子写入，失败不留下半截 JSON。

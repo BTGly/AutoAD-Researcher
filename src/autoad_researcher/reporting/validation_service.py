@@ -39,7 +39,7 @@ def run_validate_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
     write_immutable_report_json(run_dir, report_id=report_id, filename="claim_evidence_map.json", artifact_type="report_claim_evidence_map", value=claim_map)
     if not validation.passed:
         raise ValueError("report validation failed: " + "; ".join(validation.errors))
-    write_immutable_report_text(run_dir, report_id=report_id, filename="report.md", artifact_type="report_markdown", text=render_markdown(facts=facts, narrative=narrative))
+    write_immutable_report_text(run_dir, report_id=report_id, filename="report.md", artifact_type="report_markdown", text=render_markdown(facts=facts, narrative=narrative, evidence=evidence))
     store.set_format_status(run_dir, report_id=report_id, format_name="markdown", status="ready")
     store.transition_generation(run_dir, report_id=report_id, target="content_ready")
     append_event(run_dir, "report.content_ready", {"report_id": report_id})

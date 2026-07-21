@@ -11,9 +11,10 @@ from autoad_researcher.reporting.validator import resolve_fact
 MARKDOWN_RENDERER_VERSION = "v2"
 
 
-def render_markdown(*, facts: ExperimentReportFactsV1, narrative: NarrativeSectionsV1) -> str:
+def render_markdown(*, facts: ExperimentReportFactsV1, narrative: NarrativeSectionsV1, evidence=None) -> str:
     sections = {item.section_id: item for item in narrative.sections}
-    lines = ["# 研究报告", "", "## 1. 研究摘要", "", _section_text(facts, sections["summary"]), ""]
+    claims = {item.claim_id: item for item in narrative.claims}
+    lines = ["# 研究报告", "", "## 1. 研究摘要", "", _section_text(facts, sections["summary"], claims), ""]
     lines.extend(["## 2. 研究目标与约束", "", f"- Task: `{facts.research_objective.get('task_ref') or 'unknown'}`", ""])
     lines.extend(["## 3. 实验配置", "", f"- Session: `{facts.session_id}`", ""])
     lines.extend(["## 4. Baseline 与 Champion", "", _attempt_table(facts.baseline), "", _champion_table(facts.candidate_and_champion), ""])
@@ -21,10 +22,10 @@ def render_markdown(*, facts: ExperimentReportFactsV1, narrative: NarrativeSecti
     lines.extend(["## 6. 执行结果", "", _attempt_table(facts.attempts), ""])
     lines.extend(["## 7. 量化结果", "", "### Primary", "", _metric_table(facts.primary_metrics), "", "### Guardrails", "", _metric_table(facts.guardrail_metrics), ""])
     lines.extend(["## 8. 失败与不可比较实验", "", _failure_table([*facts.failed_attempts, *facts.non_comparable_attempts]), ""])
-    lines.extend(["## 9. 科学解释", "", _section_text(facts, sections["interpretation"]), ""])
-    lines.extend(["## 10. 局限与不确定性", "", _section_text(facts, sections["limitations"]), ""])
-    lines.extend(["## 11. 建议的下一步", "", _section_text(facts, sections["next_steps"]), ""])
-    lines.extend(["## 12. 证据与制品引用", "", *[f"- `{ref.artifact_id}`: `{ref.locator}`" for ref in facts.source_refs], ""])
+    lines.extend(["## 9. 科学解释", "", _section_text(facts, sections["interpretation"], claims), ""])
+    lines.extend(["## 10. 局限与不确定性", "", _section_text(facts, sections["limitations"], claims), ""])
+    lines.extend(["## 11. 建议的下一步", "", _section_text(facts, sections["next_steps"], claims), ""])
+    lines.extend(["## 12. 证据与制品引用", "", *_evidence_lines(evidence, facts), ""])
     return "\n".join(lines)
 
 
@@ -99,8 +100,20 @@ def _display(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def _section_text(facts: ExperimentReportFactsV1, section) -> str:
-    return "\n\n".join(_render_template(facts, paragraph.prose_template) for paragraph in section.paragraphs)
+def _section_text(facts: ExperimentReportFactsV1, section, claims) -> str:
+    values = []
+    for paragraph in section.paragraphs:
+        if paragraph.paragraph_kind in {"interpretation", "limitation"}:
+            values.extend(_render_template(facts, claims[claim_id].statement_template) for claim_id in paragraph.claim_ids)
+        else:
+            values.append(_render_template(facts, paragraph.prose_template))
+    return "\n\n".join(values)
+
+
+def _evidence_lines(evidence, facts: ExperimentReportFactsV1) -> list[str]:
+    if evidence is None:
+        return [f"- `{ref.artifact_id}`: `{ref.locator}`" for ref in facts.source_refs]
+    return [f"- [{item.evidence_id}](#evidence-{item.evidence_id}): `{item.evidence_kind}`" for item in evidence.entries]
 
 
 def _render_template(facts: ExperimentReportFactsV1, template: str) -> str:

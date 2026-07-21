@@ -36,6 +36,10 @@ def test_typed_tools_are_report_local_and_return_only_frozen_context(tmp_path: P
     assert [item["name"] for item in results] == ["get_report_digest", "get_evaluation_contract", "get_budget_usage", "list_attempts"]
     assert results[0]["result"]["report_id"] == report_id
     assert "cognitive_cost_summary" in results[2]["result"]
+    assert results[0]["result"]["fact_refs"]
+    assert results[0]["result"]["evidence_ids"]
+    for item in results:
+        assert {"status", "value", "fact_refs", "evidence_ids"}.issubset(item["result"])
 
 
 def test_typed_tools_reject_unknown_attempt_and_evidence(tmp_path: Path):
@@ -62,3 +66,5 @@ def test_log_tool_reads_only_sha_bound_registered_log(tmp_path: Path):
     })
     found = _text_evidence(tmp_path, index, {"attempt_id": "attempt_000001", "stream": "stdout"}, expected=("log",), query="needle", start=None, end=None)
     assert found["matches"] == [{"line": 2, "text": "needle"}]
+    assert found["evidence_ids"] == ["evidence_log"]
+    assert {"status", "value", "fact_refs", "evidence_ids"}.issubset(found)
