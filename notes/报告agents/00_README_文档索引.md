@@ -79,7 +79,16 @@ PR-R0 控制面接入
 → PR-R6 可选 PDF + Bundle
 ```
 
-## 六、总原则
+## 六、当前实现状态（2026-07-21）
+
+- 已完成：Snapshot/Facts/Evidence、持久化报告 DAG、结构化 Narrative、发布前 Validator、Markdown/HTML、可选 PDF/Bundle、版本化 API/前端、只读 Discussion、Proposal/Review/Handoff。
+- 报告 DAG 以既有 `PipelineJob` 的持久化依赖预创建 `facts -> narrative -> validate -> html -> bundle`；失败上游会阻塞后继，重试同一 Job 后自动继续。
+- Evidence 同时保留根制品和字段路径，执行结果引用仅在其 locator 与 SHA 冻结引用一致时标为 `bound`。
+- Narrative Agent 只消费冻结 Facts/Evidence。配置 `AUTOAD_REPORT_API_KEY`、`AUTOAD_REPORT_BASE_URL`、`AUTOAD_REPORT_MODEL` 后使用共享结构化 LLM 通道；未配置或调用失败时写入可审计的确定性 fallback 元数据。
+
+剩余工作仅限后续产品迭代，例如更丰富的 Discussion 只读工具和对外部模型的运维配置界面；它们不阻塞当前报告闭环。
+
+## 七、总原则
 
 1. 报告是现有实验控制面的只读投影，不是第二套实验平台。
 2. Facts、Evidence、Validation 和制品版本不可覆盖；状态和审阅记录可原子更新并留事件。

@@ -19,6 +19,8 @@ class StructuredClaimV1(BaseModel):
     statement_template: str = Field(min_length=1)
     fact_refs: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+    attempt_ids: list[str] = Field(default_factory=list)
+    asserted_scientific_effects: dict[str, Literal["IMPROVEMENT", "NO_EFFECT", "REGRESSION", "INCONCLUSIVE"]] = Field(default_factory=dict)
 
 
 class NarrativeParagraphV1(BaseModel):

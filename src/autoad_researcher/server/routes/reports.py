@@ -22,7 +22,7 @@ MAX_REPORT_DOWNLOAD_BYTES = 10 * 1024 * 1024
 _DOWNLOAD_ARTIFACTS = {
     "report.md", "report.html", "report.pdf", "report_bundle.zip", "checksums.sha256",
     "report_facts.json", "evidence_index.json", "report_digest.json", "report_validation.json",
-    "narrative_sections.json", "claim_evidence_map.json", "report_pdf_result.json", "delivery_state_snapshot.json", "bundle_exclusions.json",
+    "narrative_sections.json", "narrative_generation.json", "claim_evidence_map.json", "report_pdf_result.json", "delivery_state_snapshot.json", "bundle_exclusions.json",
 }
 
 

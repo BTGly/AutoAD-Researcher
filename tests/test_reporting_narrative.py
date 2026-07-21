@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import json
+
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
-from autoad_researcher.reporting.narrative import NarrativeParagraphV1, NarrativeSectionV1, NarrativeSectionsV1
+from autoad_researcher.reporting.narrative import NarrativeParagraphV1, NarrativeSectionV1, NarrativeSectionsV1, StructuredClaimV1
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.validator import validate_report
@@ -57,3 +59,81 @@ def test_validator_rejects_unknown_placeholders_and_unbound_interpretation(tmp_p
     assert not validation.passed
     assert any("unknown Fact placeholder" in error for error in validation.errors)
     assert any("requires a claim ID" in error for error in validation.errors)
+
+
+def test_narrative_agent_uses_only_frozen_context_when_configured(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_reporting_narrative_agent"
+    run_dir.mkdir()
+    session = ExperimentSessionStore().create_or_get(
+        run_dir, task_ref="tasks/task.json", task_hash="e" * 64, execution_mode="approve_each_step"
+    )[0]
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = result["manifest"].report_id
+    assert _process_pending_jobs(run_dir) == 1
+    directory = run_dir / "reports" / report_id
+    facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
+    evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    root_evidence = next(item.evidence_id for item in evidence.entries if item.field_path == "$")
+
+    observed = {}
+    def fake_call(api_key, provider_url, messages, **kwargs):
+        observed["messages"] = messages
+        assert api_key == "test-key"
+        assert provider_url == "https://provider.test"
+        assert kwargs["response_format_json"] is True
+        return {"reply": json.dumps({
+            "schema_version": 2,
+            "sections": [
+                {"section_id": "summary", "paragraphs": [{"paragraph_id": "summary", "paragraph_kind": "background", "prose_template": "冻结摘要", "claim_ids": ["summary_claim"]}]},
+                {"section_id": "interpretation", "paragraphs": [{"paragraph_id": "interpretation", "paragraph_kind": "interpretation", "prose_template": "冻结解释", "claim_ids": ["interpretation_claim"]}]},
+                {"section_id": "limitations", "paragraphs": [{"paragraph_id": "limitations", "paragraph_kind": "limitation", "prose_template": "冻结限制", "claim_ids": ["limitations_claim"]}]},
+                {"section_id": "next_steps", "paragraphs": [{"paragraph_id": "next", "paragraph_kind": "recommendation", "prose_template": "等待确认", "claim_ids": ["next_claim"]}]},
+            ],
+            "claims": [
+                {"claim_id": "summary_claim", "claim_kind": "explanation", "statement_template": "冻结摘要", "fact_refs": [], "evidence_ids": []},
+                {"claim_id": "interpretation_claim", "claim_kind": "explanation", "statement_template": "冻结解释", "fact_refs": [], "evidence_ids": []},
+                {"claim_id": "limitations_claim", "claim_kind": "limitation", "statement_template": "冻结限制", "fact_refs": ["uncertainties"], "evidence_ids": [root_evidence]},
+                {"claim_id": "next_claim", "claim_kind": "recommendation", "statement_template": "等待确认", "fact_refs": [], "evidence_ids": []},
+            ],
+        }), "error": ""}
+
+    monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "test-key")
+    monkeypatch.setenv("AUTOAD_REPORT_BASE_URL", "https://provider.test")
+    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "test-model")
+    monkeypatch.setattr("autoad_researcher.reporting.narrative_agent.call_research_chat", fake_call)
+    from autoad_researcher.reporting.narrative_agent import generate_narrative
+
+    generated = generate_narrative(facts=facts, evidence=evidence)
+    assert generated.mode == "model"
+    assert generated.model == "test-model"
+    context = observed["messages"][1]["content"]
+    assert "test-key" not in context
+    assert "uncertainties" in context
+
+
+def test_validator_rejects_improvement_claim_for_non_comparable_attempt(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_noncomparable"
+    run_dir.mkdir()
+    session = ExperimentSessionStore().create_or_get(
+        run_dir, task_ref="tasks/task.json", task_hash="f" * 64, execution_mode="approve_each_step"
+    )[0]
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = result["manifest"].report_id
+    assert _process_pending_jobs(run_dir) == 1
+    directory = run_dir / "reports" / report_id
+    facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
+    evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    noncomparable = {"attempt_id": "attempt_000001", "outcome": {"evaluation_status": "NON_COMPARABLE", "scientific_effect": "INCONCLUSIVE"}}
+    facts = facts.model_copy(update={"attempts": [noncomparable], "non_comparable_attempts": [noncomparable]})
+    narrative = NarrativeSectionsV1(
+        sections=[
+            NarrativeSectionV1(section_id="summary", paragraphs=[NarrativeParagraphV1(paragraph_id="summary", paragraph_kind="background", prose_template="摘要")]),
+            NarrativeSectionV1(section_id="interpretation", paragraphs=[NarrativeParagraphV1(paragraph_id="interpretation", paragraph_kind="interpretation", prose_template="解释", claim_ids=["claim"])]),
+            NarrativeSectionV1(section_id="limitations", paragraphs=[NarrativeParagraphV1(paragraph_id="limitations", paragraph_kind="limitation", prose_template="限制", claim_ids=["claim"])]),
+            NarrativeSectionV1(section_id="next_steps", paragraphs=[NarrativeParagraphV1(paragraph_id="next", paragraph_kind="recommendation", prose_template="下一步")]),
+        ],
+        claims=[StructuredClaimV1(claim_id="claim", claim_kind="explanation", statement_template="提升", attempt_ids=["attempt_000001"], asserted_scientific_effects={"attempt_000001": "IMPROVEMENT"})],
+    )
+    validation = validate_report(facts=facts, evidence=evidence, narrative=narrative)
+    assert not validation.passed
+    assert any("non-comparable" in error for error in validation.errors)

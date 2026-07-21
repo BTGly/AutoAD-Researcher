@@ -15,6 +15,7 @@ _DELIVERY_METADATA: dict[str, tuple[str, str]] = {
     "report_evidence_index": ("application/json", "attachment"),
     "report_digest": ("application/json", "attachment"),
     "report_narrative": ("application/json", "attachment"),
+    "report_narrative_generation": ("application/json", "attachment"),
     "report_validation": ("application/json", "attachment"),
     "report_claim_evidence_map": ("application/json", "attachment"),
     "report_pdf_result": ("application/json", "attachment"),

@@ -6,11 +6,20 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.v2.event_service import append_event
-from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job, load_pipeline_jobs, requeue_failed_report_job
+from autoad_researcher.assistant.v2.job_service import (
+    create_or_get_pipeline_job,
+    create_or_get_pipeline_jobs,
+    load_pipeline_jobs,
+    requeue_failed_report_job,
+)
 from autoad_researcher.reporting.recipe import report_recipe_hash
 from autoad_researcher.reporting.snapshot import build_report_snapshot, snapshot_content_sha256
 from autoad_researcher.reporting.store import MANIFEST_FILE, SNAPSHOT_FILE, ReportStore
 from autoad_researcher.reporting.facts_service import REPORT_FACTS_JOB_TYPE
+from autoad_researcher.reporting.html_service import REPORT_HTML_JOB_TYPE
+from autoad_researcher.reporting.narrative_service import REPORT_NARRATIVE_JOB_TYPE
+from autoad_researcher.reporting.validation_service import REPORT_VALIDATE_JOB_TYPE
+from autoad_researcher.reporting.bundle import REPORT_BUNDLE_JOB_TYPE
 
 # Retained only to recover reports created by the earlier asynchronous-snapshot
 # implementation. New requests freeze their Snapshot synchronously.
@@ -27,21 +36,41 @@ class ReportRequestService:
         snapshot = build_report_snapshot(run_dir, session_id=session_id)
         recipe_hash = report_recipe_hash()
         manifest, created = self._store.create_or_get(run_dir, snapshot=snapshot, report_recipe_hash=recipe_hash)
-        job, job_created = create_or_get_pipeline_job(
-            run_dir,
-            source_id="",
-            report_id=manifest.report_id,
-            job_type=REPORT_FACTS_JOB_TYPE,
-            idempotency_key=f"report:{manifest.report_id}:{snapshot_content_sha256(snapshot)}:{REPORT_FACTS_JOB_TYPE}",
-            evidence_role="report_artifact",
-            payload={
-                "report_id": manifest.report_id,
-                "session_id": session_id,
-                "snapshot_content_sha256": manifest.source_snapshot_content_sha256,
-                "report_recipe_hash": manifest.report_recipe_hash,
-            },
+        common_payload = {
+            "report_id": manifest.report_id,
+            "session_id": session_id,
+            "snapshot_content_sha256": manifest.source_snapshot_content_sha256,
+            "report_recipe_hash": manifest.report_recipe_hash,
+        }
+        job_types = (
+            REPORT_FACTS_JOB_TYPE,
+            REPORT_NARRATIVE_JOB_TYPE,
+            REPORT_VALIDATE_JOB_TYPE,
+            REPORT_HTML_JOB_TYPE,
+            REPORT_BUNDLE_JOB_TYPE,
         )
-        self._store.record_job(run_dir, report_id=manifest.report_id, job_id=job["job_id"])
+        job_keys = {
+            job_type: f"report:{manifest.report_id}:{manifest.source_snapshot_content_sha256}:{job_type}"
+            for job_type in job_types
+        }
+        jobs, job_created = create_or_get_pipeline_jobs(
+            run_dir,
+            [
+                {
+                    "source_id": "",
+                    "report_id": manifest.report_id,
+                    "job_type": job_type,
+                    "idempotency_key": job_keys[job_type],
+                    "evidence_role": "report_artifact",
+                    "payload": common_payload,
+                    **({"depends_on_key": job_keys[job_types[index - 1]]} if index else {}),
+                }
+                for index, job_type in enumerate(job_types)
+            ],
+        )
+        for item in jobs:
+            self._store.record_job(run_dir, report_id=manifest.report_id, job_id=item["job_id"])
+        job = jobs[0]
         if created or job_created:
             append_event(
                 run_dir,

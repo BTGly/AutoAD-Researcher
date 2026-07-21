@@ -73,6 +73,15 @@ def _process_pending_jobs(run_dir: Path) -> int:
     from autoad_researcher.assistant.v2.event_service import append_event
 
     experiment_job_types = {"experiment_baseline", "experiment_baseline_b_test", "experiment_attempt", "experiment_confirmatory"}
+    report_job_types = {
+        "report_snapshot_build",
+        "report_facts_assemble",
+        "report_narrative_generate",
+        "report_validate",
+        "report_render_html",
+        "report_package",
+        "report_render_pdf",
+    }
     recovered = requeue_stale_running_jobs(run_dir, excluded_job_types=experiment_job_types)
     for recovered_job in recovered:
         append_event(
@@ -81,7 +90,13 @@ def _process_pending_jobs(run_dir: Path) -> int:
             {"job_id": recovered_job.get("job_id", ""), "job_type": recovered_job.get("job_type", "")},
         )
     processed = 0
-    from autoad_researcher.assistant.v2.job_service import complete_pipeline_job, fail_pipeline_job
+    from autoad_researcher.assistant.v2.job_service import complete_pipeline_job, fail_pipeline_job, load_pipeline_jobs
+    # A persisted report chain advances one stage per poll.  A later stage
+    # therefore cannot consume artifacts produced during this same scan.
+    report_dependency_snapshot = {
+        item.get("job_id"): item.get("status")
+        for item in load_pipeline_jobs(run_dir)
+    }
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             running_job = json.loads(line)
@@ -121,9 +136,17 @@ def _process_pending_jobs(run_dir: Path) -> int:
         from autoad_researcher.assistant.v2.event_service import append_event
 
         dependency = _dependency_status(run_dir, job)
+        if job_type in report_job_types:
+            depends_on = job.get("payload", {}).get("depends_on") if isinstance(job.get("payload"), dict) else None
+            if depends_on and report_dependency_snapshot.get(depends_on) != "completed":
+                dependency = "failed" if report_dependency_snapshot.get(depends_on) == "failed" else "pending"
         if dependency == "pending":
             continue
         if dependency == "failed":
+            if job_type in report_job_types:
+                # Keep the successor queued. Retrying the failed predecessor
+                # then resumes the same persisted graph without re-enqueuing.
+                continue
             claimed = claim_pipeline_job(run_dir, job_id)
             if claimed:
                 error = f"dependency failed: {job.get('payload', {}).get('depends_on')}"

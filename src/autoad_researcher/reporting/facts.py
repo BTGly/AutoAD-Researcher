@@ -142,7 +142,40 @@ def _attempt_facts(raw: list[tuple[ArtifactReferenceV2, dict[str, Any]]]) -> lis
         elif reference.artifact_type == "scientific_assessment":
             assessment = ScientificAssessment.model_validate(value)
             entry["assessment"] = assessment.model_dump(mode="json", exclude_none=True)
+        elif reference.artifact_type in {
+            "execution_result",
+            "assessment_reconciliation",
+            "scientific_evaluation_inputs",
+            "attempt_metrics",
+            "failure_classification",
+        }:
+            entry[reference.artifact_type] = value
+            if reference.artifact_type == "execution_result":
+                entry["execution_result_artifact_ref"] = reference.model_dump(mode="json")
+    for attempt_id, entry in attempts.items():
+        execution_ref = entry.get("execution_result_artifact_ref")
+        declared_ref = entry.get("execution_result_ref")
+        outcome = entry.get("outcome")
+        if declared_ref is None and isinstance(outcome, dict):
+            declared_ref = outcome.get("execution_result_ref")
+        expected = _attempt_relative_locator(attempt_id, declared_ref)
+        if not isinstance(execution_ref, dict):
+            entry["execution_result_binding"] = {"status": "missing", "declared_ref": declared_ref}
+        elif expected != execution_ref.get("locator"):
+            entry["execution_result_binding"] = {
+                "status": "unbound",
+                "declared_ref": declared_ref,
+                "artifact_locator": execution_ref.get("locator"),
+            }
+        else:
+            entry["execution_result_binding"] = {"status": "bound", "artifact_ref": execution_ref}
     return [attempts[key] for key in sorted(attempts)]
+
+
+def _attempt_relative_locator(attempt_id: str, value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return value if value.startswith("attempts/") else f"attempts/{attempt_id}/{value}"
 
 
 def _metric_facts(attempts: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:

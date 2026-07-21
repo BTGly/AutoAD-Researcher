@@ -11,7 +11,7 @@ from autoad_researcher.reporting.facts import ExperimentReportFactsV1
 from autoad_researcher.reporting.narrative import NarrativeSectionsV1
 
 REQUIRED_SECTIONS = {"summary", "interpretation", "limitations", "next_steps"}
-REPORT_VALIDATOR_VERSION = "v2"
+REPORT_VALIDATOR_VERSION = "v3"
 _PLACEHOLDER = re.compile(r"\{\{fact:([A-Za-z0-9_.-]+)\}\}")
 
 
@@ -34,6 +34,8 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
     if len(claims) != len(narrative.claims):
         errors.append("Narrative claim IDs must be unique")
     evidence_ids = {item.evidence_id for item in evidence.entries}
+    _validate_evidence_bindings(facts, evidence, errors)
+    attempt_ids = {item.get("attempt_id") for item in facts.attempts if isinstance(item.get("attempt_id"), str)}
     for section in narrative.sections:
         for paragraph in section.paragraphs:
             if paragraph.paragraph_kind in {"interpretation", "limitation"} and not paragraph.claim_ids:
@@ -49,12 +51,47 @@ def validate_report(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, 
         for fact_ref in claim.fact_refs:
             if _resolve_fact(facts, fact_ref) is _MISSING:
                 errors.append(f"claim {claim.claim_id} references an unknown Fact")
+        if claim.fact_refs and not claim.evidence_ids:
+            errors.append(f"claim {claim.claim_id} binds Facts without Evidence IDs")
+        unknown_attempts = set(claim.attempt_ids).difference(attempt_ids)
+        if unknown_attempts:
+            errors.append(f"claim {claim.claim_id} references unknown Attempt IDs")
+        for attempt_id, asserted_effect in claim.asserted_scientific_effects.items():
+            if attempt_id not in attempt_ids:
+                errors.append(f"claim {claim.claim_id} asserts an unknown Attempt ID")
+                continue
+            attempt = next(item for item in facts.attempts if item.get("attempt_id") == attempt_id)
+            outcome = attempt.get("outcome") if isinstance(attempt.get("outcome"), dict) else {}
+            if outcome.get("evaluation_status") == "NON_COMPARABLE":
+                errors.append(f"claim {claim.claim_id} asserts scientific effect for a non-comparable Attempt")
+            elif outcome.get("scientific_effect") != asserted_effect:
+                errors.append(f"claim {claim.claim_id} scientific effect conflicts with frozen Facts")
         _validate_placeholders(facts, claim.statement_template, f"claim {claim.claim_id}", errors)
     if facts.non_comparable_attempts:
         warnings.append("Non-comparable Attempts remain in deterministic result tables.")
     if not facts.failed_attempts and not facts.non_comparable_attempts:
         warnings.append("No failed or non-comparable Attempt is present in the frozen Facts")
     return ReportValidationResult(passed=not errors, errors=errors, warnings=warnings)
+
+
+def _validate_evidence_bindings(facts: ExperimentReportFactsV1, evidence: EvidenceIndex, errors: list[str]) -> None:
+    source_refs = {item.artifact_id: item for item in facts.source_refs}
+    evidence_ids: set[str] = set()
+    for entry in evidence.entries:
+        if entry.evidence_id in evidence_ids:
+            errors.append("Evidence IDs must be unique")
+        evidence_ids.add(entry.evidence_id)
+        source = source_refs.get(entry.source_object_id)
+        if source is None:
+            errors.append(f"Evidence {entry.evidence_id} references an unknown snapshot object")
+            continue
+        if entry.field_path != "$" and not entry.field_path.strip("."):
+            errors.append(f"Evidence {entry.evidence_id} has an invalid field path")
+        if entry.evidence_kind.startswith("frozen_"):
+            if not entry.artifact_ref.artifact_type.startswith("frozen_"):
+                errors.append(f"Evidence {entry.evidence_id} has an invalid frozen reference")
+        elif entry.artifact_ref != source:
+            errors.append(f"Evidence {entry.evidence_id} does not preserve its source SHA binding")
 
 
 _MISSING = object()

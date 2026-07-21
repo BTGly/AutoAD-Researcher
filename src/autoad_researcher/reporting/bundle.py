@@ -20,6 +20,7 @@ _BUNDLE_FILES = (
     "report_validation.json",
     "claim_evidence_map.json",
     "narrative_sections.json",
+    "narrative_generation.json",
     "report_manifest.json",
     "report_snapshot.json",
     "delivery_state_snapshot.json",
@@ -38,13 +39,16 @@ def run_bundle_job(run_dir: Path, job: dict[str, object]) -> list[str]:
         raise ValueError("report package requires content_ready")
     if state.format_status.html != "ready":
         raise ValueError("report package requires HTML readiness")
+    directory = run_dir / "reports" / report_id
+    if not (directory / "report.html").is_file():
+        raise ValueError("report package requires HTML artifact")
     if state.format_status.bundle == "ready":
         return _outputs(run_dir, report_id)
-    directory = run_dir / "reports" / report_id
     _write_delivery_snapshots(run_dir, report_id=report_id, job=job)
     names = [name for name in _BUNDLE_FILES if (directory / name).is_file()]
     required = {
         "report.md",
+        "report.html",
         "report_facts.json",
         "evidence_index.json",
         "report_digest.json",

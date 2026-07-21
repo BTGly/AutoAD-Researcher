@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.reporting.content_persistence import write_immutable_report_text
-from autoad_researcher.reporting.render_request import request_optional_format
 from autoad_researcher.reporting.renderer_html import render_html
 from autoad_researcher.reporting.store import ReportStore
 
@@ -24,5 +23,4 @@ def run_html_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
         markdown = (directory / "report.md").read_text(encoding="utf-8")
         write_immutable_report_text(run_dir, report_id=report_id, filename="report.html", artifact_type="report_html", text=render_html(report_id=report_id, markdown=markdown))
         store.set_format_status(run_dir, report_id=report_id, format_name="html", status="ready")
-    request_optional_format(run_dir, report_id=report_id, format_name="bundle")
     return [str((directory / "report.html").relative_to(run_dir))]

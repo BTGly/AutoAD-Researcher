@@ -37,10 +37,18 @@ def test_report_request_is_idempotent_and_uses_report_job_identity(tmp_path: Pat
     assert replayed is False
     assert first["manifest"].report_id == second["manifest"].report_id
     jobs = load_pipeline_jobs(run_dir)
-    assert len(jobs) == 1
-    assert jobs[0]["job_type"] == REPORT_FACTS_JOB_TYPE
+    assert len(jobs) == 5
+    assert [item["job_type"] for item in jobs] == [
+        REPORT_FACTS_JOB_TYPE,
+        "report_narrative_generate",
+        "report_validate",
+        "report_render_html",
+        "report_package",
+    ]
     assert jobs[0]["report_id"] == first["manifest"].report_id
     assert jobs[0]["source_id"] == ""
+    assert jobs[1]["payload"]["depends_on"] == jobs[0]["job_id"]
+    assert jobs[4]["payload"]["depends_on"] == jobs[3]["job_id"]
 
 
 def test_report_request_concurrent_replay_allocates_one_version(tmp_path: Path):
@@ -54,7 +62,7 @@ def test_report_request_concurrent_replay_allocates_one_version(tmp_path: Path):
 
     assert {item["manifest"].report_id for item in results}
     assert len(ReportStore().list_manifests(run_dir, session_id=session.session_id)) == 1
-    assert len(load_pipeline_jobs(run_dir)) == 1
+    assert len(load_pipeline_jobs(run_dir)) == 5
 
 
 def test_report_recipe_change_allocates_a_new_version(tmp_path: Path, monkeypatch):
@@ -110,6 +118,26 @@ def test_validate_retry_returns_only_the_failed_validate_stage_to_its_phase(tmp_
     state = ReportStore().load_state(run_dir, report_id)
     assert state.generation_status == "validating"
     assert state.retry_count == 1
+
+
+def test_failed_report_stage_blocks_successors_and_retry_resumes_same_graph(tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_dependency_retry"
+    run_dir.mkdir()
+    session = _session(run_dir)
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = result["manifest"].report_id
+    jobs = load_pipeline_jobs(run_dir)
+    facts, narrative = jobs[:2]
+
+    ReportStore().mark_failed(run_dir, report_id=report_id, error="fixture facts failure")
+    fail_pipeline_job(run_dir, facts["job_id"], error="fixture facts failure")
+    assert _process_pending_jobs(run_dir) == 0
+    assert next(item for item in load_pipeline_jobs(run_dir) if item["job_id"] == narrative["job_id"])["status"] == "queued"
+
+    retry_failed_report_job(run_dir, report_id=report_id, job_id=facts["job_id"])
+    assert _process_pending_jobs(run_dir) == 1
+    assert _process_pending_jobs(run_dir) == 1
+    assert next(item for item in load_pipeline_jobs(run_dir) if item["job_id"] == narrative["job_id"])["status"] == "completed"
 
 
 def test_synchronously_frozen_snapshot_starts_with_facts_job(tmp_path: Path):

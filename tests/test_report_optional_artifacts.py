@@ -3,6 +3,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.pdf import run_pdf_job
 from autoad_researcher.reporting.render_request import request_optional_format
@@ -75,3 +77,15 @@ def test_missing_pdf_capability_marks_only_pdf_failed(tmp_path: Path, monkeypatc
     assert state.generation_status == "content_ready"
     assert state.format_status.pdf == "failed"
     assert (run_dir / "reports" / report_id / "report_pdf_result.json").is_file()
+
+
+def test_bundle_refuses_to_publish_without_html(tmp_path: Path):
+    run_dir, report_id = _content_ready_report(tmp_path)
+    directory = run_dir / "reports" / report_id
+    (directory / "report.html").unlink()
+    ReportStore().set_format_status(run_dir, report_id=report_id, format_name="bundle", status="missing")
+    package_job = next(job for job in load_pipeline_jobs(run_dir) if job["job_type"] == "report_package")
+    from autoad_researcher.reporting.bundle import run_bundle_job
+
+    with pytest.raises(ValueError, match="requires HTML artifact"):
+        run_bundle_job(run_dir, package_job)

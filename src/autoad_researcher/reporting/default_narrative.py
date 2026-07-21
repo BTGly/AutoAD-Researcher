@@ -8,8 +8,8 @@ from autoad_researcher.reporting.narrative import (
     StructuredClaimV1,
 )
 
-NARRATIVE_TEMPLATE_VERSION = "deterministic-v2"
-NARRATIVE_MODEL_PROFILE = "deterministic"
+NARRATIVE_TEMPLATE_VERSION = "structured-agent-v1"
+NARRATIVE_MODEL_PROFILE = "structured-chat-with-deterministic-fallback"
 
 
 def build_default_narrative(facts: ExperimentReportFactsV1) -> NarrativeSectionsV1:

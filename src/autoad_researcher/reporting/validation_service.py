@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from autoad_researcher.assistant.v2.event_service import append_event
-from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
 from autoad_researcher.reporting.content_persistence import write_immutable_report_text
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
@@ -15,7 +14,6 @@ from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.validator import validate_report
 
 REPORT_VALIDATE_JOB_TYPE = "report_validate"
-REPORT_HTML_JOB_TYPE = "report_render_html"
 
 
 def run_validate_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
@@ -44,17 +42,6 @@ def run_validate_job(run_dir: Path, job: dict[str, Any]) -> list[str]:
     write_immutable_report_text(run_dir, report_id=report_id, filename="report.md", artifact_type="report_markdown", text=render_markdown(facts=facts, narrative=narrative))
     store.set_format_status(run_dir, report_id=report_id, format_name="markdown", status="ready")
     store.transition_generation(run_dir, report_id=report_id, target="content_ready")
-    manifest = store.load_manifest(run_dir, report_id)
-    html_job, _ = create_or_get_pipeline_job(
-        run_dir,
-        source_id="",
-        report_id=report_id,
-        job_type=REPORT_HTML_JOB_TYPE,
-        idempotency_key=f"report:{report_id}:{manifest.source_snapshot_content_sha256}:{REPORT_HTML_JOB_TYPE}",
-        evidence_role="report_artifact",
-        payload={"report_id": report_id, "snapshot_content_sha256": manifest.source_snapshot_content_sha256, "report_recipe_hash": manifest.report_recipe_hash},
-    )
-    store.record_job(run_dir, report_id=report_id, job_id=str(html_job["job_id"]))
     append_event(run_dir, "report.content_ready", {"report_id": report_id})
     return _outputs(run_dir, report_id)
 
