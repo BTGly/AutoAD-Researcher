@@ -173,6 +173,15 @@ export interface DiscussionTurn {
   error: string | null;
 }
 
+export interface ReportProposal {
+  proposal_id: string;
+  proposal_type: string;
+  rationale: string;
+  status: 'DRAFT' | 'READY_FOR_CONFIRMATION' | 'CONFIRMED' | 'REJECTED' | 'SUPERSEDED' | 'HANDED_OFF';
+  validation_errors: string[];
+  handoff: Record<string, string> | null;
+}
+
 export interface UnusableParsedSource {
   sourceId: string;
   label: string;

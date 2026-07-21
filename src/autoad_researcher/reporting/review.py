@@ -237,6 +237,19 @@ def load_proposal(run_dir: Path, *, report_id: str, proposal_id: str) -> FollowU
     return FollowUpProposal.model_validate_json(_proposal_path(run_dir, report_id, proposal_id).read_text(encoding="utf-8"))
 
 
+def list_proposals(run_dir: Path, *, report_id: str) -> list[FollowUpProposal]:
+    """Read the report-local proposal history without changing its state."""
+
+    directory = run_dir / "reports" / report_id / "proposals"
+    if not directory.is_dir():
+        return []
+    proposals = [
+        FollowUpProposal.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in directory.glob("proposal_*.json")
+    ]
+    return sorted(proposals, key=lambda item: (item.created_at, item.proposal_id))
+
+
 def reject_proposal(run_dir: Path, *, report_id: str, proposal_id: str) -> FollowUpProposal:
     with _proposal_lock(run_dir, report_id):
         proposal = load_proposal(run_dir, report_id=report_id, proposal_id=proposal_id)

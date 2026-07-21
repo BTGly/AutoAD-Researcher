@@ -9,6 +9,7 @@ import type {
   ReportState,
   DiscussionMessage,
   DiscussionTurn,
+  ReportProposal,
   TaskRun,
 } from './types';
 
@@ -302,3 +303,8 @@ export async function getReportContent(runId: string, reportId: string): Promise
 export async function listReportEvidence(runId: string, reportId: string): Promise<ReportEvidence[]> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/evidence`); if (res.status === 409) return []; if (!res.ok) throw await apiError(res, 'Report evidence unavailable'); return (await res.json()).entries; }
 export async function getReportDiscussion(runId: string, reportId: string): Promise<{ messages: DiscussionMessage[]; turns: DiscussionTurn[] }> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/discussion`); if (!res.ok) throw await apiError(res, 'Discussion unavailable'); return res.json(); }
 export async function sendReportDiscussion(runId: string, reportId: string, requestId: string, content: string): Promise<DiscussionTurn> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/discussion`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ request_id: requestId, content }) }); if (!res.ok) throw await apiError(res, 'Discussion request failed'); return res.json(); }
+export async function listReportProposals(runId: string, reportId: string): Promise<ReportProposal[]> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/proposals`, { headers: getHeaders() }); if (!res.ok) throw await apiError(res, 'Proposal list unavailable'); return (await res.json()).proposals; }
+export async function createHumanProposal(runId: string, reportId: string, rationale: string): Promise<ReportProposal> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/proposals`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ proposal_type: 'REQUEST_HUMAN', rationale }) }); if (!res.ok) throw await apiError(res, 'Proposal creation failed'); return res.json(); }
+export async function confirmReportProposal(runId: string, reportId: string, proposalId: string): Promise<ReportProposal> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/proposals/${proposalId}/confirm`, { method: 'POST', headers: getHeaders() }); if (!res.ok) throw await apiError(res, 'Proposal confirmation failed'); return res.json(); }
+export async function rejectReportProposal(runId: string, reportId: string, proposalId: string): Promise<ReportProposal> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/proposals/${proposalId}/reject`, { method: 'POST', headers: getHeaders() }); if (!res.ok) throw await apiError(res, 'Proposal rejection failed'); return res.json(); }
+export async function recordReportReview(runId: string, reportId: string, decision: string, userComment: string): Promise<unknown> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/review-decision`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ request_id: `review.${reportId}.${crypto.randomUUID()}`, decision, user_comment: userComment }) }); if (!res.ok) throw await apiError(res, 'Review submission failed'); return res.json(); }

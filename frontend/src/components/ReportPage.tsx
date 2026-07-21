@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, ExternalLink, RefreshCw, Send } from 'lucide-react';
-import { getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReports, sendReportDiscussion } from '../lib/api';
-import type { DiscussionMessage, ReportDigest, ReportEvidence, ReportManifest, ReportState } from '../lib/types';
+import { confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
+import type { DiscussionMessage, ReportDigest, ReportEvidence, ReportManifest, ReportProposal, ReportState } from '../lib/types';
 import { MarkdownContent } from './MarkdownContent';
 
 interface Props { runId: string; onBack: () => void; }
@@ -20,6 +20,9 @@ export function ReportPage({ runId, onBack }: Props) {
   const [discussion, setDiscussion] = useState<DiscussionMessage[]>([]);
   const [question, setQuestion] = useState('');
   const [sending, setSending] = useState(false);
+  const [proposals, setProposals] = useState<ReportProposal[]>([]);
+  const [proposalRationale, setProposalRationale] = useState('');
+  const [reviewComment, setReviewComment] = useState('');
   const load = async () => {
     if (!runId) return;
     setLoading(true); setError(null);
@@ -42,14 +45,15 @@ export function ReportPage({ runId, onBack }: Props) {
           setDigest(null); setContent(null); setEvidence([]); setDiscussion([]);
           return;
         }
-        const [nextDigest, nextContent, nextEvidence, nextDiscussion] = await Promise.all([
+        const [nextDigest, nextContent, nextEvidence, nextDiscussion, nextProposals] = await Promise.all([
           getReportDigest(runId, selectedId),
           getReportContent(runId, selectedId),
           listReportEvidence(runId, selectedId),
           getReportDiscussion(runId, selectedId),
+          listReportProposals(runId, selectedId),
         ]);
         if (!active) return;
-        setDigest(nextDigest); setContent(nextContent); setEvidence(nextEvidence); setDiscussion(nextDiscussion.messages);
+        setDigest(nextDigest); setContent(nextContent); setEvidence(nextEvidence); setDiscussion(nextDiscussion.messages); setProposals(nextProposals);
       })
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : '无法读取固定版本报告'); });
     return () => { active = false; };
@@ -58,6 +62,10 @@ export function ReportPage({ runId, onBack }: Props) {
   const artifacts = state?.available_artifacts ?? [];
   const discussionReady = state?.generation_status === 'content_ready' && artifacts.includes('report.md') && artifacts.includes('report_validation.json');
   const sendDiscussion = async () => { if (!selected || !discussionReady || !question.trim() || sending) return; setSending(true); try { await sendReportDiscussion(runId, selected.report_id, `report.${selected.report_id}.${crypto.randomUUID()}`, question.trim()); setQuestion(''); setDiscussion((await getReportDiscussion(runId, selected.report_id)).messages); } catch (reason) { setError(reason instanceof Error ? reason.message : '讨论请求失败'); } finally { setSending(false); } };
+  const refreshProposals = async () => { if (selected) setProposals(await listReportProposals(runId, selected.report_id)); };
+  const proposeHuman = async () => { if (!selected || !proposalRationale.trim()) return; try { await createHumanProposal(runId, selected.report_id, proposalRationale.trim()); setProposalRationale(''); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 创建失败'); } };
+  const changeProposal = async (proposalId: string, action: 'confirm' | 'reject') => { if (!selected) return; try { if (action === 'confirm') await confirmReportProposal(runId, selected.report_id, proposalId); else await rejectReportProposal(runId, selected.report_id, proposalId); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 更新失败'); } };
+  const submitReview = async (decision: string) => { if (!selected) return; try { await recordReportReview(runId, selected.report_id, decision, reviewComment); setReviewComment(''); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : '审阅提交失败'); } };
   return <main style={{ flex: 1, overflow: 'auto', padding: '20px 28px', color: 'var(--text)' }}>
     <header style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
       <div><h1 style={{ fontSize: '1.15rem', margin: 0 }}>实验报告</h1><div style={{ color: 'var(--text-muted)', fontSize: '.82rem', marginTop: 3 }}>固定版本、证据与交付制品</div></div>
@@ -78,7 +86,7 @@ export function ReportPage({ runId, onBack }: Props) {
     </section> : null}
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(250px, .42fr)', gap: 18, marginTop: 16 }}>
       <section style={{ minWidth: 0 }}>{content ? <MarkdownContent>{content}</MarkdownContent> : <div style={{ color: 'var(--text-muted)', padding: 24 }}>{state?.last_error ? `生成失败：${state.last_error}` : '此版本尚无可读 Markdown。'}</div>}</section>
-      <aside style={{ borderLeft: '1px solid var(--border)', paddingLeft: 16 }}><h2 style={{ fontSize: '.95rem', marginTop: 0 }}>摘要</h2>{digest ? <div style={{ fontSize: '.84rem', lineHeight: 1.6 }}><div>工程：{digest.engineering_status ?? '未记录'}</div><div>执行：{digest.execution_status ?? '未记录'}</div><div>科学：{digest.scientific_status ?? '未记录'}</div><div>Champion：{String(digest.champion.current_by_contract ? '已记录' : digest.champion.status ?? '未记录')}</div><div>停止：{String(digest.stop_decision.reason ?? digest.stop_decision.status ?? '未记录')}</div><div>Attempts：{digest.attempt_count}，失败：{digest.failed_attempt_count}，不可比：{digest.non_comparable_attempt_count}</div>{digest.primary_metrics.map(item => <div key={`${item.attempt_id}.${item.metric}`}>{item.attempt_id} · {item.metric}: {String(item.value)}</div>)}{digest.uncertainties.map(item => <div key={item} style={{ color: 'var(--text-muted)', marginTop: 6 }}>{item}</div>)}</div> : <div style={{ color: 'var(--text-muted)' }}>摘要尚不可用。</div>}<h2 style={{ fontSize: '.95rem', marginTop: 20 }}>证据</h2>{evidence.map(item => <details id={`evidence-${item.evidence_id}`} key={item.evidence_id} style={{ borderTop: '1px solid var(--border)', padding: '8px 0', fontSize: '.8rem' }}><summary>{item.evidence_kind} · {item.evidence_id}</summary><div style={{ marginTop: 5, color: 'var(--text-muted)' }}>{item.summary}</div>{item.attempt_id && <div>Attempt：{item.attempt_id}</div>}{item.idea_id && <div>Idea：{item.idea_id}</div>}<div style={{ overflowWrap: 'anywhere' }}>SHA：{item.artifact_ref.sha256}</div></details>)}<h2 style={{ fontSize: '.95rem', marginTop: 20 }}>讨论</h2><div style={{ maxHeight: 220, overflow: 'auto', fontSize: '.82rem' }}>{discussion.map(item => <div key={item.message_id} style={{ margin: '8px 0', color: item.role === 'assistant' ? 'var(--text)' : 'var(--text-muted)' }}>{item.content}</div>)}</div><div style={{ display: 'flex', gap: 6, marginTop: 8 }}><input aria-label="报告讨论" value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void sendDiscussion(); }} disabled={!discussionReady} /><button aria-label="发送报告讨论" title="发送报告讨论" onClick={() => void sendDiscussion()} disabled={!discussionReady || sending || !question.trim()}><Send size={16} /></button></div></aside>
+      <aside style={{ borderLeft: '1px solid var(--border)', paddingLeft: 16 }}><h2 style={{ fontSize: '.95rem', marginTop: 0 }}>摘要</h2>{digest ? <div style={{ fontSize: '.84rem', lineHeight: 1.6 }}><div>工程：{digest.engineering_status ?? '未记录'}</div><div>执行：{digest.execution_status ?? '未记录'}</div><div>科学：{digest.scientific_status ?? '未记录'}</div><div>Champion：{String(digest.champion.current_by_contract ? '已记录' : digest.champion.status ?? '未记录')}</div><div>停止：{String(digest.stop_decision.reason ?? digest.stop_decision.status ?? '未记录')}</div><div>Attempts：{digest.attempt_count}，失败：{digest.failed_attempt_count}，不可比：{digest.non_comparable_attempt_count}</div>{digest.primary_metrics.map(item => <div key={`${item.attempt_id}.${item.metric}`}>{item.attempt_id} · {item.metric}: {String(item.value)}</div>)}{digest.uncertainties.map(item => <div key={item} style={{ color: 'var(--text-muted)', marginTop: 6 }}>{item}</div>)}</div> : <div style={{ color: 'var(--text-muted)' }}>摘要尚不可用。</div>}<h2 style={{ fontSize: '.95rem', marginTop: 20 }}>审阅与后续</h2><textarea aria-label="审阅说明" value={reviewComment} onChange={event => setReviewComment(event.target.value)} placeholder="可选审阅说明" style={{ width: '100%', boxSizing: 'border-box' }} /><div style={{ display: 'flex', gap: 6, marginTop: 6 }}><button onClick={() => void submitReview('accept')}>接受</button><button onClick={() => void submitReview('needs_more')}>需要更多证据</button></div><input aria-label="人工跟进 Proposal" value={proposalRationale} onChange={event => setProposalRationale(event.target.value)} placeholder="需要人工跟进的事项" style={{ width: '100%', boxSizing: 'border-box', marginTop: 10 }} /><button onClick={() => void proposeHuman()} disabled={!proposalRationale.trim()} style={{ marginTop: 6 }}>创建人工 Proposal</button>{proposals.map(item => <div key={item.proposal_id} style={{ borderTop: '1px solid var(--border)', padding: '8px 0', fontSize: '.8rem' }}><div>{item.proposal_type} · {item.status}</div><div>{item.rationale}</div>{item.validation_errors.map(error => <div key={error} style={{ color: 'var(--orange)' }}>{error}</div>)}{item.status === 'READY_FOR_CONFIRMATION' && <div style={{ display: 'flex', gap: 6, marginTop: 5 }}><button onClick={() => void changeProposal(item.proposal_id, 'confirm')}>确认转交</button><button onClick={() => void changeProposal(item.proposal_id, 'reject')}>拒绝</button></div>}{item.handoff && <div style={{ color: 'var(--text-muted)' }}>已转交：{item.handoff.kind}</div>}</div>)}<h2 style={{ fontSize: '.95rem', marginTop: 20 }}>证据</h2>{evidence.map(item => <details id={`evidence-${item.evidence_id}`} key={item.evidence_id} style={{ borderTop: '1px solid var(--border)', padding: '8px 0', fontSize: '.8rem' }}><summary>{item.evidence_kind} · {item.evidence_id}</summary><div style={{ marginTop: 5, color: 'var(--text-muted)' }}>{item.summary}</div>{item.attempt_id && <div>Attempt：{item.attempt_id}</div>}{item.idea_id && <div>Idea：{item.idea_id}</div>}<div style={{ overflowWrap: 'anywhere' }}>SHA：{item.artifact_ref.sha256}</div></details>)}<h2 style={{ fontSize: '.95rem', marginTop: 20 }}>讨论</h2><div style={{ maxHeight: 220, overflow: 'auto', fontSize: '.82rem' }}>{discussion.map(item => <div key={item.message_id} style={{ margin: '8px 0', color: item.role === 'assistant' ? 'var(--text)' : 'var(--text-muted)' }}>{item.content}</div>)}</div><div style={{ display: 'flex', gap: 6, marginTop: 8 }}><input aria-label="报告讨论" value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void sendDiscussion(); }} disabled={!discussionReady} /><button aria-label="发送报告讨论" title="发送报告讨论" onClick={() => void sendDiscussion()} disabled={!discussionReady || sending || !question.trim()}><Send size={16} /></button></div></aside>
     </div></>}
   </main>;
 }

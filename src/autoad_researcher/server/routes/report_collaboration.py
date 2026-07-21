@@ -12,6 +12,7 @@ from autoad_researcher.reporting.review import (
     ProposalBudgetEstimate,
     confirm_proposal,
     create_proposal,
+    list_proposals,
     record_review,
     reject_proposal,
 )
@@ -84,6 +85,14 @@ async def post_proposal(run_id: str, report_id: str, request: ProposalRequest):
         return create_proposal(run_dir_or_400(RUNS_ROOT, run_id), report_id=report_id, **request.model_dump(mode="python")).model_dump(mode="json")
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/proposals")
+async def get_proposals(run_id: str, report_id: str):
+    try:
+        return {"proposals": [item.model_dump(mode="json") for item in list_proposals(run_dir_or_400(RUNS_ROOT, run_id), report_id=report_id)]}
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(404, "report proposals not found") from exc
 
 
 @router.post("/proposals/{proposal_id}/confirm")
