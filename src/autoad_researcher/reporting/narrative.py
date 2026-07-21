@@ -11,6 +11,7 @@ class NarrativeSectionV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     section_id: Literal["summary", "interpretation", "limitations", "next_steps"]
+    claim_id: str | None = Field(default=None, min_length=1)
     text: str = Field(min_length=1)
     evidence_ids: list[str] = Field(default_factory=list)
     claim_kind: Literal["explanation", "limitation", "recommendation"]

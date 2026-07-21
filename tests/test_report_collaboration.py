@@ -32,6 +32,41 @@ def test_proposal_is_not_handoff_and_accept_is_only_review(tmp_path: Path):
     proposal = create_proposal(run_dir, report_id=report_id, proposal_type="REQUEST_HUMAN", rationale="需要人工判断")
     assert proposal.status == "READY_FOR_CONFIRMATION"
     assert len((run_dir / "jobs" / "pipeline_jobs.jsonl").read_text().splitlines()) == job_count_before
-    review = record_review(run_dir, report_id=report_id, decision="accept")
+    review = record_review(run_dir, report_id=report_id, request_id="review_accept", decision="accept")
     assert review.decision == "accept"
     assert ReportStore().load_state(run_dir, report_id).review_status == "accepted"
+
+
+def test_review_claims_are_idempotent_and_project_the_latest_status(tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    first = record_review(
+        run_dir,
+        report_id=report_id,
+        request_id="review_claims",
+        decision="disputed",
+        disputed_claims=["claim_summary"],
+    )
+    replay = record_review(
+        run_dir,
+        report_id=report_id,
+        request_id="review_claims",
+        decision="disputed",
+        disputed_claims=["claim_summary"],
+    )
+    assert replay.decision_id == first.decision_id
+    assert ReportStore().load_state(run_dir, report_id).review_status == "disputed"
+    with pytest.raises(ValueError, match="request_id conflicts"):
+        record_review(
+            run_dir,
+            report_id=report_id,
+            request_id="review_claims",
+            decision="accept",
+        )
+    with pytest.raises(ValueError, match="unknown claim IDs"):
+        record_review(
+            run_dir,
+            report_id=report_id,
+            request_id="review_unknown",
+            decision="accept",
+            accepted_claims=["claim_missing"],
+        )

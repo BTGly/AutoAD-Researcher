@@ -7,11 +7,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.reporting.discussion import append_message, load_messages
 from autoad_researcher.reporting.review import (
+    PivotTaskContext,
     confirm_proposal,
     create_proposal,
     record_review,
     reject_proposal,
 )
+from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateLaunchInput
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
 
@@ -37,11 +39,14 @@ class ProposalRequest(BaseModel):
     target_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
     candidate_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
     noise_threshold: float | None = Field(default=None, ge=0)
+    refine_input: CandidateLaunchInput | None = None
+    pivot_context: PivotTaskContext | None = None
 
 
 class ReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    decision: Literal["accept", "suspend", "needs_more", "needs_repair", "needs_pivot"]
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$")
+    decision: Literal["accept", "suspend", "needs_more", "needs_repair", "needs_pivot", "disputed"]
     user_comment: str = ""
     accepted_claims: list[str] = Field(default_factory=list)
     disputed_claims: list[str] = Field(default_factory=list)
