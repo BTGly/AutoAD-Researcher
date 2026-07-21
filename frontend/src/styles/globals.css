@@ -564,6 +564,24 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue); }
 
 .font-mono, code, pre, kbd { font-family: var(--font-mono); }
 
+.app-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; border-radius: var(--radius-sm); }
+.app-button-primary { background: var(--tint); border-color: var(--tint); color: #fff; font-weight: 600; }
+.app-button-secondary { background: var(--surface-secondary); }
+.app-button-plain { background: transparent; border-color: transparent; color: var(--tint); }
+.app-button-destructive { background: transparent; border-color: var(--danger); color: var(--danger); }
+.icon-button { display: inline-grid; place-items: center; width: 32px; min-height: 32px; padding: 0; border-color: transparent; background: transparent; color: var(--text-muted); }
+.icon-button:hover { color: var(--text); background: var(--surface-secondary); }
+.status-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 2px 7px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; }
+.status-badge-neutral { background: var(--surface-secondary); color: var(--text-muted); }
+.status-badge-success { background: var(--status-ready-bg); color: var(--green); }
+.status-badge-warning { background: var(--status-working-bg); color: var(--orange); }
+.status-badge-danger { background: var(--status-error-bg); color: var(--red); }
+.status-badge-info { background: var(--status-idle-bg); color: var(--blue); }
+.surface { background: var(--surface-primary); border: 1px solid var(--separator); border-radius: var(--radius-md); }
+.empty-state { min-height: 220px; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 24px; text-align: center; color: var(--text-muted); }
+.empty-state strong { color: var(--text); font-size: 15px; }
+.empty-state span { max-width: 360px; font-size: 13px; }
+
 .app-shell { height: 100vh; display: flex; flex-direction: column; background: var(--app-bg); }
 .app-toolbar {
   z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 16px;

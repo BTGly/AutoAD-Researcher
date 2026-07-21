@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import type { AppConfig } from '../hooks/useConfig';
+import { AppButton } from './ui/AppButton';
+import { Surface } from './ui/Surface';
 
 interface Props {
   config: AppConfig;
@@ -14,8 +16,8 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
 
   return (
     <div className="modal-overlay">
-      <div className="modal">
-        <h2 style={{ fontSize: '1.2em', marginBottom: 20, color: 'var(--blue)' }}>🔑 配置 API Key</h2>
+      <Surface className="modal">
+        <h2 style={{ fontSize: '1.2em', marginBottom: 20, color: 'var(--blue)' }}>配置 API Key</h2>
         <p style={{ fontSize: '0.85em', color: 'var(--text-muted)', marginBottom: 16 }}>
           API Key 保存在本设备浏览器中，不上传服务器。
         </p>
@@ -36,16 +38,16 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="primary" onClick={() => onSave({ apiKey: key, baseUrl: url, model })} disabled={!key.trim()} style={{ flex: 1 }}>
+          <AppButton variant="primary" onClick={() => onSave({ apiKey: key, baseUrl: url, model })} disabled={!key.trim()} style={{ flex: 1 }}>
             保存并开始
-          </button>
+          </AppButton>
           {config.apiKey && (
-            <button onClick={onClose} style={{ flex: 1 }}>
+            <AppButton onClick={onClose} style={{ flex: 1 }}>
               取消
-            </button>
+            </AppButton>
           )}
         </div>
-      </div>
+      </Surface>
     </div>
   );
 }

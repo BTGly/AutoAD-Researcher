@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import type { AppConfig } from '../hooks/useConfig';
+import { AppButton } from './ui/AppButton';
+import { Surface } from './ui/Surface';
 
 interface Props {
   onSave: (c: AppConfig) => Promise<void>;
@@ -22,10 +24,8 @@ export function FirstRunSetup({ onSave }: Props) {
       height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: 'var(--bg)', color: 'var(--text)',
     }}>
-      <div style={{
+      <Surface style={{
         width: 420, maxWidth: '90vw', padding: 40,
-        border: '1px solid var(--border)', borderRadius: 12,
-        background: 'var(--bg-panel)',
       }}>
         <div style={{ fontSize: '1.4em', fontWeight: 600, color: 'var(--blue)', marginBottom: 8 }}>
           AutoAD Researcher
@@ -48,15 +48,15 @@ export function FirstRunSetup({ onSave }: Props) {
           <input value={model} onChange={e => setModel(e.target.value)} placeholder="deepseek-v4-flash" />
         </div>
 
-        <button
-          className="primary"
+        <AppButton
+          variant="primary"
           disabled={!key.trim() || saving}
           onClick={handleSave}
           style={{ width: '100%', padding: '10px 0', fontSize: '0.95em' }}
         >
           {saving ? '正在创建任务…' : '保存并创建任务'}
-        </button>
-      </div>
+        </AppButton>
+      </Surface>
     </div>
   );
 }

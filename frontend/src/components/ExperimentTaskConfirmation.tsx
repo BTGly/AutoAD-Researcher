@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ExperimentTaskDraft, SourceItem } from '../lib/types';
+import { AppButton } from './ui/AppButton';
 
 interface Props {
   task: ExperimentTaskDraft;
@@ -86,9 +87,9 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
               rows={3}
               style={{ width: '100%', marginBottom: 8 }}
             />
-            <button onClick={savePrimaryMetrics} disabled={submitting || !primaryMetricsText.trim()}>
+            <AppButton onClick={savePrimaryMetrics} disabled={submitting || !primaryMetricsText.trim()}>
               确认主指标并刷新草案
-            </button>
+            </AppButton>
           </div>
         ) : (
           <div style={{ marginBottom: 16, fontSize: '0.82em', color: 'var(--green)' }}>
@@ -136,15 +137,15 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
 
         {error && <div style={{ color: 'var(--red)', fontSize: '0.82em', marginBottom: 12 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            className="primary"
+          <AppButton
+            variant="primary"
             onClick={submit}
             disabled={submitting || (requiresRepository && !selectedRepository)}
             style={{ flex: 1 }}
           >
             {submitting ? '确认中…' : '确认任务'}
-          </button>
-          <button onClick={onClose} disabled={submitting} style={{ flex: 1 }}>取消</button>
+          </AppButton>
+          <AppButton onClick={onClose} disabled={submitting} style={{ flex: 1 }}>取消</AppButton>
         </div>
       </div>
     </div>

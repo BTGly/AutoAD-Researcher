@@ -1,4 +1,5 @@
 import type { KeyboardEvent } from 'react';
+import { AppButton } from './ui/AppButton';
 
 interface Props {
   value: string;
@@ -33,9 +34,9 @@ export function ChatInput({ value, onChange, onSend, disabled }: Props) {
         disabled={disabled}
         style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
       />
-      <button onClick={send} disabled={disabled || !value.trim()} className="primary" style={{ padding: '6px 16px' }}>
+      <AppButton variant="primary" onClick={send} disabled={disabled || !value.trim()}>
         发送
-      </button>
+      </AppButton>
     </div>
   );
 }
