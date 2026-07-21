@@ -15,6 +15,7 @@ import { DevMockPanel } from './components/DevMockPanel';
 import { MarkdownContent } from './components/MarkdownContent';
 import { TaskMenu } from './components/TaskMenu';
 import { ExperimentTaskConfirmation } from './components/ExperimentTaskConfirmation';
+import { ThemeToggle } from './theme/ThemeToggle';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -623,6 +624,7 @@ export default function App() {
           </span>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <ThemeToggle />
           <button onClick={openConfig} title="配置" style={{ padding: '6px 10px' }}>⚙</button>
         </div>
       </div>

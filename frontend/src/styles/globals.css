@@ -3,25 +3,83 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  --bg: #0d0d0d;
-  --bg-panel: #141414;
-  --bg-hover: #1a1a1a;
-  --border: #262626;
-  --text: #e5e5e5;
-  --text-muted: #888;
-  --text-dim: #555;
-  --blue: #4fc3f7;
-  --green: #66bb6a;
-  --red: #ef5350;
-  --orange: #ffa726;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  --duration-fast: 150ms;
+  --duration-press: 120ms;
+  --ease-standard: cubic-bezier(0.28, 0.11, 0.32, 1);
+}
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --app-bg: #f5f5f7;
+  --surface-primary: #ffffff;
+  --surface-secondary: #f2f2f7;
+  --surface-tertiary: #e5e5ea;
+  --label-primary: #1d1d1f;
+  --label-secondary: rgba(60, 60, 67, 0.72);
+  --label-tertiary: rgba(60, 60, 67, 0.5);
+  --separator: rgba(60, 60, 67, 0.2);
+  --separator-strong: rgba(60, 60, 67, 0.32);
+  --tint: #0088ff;
+  --success: #248a3d;
+  --warning: #c15f00;
+  --danger: #d70015;
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-rim: rgba(255, 255, 255, 0.82);
+  --scrim: rgba(0, 0, 0, 0.34);
+  --scrollbar-thumb: rgba(60, 60, 67, 0.32);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --app-bg: #000000;
+  --surface-primary: #1c1c1e;
+  --surface-secondary: #2c2c2e;
+  --surface-tertiary: #3a3a3c;
+  --label-primary: #f5f5f7;
+  --label-secondary: rgba(235, 235, 245, 0.72);
+  --label-tertiary: rgba(235, 235, 245, 0.48);
+  --separator: rgba(84, 84, 88, 0.48);
+  --separator-strong: rgba(84, 84, 88, 0.68);
+  --tint: #0091ff;
+  --success: #30d158;
+  --warning: #ff9230;
+  --danger: #ff4245;
+  --glass-bg: rgba(30, 30, 32, 0.72);
+  --glass-rim: rgba(255, 255, 255, 0.16);
+  --scrim: rgba(0, 0, 0, 0.6);
+  --scrollbar-thumb: rgba(235, 235, 245, 0.24);
+}
+
+:root {
+  --bg: var(--app-bg);
+  --bg-panel: var(--surface-primary);
+  --bg-hover: var(--surface-secondary);
+  --border: var(--separator);
+  --text: var(--label-primary);
+  --text-muted: var(--label-secondary);
+  --text-dim: var(--label-tertiary);
+  --blue: var(--tint);
+  --green: var(--success);
+  --red: var(--danger);
+  --orange: var(--warning);
+  --yellow: var(--warning);
+  --control-bg: var(--surface-secondary);
+  --control-hover-bg: var(--surface-tertiary);
+  --focus-ring: color-mix(in srgb, var(--tint) 54%, transparent);
 }
 
 html, body, #root {
   height: 100vh;
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.6;
   overflow: hidden;
@@ -29,7 +87,7 @@ html, body, #root {
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--radius-pill); }
 
 .tool-line { margin: 2px 0; font-size: 0.92em; display: flex; align-items: center; gap: 6px; }
 .tool-dot { width: 14px; text-align: center; flex-shrink: 0; }
@@ -488,3 +546,57 @@ input:focus, textarea:focus { border-color: var(--blue); }
   background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: 12px; padding: 28px; width: 420px; max-width: 90vw;
 }
+
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-primary) 58%, transparent);
+}
+.theme-toggle-option {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  min-height: 30px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-press) var(--ease-standard);
+}
+.theme-toggle-option:hover, .theme-toggle-option.active { background: var(--surface-primary); color: var(--blue); }
+.theme-toggle-option:active { transform: scale(0.97); }
+
+.app-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border-radius: var(--radius-sm);
+  transition: transform var(--duration-press) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard);
+}
+.app-button-primary { background: var(--tint); border-color: var(--tint); color: #fff; font-weight: 600; }
+.app-button-secondary { background: var(--surface-secondary); }
+.app-button-plain { background: transparent; border-color: transparent; color: var(--tint); }
+.app-button-destructive { background: transparent; border-color: var(--danger); color: var(--danger); }
+.icon-button { display: inline-grid; place-items: center; width: 32px; min-height: 32px; padding: 0; border-color: transparent; background: transparent; color: var(--text-muted); }
+.app-button:active, .icon-button:active { opacity: 0.8; transform: scale(0.97); }
+.status-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 2px 7px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; }
+.status-badge-neutral { background: var(--surface-secondary); color: var(--text-muted); }
+.status-badge-success { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+.status-badge-warning { background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning); }
+.status-badge-danger { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.status-badge-info { background: color-mix(in srgb, var(--tint) 14%, transparent); color: var(--tint); }
+.surface { background: var(--surface-primary); border: 1px solid var(--separator); border-radius: var(--radius-md); }
+.empty-state { min-height: 220px; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 24px; text-align: center; color: var(--text-muted); }
+.empty-state strong { color: var(--text); font-size: 15px; }
+.empty-state span { max-width: 360px; font-size: 13px; }
