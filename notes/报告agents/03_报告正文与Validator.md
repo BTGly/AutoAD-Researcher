@@ -20,8 +20,9 @@ LLM 只接收：
 ```text
 ExperimentReportFactsV1
 evidence_index.json
-report_digest.json
 ```
+
+`report_digest.json` 是从同一份 Facts 确定性派生的 UI/Discussion 摘要，不重复注入 Narrative 上下文。这样避免同一事实在模型输入中出现两种表示；Narrative 的所有可发布事实仍只能从 Facts placeholder 和 Evidence 引用取得。
 
 默认不传入：
 
@@ -104,15 +105,9 @@ execution_validity_scientific_status_separated
 improvement_respects_existing_scientific_assessment
 ```
 
-“报告所有数字必须出现在 Facts”不再作为主校验，因为自由文本中的章节号、日期、版本号、GPU 型号和格式化小数会产生大量误报。数字表格由确定性 renderer 直接从 Facts 生成；对 LLM 文本只做低优先级 lint：
+“报告所有数字必须出现在 Facts”不再作为主校验，因为自由文本中的章节号、日期、版本号、GPU 型号和格式化小数会产生大量误报。数字表格由确定性 renderer 直接从 Facts 生成；首版不从普通 prose 用关键词、正则或数值模式猜测事实性声明，也不以此产生 lint。
 
-```text
-unknown_attempt_id
-unknown_evidence_id
-明显未登记的数值表达
-```
-
-lint 失败不应覆盖结构化事实校验结果，但必须记录到 `report_validation.json`。
+发布约束只由结构化 Claim、Facts、Evidence、Attempt 和科学评估关系确定性校验；未解析 placeholder、没有 fact ref 的事实性 claim 或模板直接携带事实数字属于阻断项。
 
 ## 7. 发布与重试
 
