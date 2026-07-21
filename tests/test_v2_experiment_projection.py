@@ -519,6 +519,20 @@ def test_projection_exposes_server_owned_approval_actions(tmp_path: Path):
 
     assert projection.actions.candidate_confirmations == []
     assert [item.candidate_id for item in projection.actions.candidate_promotions] == ["candidate_000001"]
+    CandidateRegistry().update_pointer(
+        tmp_path,
+        contract_hash=contract_hash,
+        pointer=ChampionPointer(
+            candidate_id="candidate_000001",
+            event_id="promotion-current",
+            trunk_commit="d" * 40,
+            updated_at=NOW,
+        ),
+    )
+
+    projection = build_projection(tmp_path)
+
+    assert projection.actions.candidate_promotions == []
 
 
 def test_projection_exposes_only_durable_candidate_action_facts(tmp_path: Path):

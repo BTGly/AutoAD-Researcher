@@ -288,7 +288,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
         )
         for item in candidate_inventory.candidates
     ]
-    actions = _actions_projection(session, attempt_views, candidate_inventory)
+    actions = _actions_projection(session, attempt_views, candidate_inventory, champion)
     activity, truncated, scan_truncated = _activity(
         run_dir,
         session_id=session.session_id,
@@ -554,6 +554,7 @@ def _actions_projection(
     session: ExperimentSession,
     attempts: list[AttemptProjection],
     candidate_inventory: CandidateInventory,
+    champion: ChampionProjection | None,
 ) -> ExperimentActionsProjection:
     if session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available":
         return ExperimentActionsProjection()
@@ -577,6 +578,7 @@ def _actions_projection(
             and item.evaluation_contract_hash == session.evaluation_contract_sha256
             and item.b_test_passed
             and item.guardrails_passed
+            and (champion is None or item.candidate_id != champion.candidate_id)
         )
     ]
     return ExperimentActionsProjection(

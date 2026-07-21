@@ -142,7 +142,7 @@ function ExperimentActions({ runId, projection, onChanged }: { runId: string; pr
   const [error, setError] = useState<string | null>(null);
   if (projection.session?.execution_mode !== 'approve_each_step') return null;
   const confirmations = projection.actions.candidate_confirmations;
-  const promotions = projection.actions.candidate_promotions.filter(item => projection.champion?.candidate_id !== item.candidate_id);
+  const promotions = projection.actions.candidate_promotions;
   const reportError = (reason: unknown) => setError(reason instanceof ApiError ? reason.message : '操作未完成，请保留当前证据后重试。');
   return <section aria-label="实验确认动作" style={{ border: '1px solid var(--blue)', borderRadius: 8, padding: 14, marginTop: 12, background: 'var(--bg-panel)' }}>
     <b>需要确认的实验动作</b><div style={{ color: 'var(--text-muted)', fontSize: '0.8em', marginTop: 5 }}>命令、仓库、输入和合并目标均由已冻结工件派生；本页不会接受任意命令。</div>
