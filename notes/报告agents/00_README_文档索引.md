@@ -79,7 +79,19 @@ PR-R0 控制面接入
 → PR-R6 可选 PDF + Bundle
 ```
 
-## 六、总原则
+## 六、当前实现状态（2026-07-21）
+
+- 已完成：Snapshot/Facts/Evidence、持久化报告 DAG、结构化 Narrative、发布前 Validator、Markdown/HTML、可选 PDF/Bundle、版本化 API/前端、只读 Discussion、Proposal/Review/Handoff。
+- 报告 DAG 以既有 `PipelineJob` 的持久化依赖预创建 `facts -> narrative -> validate -> html -> bundle`；失败上游会阻塞后继，重试同一 Job 后自动继续。已选择模型的 provider、JSON 或 schema 失败会使 Narrative Job 失败并进入该重试路径；只有报告创建时未配置模型时才冻结确定性 fallback profile。
+- Snapshot 在请求时同步冻结 source inventory 与内容身份。Evidence 同时保留根制品和字段路径，Facts 的 Attempt、Candidate、指标、baseline、validity 等投影均可解析回相应 Evidence；执行结果引用仅在其 locator 与 SHA 冻结引用一致时标为 `bound`。
+- Narrative Agent 只消费冻结 Facts/Evidence。其版本身份 hash 覆盖实际 system prompt、agent profile 和 `NarrativeSectionsV1` JSON schema，避免不同生成行为复用同一 report identity。解释和局限的发布正文只从其关联的 Claim 渲染，Validator 继续校验 Claim 的 Facts、Evidence、Attempt 和科学评估关系。
+- Digest/ReportPage 投影工程、执行和科学三类状态及核心指标；缺少 `ScientificAssessment` 时显式呈现 `evidence-insufficient` 不确定性，而不推断科学效果。
+- Discussion 的持久化源为 `discussion/turns.jsonl`。每次模型调用只注入已完成的最近 turns，并受消息数和 UTF-8 字节上限约束；它是受限上下文数据，不是第二套状态机。typed deep-read 工具统一返回 `status`、`value`、`fact_refs`、`evidence_ids`。
+- Source inventory 复核 `OutputManifest` 自身 hash 后才使用其 outputs；`patch_diff` 只接入既有 handoff 服务已经复制的 `patch.diff`/`final_patch.diff`，不从 Git worktree 收集差异。
+
+`get_patch_diff` 不会主动生成 Git diff：没有上述已登记 patch artifact 时工具返回 `unavailable`。更丰富的 artifact 契约或外部模型运维界面属于后续产品迭代，不阻塞当前报告闭环。
+
+## 七、总原则
 
 1. 报告是现有实验控制面的只读投影，不是第二套实验平台。
 2. Facts、Evidence、Validation 和制品版本不可覆盖；状态和审阅记录可原子更新并留事件。

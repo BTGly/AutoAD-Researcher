@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-原地升级真实路径 `frontend/src/components/ReportPage.tsx`，先完成报告版本、生成状态、Markdown/HTML、摘要、证据和下载。Discussion 只接入已验证内容，不首版实现复杂工作台。
+原地升级真实路径 `frontend/src/components/ReportPage.tsx`，完成报告版本、生成状态、Markdown/HTML、摘要、证据、下载和只读 Discussion。审阅决定在页面中追加；Proposal UI 只创建、确认或拒绝 `REQUEST_HUMAN`，不在浏览器拼装执行型候选输入。
 
 ## 2. 设计依据
 
@@ -26,7 +26,7 @@ frontend/src/components/report/EvidenceCard.tsx
 frontend/src/components/report/ReportDownloadMenu.tsx
 ```
 
-`ReportWorkspace`、复杂 ProposalCard 和 DiscussionPanel 在后续阶段接入，避免前端先于后端事实契约膨胀。
+不引入 `ReportWorkspace`、拖拽工作台或执行型 Proposal 编辑器；页面复用后端 Proposal/Review 契约和现有人工队列。
 
 ## 4. 首版布局
 

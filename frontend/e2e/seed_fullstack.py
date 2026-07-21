@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.research_intent_summary import (
     ConfirmedTaskParameters,
     ResearchIntentSummary,
@@ -15,12 +16,17 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
 )
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.repository_intelligence.acquisition import RepositoryAttestation
+from autoad_researcher.reporting.service import ReportRequestService
+from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.schemas.decisions import ConfirmedDecision
+from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.task_workspace.task_profile import create_task_profile
 from autoad_researcher.ui.sources import append_source_ref
+from autoad_researcher.worker.main import _process_pending_jobs
 
 
 RUN_ID = "run_fullstack_e2e"
+REPORT_RUN_ID = "run_report_fullstack_e2e"
 REPOSITORY_SOURCE_ID = "repo_micro"
 
 
@@ -29,13 +35,15 @@ def main() -> None:
     if not runs_root_text:
         raise SystemExit("AUTOAD_E2E_RUNS_ROOT is required")
     runs_root = Path(runs_root_text)
+    now = datetime.now(timezone.utc)
+    _seed_report_run(runs_root, created_at=now - timedelta(minutes=1))
     run_dir = runs_root / RUN_ID
     run_dir.mkdir(parents=True, exist_ok=False)
     create_task_profile(
         run_dir=run_dir,
         run_id=RUN_ID,
         task_title="真实浏览器确认",
-        created_at=datetime.now(timezone.utc),
+        created_at=now,
     )
     append_source_ref(
         run_dir,
@@ -107,6 +115,36 @@ def main() -> None:
         ),
     )
     TaskBridge.build_experiment_task(run_dir, user_input="确认 micro repo 作为执行仓库")
+
+
+def _seed_report_run(runs_root: Path, *, created_at: datetime) -> None:
+    run_dir = runs_root / REPORT_RUN_ID
+    run_dir.mkdir(parents=True, exist_ok=False)
+    create_task_profile(
+        run_dir=run_dir,
+        run_id=REPORT_RUN_ID,
+        task_title="真实报告全栈验收",
+        created_at=created_at,
+    )
+    session, _ = ExperimentSessionStore().create_or_get(
+        run_dir,
+        task_ref="tasks/task.json",
+        task_hash="f" * 64,
+        execution_mode="approve_each_step",
+    )
+    result, _ = ReportRequestService().request(
+        run_dir,
+        session_id=session.session_id,
+    )
+    for _ in range(10):
+        if _process_pending_jobs(run_dir) == 0:
+            break
+    report_id = result["manifest"].report_id
+    state = ReportStore().load_state(run_dir, report_id)
+    if state.generation_status != "content_ready" or state.format_status.bundle != "ready":
+        raise RuntimeError("full-stack report fixture did not become content_ready with a bundle")
+    if not load_pipeline_jobs(run_dir):
+        raise RuntimeError("full-stack report fixture did not persist report jobs")
 
 
 if __name__ == "__main__":

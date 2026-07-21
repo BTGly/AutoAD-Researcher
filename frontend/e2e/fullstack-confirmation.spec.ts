@@ -1,9 +1,12 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const runId = 'run_fullstack_e2e';
+const reportRunId = 'run_report_fullstack_e2e';
 const runsRoot = process.env.AUTOAD_E2E_RUNS_ROOT;
+
+test.describe.configure({ mode: 'serial' });
 
 test('persists an explicitly selected execution repository through the real API', async ({ page }) => {
   expect(runsRoot).toBeTruthy();
@@ -37,3 +40,40 @@ test('persists an explicitly selected execution repository through the real API'
     authorization: { execution_mode: 'approve_each_step' },
   });
 });
+
+test('persists report review and human handoff without creating experiment jobs', async ({ page }) => {
+  expect(runsRoot).toBeTruthy();
+  await page.addInitScript(() => {
+    localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'fullstack-e2e', baseUrl: 'http://fixture.invalid', model: 'fixture' }));
+  });
+  const jobsPath = join(runsRoot!, reportRunId, 'jobs', 'pipeline_jobs.jsonl');
+  const jobsBefore = await readFile(jobsPath, 'utf8');
+
+  await openReportRun(page);
+  await expect(page.getByTitle('下载 report_bundle.zip')).toBeVisible();
+  await page.getByRole('button', { name: '接受' }).click();
+  await expect(page.getByText('审阅：accepted', { exact: true })).toBeVisible();
+
+  await openReportRun(page);
+  await expect(page.getByText('审阅：accepted', { exact: true })).toBeVisible();
+  await page.getByLabel('人工跟进 Proposal').fill('请人工复核下一步');
+  await page.getByRole('button', { name: '创建人工 Proposal' }).click();
+  await page.getByRole('button', { name: '确认转交' }).click();
+  await expect(page.getByText('REQUEST_HUMAN · HANDED_OFF', { exact: true })).toBeVisible();
+
+  await openReportRun(page);
+  await expect(page.getByText('REQUEST_HUMAN · HANDED_OFF', { exact: true })).toBeVisible();
+  await expect(page.getByText('已转交：human_queue', { exact: true })).toBeVisible();
+  expect(await readFile(jobsPath, 'utf8')).toBe(jobsBefore);
+});
+
+async function openReportRun(page: Page) {
+  await page.goto('/');
+  const history = page.getByRole('button', { name: 'Session history' });
+  await history.click();
+  await page.locator('.session-row-title').filter({ hasText: '真实报告全栈验收' }).click();
+  await expect(page.getByText('当前任务：真实报告全栈验收', { exact: true })).toBeVisible();
+  await history.click();
+  await page.getByTitle('Report', { exact: true }).click();
+  await expect(page.getByText('生成：content_ready', { exact: true })).toBeVisible();
+}

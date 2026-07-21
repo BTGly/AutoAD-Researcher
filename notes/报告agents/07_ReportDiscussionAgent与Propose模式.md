@@ -31,22 +31,26 @@
 首版使用：
 
 ```text
-runs/{run_id}/reports/{report_id}/discussion/messages.jsonl
+runs/{run_id}/reports/{report_id}/discussion/turns.jsonl
 ```
 
-每条消息保存：
+每个 turn 保存：
 
 ```text
-message_id
+turn_id
+request_id
 report_id
 snapshot_content_sha256
-role
-content
+user_message
+response
+status
 evidence_ids
 created_at
+completed_at
+error
 ```
 
-Transcript 是用户对话记录，不是 Facts 的权威来源。上下文装配时只加载有上限的最近消息，并把 report snapshot identity 固定注入。
+`pending`/`completed`/`failed` 是同一 turn 的持久化状态，不新建第二套对话状态机。Transcript 是用户对话记录，不是 Facts 的权威来源。上下文装配时只从已完成的最近 turn 提取 user/assistant 消息，限制最近消息数和 UTF-8 字节数；超限时保留尾部并注入明确的截断标记，同时固定注入 report snapshot identity。
 
 暂不使用计划中未核实的 `storage/checkpoint/sqlite.py` 路径，也不把 LangGraph checkpoint 当作业务 transcript 的唯一事实源。
 
@@ -85,6 +89,8 @@ resolve_evidence
 ```
 
 工具只返回应用层摘要或经过 allow-list 的内容，不允许任意路径浏览。
+
+每个 typed tool 的返回均使用统一 provenance 包装：`status`、`value`、`fact_refs`、`evidence_ids`。映射复用 `EvidenceIndex`，不建立第二个索引；`get_patch_diff` 仅能读取已登记的 patch artifact，否则返回 `unavailable`。
 
 ## 6. Discuss / Propose
 
@@ -134,7 +140,8 @@ PIVOT
 - [ ] `tools=[]` 不被当作删除默认工具的证明。
 - [ ] 绝对路径、`..`、symlink、未登记 artifact 和超大日志均被拒绝或截断。
 - [ ] 讨论固定绑定 `report_id` 和 snapshot hash。
-- [ ] 多轮 transcript 可恢复但不污染主 Chat。
+- [ ] 多轮 transcript 可恢复，且模型调用包含有界的已完成历史，不污染主 Chat。
+- [ ] typed deep-read 结果可返回对应的 Facts/Evidence provenance。
 - [ ] Discuss 返回解释，不返回可直接执行的 Job。
 - [ ] Propose 返回结构化 Proposal，且未确认前不会创建 Job。
 - [ ] Agent 无法直接修改任何报告或实验制品。

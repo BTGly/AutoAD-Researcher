@@ -61,7 +61,7 @@ Bundle 至少包含：
 
 ```text
 report.md
-report.html（如已生成）
+report.html
 report_facts.json
 evidence_index.json
 report_digest.json
@@ -70,9 +70,11 @@ report_manifest.json
 checksums.sha256
 ```
 
+`report.html` 是 Bundle 的必需项；HTML Job 失败时 Bundle Job 不得发布。PDF 仍是可选 format，不影响已验证的 Markdown/HTML 内容。
+
 引用的 Evidence 可以进入 `evidence/` 子目录，但必须依据 allow-list 和大小上限复制；不能把整个 run 目录打包。
 
-Manifest 中每个实际制品都要有 artifact ref 和 SHA。ZIP 生成后再次计算 ZIP 自身 SHA，不能只记录打包前文件。
+Manifest 中每个实际制品都要有 artifact ref 和 SHA，并使用现有 canonical helper 复核 manifest 自身的摘要。ZIP 生成后再次计算 ZIP 自身 SHA，不能只记录打包前文件。
 
 ## 7. 状态关系
 
@@ -92,7 +94,7 @@ PDF 或 ZIP 失败不能把已验证的 Markdown 报告改成内容失败。
 - [ ] 超大日志不会导致 HTML 或 Agent 上下文无限增长。
 - [ ] PDF capability 缺失时有明确失败状态和日志。
 - [ ] PDF 编译检查 return code、timeout 和输出文件，而非只调用 subprocess。
-- [ ] ZIP 包含 Facts、Evidence、Validation 和 checksums。
+- [ ] ZIP 包含 Markdown、必需的 HTML、Facts、Evidence、Validation 和 checksums。
 - [ ] 下载包和页面绑定同一个 `report_id`。
 - [ ] 重复渲染不覆盖已冻结的正文和 Facts。
 

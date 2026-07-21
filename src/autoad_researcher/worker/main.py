@@ -73,6 +73,15 @@ def _process_pending_jobs(run_dir: Path) -> int:
     from autoad_researcher.assistant.v2.event_service import append_event
 
     experiment_job_types = {"experiment_baseline", "experiment_baseline_b_test", "experiment_attempt", "experiment_confirmatory"}
+    report_job_types = {
+        "report_snapshot_build",
+        "report_facts_assemble",
+        "report_narrative_generate",
+        "report_validate",
+        "report_render_html",
+        "report_package",
+        "report_render_pdf",
+    }
     recovered = requeue_stale_running_jobs(run_dir, excluded_job_types=experiment_job_types)
     for recovered_job in recovered:
         append_event(
@@ -81,7 +90,13 @@ def _process_pending_jobs(run_dir: Path) -> int:
             {"job_id": recovered_job.get("job_id", ""), "job_type": recovered_job.get("job_type", "")},
         )
     processed = 0
-    from autoad_researcher.assistant.v2.job_service import complete_pipeline_job, fail_pipeline_job
+    from autoad_researcher.assistant.v2.job_service import complete_pipeline_job, fail_pipeline_job, load_pipeline_jobs
+    # A persisted report chain advances one stage per poll.  A later stage
+    # therefore cannot consume artifacts produced during this same scan.
+    report_dependency_snapshot = {
+        item.get("job_id"): item.get("status")
+        for item in load_pipeline_jobs(run_dir)
+    }
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             running_job = json.loads(line)
@@ -121,13 +136,21 @@ def _process_pending_jobs(run_dir: Path) -> int:
         from autoad_researcher.assistant.v2.event_service import append_event
 
         dependency = _dependency_status(run_dir, job)
+        if job_type in report_job_types:
+            depends_on = job.get("payload", {}).get("depends_on") if isinstance(job.get("payload"), dict) else None
+            if depends_on and report_dependency_snapshot.get(depends_on) != "completed":
+                dependency = "failed" if report_dependency_snapshot.get(depends_on) == "failed" else "pending"
         if dependency == "pending":
             continue
         if dependency == "failed":
+            if job_type in report_job_types:
+                # Keep the successor queued. Retrying the failed predecessor
+                # then resumes the same persisted graph without re-enqueuing.
+                continue
             claimed = claim_pipeline_job(run_dir, job_id)
             if claimed:
                 error = f"dependency failed: {job.get('payload', {}).get('depends_on')}"
-                _project_source_failure(run_dir, job, error)
+                _project_job_failure(run_dir, job, error)
                 fail_pipeline_job(run_dir, job_id, error=error)
                 append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error}"})
@@ -167,6 +190,41 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 success, outputs = _run_paper_summarize(run_dir, job)
             elif job_type in {"repo_analyze", "repo_summarize"}:
                 success, outputs = _run_repo_analyze(run_dir, job)
+            elif job_type == "report_snapshot_build":
+                from autoad_researcher.reporting.service import run_snapshot_job
+
+                outputs = run_snapshot_job(run_dir, job)
+                success = True
+            elif job_type == "report_facts_assemble":
+                from autoad_researcher.reporting.facts_service import run_facts_job
+
+                outputs = run_facts_job(run_dir, job)
+                success = True
+            elif job_type == "report_narrative_generate":
+                from autoad_researcher.reporting.narrative_service import run_narrative_job
+
+                outputs = run_narrative_job(run_dir, job)
+                success = True
+            elif job_type == "report_validate":
+                from autoad_researcher.reporting.validation_service import run_validate_job
+
+                outputs = run_validate_job(run_dir, job)
+                success = True
+            elif job_type == "report_render_html":
+                from autoad_researcher.reporting.html_service import run_html_job
+
+                outputs = run_html_job(run_dir, job)
+                success = True
+            elif job_type == "report_package":
+                from autoad_researcher.reporting.bundle import run_bundle_job
+
+                outputs = run_bundle_job(run_dir, job)
+                success = True
+            elif job_type == "report_render_pdf":
+                from autoad_researcher.reporting.pdf import run_pdf_job
+
+                outputs = run_pdf_job(run_dir, job)
+                success = True
             elif job_type == "experiment_environment_prepare":
                 from autoad_researcher.environments.prepare import prepare_environment_for_job
 
@@ -184,7 +242,7 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 if not success:
                     raise RuntimeError(observation.error or "experiment attempt failed")
             else:
-                _project_source_failure(run_dir, job, f"unknown job_type: {job_type}")
+                _project_job_failure(run_dir, job, f"unknown job_type: {job_type}")
                 fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
                 append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
                 continue
@@ -198,13 +256,16 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 append_event(run_dir, "toast.success", {"message": f"{job_type} 完成"})
             else:
                 error_msg = _best_job_error(run_dir, job)
-                _project_source_failure(run_dir, job, error_msg)
+                _project_job_failure(run_dir, job, error_msg)
                 fail_pipeline_job(run_dir, job_id, error=error_msg)
                 append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error_msg})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error_msg}"})
         except Exception as exc:
             error_msg = str(exc)[:500]
-            _project_source_failure(run_dir, job, error_msg)
+            if job_type == "report_package" and isinstance(job.get("report_id"), str):
+                from autoad_researcher.reporting.store import ReportStore
+                ReportStore().set_format_status(run_dir, report_id=job["report_id"], format_name="bundle", status="failed")
+            _project_job_failure(run_dir, job, error_msg)
             fail_pipeline_job(run_dir, job_id, error=error_msg)
             append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})
             append_event(run_dir, "toast.error", {"message": f"{job_type} 失败"})
@@ -1694,6 +1755,15 @@ def _best_job_error(run_dir: Path, job: dict[str, Any]) -> str:
                 errors.append(f"{parser}: {error[:240]}")
     return "；".join(errors[:3]) if errors else "execution failed"
 
+
+def _project_job_failure(run_dir: Path, job: dict[str, Any], error: str) -> None:
+    """Project failures to their true control-plane owner."""
+    if isinstance(job.get("report_id"), str) and job["report_id"]:
+        from autoad_researcher.reporting.service import mark_report_job_failed
+
+        mark_report_job_failed(run_dir, job, error)
+        return
+    _project_source_failure(run_dir, job, error)
 
 def _project_source_failure(run_dir: Path, job: dict[str, Any], error: str) -> None:
     """Persist an actionable Source outcome before its Job becomes terminal.

@@ -32,7 +32,25 @@ JOB_TYPES = {
     "paper_summarize": "parsed_paper_evidence",
     "repo_analyze": "repo_acquired",
     "repo_summarize": "repo_acquired",
+    "report_snapshot_build": "report_artifact",
+    "report_facts_assemble": "report_artifact",
+    "report_narrative_generate": "report_artifact",
+    "report_validate": "report_artifact",
+    "report_render_html": "report_artifact",
+    "report_package": "report_artifact",
+    "report_render_pdf": "report_artifact",
 }
+REPORT_JOB_TYPES = frozenset(
+    {
+        "report_snapshot_build",
+        "report_facts_assemble",
+        "report_narrative_generate",
+        "report_validate",
+        "report_render_html",
+        "report_package",
+        "report_render_pdf",
+    }
+)
 
 
 def _jobs_path(run_dir: Path) -> Path:
@@ -104,6 +122,7 @@ def create_or_get_pipeline_job(
     idempotency_key: str,
     evidence_role: str = "",
     payload: dict[str, Any] | None = None,
+    report_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create one durable job for an idempotency key, or return the existing one.
 
@@ -126,12 +145,14 @@ def create_or_get_pipeline_job(
                 "job_type": job_type,
                 "evidence_role": resolved_role,
                 "payload": normalized_payload,
+                "report_id": report_id,
             }
             existing_identity = {
                 "source_id": existing.get("source_id", ""),
                 "job_type": existing.get("job_type"),
                 "evidence_role": existing.get("evidence_role", ""),
                 "payload": existing.get("payload", {}),
+                "report_id": existing.get("report_id"),
             }
             if existing_identity != identity:
                 raise ValueError("same idempotency key, different job identity")
@@ -144,10 +165,79 @@ def create_or_get_pipeline_job(
             evidence_role=resolved_role,
             payload=normalized_payload,
             idempotency_key=idempotency_key,
+            report_id=report_id,
         )
         jobs.append(job)
         _write_jobs_unlocked(run_dir, jobs)
         return job, True
+
+
+def create_or_get_pipeline_jobs(
+    run_dir: Path,
+    specs: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Create a small idempotent job graph while holding one jobs lock.
+
+    Report generation uses this for its fixed dependency chain.  Persisting
+    all nodes together means a worker crash cannot leave a completed stage
+    without its already-known successor.
+    """
+    if not specs:
+        raise ValueError("at least one pipeline Job spec is required")
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        result: list[dict[str, Any]] = []
+        created = False
+        for spec in specs:
+            idempotency_key = str(spec.get("idempotency_key", "")).strip()
+            if not idempotency_key:
+                raise ValueError("idempotency_key is required")
+            source_id = str(spec.get("source_id", ""))
+            job_type = str(spec.get("job_type", ""))
+            report_id = spec.get("report_id")
+            payload = dict(spec.get("payload") or {})
+            depends_on_key = spec.get("depends_on_key")
+            if depends_on_key is not None:
+                dependency = next((job for job in jobs if job.get("idempotency_key") == depends_on_key), None)
+                if dependency is None:
+                    raise ValueError("pipeline Job dependency must precede its successor")
+                payload["depends_on"] = dependency["job_id"]
+            evidence_role = str(spec.get("evidence_role", "")) or JOB_TYPES.get(job_type, "candidate_source_only")
+            existing = next((job for job in jobs if job.get("idempotency_key") == idempotency_key), None)
+            identity = {
+                "source_id": source_id,
+                "job_type": job_type,
+                "evidence_role": evidence_role,
+                "payload": payload,
+                "report_id": report_id,
+            }
+            if existing is not None:
+                existing_identity = {
+                    "source_id": existing.get("source_id", ""),
+                    "job_type": existing.get("job_type"),
+                    "evidence_role": existing.get("evidence_role", ""),
+                    "payload": existing.get("payload", {}),
+                    "report_id": existing.get("report_id"),
+                }
+                if existing_identity != identity:
+                    raise ValueError("same idempotency key, different job identity")
+                result.append(existing)
+                continue
+            job = _new_pipeline_job(
+                jobs,
+                source_id=source_id,
+                job_type=job_type,
+                evidence_role=evidence_role,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                report_id=report_id,
+            )
+            jobs.append(job)
+            result.append(job)
+            created = True
+        if created:
+            _write_jobs_unlocked(run_dir, jobs)
+        return result, created
 
 
 def _new_pipeline_job(
@@ -158,6 +248,7 @@ def _new_pipeline_job(
     evidence_role: str,
     payload: dict[str, Any] | None,
     idempotency_key: str | None,
+    report_id: str | None = None,
 ) -> dict[str, Any]:
     return {
         "job_id": _next_id_from_loaded(jobs),
@@ -172,6 +263,7 @@ def _new_pipeline_job(
         "error": None,
         "payload": payload or {},
         "idempotency_key": idempotency_key,
+        "report_id": report_id,
     }
 
 
@@ -236,6 +328,28 @@ def fail_pipeline_job(run_dir: Path, job_id: str, *, error: str) -> dict[str, An
                 _write_jobs_unlocked(run_dir, jobs)
                 return j
     return None
+
+
+def requeue_failed_report_job(run_dir: Path, job_id: str) -> dict[str, Any]:
+    """Requeue exactly one failed report Job while preserving its identity."""
+
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        for job in jobs:
+            if job.get("job_id") != job_id:
+                continue
+            if job.get("job_type") not in REPORT_JOB_TYPES:
+                raise ValueError("only report Jobs may be explicitly requeued")
+            if job.get("status") != "failed":
+                raise ValueError("only failed report Jobs may be requeued")
+            job["status"] = "queued"
+            job["started_at"] = None
+            job["completed_at"] = None
+            job["error"] = None
+            job["retry_count"] = int(job.get("retry_count", 0)) + 1
+            _write_jobs_unlocked(run_dir, jobs)
+            return dict(job)
+    raise FileNotFoundError("pipeline Job not found")
 
 
 def requeue_stale_running_jobs(

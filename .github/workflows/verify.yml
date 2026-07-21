@@ -39,6 +39,18 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
       - name: Run frontend browser tests
         working-directory: frontend
         run: npm run test:e2e
+
+      - name: Run full-stack browser tests
+        working-directory: frontend
+        run: npm run test:e2e:fullstack

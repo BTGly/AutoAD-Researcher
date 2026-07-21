@@ -20,8 +20,9 @@ LLM 只接收：
 ```text
 ExperimentReportFactsV1
 evidence_index.json
-report_digest.json
 ```
+
+`report_digest.json` 是从同一份 Facts 确定性派生的 UI/Discussion 摘要，不重复注入 Narrative 上下文。这样避免同一事实在模型输入中出现两种表示；Narrative 的所有可发布事实仍只能从 Facts placeholder 和 Evidence 引用取得。
 
 默认不传入：
 
@@ -104,15 +105,9 @@ execution_validity_scientific_status_separated
 improvement_respects_existing_scientific_assessment
 ```
 
-“报告所有数字必须出现在 Facts”不再作为主校验，因为自由文本中的章节号、日期、版本号、GPU 型号和格式化小数会产生大量误报。数字表格由确定性 renderer 直接从 Facts 生成；对 LLM 文本只做低优先级 lint：
+“报告所有数字必须出现在 Facts”不再作为主校验，因为自由文本中的章节号、日期、版本号、GPU 型号和格式化小数会产生大量误报。数字表格由确定性 renderer 直接从 Facts 生成；首版不从普通 prose 用关键词、正则或数值模式猜测事实性声明，也不以此产生 lint。
 
-```text
-unknown_attempt_id
-unknown_evidence_id
-明显未登记的数值表达
-```
-
-lint 失败不应覆盖结构化事实校验结果，但必须记录到 `report_validation.json`。
+发布约束只由结构化 Claim、Facts、Evidence、Attempt 和科学评估关系确定性校验；未解析 placeholder、没有 fact ref 的事实性 claim、Attempt 或科学评估关系不一致属于阻断项。
 
 ## 7. 发布与重试
 
@@ -136,7 +131,9 @@ LLM 结构化输出
 → 通过后 content_ready
 ```
 
-LLM 超时、解析错误和 Validator 失败通过持久化报告 Job 重试；每次记录 model、prompt 版本、失败原因和 retry 次数。不得将失败输出当作报告正文发布。
+LLM 超时、provider 错误、JSON/schema 解析错误和 Validator 失败通过持久化报告 Job 重试；每次记录 model、prompt 版本、失败原因和 retry 次数。已选择模型的调用失败不得静默回落到相同 report identity 下的 deterministic fallback；只有创建报告时未配置模型才选择并冻结 fallback profile。不得将失败输出当作报告正文发布。
+
+报告版本身份中的 prompt hash 必须由实际 system prompt、agent profile 和 `NarrativeSectionsV1` JSON schema 共同计算，而不是由固定标签或配置名替代。
 
 ## 8. 验收
 
@@ -148,6 +145,7 @@ LLM 超时、解析错误和 Validator 失败通过持久化报告 Job 重试；
 - [ ] 工程、执行、validity、scientific effect 四类状态不混淆。
 - [ ] 缺失字段和部分结果能够生成明确的 partial/inconclusive report。
 - [ ] `sections.title` 类似的结构字段错误在 schema/单元测试中被捕获。
+- [ ] 解释和局限的发布内容只渲染其关联 Claim；原始 paragraph prose 不得绕过 Claim 的 Fact/Evidence/Attempt/科学评估校验。
 - [ ] Validator 失败时不进入 HTML/PDF 发布阶段。
 
 ## 9. 不做什么

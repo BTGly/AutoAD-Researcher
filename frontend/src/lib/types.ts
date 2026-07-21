@@ -108,6 +108,80 @@ export interface EvidenceItem {
   raw?: Record<string, any>;
 }
 
+export interface ReportManifest {
+  report_id: string;
+  version: number;
+  generation_status: string;
+  review_status: string;
+  format_status: { markdown: string; html: string; pdf: string; bundle: string };
+  source_snapshot_content_sha256: string;
+  facts_content_sha256: string | null;
+}
+
+export interface ReportState {
+  report_id: string;
+  generation_status: string;
+  review_status: string;
+  format_status: { markdown: string; html: string; pdf: string; bundle: string };
+  job_ids: string[];
+  jobs: Array<{ job_id: string; job_type: string; status: string; error: string | null; depends_on: string | null; dependency_status: string | null; blocked_reason: string | null }>;
+  retry_count: number;
+  last_error: string | null;
+  available_artifacts: string[];
+}
+
+export interface ReportDigest {
+  report_id: string;
+  facts_content_sha256: string;
+  research_objective: Record<string, unknown>;
+  engineering_status: string | null;
+  execution_status: string | null;
+  scientific_status: string | null;
+  attempt_count: number;
+  failed_attempt_count: number;
+  non_comparable_attempt_count: number;
+  champion: Record<string, unknown>;
+  primary_metrics: Array<{ attempt_id: string; metric: string; value: unknown }>;
+  stop_decision: Record<string, unknown>;
+  uncertainties: string[];
+}
+
+export interface ReportEvidence {
+  evidence_id: string;
+  evidence_kind: string;
+  source_object_id: string;
+  field_path: string;
+  attempt_id: string | null;
+  idea_id: string | null;
+  summary: string;
+  artifact_ref: { locator: string; sha256: string; artifact_type: string };
+}
+
+export interface DiscussionMessage {
+  message_id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  evidence_ids: string[];
+}
+
+export interface DiscussionTurn {
+  turn_id: string;
+  request_id: string;
+  status: 'pending' | 'completed' | 'failed';
+  user_message: string;
+  response: { answer: string; response_kind: string; evidence_ids: string[]; unsupported_claims: string[] } | null;
+  error: string | null;
+}
+
+export interface ReportProposal {
+  proposal_id: string;
+  proposal_type: string;
+  rationale: string;
+  status: 'DRAFT' | 'READY_FOR_CONFIRMATION' | 'CONFIRMED' | 'REJECTED' | 'SUPERSEDED' | 'HANDED_OFF';
+  validation_errors: string[];
+  handoff: Record<string, string> | null;
+}
+
 export interface UnusableParsedSource {
   sourceId: string;
   label: string;
