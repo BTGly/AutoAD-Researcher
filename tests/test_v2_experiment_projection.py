@@ -783,6 +783,30 @@ def test_activity_is_session_bound_and_bounded(tmp_path: Path):
     assert all(card.event_type == "experiment.idea_tree.mutated" for card in projection.activity)
 
 
+def test_activity_includes_candidate_confirmation_and_registration_events(tmp_path: Path):
+    session = _session(tmp_path)
+    _write_session(tmp_path, session)
+    attempts = [_attempt(tmp_path, session.session_id).model_copy(update={"attempt_id": f"attempt_{index:06d}"}) for index in (1, 2)]
+    for attempt in attempts:
+        _write_attempt(tmp_path, attempt)
+    append_event(
+        tmp_path,
+        "experiment.candidate.b_test_queued",
+        {"candidate_attempt_id": attempts[0].attempt_id, "confirmation_attempt_id": attempts[1].attempt_id},
+    )
+    append_event(
+        tmp_path,
+        "experiment.candidate.registered",
+        {"candidate_id": "candidate_000001", "attempt_id": attempts[0].attempt_id, "confirmation_attempt_id": attempts[1].attempt_id},
+    )
+
+    projection = build_projection(tmp_path)
+
+    assert [item.title for item in projection.activity] == ["Candidate 已登记", "B_test 已排队"]
+    assert projection.activity[0].related_attempt_id == attempts[0].attempt_id
+    assert projection.activity[1].related_attempt_id == attempts[1].attempt_id
+
+
 @pytest.mark.asyncio
 async def test_projection_route_uses_configured_root_and_maps_missing_session(tmp_path: Path, monkeypatch):
     run_dir = tmp_path / "run_projection"

@@ -43,13 +43,11 @@ ExperimentPage
 | `frontend/src/components/LeftSidebar.tsx` | 设置入口改名为“实验工作台” |
 | `frontend/src/App.tsx` | 渲染 ExperimentPage，保留顶部 ConfigModal |
 | `frontend/src/components/ExperimentPage.tsx` | 新建工作台布局和空状态 |
-| `frontend/src/components/SettingsPage.tsx` | 保留现有实验配置表单，供工作台嵌入 |
+| `frontend/src/components/ConfigModal.tsx` | 保留全局 Provider/API 连接设置 |
 
 ### 3.2 配置职责不能混淆
 
-当前 `ConfigModal` 只负责通用 API Key、Base URL、Model；当前 `SettingsPage` 负责实验 Provider、实验 Model、实验 API Key、Reasoning Effort、Cycle、Turn、Timeout、文献搜索和 Idea 新颖性检查。
-
-工作台增加“实验配置”按钮，复用 `SettingsPage` 的表单和 `saveExperimentConfig`。顶部齿轮继续打开 `ConfigModal`。不要重写第二套表单，也不要声称两个组件已经共用全部字段。
+`ConfigModal` 负责全局 Provider、API Key、Base URL 和 Model。科研任务的目标、数据集、baseline、指标、预算和约束在意图对齐/任务确认阶段冻结；工作台只读展示，不提供第二套无效编辑表单。
 
 ### 3.3 空状态
 
@@ -61,7 +59,7 @@ ExperimentPage
 
 - 实验工作台入口可打开。
 - 通用 API 配置仍可打开和保存。
-- 实验配置字段未丢失。
+- 工作台不显示不会被 Session、Coordinator 或 Worker 消费的实验配置字段。
 - Chat、Report 不回归。
 
 ## 4. 提交二：后端只读投影

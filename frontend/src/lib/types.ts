@@ -165,7 +165,11 @@ export interface ExperimentProjectionSession {
   readiness_blockers: string[];
   environment_status: string;
   baseline_status: string;
+  evaluation_contract_ref: string | null;
+  evaluation_contract_sha256: string | null;
   budget: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ExperimentIdeaNode {
@@ -213,6 +217,8 @@ export interface ExperimentAttempt {
   pid: number | null;
   heartbeat_at: string | null;
   resource_lease_id: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ExperimentActivity {
@@ -237,6 +243,10 @@ export interface ExperimentProjection {
   session_candidates: Array<{ session_id: string; task_hash: string; status: string; created_at: string }>;
   input_task: PipelineInputTask | null;
   summary: {
+    status: string;
+    readiness_status: string;
+    environment_status: string;
+    baseline_status: string;
     idea_count: number;
     idea_rooted_count: number;
     attempt_by_status: Record<string, number>;
@@ -253,7 +263,16 @@ export interface ExperimentProjection {
     candidate_promotions: Array<{ candidate_id: string }>;
   };
   champion_status: 'absent' | 'available' | 'assessment_missing' | 'assessment_invalid' | 'control_plane_invalid';
-  champion: { candidate_id: string; idea_id: string; attempt_id: string; assessment_error: string | null } | null;
+  champion: {
+    candidate_id: string;
+    session_id: string;
+    evaluation_contract_hash: string;
+    idea_id: string;
+    attempt_id: string;
+    scientific_assessment: Record<string, unknown> | null;
+    assessment_reconciliation: Record<string, unknown> | null;
+    assessment_error: string | null;
+  } | null;
   activity: ExperimentActivity[];
   activity_limit: number;
   activity_truncated: boolean;

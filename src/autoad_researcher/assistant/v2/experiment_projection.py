@@ -680,11 +680,16 @@ def _activity_card(
     if not isinstance(event_id, int) or not isinstance(event_type, str) or not isinstance(created_at, str) or not isinstance(payload, dict):
         return None
     attempt_id = payload.get("attempt_id") if isinstance(payload.get("attempt_id"), str) else None
+    candidate_attempt_id = payload.get("candidate_attempt_id") if isinstance(payload.get("candidate_attempt_id"), str) else None
+    confirmation_attempt_id = payload.get("confirmation_attempt_id") if isinstance(payload.get("confirmation_attempt_id"), str) else None
     commit_id = payload.get("commit_id") if isinstance(payload.get("commit_id"), str) else None
     candidate_id = payload.get("candidate_id") if isinstance(payload.get("candidate_id"), str) else None
+    activity_attempt_id = attempt_id or confirmation_attempt_id or candidate_attempt_id
     related = (
         payload.get("session_id") == session_id
-        or (attempt_id is not None and attempt_id in attempts)
+        or (activity_attempt_id is not None and activity_attempt_id in attempts)
+        or (candidate_attempt_id is not None and candidate_attempt_id in attempts)
+        or (confirmation_attempt_id is not None and confirmation_attempt_id in attempts)
         or (commit_id is not None and commit_id in commits)
         or (candidate_id is not None and candidate_id in candidate_ids)
     )
@@ -694,7 +699,7 @@ def _activity_card(
     if title is None:
         return None
     outcome = None
-    if attempt_id is not None and event_type == "experiment.attempt.finalized":
+    if activity_attempt_id is not None and event_type == "experiment.attempt.finalized":
         outcome = {key: value for key, value in payload.items() if key in {"runtime_status", "failure_code"}}
     return ActivityCard(
         event_id=event_id,
@@ -703,7 +708,7 @@ def _activity_card(
         title=title,
         summary=summary,
         card_kind=kind,
-        related_attempt_id=attempt_id,
+        related_attempt_id=activity_attempt_id,
         related_commit_id=commit_id,
         related_outcome=outcome,
     )
@@ -724,6 +729,8 @@ def _activity_text(event_type: str, payload: dict[str, Any]) -> tuple[str | None
         "experiment.attempt.finalized": ("实验已完成", "attempt"),
         "experiment.attempt.retry_queued": ("重试已排队", "attempt"),
         "experiment.cognitive_commit.appended": ("认知提交已记录", "cognitive_commit"),
+        "experiment.candidate.b_test_queued": ("B_test 已排队", "candidate"),
+        "experiment.candidate.registered": ("Candidate 已登记", "candidate"),
     }
     if event_type in mapping:
         title, kind = mapping[event_type]
