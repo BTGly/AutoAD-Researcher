@@ -7,10 +7,10 @@
 ## 2. 复用现有代码
 
 - 使用 `RUNS_ROOT`；
-- 使用 `run_dir_or_400()` 和现有 run path helper；
+- 复用当前证据路由中 `_run_dir_or_400()` 所代表的 `RUNS_ROOT + run_dir_path` 校验基线；当前报告路由若没有共享 helper，实施时再抽取一个共享实现，不能把它描述成已经存在的公共 `run_dir_or_400()`；
 - 使用报告 Store、PipelineJob Store 和 Event service；
 - 保留当前 `REPORT_PATHS` 兼容读取逻辑；
-- 不重新实现 run_id 校验和路径根目录解析。
+- 不重新实现 run_id 校验和路径根目录解析，也不使用 `Path("runs") / run_id` 另造路径体系。
 
 ## 3. API
 
@@ -18,13 +18,21 @@
 
 ```text
 GET  /api/runs/{run_id}/reports
-GET  /api/runs/{run_id}/reports/latest
+GET  /api/runs/{run_id}/reports/latest-created
+GET  /api/runs/{run_id}/reports/latest-content-ready
 GET  /api/runs/{run_id}/reports/{report_id}/manifest
+GET  /api/runs/{run_id}/reports/{report_id}/state
 POST /api/runs/{run_id}/reports
 POST /api/runs/{run_id}/reports/{report_id}/retry
 ```
 
-`POST /reports` 只校验 Session/readiness、冻结 snapshot identity、分配版本并创建幂等报告 Jobs。重复请求返回既有报告，不重复执行。
+`POST /reports` 只校验 Session/readiness、在锁内同步冻结 Snapshot、分配版本并创建幂等报告 Jobs。重复请求返回既有报告，不重复执行。Snapshot hash 产生前不创建依赖该 hash 的 Job。
+
+Retry 请求必须显式指定允许重试的目标步骤，并调用报告 Job 专用的 failed requeue 操作，沿用该步骤的幂等身份和 retry 记录；不能把一个 PDF 失败无条件扩散成 Facts/Narrative 全链重跑。
+
+`latest-created` 表示最新创建的版本；`latest-content-ready` 表示最新可读且 Validator 通过的版本。两者都是报告侧新增语义，不把不存在的 `/latest` 说成旧兼容接口。旧兼容接口仍只有 `/api/runs/{run_id}/report`，ReportPage 默认使用 `latest-content-ready`，并单独显示更新中的最新创建版本。
+
+`/manifest` 只返回不可变 Manifest；`/state` 返回可变的 `ReportState` 投影。实施前必须结合现有 FastAPI 路由注册和测试确认精确注册位置，不能因为字符串相似而复用错误的路由语义。
 
 ### 内容和证据
 
@@ -42,7 +50,7 @@ Markdown/HTML 是否可读由对应制品和内容状态决定；不要把不存
 GET /api/runs/{run_id}/reports/{report_id}/download/{artifact}
 ```
 
-`artifact` 只允许 manifest 中登记且位于固定报告目录的制品。路径参数不能直接拼接成任意文件路径。
+`artifact` 只允许报告侧制品记录中登记且位于固定报告目录的制品。路径参数不能直接拼接成任意文件路径；Manifest 负责身份，State/制品记录负责可下载清单。
 
 ### 讨论和审阅（后续阶段注册）
 
@@ -75,6 +83,8 @@ require_run(run_id)
 
 下载响应使用真实 MIME 和 `Content-Disposition`，不能一律返回文本或依赖文件扩展名猜测。
 
+现有 `ArtifactReferenceV2` 不包含 MIME、下载文件名或 Content-Disposition。报告侧必须保存独立的制品交付记录；它引用 `ArtifactReferenceV2`，但不修改该通用 schema，也不从扩展名猜测真实 MIME。
+
 ## 5. 状态返回
 
 Manifest/API 状态必须同时返回：
@@ -88,6 +98,19 @@ retry_count
 last_error
 available_artifacts
 ```
+
+`jobs` 必须逐项返回报告 Job 的依赖投影，至少包括：
+
+```text
+job_id
+job_type
+status
+depends_on_job_id
+dependency_status: ready / pending / blocked_by_failed_dependency
+dependency_reason
+```
+
+因此 `/state` 能同时表达“Bundle 等待 HTML 重试”和“PDF 已完成”，不会用一个全局依赖字符串覆盖并行分支。
 
 `READY_FOR_REVIEW` 可以作为前端兼容字段，但它必须是确定性 readiness projection，而不是 PDF 是否成功的别名。
 
@@ -110,11 +133,18 @@ GET /api/runs/{run_id}/report
 ## 7. 验收
 
 - [ ] 相同报告请求只创建一组幂等 Jobs。
+- [ ] Retry 只重排队指定目标步骤，并保留失败原因和 retry 次数。
+- [ ] failed Job 的重排队通过显式报告 Job 操作完成，不改变普通幂等创建的读取语义。
+- [ ] `latest-created` 与 `latest-content-ready` 语义不混淆，排队中的新版本不会遮挡旧的可读版本。
+- [ ] `/manifest` 只返回不可变身份；`/state` 返回可变状态投影。
+- [ ] `/state` 的每个 Job 都返回 `dependency_status`、`depends_on_job_id` 和 `dependency_reason`。
 - [ ] API 使用 `RUNS_ROOT` 和现有 path helper。
+- [ ] 报告路径校验复用当前 `RUNS_ROOT + run_dir_path` 基线；若抽取共享 helper，测试覆盖现有证据路由和报告路由。
 - [ ] `report_id` 固定绑定，不能在 Agent 请求中隐式切换 latest。
 - [ ] Markdown/HTML 在存在且验证通过时可读取，即使 PDF 失败。
 - [ ] 不存在的制品返回明确的 404/409，而不是目录穿越结果。
 - [ ] 下载 MIME、文件名和版本正确。
+- [ ] 报告制品交付记录明确保存 MIME、下载文件名和 Content-Disposition。
 - [ ] 旧 `/report` 路由仍能读取旧报告。
 - [ ] 路径攻击、symlink 和前缀碰撞测试通过。
 

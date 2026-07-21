@@ -57,6 +57,8 @@ Champion
 停止原因
 ```
 
+状态摘要同时读取 `/state.jobs` 的逐 Job 依赖投影，至少显示 Job 类型、当前状态、`dependency_status` 和阻塞原因。例如 HTML 失败时显示“Bundle：等待 HTML 重试”，而 PDF 分支仍显示自身的 `ready` 或 `failed` 状态；不能把并行分支压缩成一个全局“依赖失败”。
+
 Digest 作为摘要卡渲染，不伪装成一条写入 transcript 的系统消息。摘要必须带 `report_id` 和 Facts hash，避免用户看到旧版本摘要。
 
 讨论启用条件：
@@ -83,8 +85,9 @@ GET /api/runs/{run_id}/reports/{report_id}/evidence/{evidence_id}
 
 ```text
 进入 Report
-→ 读取 reports/latest
-→ 读取 manifest/status
+→ 读取 latest-content-ready
+→ 查询 latest-created 的生成状态
+→ 分别读取 `/manifest` 和 `/state`
 → 若 report.md 可用则展示
 → digest 作为摘要卡
 → 证据链接按 report_id 请求
@@ -105,7 +108,10 @@ GET /api/runs/{run_id}/reports/{report_id}/evidence/{evidence_id}
 
 - [ ] 实际 `components/ReportPage.tsx` 读取新版 API。
 - [ ] 报告未完成时显示生成步骤和错误原因。
+- [ ] 生成状态区域逐 Job 显示依赖状态和阻塞原因；Bundle 被 HTML 阻塞时，PDF 状态仍独立显示。
+- [ ] queued/running 的最新创建版本不会遮挡仍可读的 content-ready 版本。
 - [ ] PDF 失败不阻断 Markdown/HTML 阅读。
+- [ ] HTML 只下载或新窗口打开，不通过 `dangerouslySetInnerHTML` 注入当前 DOM。
 - [ ] 版本切换后摘要、内容和下载均绑定同一 `report_id`。
 - [ ] EvidenceCard 不能读取未登记 artifact。
 - [ ] 失败和不可比较 Attempt 在报告中可见。

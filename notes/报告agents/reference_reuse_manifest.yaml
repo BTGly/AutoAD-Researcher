@@ -1,0 +1,121 @@
+schema_version: 1
+purpose: "记录报告 Agents 计划实际核对过的成熟项目参考，不形成运行时依赖。"
+entries:
+  - project: Arbor
+    repository: https://github.com/RUC-NLPIR/Arbor
+    commit: 4f8c5c2e8d4b8d238ae911da486240e1ba95f4ca
+    license: Apache-2.0
+    license_file: LICENSE
+    license_sha256: 821cf35143b5ae6845e4ac53015f22419037c58d4e23672c0ead7801aed7d2c3
+    notice_required: verify_if_source_is_copied
+    reuse_level: REFER
+    source_files:
+      - src/report/generator.py
+      - src/export.py
+      - src/cli/companion.py
+      - skills/arbor-agent-resume-report/SKILL.md
+    planned_local_targets:
+      - src/autoad_researcher/reporting/renderer_markdown.py
+      - src/autoad_researcher/reporting/renderer_html.py
+      - src/autoad_researcher/reporting/discussion.py
+    modifications: "独立重实现确定性渲染、partial report、导出安全和只读 Discussion 边界。"
+
+  - project: Claw-AI-Lab
+    repository: https://github.com/Claw-AI-Lab/Claw-AI-Lab
+    commit: 845532086f644630dd87aa610ca65bc261df5276
+    declared_license: MIT
+    license_status: unverified_no_license_file
+    license: null
+    license_file: null
+    license_sha256: null
+    license_note: "README 的 License section 声明 MIT，但该 checkout 未包含 LICENSE 文件；未完成许可证文件核对前不复制代码。"
+    notice_required: verify_before_copy
+    reuse_level: REFER
+    source_files:
+      - backend/agent/researchclaw/pipeline/contracts.py
+      - backend/agent/researchclaw/pipeline/runner.py
+      - backend/agent/researchclaw/experiment/runner.py
+      - backend/agent/researchclaw/templates/compiler.py
+    planned_local_targets:
+      - src/autoad_researcher/assistant/v2/job_service.py
+      - src/autoad_researcher/worker/main.py
+      - src/autoad_researcher/reporting/bundle.py
+    modifications: "只吸收阶段契约、artifact manifest、timeout 和编译结果表达；不复制论文流水线。"
+
+  - project: AI-Scientist
+    repository: https://github.com/SakanaAI/AI-Scientist
+    commit: 1de1dbc1f4ee2c5f61e9c94348d55eb51d7fa2eb
+    license: AI Scientist Source Code License
+    license_file: LICENSE
+    license_sha256: 9c82e554a54dfcf2550b452801475a36f9cb909ede00b03e492089e4836a7462
+    notice_required: verify_before_copy
+    reuse_level: REFER
+    source_files:
+      - ai_scientist/perform_writeup.py
+    planned_local_targets:
+      - src/autoad_researcher/reporting/narrative.py
+    modifications: "只参考逐节写作和结果不得臆造；不复制源码。"
+
+  - project: AiScientist
+    repository: https://github.com/AweAI-Team/AiScientist
+    commit: 6bba373da123cea54ef903a988197f927e5fd5c4
+    license: MIT
+    license_file: LICENSE
+    license_sha256: 2d681e318bce109074798f9db19e191c0774f4a508e1d616bb66c1c86f4c1e45
+    notice_required: verify_if_source_is_copied
+    reuse_level: REFER
+    source_files:
+      - README.md
+      - src/aisci_core/exporter.py
+      - src/aisci_domain_paper/state_manager.py
+      - src/aisci_app/cli.py
+    planned_local_targets:
+      - src/autoad_researcher/reporting/narrative.py
+    modifications: "只参考科研工作流组织方式；当前不复制代码。"
+
+  - project: DeepAgents
+    repository: https://github.com/langchain-ai/deepagents
+    commit: 59755031482db7cfd7705f6a03c42e7a2dfd39a3
+    license: MIT
+    license_file: LICENSE
+    license_sha256: 4ec67e4ca6e6721dba849b2ca82261597c86a61ee214bbf21416006b7b2d0478
+    notice_required: verify_if_source_is_copied
+    reuse_level: REFER
+    source_files:
+      - libs/deepagents/deepagents/graph.py
+      - libs/deepagents/deepagents/middleware/filesystem.py
+      - libs/deepagents/deepagents/backends/filesystem.py
+    planned_local_targets:
+      - src/autoad_researcher/reporting/discussion.py
+      - src/autoad_researcher/reporting/tools.py
+    modifications: "只参考公开 API、structured response 和工具排除边界；Report API 不使用通用 FilesystemBackend。"
+
+  - project: ARIS
+    repository: null
+    commit: null
+    license: unknown
+    license_file: null
+    license_sha256: null
+    notice_required: not_applicable_for_reference_only
+    reuse_level: REFER
+    source_files:
+      - tools/run_state.py
+    planned_local_targets:
+      - src/autoad_researcher/reporting/store.py
+      - src/autoad_researcher/reporting/review.py
+    modifications: "按观察到的原子 JSON、单运行锁、恢复和 done/accepted 分离行为独立重实现。"
+
+  - project: AutoSOTA
+    repository: https://github.com/tsinghua-fib-lab/AutoSOTA
+    commit: c480ce2468c0adb81fb3d3897ddfe9c84c7071d3
+    license: MIT
+    license_file: LICENSE
+    license_sha256: 5679b4ae5db8bcc9cdb8f0eec2d72993ae2a28b34cae798b7fa49f1569a1b490
+    notice_required: verify_if_source_is_copied
+    reuse_level: REFER
+    source_files:
+      - README.md
+      - cli_guide.md
+    planned_local_targets:
+      - src/autoad_researcher/server/routes/report_route.py
+    modifications: "只参考 inspect/report 和多格式查看思路；当前不复制代码。"
