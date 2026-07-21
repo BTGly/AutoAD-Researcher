@@ -1,9 +1,31 @@
 import type {
   ExperimentTaskConfirmationResult,
   ExperimentTaskDraft,
+  ExperimentProjection,
   SourceInstruction,
   TaskRun,
 } from './types';
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(status: number, message: string, code: string | null = null) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function apiError(res: Response, fallback: string): Promise<ApiError> {
+  const payload = await res.json().catch(() => null);
+  const detail = payload?.detail;
+  if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
+    return new ApiError(res.status, detail.message, typeof detail.code === 'string' ? detail.code : null);
+  }
+  return new ApiError(res.status, typeof detail === 'string' ? detail : fallback);
+}
 
 function getHeaders(): Record<string, string> {
   const cfg = localStorage.getItem('autoad_config');
@@ -61,13 +83,38 @@ export async function confirmExperimentTask(
   runId: string,
   taskId: string,
   executionMode: ExperimentTaskDraft['execution_mode'],
+  executionRepositorySourceId?: string,
 ): Promise<ExperimentTaskConfirmationResult> {
   const res = await fetch(`/api/runs/${runId}/experiment-task/${taskId}/confirm`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ execution_mode: executionMode }),
+    body: JSON.stringify({
+      execution_mode: executionMode,
+      execution_repository_source_id:
+        executionMode === 'plan_only' ? null : executionRepositorySourceId,
+    }),
   });
-  if (!res.ok) throw new Error(`Experiment task confirmation error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Experiment task confirmation error: ${res.status}`);
+  return res.json();
+}
+
+export async function getPendingExperimentTask(runId: string): Promise<ExperimentTaskDraft | null> {
+  const res = await fetch(`/api/runs/${runId}/experiment-task/pending`, { headers: getHeaders() });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await apiError(res, `Pending experiment task error: ${res.status}`);
+  return res.json();
+}
+
+export async function confirmPrimaryMetrics(
+  runId: string,
+  primaryMetrics: string[],
+): Promise<ExperimentTaskDraft> {
+  const res = await fetch(`/api/runs/${runId}/intent-summary/primary-metrics`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ primary_metrics: primaryMetrics }),
+  });
+  if (!res.ok) throw await apiError(res, `Primary metric confirmation error: ${res.status}`);
   return res.json();
 }
 
@@ -173,19 +220,32 @@ export async function getArtifact(runId: string, path: string): Promise<{ path: 
   return res.json();
 }
 
-export async function getExperimentConfig(runId: string): Promise<any> {
-  const res = await fetch(`/api/runs/${runId}/experiment-config`);
-  if (!res.ok) return {};
+export async function getExperimentProjection(runId: string, sessionId?: string, signal?: AbortSignal): Promise<ExperimentProjection> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders(), signal });
+  if (!res.ok) throw await apiError(res, `Experiment projection error: ${res.status}`);
   return res.json();
 }
 
-export async function saveExperimentConfig(runId: string, config: any): Promise<any> {
-  const res = await fetch(`/api/runs/${runId}/experiment-config`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
+export async function confirmCandidate(
+  runId: string,
+  sessionId: string,
+  candidateAttemptId: string,
+  noiseThreshold: number,
+): Promise<unknown> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-confirmations`, {
+    method: 'POST', headers: getHeaders(),
+    body: JSON.stringify({ candidate_attempt_id: candidateAttemptId, noise_threshold: noiseThreshold, idempotency_key: `ui-confirm:${candidateAttemptId}` }),
   });
-  if (!res.ok) throw new Error(`Save experiment config error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Candidate confirmation error: ${res.status}`);
+  return res.json();
+}
+
+export async function promoteCandidate(runId: string, candidateId: string, approvedBy: string): Promise<unknown> {
+  const res = await fetch(`/api/runs/${runId}/promotions`, {
+    method: 'POST', headers: getHeaders(), body: JSON.stringify({ candidate_id: candidateId, approved_by: approvedBy }),
+  });
+  if (!res.ok) throw await apiError(res, `Champion promotion error: ${res.status}`);
   return res.json();
 }
 

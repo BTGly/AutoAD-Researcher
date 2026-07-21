@@ -19,3 +19,41 @@ def test_adapter_does_not_guess_missing_or_invalid_evidence(tmp_path: Path):
     assert blocked.status == "blocked" and blocked.blocker
     (tmp_path / "autoad_executor_adapter.json").write_text("{}", encoding="utf-8")
     assert ExecutorAdapter().inspect(tmp_path).status == "blocked"
+
+
+def test_b_test_requires_a_repository_declared_command(tmp_path: Path):
+    (tmp_path / "run.py").write_text("", encoding="utf-8")
+    (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
+    (tmp_path / "autoad_executor_adapter.json").write_text(
+        json.dumps(
+            {
+                "adapter_id": "generic_python",
+                "entrypoint": "run.py",
+                "smoke_argv": [sys.executable, "run.py"],
+                "metrics_output": "metrics.json",
+                "allowed_paths": ["run.py"],
+                "protected_paths": ["evaluate.py"],
+                "evaluation_commands": {
+                    "b_dev": {"args": ["run.py", "--split", "dev"], "metrics_output": "metrics.json"},
+                    "b_test": {"args": ["run.py", "--split", "test"], "metrics_output": "metrics.json"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = ExecutorAdapter().inspect(tmp_path)
+    assert result.status == "supported"
+    plan, _ = ExecutorAdapter().build_execution(
+        result,
+        ExecutorAdapterInputs(
+            run_id="run_executor",
+            worktree_ref="executor_worktrees/attempt",
+            repository_fingerprint="fixture",
+            environment_sha256="a" * 64,
+            dataset_manifest_sha256="b" * 64,
+            asset_manifest_sha256="c" * 64,
+            evaluation_phase="b_test",
+        ),
+    )
+    assert plan.args == ["run.py", "--split", "test"]
+    assert plan.command_id == "generic_python_b_test"

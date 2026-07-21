@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
+from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.task_bridge import ExperimentTaskDraft, InputTask
 from autoad_researcher.experiment.attempt import ExperimentAttempt
@@ -26,9 +27,24 @@ from autoad_researcher.experiment.watchdog import RuntimeWatchdog
 from autoad_researcher.runner.models import ExperimentCommandPlan, ExperimentInputRefs
 
 
-def _draft() -> tuple[ExperimentTaskDraft, InputTask]:
+def _draft(run_dir: Path) -> tuple[ExperimentTaskDraft, InputTask]:
     task = InputTask(run_id="e2e_test", request="confirmed baseline", source_ids=[], user_idea="baseline", constraints=["no eval changes"])
-    return ExperimentTaskDraft(task_id="task_e2e", run_id="e2e_test", execution_mode="agent_assisted_after_approval", input_task=task, summary_sha256=sha256(json.dumps(task.model_dump(mode="json"), sort_keys=True).encode()).hexdigest(), created_at=datetime.now(timezone.utc).isoformat()), task
+    binding = ExecutionRepositoryBinding(
+        source_id="src_e2e",
+        source_kind="local_repo",
+        repository_ref="repos/src_e2e",
+        repository_fingerprint="a" * 64,
+        attestation_ref="repo_acquisition/src_e2e/repository_attestation.json",
+        attestation_sha256="b" * 64,
+        adapter_manifest_ref="repos/src_e2e/autoad_executor_adapter.json",
+        adapter_manifest_sha256="c" * 64,
+        adapter_id="generic_python",
+        adapter_evidence={},
+    )
+    binding_path = run_dir / "task_bridge" / "execution_repository_binding.json"
+    binding_path.parent.mkdir(parents=True, exist_ok=True)
+    binding_path.write_text(binding.model_dump_json(), encoding="utf-8")
+    return ExperimentTaskDraft(task_id="task_e2e", run_id="e2e_test", status="confirmed", execution_mode="agent_assisted_after_approval", input_task=task, summary_sha256=sha256(json.dumps(task.model_dump(mode="json"), sort_keys=True).encode()).hexdigest(), execution_repository_binding=binding, created_at=datetime.now(timezone.utc).isoformat(), confirmed_at=datetime.now(timezone.utc).isoformat()), task
 
 
 def _attempt(run_dir: Path, key: str = "e2e") -> ExperimentAttempt:
@@ -39,7 +55,7 @@ def _attempt(run_dir: Path, key: str = "e2e") -> ExperimentAttempt:
 
 
 def test_confirmed_task_is_idempotently_connected_to_environment_job(tmp_path: Path):
-    draft, task = _draft(); (tmp_path / "input_task.yaml").write_text(json.dumps(task.model_dump(mode="json")), encoding="utf-8")
+    draft, task = _draft(tmp_path); (tmp_path / "input_task.yaml").write_text(json.dumps(task.model_dump(mode="json")), encoding="utf-8")
     first = ExperimentStarter().on_task_confirmed(tmp_path, draft, execution_mode="agent_assisted_after_approval")
     replay = ExperimentStarter().on_task_confirmed(tmp_path, draft, execution_mode="agent_assisted_after_approval")
     assert (first.disposition, replay.disposition) == ("created", "reused")

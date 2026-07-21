@@ -72,7 +72,7 @@ def _process_pending_jobs(run_dir: Path) -> int:
     from autoad_researcher.assistant.v2.job_service import requeue_stale_running_jobs
     from autoad_researcher.assistant.v2.event_service import append_event
 
-    experiment_job_types = {"experiment_baseline", "experiment_attempt", "experiment_confirmatory"}
+    experiment_job_types = {"experiment_baseline", "experiment_baseline_b_test", "experiment_attempt", "experiment_confirmatory"}
     recovered = requeue_stale_running_jobs(run_dir, excluded_job_types=experiment_job_types)
     for recovered_job in recovered:
         append_event(
@@ -127,6 +127,7 @@ def _process_pending_jobs(run_dir: Path) -> int:
             claimed = claim_pipeline_job(run_dir, job_id)
             if claimed:
                 error = f"dependency failed: {job.get('payload', {}).get('depends_on')}"
+                _project_source_failure(run_dir, job, error)
                 fail_pipeline_job(run_dir, job_id, error=error)
                 append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error}"})
@@ -183,6 +184,7 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 if not success:
                     raise RuntimeError(observation.error or "experiment attempt failed")
             else:
+                _project_source_failure(run_dir, job, f"unknown job_type: {job_type}")
                 fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
                 append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
                 continue
@@ -196,11 +198,13 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 append_event(run_dir, "toast.success", {"message": f"{job_type} 完成"})
             else:
                 error_msg = _best_job_error(run_dir, job)
+                _project_source_failure(run_dir, job, error_msg)
                 fail_pipeline_job(run_dir, job_id, error=error_msg)
                 append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error_msg})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error_msg}"})
         except Exception as exc:
             error_msg = str(exc)[:500]
+            _project_source_failure(run_dir, job, error_msg)
             fail_pipeline_job(run_dir, job_id, error=error_msg)
             append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})
             append_event(run_dir, "toast.error", {"message": f"{job_type} 失败"})
@@ -247,6 +251,31 @@ def _run_web_fetch(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
     result = provider.fetch(url)
     out_dir = run_dir / "sources" / source_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    content_bytes = result.content_bytes or result.content.encode("utf-8")
+    if _web_fetch_is_pdf(content_type=result.content_type, content=content_bytes):
+        paper_path = out_dir / "paper.pdf"
+        paper_path.write_bytes(content_bytes)
+        paper_ref = str(paper_path.relative_to(run_dir))
+        from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
+        from autoad_researcher.ui.sources import update_source_intake_result, update_source_kind
+
+        update_source_kind(run_dir, str(source_id), "paper_pdf")
+        update_source_intake_result(
+            run_dir,
+            str(source_id),
+            stored_path=paper_ref,
+            intake_status="ok",
+            clear_intake_error=True,
+        )
+        create_or_get_pipeline_job(
+            run_dir,
+            source_id=str(source_id),
+            job_type="paper_parse_mineru",
+            evidence_role="parsed_paper_evidence",
+            idempotency_key=f"web_pdf_parse:{source_id}:{result.content_sha256}",
+            payload={"stored_path": paper_ref, "web_fetch_sha256": result.content_sha256},
+        )
+        return True, [paper_ref]
     html_path = out_dir / "raw.html"
     html_path.write_text(result.content, encoding="utf-8")
     return True, [str(html_path.relative_to(run_dir))]
@@ -254,6 +283,11 @@ def _run_web_fetch(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
 
 def _run_web_markitdown(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = job.get("source_id", "")
+    source = _find_source(run_dir, str(source_id))
+    if source is not None and source.get("kind") == "paper_pdf":
+        # The fetch result was refined from its actual payload.  This queued
+        # webpage conversion is now superseded by the existing paper pipeline.
+        return True, []
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     input_rel = str(payload.get("input_path") or "")
     if not input_rel:
@@ -280,6 +314,11 @@ def _run_web_markitdown(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[
         raw=result.metadata,
     )
     return True, result.output_paths
+
+
+def _web_fetch_is_pdf(*, content_type: str, content: bytes) -> bool:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return media_type in {"application/pdf", "application/x-pdf"} or content.startswith(b"%PDF-")
 
 
 def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
@@ -330,6 +369,15 @@ def _run_git_clone(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]
         if result.status != "success":
             _write_parse_error(run_dir, source_id, "git_clone", result.error_message or "repository acquisition failed")
             return False, []
+        from autoad_researcher.ui.sources import update_source_intake_result
+
+        update_source_intake_result(
+            run_dir,
+            source_id,
+            status="parsed",
+            intake_status="ok",
+            clear_intake_error=True,
+        )
         outputs = [f"repos/{source_id}"]
         for rel in (
             "repo_acquisition/{source_id}/repository_source.json",
@@ -723,6 +771,17 @@ def _discover_repo_roots(extract_dir: Path) -> list[Path]:
 
 def _repo_score(directory: Path) -> int:
     score = 0
+    # A repository-local adapter is stronger execution evidence than an
+    # incidental README or a minimum number of source files.  Reuse the same
+    # strict validator used by execution admission; an invalid manifest adds no
+    # score and therefore cannot turn arbitrary archive content into a repo.
+    try:
+        from autoad_researcher.experiment.executor_adapters import ExecutorAdapter
+
+        if ExecutorAdapter().inspect(directory).status == "supported":
+            score += 50
+    except Exception:
+        pass
     for marker in _REPO_MARKER_FILES:
         if (directory / marker).exists():
             score += 100 if marker == ".git" else 30
@@ -1634,6 +1693,51 @@ def _best_job_error(run_dir: Path, job: dict[str, Any]) -> str:
             if error:
                 errors.append(f"{parser}: {error[:240]}")
     return "；".join(errors[:3]) if errors else "execution failed"
+
+
+def _project_source_failure(run_dir: Path, job: dict[str, Any], error: str) -> None:
+    """Persist an actionable Source outcome before its Job becomes terminal.
+
+    A completed Source can have a later auxiliary Job fail without invalidating
+    already-supported evidence.  In that case the Job remains the failure
+    record and the Source retains its parsed outcome.
+    """
+    source_id = str(job.get("source_id") or "")
+    if not source_id:
+        return
+    from autoad_researcher.ui.sources import (
+        load_source_registry,
+        update_source_intake_result,
+    )
+
+    source = next(
+        (
+            item
+            for item in load_source_registry(run_dir).get("sources", [])
+            if isinstance(item, dict) and item.get("source_id") == source_id
+        ),
+        None,
+    )
+    if source is None or source.get("status") == "parsed":
+        return
+    if source.get("intake_status") == "failed":
+        return
+    error_code = (
+        "remote_source_unavailable"
+        if str(error).startswith("remote_source_unavailable:")
+        else "source_processing_failed"
+    )
+    update_source_intake_result(
+        run_dir,
+        source_id,
+        status="failed",
+        intake_status="failed",
+        intake_error={
+            "error_code": error_code,
+            "error_message": str(error)[:500],
+        },
+        error_message=str(error)[:500],
+    )
 
 
 def _extract_arxiv_id(text: str) -> str | None:

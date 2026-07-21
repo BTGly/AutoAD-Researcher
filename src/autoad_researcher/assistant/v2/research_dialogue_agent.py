@@ -7,15 +7,31 @@ import re
 from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.event_service import append_event
-from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
+from autoad_researcher.assistant.v2.research_intent_summary import (
+    BasedStatement,
+    ConfirmedTaskParameters,
+    ResearchIntentSummary,
+)
 from autoad_researcher.assistant.v2.task_bridge import TaskInstruction
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
+from autoad_researcher.schemas.decisions import ConfirmedDecision
+
+
+T = TypeVar("T")
 
 
 class SourceInstruction(BaseModel):
@@ -27,6 +43,15 @@ class SourceInstruction(BaseModel):
     source_id: str = Field(min_length=1)
     label_hint: str = ""
     reason: str = ""
+
+
+class DatasetSourceInstruction(BaseModel):
+    """An explicit server-local dataset directory supplied by the user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_path: str = Field(min_length=1)
+    user_label: str = Field(min_length=1)
 
 
 class TargetSpec(BaseModel):
@@ -44,7 +69,10 @@ DialoguePolicy = Literal["allow", "ask_permission", "deny"]
 EvidenceStatus = Literal["sufficient", "insufficient", "conflicting", "unavailable"]
 ConversationTransition = Literal["new", "continue", "revise", "confirm", "cancel"]
 Feasibility = Literal["not_assessed", "feasible", "infeasible_as_stated"]
-TaskActionProposal = Literal["prepare_experiment_task"]
+TaskActionProposal = Literal[
+    "prepare_experiment_task",
+    "confirm_pending_plan_only_task",
+]
 PolicyCategory = Literal[
     "none",
     "evaluation_leakage",
@@ -101,6 +129,7 @@ class DialogueDecision(BaseModel):
     numeric_claim_allowed: bool = True
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
+    dataset_source: DatasetSourceInstruction | None = None
     task_action: TaskActionProposal | None = None
     target_spec: TargetSpec | None = None
     _is_valid: bool = PrivateAttr(default=False)
@@ -131,14 +160,56 @@ class GatedDialogueDecision(BaseModel):
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
     source_permission: dict[str, Any] | None = None
+    dataset_source: DatasetSourceInstruction | None = None
     task_action: TaskInstruction | None = None
     target_spec: TargetSpec | None = None
     execution_gate: ExecutionGate = "not_requested"
     gate_notes: list[str] = Field(default_factory=list)
 
 
+class RawTaskParameters(BaseModel):
+    """Flat, model-facing parameter updates without authoritative provenance."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    baseline: str | None = Field(default=None, min_length=1)
+    dataset: str | None = Field(default=None, min_length=1)
+    compute_budget: str | None = Field(default=None, min_length=1)
+    primary_metrics: list[str] | None = None
+    evaluation_constraints: list[str] | None = None
+
+    @field_validator("primary_metrics", "evaluation_constraints")
+    @classmethod
+    def _reject_empty_list_values(cls, values: list[str] | None) -> list[str] | None:
+        if values is not None and any(not value for value in values):
+            raise ValueError("task parameter values must not be empty")
+        return values
+
+
+class ResearchReplySummaryDraft(BaseModel):
+    """Model-facing summary shape; provenance is added by trusted code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = ""
+    confirmed_facts: list[str] = Field(default_factory=list)
+    confirmed_task_parameters: RawTaskParameters = Field(default_factory=RawTaskParameters)
+    inferred_facts: list[BasedStatement] = Field(default_factory=list)
+    unresolved_conflicts: list[BasedStatement] = Field(default_factory=list)
+    blocking_question: str | None = None
+
+
+class ResearchReplyDraftResponse(BaseModel):
+    """One LLM reply with a flat task-parameter transport contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply_to_user: str = Field(min_length=1)
+    summary: ResearchReplySummaryDraft
+
+
 class ResearchReplyResponse(BaseModel):
-    """Natural-language reply and complete summary from the Reply Agent."""
+    """Natural-language reply and authoritative persisted summary."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -179,50 +250,18 @@ class ResearchDecisionAgent:
             last_summary=last_summary,
             transcript_tail=transcript_tail,
         )
-        from autoad_researcher.ui.chat_client import call_research_chat
-
-        result = call_research_chat(
-            api_key,
-            provider_url,
-            messages,
+        decision = _call_with_schema_repair(
+            run_dir=run_dir,
+            repair_event_type="assistant.decision_repair",
+            api_key=api_key,
+            provider_url=provider_url,
+            messages=messages,
             model=model,
-            timeout_s=30,
-            priority="interactive",
-            response_format_json=True,
             temperature=temperature,
+            validate_reply=_validate_decision_reply,
+            repair_messages=_decision_repair_messages,
         )
-        if result.get("error"):
-            return _fallback_decision()
-        raw_reply = str(result.get("reply") or "")
-        if not raw_reply.strip():
-            return _fallback_decision()
-        decision, failure = _validate_decision_reply(raw_reply)
-        if decision is not None:
-            return decision
-
-        repair_result = call_research_chat(
-            api_key,
-            provider_url,
-            _decision_repair_messages(messages, raw_reply, failure),
-            model=model,
-            timeout_s=30,
-            priority="interactive",
-            response_format_json=True,
-            temperature=0.0,
-        )
-        repair_raw_reply = str(repair_result.get("reply") or "")
-        repaired, _ = (
-            _validate_decision_reply(repair_raw_reply)
-            if not repair_result.get("error") and repair_raw_reply.strip()
-            else (None, None)
-        )
-        _record_decision_repair(
-            run_dir,
-            original_reply=raw_reply,
-            failure=failure,
-            outcome="succeeded" if repaired is not None else "failed",
-        )
-        return repaired or _fallback_decision()
+        return decision or _fallback_decision()
 
     @classmethod
     def build_messages(
@@ -299,9 +338,73 @@ def _decision_repair_messages(
     ]
 
 
-def _record_decision_repair(
+def _call_with_schema_repair(
+    *,
+    run_dir: Path | None,
+    repair_event_type: str,
+    api_key: str,
+    provider_url: str,
+    messages: list[dict[str, str]],
+    model: str,
+    temperature: float,
+    validate_reply: Callable[[str], tuple[T | None, dict[str, Any]]],
+    repair_messages: Callable[
+        [list[dict[str, str]], str, dict[str, Any]],
+        list[dict[str, str]],
+    ],
+) -> T | None:
+    """Validate one schema-bound answer, then allow one diagnostic repair call."""
+    from autoad_researcher.ui.chat_client import call_research_chat
+
+    result = call_research_chat(
+        api_key,
+        provider_url,
+        messages,
+        model=model,
+        timeout_s=30,
+        priority="interactive",
+        response_format_json=True,
+        temperature=temperature,
+    )
+    if result.get("error"):
+        return None
+    raw_reply = str(result.get("reply") or "")
+    if not raw_reply.strip():
+        return None
+    value, failure = validate_reply(raw_reply)
+    if value is not None:
+        return value
+
+    repair_result = call_research_chat(
+        api_key,
+        provider_url,
+        repair_messages(messages, raw_reply, failure),
+        model=model,
+        timeout_s=30,
+        priority="interactive",
+        response_format_json=True,
+        temperature=0.0,
+    )
+    repair_raw_reply = str(repair_result.get("reply") or "")
+    repaired, _ = (
+        validate_reply(repair_raw_reply)
+        if not repair_result.get("error") and repair_raw_reply.strip()
+        else (None, {})
+    )
+    _record_schema_repair(
+        run_dir,
+        event_type=repair_event_type,
+        original_reply=raw_reply,
+        failure=failure,
+        outcome="succeeded" if repaired is not None else "failed",
+    )
+    return repaired
+
+
+def _record_schema_repair(
     run_dir: Path | None,
     *,
+    event_type: str,
     original_reply: str,
     failure: dict[str, Any],
     outcome: Literal["succeeded", "failed"],
@@ -310,7 +413,7 @@ def _record_decision_repair(
         return
     append_event(
         run_dir,
-        "assistant.decision_repair",
+        event_type,
         {
             "attempted": True,
             "outcome": outcome,
@@ -330,6 +433,7 @@ class ResearchReplyAgent:
     def respond(
         cls,
         *,
+        run_dir: Path | None = None,
         user_input: str,
         evidence_state: dict[str, Any],
         frozen_decision: GatedDialogueDecision,
@@ -358,25 +462,24 @@ class ResearchReplyAgent:
             last_summary=last_summary,
             transcript_tail=transcript_tail,
         )
-        from autoad_researcher.ui.chat_client import call_research_chat
-
-        result = call_research_chat(
-            api_key,
-            provider_url,
-            messages,
+        response = _call_with_schema_repair(
+            run_dir=run_dir,
+            repair_event_type="assistant.reply_repair",
+            api_key=api_key,
+            provider_url=provider_url,
+            messages=messages,
             model=model,
-            timeout_s=30,
-            priority="interactive",
-            response_format_json=True,
             temperature=temperature,
+            validate_reply=lambda reply: _validate_reply_response(
+                reply,
+                user_input=user_input,
+                frozen_decision=frozen_decision,
+                last_summary=last_summary,
+            ),
+            repair_messages=_reply_repair_messages,
         )
-        payload = _parse_json_object(str(result.get("reply") or ""))
-        if result.get("error") or payload is None:
+        if response is None:
             return _fallback_reply(last_summary, "这轮回复生成失败了，请重试。")
-        try:
-            response = ResearchReplyResponse.model_validate(payload)
-        except ValidationError:
-            return _fallback_reply(last_summary, "这轮回复格式无效，请重试。")
         response._should_persist = True
         if on_reply_delta is not None:
             on_reply_delta(response.visible_reply())
@@ -409,6 +512,163 @@ class ResearchReplyAgent:
             {"role": "system", "content": system},
             {"role": "user", "content": user_input},
         ]
+
+
+def _validate_reply_response(
+    reply: str,
+    *,
+    user_input: str,
+    frozen_decision: GatedDialogueDecision,
+    last_summary: ResearchIntentSummary | None,
+) -> tuple[ResearchReplyResponse | None, dict[str, Any]]:
+    payload = _parse_json_object(reply)
+    if payload is None:
+        return None, {"failure_kind": "json_parse_error", "validation_errors": []}
+    try:
+        draft = ResearchReplyDraftResponse.model_validate(payload)
+    except ValidationError as exc:
+        return None, {
+            "failure_kind": "schema_validation_error",
+            "validation_errors": _compact_validation_errors(exc),
+        }
+    return ResearchReplyResponse(
+        reply_to_user=draft.reply_to_user,
+        summary=_materialize_reply_summary(
+            draft.summary,
+            user_input=user_input,
+            frozen_decision=frozen_decision,
+            last_summary=last_summary,
+        ),
+    ), {}
+
+
+def _materialize_reply_summary(
+    draft: ResearchReplySummaryDraft,
+    *,
+    user_input: str,
+    frozen_decision: GatedDialogueDecision,
+    last_summary: ResearchIntentSummary | None,
+) -> ResearchIntentSummary:
+    """Attach provenance in code instead of asking the reply model to invent it."""
+    previous_parameters = (
+        last_summary.confirmed_task_parameters
+        if last_summary is not None
+        else ConfirmedTaskParameters()
+    )
+    return ResearchIntentSummary(
+        goal=draft.goal,
+        confirmed_facts=draft.confirmed_facts,
+        confirmed_task_parameters=_materialize_task_parameters(
+            draft.confirmed_task_parameters,
+            previous_parameters=previous_parameters,
+            user_input=user_input,
+            frozen_decision=frozen_decision,
+        ),
+        inferred_facts=draft.inferred_facts,
+        unresolved_conflicts=draft.unresolved_conflicts,
+        blocking_question=draft.blocking_question,
+    )
+
+
+def _materialize_task_parameters(
+    raw: RawTaskParameters,
+    *,
+    previous_parameters: ConfirmedTaskParameters,
+    user_input: str,
+    frozen_decision: GatedDialogueDecision,
+) -> ConfirmedTaskParameters:
+    """Merge flat current-turn updates with trusted persisted provenance."""
+    if frozen_decision.policy != "allow" or frozen_decision.conversation_transition == "cancel":
+        return previous_parameters
+    source = (
+        "user_confirmed"
+        if frozen_decision.conversation_transition == "confirm"
+        else "user_provided"
+    )
+    evidence = f"当前用户消息：{user_input.strip()}"
+    return ConfirmedTaskParameters(
+        baseline=_materialize_scalar_parameter(
+            raw.baseline,
+            previous_parameters.baseline,
+            source=source,
+            evidence=evidence,
+        ),
+        dataset=_materialize_scalar_parameter(
+            raw.dataset,
+            previous_parameters.dataset,
+            source=source,
+            evidence=evidence,
+        ),
+        compute_budget=_materialize_scalar_parameter(
+            raw.compute_budget,
+            previous_parameters.compute_budget,
+            source=source,
+            evidence=evidence,
+        ),
+        primary_metrics=_materialize_list_parameter(
+            raw.primary_metrics,
+            previous_parameters.primary_metrics,
+            source=source,
+            evidence=evidence,
+        ),
+        evaluation_constraints=_materialize_list_parameter(
+            raw.evaluation_constraints,
+            previous_parameters.evaluation_constraints,
+            source=source,
+            evidence=evidence,
+        ),
+    )
+
+
+def _materialize_scalar_parameter(
+    value: str | None,
+    previous: ConfirmedDecision | None,
+    *,
+    source: Literal["user_provided", "user_confirmed"],
+    evidence: str,
+) -> ConfirmedDecision | None:
+    if value is None or (previous is not None and previous.value == value):
+        return previous
+    return ConfirmedDecision(value=value, source=source, evidence=evidence)
+
+
+def _materialize_list_parameter(
+    values: list[str] | None,
+    previous: list[ConfirmedDecision],
+    *,
+    source: Literal["user_provided", "user_confirmed"],
+    evidence: str,
+) -> list[ConfirmedDecision]:
+    if values is None or [item.value for item in previous] == values:
+        return previous
+    return [ConfirmedDecision(value=value, source=source, evidence=evidence) for value in values]
+
+
+def _reply_repair_messages(
+    messages: list[dict[str, str]],
+    raw_reply: str,
+    failure: dict[str, Any],
+) -> list[dict[str, str]]:
+    validation_errors = json.dumps(
+        failure.get("validation_errors") or [],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return [
+        *messages,
+        {"role": "assistant", "content": raw_reply[:4000]},
+        {
+            "role": "user",
+            "content": (
+                "上一个回答未通过 ResearchReplyResponse schema 校验。"
+                f"失败类型：{failure.get('failure_kind', 'unknown')}。"
+                f"字段问题：{validation_errors}。\n"
+                "保持冻结决策和上一轮语义不变，只修复 JSON 结构。"
+                "仅输出一个符合回复 schema 的 JSON object。"
+                "不要解释，不要 Markdown，不要代码围栏。"
+            ),
+        },
+    ]
 
 
 def _fallback_decision() -> DialogueDecision:

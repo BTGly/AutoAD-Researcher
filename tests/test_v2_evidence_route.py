@@ -15,6 +15,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     save_research_intent_summary,
 )
+from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.paper_intelligence.reading_artifacts import build_paper_reading_artifacts
 from autoad_researcher.server.worker_runtime import embedded_worker_enabled
 from autoad_researcher.server.routes import evidence as evidence_route
@@ -22,7 +23,7 @@ from autoad_researcher.server.routes import intent_summary as intent_summary_rou
 from autoad_researcher.server.routes import sources as sources_route
 from autoad_researcher.tools.markitdown_adapter import convert_local_to_markdown
 from autoad_researcher.tools.pdf_text_adapter import PdfTextAdapterResult, convert_pdf_to_markdown
-from autoad_researcher.tools.providers import GitHubCommitRef, GitHubRepositoryMetadata
+from autoad_researcher.tools.providers import GitHubCommitRef, GitHubRepositoryMetadata, WebFetchResult
 from autoad_researcher.ui.sources import append_source_ref, load_source_registry
 from autoad_researcher.worker.main import (
     _process_pending_jobs,
@@ -33,6 +34,9 @@ from autoad_researcher.worker.main import (
     _run_paper_parse_pdftotext,
     _run_paper_summarize,
     _run_repo_analyze,
+    _run_web_fetch,
+    _run_web_markitdown,
+    _project_source_failure,
 )
 
 
@@ -266,6 +270,84 @@ def test_archive_bundle_classifies_mixed_materials_and_queues_child_jobs(tmp_pat
     assert any(item["evidence_type"] == "uploaded_text" for item in evidence)
 
 
+def test_archive_bundle_accepts_manifest_only_executable_micro_repository(tmp_path: Path):
+    run_dir = tmp_path / "run_micro_repo"
+    source_dir = run_dir / "sources" / "src_bundle"
+    source_dir.mkdir(parents=True)
+    archive_path = source_dir / "micro.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("micro/run_experiment.py", "print('ok')\n")
+        zf.writestr("micro/evaluation.py", "")
+        zf.writestr("micro/autoad_executor_adapter.json", json.dumps({
+            "adapter_id": "generic_python",
+            "entrypoint": "run_experiment.py",
+            "smoke_argv": ["python", "run_experiment.py"],
+            "metrics_output": "metrics.json",
+            "allowed_paths": ["rarity_model.py"],
+            "protected_paths": ["evaluation.py", "run_experiment.py", "autoad_executor_adapter.json"],
+            "activation_evidence": "observed",
+        }))
+    append_source_ref(
+        run_dir,
+        kind="archive_bundle",
+        user_label="micro.zip",
+        stored_path="sources/src_bundle/micro.zip",
+        status="uploaded_not_parsed",
+        source_id="src_bundle",
+    )
+
+    ok, _outputs = _run_archive_unpack_classify(
+        run_dir,
+        {
+            "job_id": "job_000001",
+            "source_id": "src_bundle",
+            "job_type": "archive_unpack_classify",
+            "payload": {"stored_path": "sources/src_bundle/micro.zip"},
+        },
+    )
+
+    assert ok is True
+    registry = json.loads((run_dir / "sources" / "source_references.json").read_text(encoding="utf-8"))
+    children = [source for source in registry["sources"] if source.get("parent_source_id") == "src_bundle"]
+    assert [(child["kind"], child["user_label"]) for child in children] == [("local_repo", "micro")]
+    assert (run_dir / "sources" / children[0]["source_id"] / "repository" / "autoad_executor_adapter.json").is_file()
+
+
+def test_worker_projects_unsafe_archive_failure_to_source_terminal_status(tmp_path: Path):
+    run_dir = tmp_path / "run_demo"
+    source_dir = run_dir / "sources" / "src_bundle"
+    source_dir.mkdir(parents=True)
+    archive_path = source_dir / "unsafe.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("../escape.txt", "must not escape")
+    append_source_ref(
+        run_dir,
+        kind="archive_bundle",
+        user_label="unsafe.zip",
+        stored_path="sources/src_bundle/unsafe.zip",
+        status="uploaded_not_parsed",
+        source_id="src_bundle",
+    )
+    job = append_pipeline_job(
+        run_dir,
+        source_id="src_bundle",
+        job_type="archive_unpack_classify",
+        payload={"stored_path": "sources/src_bundle/unsafe.zip"},
+    )
+
+    assert _process_pending_jobs(run_dir) == 1
+
+    source = load_source_registry(run_dir)["sources"][0]
+    finished_job = load_pipeline_jobs(run_dir)[0]
+    assert not (run_dir / "escape.txt").exists()
+    assert finished_job["job_id"] == job["job_id"]
+    assert finished_job["status"] == "failed"
+    assert source["status"] == "failed"
+    assert source["intake_status"] == "failed"
+    assert source["intake_error"]["error_code"] == "source_processing_failed"
+    assert "unsafe archive member path" in source["intake_error"]["error_message"]
+
+
 @pytest.mark.asyncio
 async def test_evidence_route_returns_v2_evidence(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(evidence_route, "RUNS_ROOT", str(tmp_path))
@@ -395,6 +477,13 @@ async def test_intent_summary_route_returns_empty_summary_for_missing_run(tmp_pa
     assert payload == {
         "goal": "",
         "confirmed_facts": [],
+        "confirmed_task_parameters": {
+            "baseline": None,
+            "dataset": None,
+            "compute_budget": None,
+            "primary_metrics": [],
+            "evaluation_constraints": [],
+        },
         "inferred_facts": [],
         "unresolved_conflicts": [],
         "blocking_question": None,
@@ -423,6 +512,28 @@ async def test_intent_summary_route_returns_persisted_fact_groups(tmp_path: Path
     assert payload["inferred_facts"][0]["basis"] == "src_repo:README.md"
     assert payload["unresolved_conflicts"][0]["statement"] == "硬件不兼容"
     assert payload["blocking_question"] == "是否接受兼容实现？"
+
+
+@pytest.mark.asyncio
+async def test_primary_metric_confirmation_route_refreshes_pending_task(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(intent_summary_route, "RUNS_ROOT", str(tmp_path))
+    run_dir = tmp_path / "run_metric_confirmation_route"
+    run_dir.mkdir()
+    save_research_intent_summary(run_dir, ResearchIntentSummary(goal="比较候选方法"))
+    original = TaskBridge.build_experiment_task(run_dir, user_input="准备实验")
+
+    updated = await intent_summary_route.confirm_primary_metrics(
+        run_dir.name,
+        intent_summary_route.ConfirmPrimaryMetricsRequest(
+            primary_metrics=["image_auroc"],
+        ),
+    )
+
+    assert updated.task_id != original.task_id
+    assert updated.input_task.primary_metrics == ["image_auroc"]
+    assert updated.status == "pending_confirmation"
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
 
 
 @pytest.mark.asyncio
@@ -485,6 +596,176 @@ def test_markitdown_builtin_fallback_refuses_binary_files(tmp_path: Path, monkey
     assert result.ok is False
     assert "builtin fallback does not support .docx files" in str(result.error)
     assert not (tmp_path / "content.md").exists()
+
+
+def test_markitdown_converts_a_real_docx_when_docx_extra_is_installed(tmp_path: Path):
+    source = tmp_path / "constraints.docx"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version=\"1.0\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>Latest experiment constraint</w:t></w:r></w:p></w:body></w:document>""",
+        )
+
+    result = convert_local_to_markdown(source, tmp_path / "constraints.md", run_dir=tmp_path)
+
+    assert result.ok is True
+    assert "Latest experiment constraint" in (tmp_path / "constraints.md").read_text(encoding="utf-8")
+
+
+def test_web_fetch_preserves_pdf_bytes_and_routes_to_paper_parse(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_web_pdf"
+    append_source_ref(
+        run_dir,
+        source_id="src_official_paper",
+        kind="webpage",
+        user_label="https://example.org/official-paper",
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    class PdfProvider:
+        def fetch(self, url: str) -> WebFetchResult:
+            content = b"%PDF-1.7\nOfficial paper bytes\n"
+            return WebFetchResult(
+                url=url,
+                status_code=200,
+                content=content.decode("utf-8"),
+                content_bytes=content,
+                content_type="application/octet-stream",
+                content_sha256="a" * 64,
+            )
+
+    import autoad_researcher.tools.providers as providers
+
+    monkeypatch.setattr(providers, "SecureWebFetchProvider", PdfProvider)
+    fetch_job = {"job_id": "job_000001", "source_id": "src_official_paper", "job_type": "web_fetch", "payload": {}}
+    ok, outputs = _run_web_fetch(run_dir, fetch_job)
+
+    source = load_source_registry(run_dir)["sources"][0]
+    assert ok is True
+    assert outputs == ["sources/src_official_paper/paper.pdf"]
+    assert source["kind"] == "paper_pdf"
+    assert source["stored_path"] == outputs[0]
+    assert (run_dir / outputs[0]).read_bytes().startswith(b"%PDF-")
+    assert [job["job_type"] for job in load_pipeline_jobs(run_dir)] == ["paper_parse_mineru"]
+
+    superseded_ok, superseded_outputs = _run_web_markitdown(
+        run_dir,
+        {"job_id": "job_000002", "source_id": "src_official_paper", "job_type": "web_markitdown", "payload": {}},
+    )
+    assert superseded_ok is True
+    assert superseded_outputs == []
+
+
+def test_web_fetch_does_not_treat_pdf_looking_url_as_pdf_when_payload_is_html(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_web_html"
+    url = "https://example.org/download/paper.pdf"
+    append_source_ref(
+        run_dir,
+        source_id="src_html",
+        kind="webpage",
+        user_label=url,
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    class HtmlProvider:
+        def fetch(self, fetched_url: str) -> WebFetchResult:
+            assert fetched_url == url
+            content = b"<html><title>Access denied</title></html>"
+            return WebFetchResult(
+                url=fetched_url,
+                status_code=200,
+                content=content.decode("utf-8"),
+                content_bytes=content,
+                content_type="text/html; charset=utf-8",
+                content_sha256="b" * 64,
+            )
+
+    import autoad_researcher.tools.providers as providers
+
+    monkeypatch.setattr(providers, "SecureWebFetchProvider", HtmlProvider)
+    ok, outputs = _run_web_fetch(
+        run_dir,
+        {"job_id": "job_000001", "source_id": "src_html", "job_type": "web_fetch", "payload": {}},
+    )
+
+    source = load_source_registry(run_dir)["sources"][0]
+    assert ok is True
+    assert outputs == ["sources/src_html/raw.html"]
+    assert source["kind"] == "webpage"
+    assert source["user_label"] == url
+    assert load_pipeline_jobs(run_dir) == []
+
+
+def test_truncated_pdf_fetch_queues_parse_without_claiming_paper_evidence(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_truncated_web_pdf"
+    append_source_ref(
+        run_dir,
+        source_id="src_truncated_pdf",
+        kind="webpage",
+        user_label="https://example.org/paper",
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    class TruncatedPdfProvider:
+        def fetch(self, url: str) -> WebFetchResult:
+            content = b"%PDF-"
+            return WebFetchResult(
+                url=url,
+                status_code=200,
+                content=content.decode("utf-8"),
+                content_bytes=content,
+                content_type="application/pdf",
+                content_sha256="c" * 64,
+            )
+
+    import autoad_researcher.tools.providers as providers
+
+    monkeypatch.setattr(providers, "SecureWebFetchProvider", TruncatedPdfProvider)
+    ok, outputs = _run_web_fetch(
+        run_dir,
+        {"job_id": "job_000001", "source_id": "src_truncated_pdf", "job_type": "web_fetch", "payload": {}},
+    )
+
+    assert ok is True
+    assert outputs == ["sources/src_truncated_pdf/paper.pdf"]
+    assert [job["job_type"] for job in load_pipeline_jobs(run_dir)] == ["paper_parse_mineru"]
+    assert load_usable_evidence(run_dir) == []
+
+
+def test_remote_source_failure_keeps_url_reference_and_records_upload_guidance(tmp_path: Path):
+    run_dir = tmp_path / "run_remote_unavailable"
+    url = "https://example.org/official-paper"
+    append_source_ref(
+        run_dir,
+        source_id="src_remote",
+        kind="webpage",
+        user_label=url,
+        stored_path=None,
+        status="user_provided_not_ingested",
+    )
+
+    _project_source_failure(
+        run_dir,
+        {"source_id": "src_remote", "job_type": "web_fetch"},
+        "remote_source_unavailable: 当前无法从该链接取得内容，请直接上传 PDF。",
+    )
+
+    source = load_source_registry(run_dir)["sources"][0]
+    assert source["user_label"] == url
+    assert source["intake_status"] == "failed"
+    assert source["intake_error"]["error_code"] == "remote_source_unavailable"
+    assert "上传 PDF" in source["intake_error"]["error_message"]
 
 
 def test_pdftotext_adapter_extracts_real_uploaded_pdf(tmp_path: Path):
@@ -925,6 +1206,8 @@ def test_worker_git_clone_uses_repository_acquisition_runner(tmp_path: Path, mon
     assert (run_dir / "repos" / "src_repo" / "README.md").is_file()
     assert (run_dir / "repo_acquisition" / "src_repo" / "repository_source.json").is_file()
     assert (run_dir / "repo_acquisition" / "src_repo" / "repository_attestation.json").is_file()
+    source = load_source_registry(run_dir)["sources"][0]
+    assert source["intake_status"] == "ok"
 
 
 def test_worker_git_clone_uses_generic_shallow_for_gitlab_url(tmp_path: Path, monkeypatch):
@@ -971,6 +1254,7 @@ def test_worker_git_clone_uses_generic_shallow_for_gitlab_url(tmp_path: Path, mo
 
     assert ok is True
     assert "repos/src_gitlab" in outputs
+    assert load_source_registry(run_dir)["sources"][0]["intake_status"] == "ok"
 
 
 def test_repo_summary_without_clone_attestation_is_not_supported(tmp_path: Path):

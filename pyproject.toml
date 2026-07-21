@@ -17,7 +17,7 @@ dependencies = [
     "deepagents>=0.6.10,<0.7",
     "fastapi>=0.139.0",
     "uvicorn>=0.50.2",
-    "markitdown>=0.1.6",
+    "markitdown[docx]>=0.1.6",
 ]
 
 [project.scripts]

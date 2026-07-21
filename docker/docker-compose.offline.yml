@@ -1,0 +1,29 @@
+services:
+  autoad:
+    image: ${AUTOAD_IMAGE:?Set AUTOAD_IMAGE to the image tag loaded from the offline tar package.}
+    ports:
+      - "${AUTOAD_PORT:-8000}:8000"
+    volumes:
+      - runs_data:/app/runs
+      - config_data:/root/.autoad
+    environment:
+      AUTOAD_HOST: 0.0.0.0
+      AUTOAD_PORT: "8000"
+      AUTOAD_RUNS_ROOT: /app/runs
+      AUTOAD_EMBEDDED_WORKER: "${AUTOAD_EMBEDDED_WORKER:-1}"
+      AUTOAD_EMBEDDED_WORKER_INTERVAL: "${AUTOAD_EMBEDDED_WORKER_INTERVAL:-2}"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/api/health', timeout=3).getcode() == 200"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  runs_data:
+  config_data:

@@ -29,6 +29,7 @@ AttemptRuntimeStatus = Literal[
 ]
 AttemptJobType = Literal[
     "experiment_baseline",
+    "experiment_baseline_b_test",
     "experiment_attempt",
     "experiment_confirmatory",
 ]

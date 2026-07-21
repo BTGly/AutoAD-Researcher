@@ -139,7 +139,7 @@ def test_research_decision_and_reply_profiles_split_production_contract():
 
     assert reply.assistant_stage == "understanding_intent"
     assert reply.io.input_schema == "ResearchReplyContext"
-    assert reply.io.output_schema == "ResearchReplyResponse"
+    assert reply.io.output_schema == "ResearchReplyDraftResponse"
     assert reply.io.produced_artifacts == ["summary.json"]
     assert "dialogue_mode" in reply.io.forbidden_outputs
     assert "<identity>" in reply.system_prompt

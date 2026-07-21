@@ -212,7 +212,7 @@ def test_gate_rejects_reparse_without_registered_pdf_input(tmp_path: Path):
     assert "source_reparse_unavailable" in gated.gate_notes
 
 
-def test_task_action_requires_plan_goal_and_no_blocker(tmp_path: Path):
+def test_explicit_task_action_requires_goal_but_allows_an_open_question(tmp_path: Path):
     decision = _valid(DialogueDecision(
         dialogue_mode="plan",
         policy_assessment=_allow_policy(),
@@ -235,7 +235,47 @@ def test_task_action_requires_plan_goal_and_no_blocker(tmp_path: Path):
     assert DialogueGate.task_action_allowed(
         gated,
         ResearchIntentSummary(goal="复现实验", blocking_question="缺少数据"),
-    ) is False
+    ) is True
+
+
+def test_missing_contract_execution_can_prepare_task_without_task_action(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act",
+        policy_assessment=_allow_policy(),
+    ))
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert gated.task_action is None
+    assert gated.execution_gate == "blocked_missing_contract"
+    assert DialogueGate.missing_contract_execution_can_prepare_task(
+        gated,
+        ResearchIntentSummary(goal="复现实验", blocking_question=None),
+    ) is True
+
+
+def test_act_keeps_task_action_hint_but_removes_repository_target(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act",
+        policy_assessment=_allow_policy(),
+        task_action="prepare_experiment_task",
+        target_spec=TargetSpec(
+            adapter_id="kernelbench",
+            selectors={"level": 2, "problem_id": 40},
+        ),
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert gated.task_action is not None
+    assert gated.target_spec is None
 
 
 def test_invalid_semantic_decision_cannot_produce_actions(tmp_path: Path):
@@ -303,7 +343,7 @@ def test_source_action_is_mutually_exclusive_with_other_actions(tmp_path: Path):
     assert gated.target_spec is None
 
 
-def test_duplicate_pending_task_action_is_removed(tmp_path: Path):
+def test_pending_task_does_not_remove_task_action_hint(tmp_path: Path):
     pending = tmp_path / "task_bridge" / "pending_experiment_task.json"
     pending.parent.mkdir(parents=True)
     pending.write_text("{}\n", encoding="utf-8")
@@ -319,5 +359,20 @@ def test_duplicate_pending_task_action_is_removed(tmp_path: Path):
         registered_sources=[],
     )
 
-    assert gated.task_action is None
-    assert "duplicate_task_action_removed" in gated.gate_notes
+    assert gated.task_action is not None
+
+
+def test_plan_only_confirmation_requires_a_confirm_transition(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="plan",
+        conversation_transition="continue",
+        policy_assessment=_allow_policy(),
+        task_action="confirm_pending_plan_only_task",
+    ))
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert DialogueGate.plan_only_confirmation_allowed(gated) is False

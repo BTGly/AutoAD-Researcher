@@ -55,6 +55,48 @@ def load_events_since(run_dir: Path, last_event_id: int = 0) -> list[dict[str, A
     return events
 
 
+def iter_events_reverse(run_dir: Path, *, chunk_size: int = 64 * 1024):
+    """Yield valid JSONL events newest first without reading the whole log.
+
+    WebSocket replay deliberately continues to use ``load_events_since`` because
+    it needs a complete forward sequence. A bounded read-only view can stop
+    after it has found enough relevant events.
+    """
+
+    path = _events_path(run_dir)
+    if not path.is_file():
+        return
+    try:
+        with path.open("rb") as handle:
+            position = path.stat().st_size
+            remainder = b""
+            while position > 0:
+                size = min(chunk_size, position)
+                position -= size
+                handle.seek(position)
+                lines = (handle.read(size) + remainder).splitlines()
+                if position > 0 and lines:
+                    remainder = lines.pop(0)
+                else:
+                    remainder = b""
+                for line in reversed(lines):
+                    try:
+                        event = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    if isinstance(event, dict):
+                        yield event
+            if remainder:
+                try:
+                    event = json.loads(remainder)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return
+                if isinstance(event, dict):
+                    yield event
+    except OSError:
+        return
+
+
 def _next_event_id(run_dir: Path) -> int:
     return _next_event_id_unlocked(run_dir)
 

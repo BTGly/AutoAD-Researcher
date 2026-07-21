@@ -23,15 +23,25 @@ class NoiseFloor(BaseModel):
     mean: float | None = None
     stddev: float | None = None
     threshold: float | None = None
-    status: Literal["UNCALIBRATED", "PROVISIONAL_NOISE_FLOOR", "LOCKED", "LOCKED_MAX", "LOCKED_LOW_CONFIDENCE"]
+    status: Literal["UNCALIBRATED", "PROVISIONAL_NOISE_FLOOR", "PROVISIONAL_RETROSPECTIVE", "LOCKED", "LOCKED_MAX", "LOCKED_LOW_CONFIDENCE"]
     updated_at: str
 
 
-def calibrate_noise_floor(*, session_id: str, metric: str, category: str, samples: list[float], budget_allows_three_runs: bool = True) -> NoiseFloor:
+def calibrate_noise_floor(*, session_id: str, metric: str, category: str, samples: list[float], budget_allows_three_runs: bool = True, retrospective: bool = False) -> NoiseFloor:
     if any(not math.isfinite(value) for value in samples):
         raise ValueError("noise calibration samples must be finite")
     count = len(samples)
-    status = "UNCALIBRATED" if count < 3 or not budget_allows_three_runs else "PROVISIONAL_NOISE_FLOOR" if count < 5 else "LOCKED" if count < 7 else "LOCKED_MAX"
+    status = (
+        "UNCALIBRATED"
+        if count < 3 or not budget_allows_three_runs
+        else "PROVISIONAL_RETROSPECTIVE"
+        if retrospective
+        else "PROVISIONAL_NOISE_FLOOR"
+        if count < 5
+        else "LOCKED"
+        if count < 7
+        else "LOCKED_MAX"
+    )
     average = mean(samples) if samples else None
     deviation = stdev(samples) if count > 1 else None
     return NoiseFloor(session_id=session_id, metric=metric, category=category, samples=samples, mean=average, stddev=deviation, threshold=None if deviation is None else 2 * deviation, status=status, updated_at=datetime.now(timezone.utc).isoformat())

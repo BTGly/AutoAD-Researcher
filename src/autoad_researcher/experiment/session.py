@@ -47,6 +47,8 @@ class ExperimentSession(BaseModel):
     task_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: SessionStatus = "CREATED"
     repository_ref: str | None = None
+    execution_repository_binding_ref: str | None = None
+    execution_repository_binding_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     environment_status: str = "not_started"
     environment_snapshot_ref: str | None = None
     baseline_status: str = "not_started"
@@ -65,6 +67,8 @@ class ExperimentSession(BaseModel):
 
     @model_validator(mode="after")
     def _validate_evaluation_contract_ref(self):
+        if (self.execution_repository_binding_ref is None) != (self.execution_repository_binding_sha256 is None):
+            raise ValueError("execution repository binding reference and SHA-256 must be configured together")
         if (self.evaluation_contract_ref is None) != (self.evaluation_contract_sha256 is None):
             raise ValueError("evaluation contract reference and SHA-256 must be configured together")
         if self.evaluation_contract_ref is None and self.evaluation_contract_revision is not None:

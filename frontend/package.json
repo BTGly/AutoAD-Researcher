@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:e2e": "playwright test",
+    "test:e2e:fullstack": "bash -c 'set -euo pipefail; uv_bin=\"${UV_BIN:-uv}\"; runs_root=$(mktemp -d); AUTOAD_E2E_RUNS_ROOT=\"$runs_root\" \"$uv_bin\" run --project .. python e2e/seed_fullstack.py; NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost AUTOAD_E2E_RUNS_ROOT=\"$runs_root\" UV_BIN=\"$uv_bin\" playwright test --config=playwright.fullstack.config.ts'",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -19,6 +21,7 @@
     "tailwindcss": "^4.3.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/node": "^24.13.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

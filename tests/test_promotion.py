@@ -10,6 +10,7 @@ from autoad_researcher.experiment.promotion import (
     PromotionApproval,
     PromotionService,
 )
+from autoad_researcher.experiment.scientific_assessment import EffectiveScientificAssessment
 
 
 def _card(**updates) -> OutcomeCard:
@@ -33,6 +34,28 @@ def _card(**updates) -> OutcomeCard:
     }
     values.update(updates)
     return OutcomeCard.model_validate(values)
+
+
+def _assessment(**updates) -> EffectiveScientificAssessment:
+    card = _card(**updates)
+    return EffectiveScientificAssessment(
+        attempt_id=card.attempt_id,
+        outcome_card_ref="attempts/attempt_000001/outcome_card.json",
+        outcome_card_sha256="a" * 64,
+        scientific_assessment_ref="attempts/attempt_000001/scientific_assessment.json",
+        scientific_assessment_sha256="b" * 64,
+        execution_status=card.execution_status,
+        attempt_category=card.attempt_category,
+        protocol_intact=card.protocol_intact,
+        metrics_parsed=card.metrics_parsed,
+        patch_applied=card.patch_applied,
+        smoke_passed=card.smoke_passed,
+        evaluation_status=card.evaluation_status,
+        scientific_effect=card.scientific_effect,
+        primary_delta=card.primary_delta,
+        guardrail_deltas=card.guardrail_deltas,
+        evidence_refs=[card.execution_result_ref],
+    )
 
 
 def _candidate(**updates) -> CandidateSnapshot:
@@ -73,11 +96,11 @@ def _approval(**updates) -> PromotionApproval:
 
 def test_decision_engine_applies_protocol_noise_and_guardrail_gates():
     engine = DecisionEngine()
-    assert engine.decide(card=_card(protocol_intact=False), phase="b_dev", noise_threshold=0.01).action == "reject_result"
-    assert engine.decide(card=_card(primary_delta=0.005), phase="b_dev", noise_threshold=0.01).action == "confirm_seed"
-    assert engine.decide(card=_card(guardrail_deltas={"latency": -0.01}), phase="b_dev", noise_threshold=0.01).action == "no_promote"
-    assert engine.decide(card=_card(), phase="b_dev", noise_threshold=0.01).action == "candidate"
-    assert engine.decide(card=_card(), phase="b_test", noise_threshold=0.01).action == "ready_for_promotion"
+    assert engine.decide(assessment=_assessment(protocol_intact=False), phase="b_dev", noise_threshold=0.01).action == "reject_result"
+    assert engine.decide(assessment=_assessment(primary_delta=0.005), phase="b_dev", noise_threshold=0.01).action == "confirm_seed"
+    assert engine.decide(assessment=_assessment(guardrail_deltas={"latency": -0.01}), phase="b_dev", noise_threshold=0.01).action == "no_promote"
+    assert engine.decide(assessment=_assessment(), phase="b_dev", noise_threshold=0.01).action == "candidate"
+    assert engine.decide(assessment=_assessment(), phase="b_test", noise_threshold=0.01).action == "ready_for_promotion"
 
 
 def test_candidate_and_approval_are_immutable_by_identifier(tmp_path):

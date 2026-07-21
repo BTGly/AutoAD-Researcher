@@ -13,6 +13,10 @@ class ProviderError(ValueError):
     """Raised when a provider request is unsafe or invalid."""
 
 
+class RemoteSourceUnavailable(ProviderError):
+    """A best-effort remote material could not be obtained safely."""
+
+
 class WebFetchResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -20,6 +24,8 @@ class WebFetchResult(BaseModel):
     status_code: int
     content: str
     content_sha256: str
+    content_bytes: bytes = b""
+    content_type: str = ""
 
 
 class WebSearchResult(BaseModel):
@@ -64,20 +70,61 @@ class GitHubFileContent(BaseModel):
 class SecureWebFetchProvider:
     """HTTP(S)-only fetch provider with basic SSRF guards."""
 
+    _MAX_REDIRECTS = 3
+    _MAX_CONTENT_BYTES = 50 * 1024 * 1024
+
     def __init__(self, client: httpx.Client | None = None):
         self._client = client or httpx.Client(follow_redirects=False, timeout=10.0)
 
     def fetch(self, url: str) -> WebFetchResult:
         safe_url = _validate_public_http_url(url)
-        response = self._client.get(safe_url)
-        if 300 <= response.status_code < 400 and "location" in response.headers:
-            _validate_public_http_url(urljoin(safe_url, response.headers["location"]))
-        text = response.text
+        for _ in range(self._MAX_REDIRECTS + 1):
+            try:
+                response = self._client.get(safe_url)
+            except httpx.RequestError as exc:
+                raise RemoteSourceUnavailable(
+                    "remote_source_unavailable: 当前无法从该链接取得内容，请直接上传 PDF。"
+                ) from exc
+            if 300 <= response.status_code < 400:
+                location = response.headers.get("location")
+                if not location:
+                    raise RemoteSourceUnavailable(
+                        "remote_source_unavailable: 远程链接返回了无目标的重定向，请直接上传 PDF。"
+                    )
+                safe_url = _validate_public_http_url(urljoin(safe_url, location))
+                continue
+            if response.is_error:
+                raise RemoteSourceUnavailable(
+                    "remote_source_unavailable: 远程链接当前不可用，请直接上传 PDF。"
+                )
+            break
+        else:
+            raise RemoteSourceUnavailable(
+                "remote_source_unavailable: 重定向次数超出限制，请直接上传 PDF。"
+            )
+
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except ValueError:
+                declared_size = None
+            if declared_size is not None and declared_size > self._MAX_CONTENT_BYTES:
+                raise RemoteSourceUnavailable(
+                    "remote_source_unavailable: 远程文件超过下载大小限制，请直接上传 PDF。"
+                )
+        content = response.content
+        if len(content) > self._MAX_CONTENT_BYTES:
+            raise RemoteSourceUnavailable(
+                "remote_source_unavailable: 远程文件超过下载大小限制，请直接上传 PDF。"
+            )
         return WebFetchResult(
             url=safe_url,
             status_code=response.status_code,
-            content=text,
-            content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            content=response.text,
+            content_bytes=content,
+            content_type=response.headers.get("content-type", ""),
+            content_sha256=hashlib.sha256(content).hexdigest(),
         )
 
 
