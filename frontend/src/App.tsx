@@ -99,12 +99,22 @@ export default function App() {
   const streamingHadDeltaIdsRef = useRef(new Set<string>());
   const completedAssistantIdsRef = useRef(new Set<string>());
   const drainingQueueRunIdRef = useRef<string | null>(null);
+  const modalTriggerRef = useRef<HTMLElement | null>(null);
   const [chatTurnActive, setChatTurnActive] = useState(false);
   const bottomRef = useAutoScroll([messages]);
   const activeTask = tasks.find(task => task.run_id === runId) || null;
   const visibleTaskStatus = chatTurnActive ? 'Working' : taskStatus;
   const queuedMessages = useMemo(() => queuedMessagesByRun[runId] || [], [queuedMessagesByRun, runId]);
   const queuePaused = Boolean(queuePausedByRun[runId]);
+
+  const rememberModalTrigger = useCallback(() => {
+    modalTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, []);
+  const restoreModalTrigger = useCallback(() => {
+    const trigger = modalTriggerRef.current;
+    modalTriggerRef.current = null;
+    if (trigger?.isConnected) window.requestAnimationFrame(() => trigger.focus());
+  }, []);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -566,12 +576,12 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} />}
+      {showConfig && <ConfigModal config={config} onSave={next => { saveConfig(next); restoreModalTrigger(); }} onClose={() => { closeConfig(); restoreModalTrigger(); }} />}
       {pendingExperimentTaskConfirmation && (
         <ExperimentTaskConfirmation
           task={pendingExperimentTaskConfirmation.task}
           sources={sources}
-          onClose={() => setPendingExperimentTaskConfirmation(null)}
+          onClose={() => { setPendingExperimentTaskConfirmation(null); restoreModalTrigger(); }}
           onConfirm={async (executionMode, executionRepositorySourceId) => {
             try {
               const prepared = await confirmExperimentTask(
@@ -581,6 +591,7 @@ export default function App() {
                 executionRepositorySourceId,
               );
               setPendingExperimentTaskConfirmation(null);
+              restoreModalTrigger();
               addToast(`实验任务已确认（${prepared.disposition}）`, 'success');
               await refreshSidebarForRun(pendingExperimentTaskConfirmation.runId);
             } catch (error) {
@@ -623,7 +634,7 @@ export default function App() {
         </div>
         <div className="app-toolbar-actions">
           <ThemeToggle />
-          <button className="toolbar-icon-button" onClick={openConfig} title="配置" aria-label="配置">
+          <button className="toolbar-icon-button" onClick={() => { rememberModalTrigger(); openConfig(); }} title="配置" aria-label="配置">
             <Settings size={17} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </div>
@@ -712,7 +723,7 @@ export default function App() {
           <ExperimentPage
             runId={runId}
             experimentRefreshTick={experimentRefreshTick}
-            onOpenExperimentSettings={() => setShowExperimentSettings(true)}
+            onOpenExperimentSettings={() => { rememberModalTrigger(); setShowExperimentSettings(true); }}
             onDiscuss={text => {
               setShowExperimentSettings(false);
               setComposerText(text);
@@ -727,7 +738,7 @@ export default function App() {
               experiment={config.experiment ?? DEFAULT_EXPERIMENT}
               defaultApiKey={config.apiKey}
               onSave={saveExperimentConfig}
-              onBack={() => setShowExperimentSettings(false)}
+              onBack={() => { setShowExperimentSettings(false); restoreModalTrigger(); }}
               backLabel="返回工作台"
             />
           </div>

@@ -15,7 +15,7 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
   const [model, setModel] = useState(config.model);
 
   return (
-    <div className="modal-overlay">
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="配置 API Key">
       <Surface className="modal">
         <h2 style={{ fontSize: '1.2em', marginBottom: 20, color: 'var(--blue)' }}>配置 API Key</h2>
         <p style={{ fontSize: '0.85em', color: 'var(--text-muted)', marginBottom: 16 }}>
@@ -24,7 +24,7 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
 
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 4 }}>API Key</div>
-          <input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder="sk-…" />
+          <input autoFocus type="password" value={key} onChange={e => setKey(e.target.value)} placeholder="sk-…" />
         </div>
 
         <div style={{ marginBottom: 12 }}>

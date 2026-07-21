@@ -51,11 +51,11 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack, backLa
     toggle: (on: boolean): React.CSSProperties => ({
       width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
       background: on ? 'var(--green)' : 'var(--border)', position: 'relative',
-      flexShrink: 0, transition: 'background 0.2s',
+      flexShrink: 0, transition: 'background-color var(--duration-fast) var(--ease-standard)',
     }),
     dot: (on: boolean): React.CSSProperties => ({
       width: 18, height: 18, borderRadius: 9, background: '#fff',
-      position: 'absolute', top: 3, left: on ? 23 : 3, transition: 'left 0.2s',
+      position: 'absolute', top: 3, left: 3, transform: on ? 'translateX(20px)' : 'translateX(0)', transition: 'transform 180ms var(--ease-out)',
     }),
     range: { width: '100%', accentColor: 'var(--blue)', marginBottom: 8 },
     hint: { fontSize: '0.72em', color: 'var(--text-dim)', marginTop: 4, lineHeight: 1.5 },
@@ -203,7 +203,7 @@ export function SettingsPage({ experiment, defaultApiKey, onSave, onBack, backLa
               background: exp.apiKey.trim() ? 'var(--blue)' : 'var(--border)',
               color: '#fff', cursor: exp.apiKey.trim() ? 'pointer' : 'default',
               fontSize: '0.9em', fontWeight: 500,
-              transition: 'background 0.3s',
+              transition: 'background-color var(--duration-fast) var(--ease-standard)',
             }}
           >
             保存配置

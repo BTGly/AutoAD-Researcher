@@ -66,7 +66,7 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
 
         <label style={{ display: 'block', marginBottom: 16 }}>
           <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 4 }}>执行模式</div>
-          <select value={executionMode} onChange={event => {
+                  <select autoFocus value={executionMode} onChange={event => {
             setExecutionMode(event.target.value as ExperimentTaskDraft['execution_mode']);
             setExecutionRepositorySourceId('');
           }}>
