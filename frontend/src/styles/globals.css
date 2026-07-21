@@ -649,6 +649,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-workspace { flex: 1; display: flex; min-height: 0; overflow: hidden; padding: 10px 12px 12px; gap: 10px; }
 .project-sidebar {
   position: relative;
+  z-index: 3;
   width: 52px;
   flex-shrink: 0;
   display: flex;
