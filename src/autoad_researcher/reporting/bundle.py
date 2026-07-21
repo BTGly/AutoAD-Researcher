@@ -11,6 +11,7 @@ from autoad_researcher.reporting.binary_persistence import write_immutable_repor
 from autoad_researcher.reporting.store import ReportStore
 
 REPORT_BUNDLE_JOB_TYPE = "report_package"
+REPORT_BUNDLE_FORMAT_VERSION = "v2"
 _BUNDLE_FILES = (
     "report.md",
     "report.html",

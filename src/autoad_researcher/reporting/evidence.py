@@ -11,6 +11,8 @@ from autoad_researcher.reporting.snapshot import canonical_sha256, resolve_run_r
 from autoad_researcher.reporting.models import ReportSnapshot
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
+EVIDENCE_INDEX_BUILD_VERSION = "v2"
+
 
 class EvidenceEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -103,6 +105,11 @@ def _fact_refs_for_source(facts, artifact_type: str, artifact_id: str, field_pat
         return _candidate_fact_refs(facts, artifact_id, field_path)
     if artifact_type == "idea_tree":
         return _idea_fact_refs(field_path)
+    if artifact_type == "environment_snapshot":
+        if field_path == "environment_path":
+            return []
+        prefix = "repository_and_environment.environment_snapshot"
+        return [prefix if field_path == "$" else f"{prefix}.snapshot.{field_path}"]
     attempt_id = _id_part(artifact_id, "attempt_")
     if attempt_id is not None:
         index = next((i for i, item in enumerate(facts.attempts) if item.get("attempt_id") == attempt_id), None)

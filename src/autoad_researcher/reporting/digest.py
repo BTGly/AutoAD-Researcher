@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1, facts_content_sha256
 
+REPORT_DIGEST_BUILD_VERSION = "v2"
+
 
 class ReportDigest(BaseModel):
     model_config = ConfigDict(extra="forbid")

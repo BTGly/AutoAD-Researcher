@@ -111,6 +111,26 @@ def test_generation_profile_hashes_the_actual_prompt_and_schema(monkeypatch):
     assert report_generation_profile()["prompt_sha256"] != baseline
 
 
+def test_recipe_hash_covers_evidence_digest_bundle_and_pdf_versions(monkeypatch):
+    import autoad_researcher.reporting.recipe as recipe
+
+    baseline = report_recipe_hash()
+    for attribute in (
+        "EVIDENCE_INDEX_BUILD_VERSION",
+        "REPORT_DIGEST_BUILD_VERSION",
+        "REPORT_BUNDLE_FORMAT_VERSION",
+        "PDF_RENDERER_VERSION",
+    ):
+        monkeypatch.setattr(recipe, attribute, f"changed-{attribute}")
+        assert report_recipe_hash() != baseline
+        monkeypatch.setattr(recipe, attribute, {
+            "EVIDENCE_INDEX_BUILD_VERSION": "v2",
+            "REPORT_DIGEST_BUILD_VERSION": "v2",
+            "REPORT_BUNDLE_FORMAT_VERSION": "v2",
+            "PDF_RENDERER_VERSION": "v1",
+        }[attribute])
+
+
 def test_model_narrative_failure_persists_a_retryable_report_job(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_reporting_model_failure"
     run_dir.mkdir()

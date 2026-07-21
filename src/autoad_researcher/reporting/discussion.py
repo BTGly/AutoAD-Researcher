@@ -180,7 +180,12 @@ def _respond_with_slot(
             plan = _tool_plan(reply)
             if budget.max_llm_calls < 2:
                 raise ValueError("report discussion budget does not allow a typed deep-read response")
-            tool_results = execute_tools(run_dir, report_id=report_id, calls=plan)
+            tool_results = execute_tools(
+                run_dir,
+                report_id=report_id,
+                calls=plan,
+                snapshot_content_sha256_expected=turn.snapshot_content_sha256,
+            )
             final = call_research_chat(
                 api_key,
                 provider_url,

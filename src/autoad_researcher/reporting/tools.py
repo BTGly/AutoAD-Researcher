@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.reporting.digest import ReportDigest
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
-from autoad_researcher.reporting.snapshot import resolve_run_relative_file, sha256_file
+from autoad_researcher.reporting.snapshot import resolve_run_relative_file, sha256_file, snapshot_content_sha256
+from autoad_researcher.reporting.store import ReportStore
 
 ToolName = Literal[
     "get_report_digest", "get_report_section", "list_attempts", "get_outcome_card",
@@ -50,24 +51,43 @@ MAX_LOG_LINES = 120
 MAX_TEXT_BYTES = 48_000
 
 
-def execute_tools(run_dir, *, report_id: str, calls: list[ReportToolCall]) -> list[dict[str, Any]]:
+def execute_tools(
+    run_dir,
+    *,
+    report_id: str,
+    calls: list[ReportToolCall],
+    snapshot_content_sha256_expected: str | None = None,
+) -> list[dict[str, Any]]:
     if len(calls) > MAX_TOOL_CALLS:
         raise ValueError("report discussion requested too many typed tools")
-    facts, evidence, digest, markdown = _context(run_dir, report_id)
+    facts, evidence, digest, markdown = _context(
+        run_dir,
+        report_id,
+        snapshot_content_sha256_expected=snapshot_content_sha256_expected,
+    )
     return [
         {"name": call.name, "arguments": call.arguments, "result": _execute(run_dir, call, facts, evidence, digest, markdown)}
         for call in calls
     ]
 
 
-def _context(run_dir, report_id: str):
+def _context(run_dir, report_id: str, *, snapshot_content_sha256_expected: str | None = None):
     directory = run_dir / "reports" / report_id
-    return (
-        ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8")),
-        EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8")),
-        ReportDigest.model_validate_json((directory / "report_digest.json").read_text(encoding="utf-8")),
-        (directory / "report.md").read_text(encoding="utf-8"),
-    )
+    store = ReportStore()
+    manifest = store.load_manifest(run_dir, report_id)
+    expected = snapshot_content_sha256_expected or manifest.source_snapshot_content_sha256
+    if manifest.source_snapshot_content_sha256 != expected:
+        raise ValueError("report discussion snapshot identity conflicts with manifest")
+    if snapshot_content_sha256(store.load_snapshot(run_dir, report_id)) != expected:
+        raise ValueError("report discussion snapshot content no longer matches manifest")
+    facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
+    evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    if evidence.snapshot_content_sha256 != expected:
+        raise ValueError("report discussion Evidence snapshot identity conflicts with manifest")
+    digest = ReportDigest.model_validate_json((directory / "report_digest.json").read_text(encoding="utf-8"))
+    if digest.report_id != report_id:
+        raise ValueError("report discussion Digest identity conflicts with report")
+    return facts, evidence, digest, (directory / "report.md").read_text(encoding="utf-8")
 
 
 def _execute(run_dir, call: ReportToolCall, facts, evidence, digest, markdown: str) -> dict[str, Any]:
@@ -98,7 +118,13 @@ def _execute(run_dir, call: ReportToolCall, facts, evidence, digest, markdown: s
     if name == "get_evaluation_contract":
         return _with_provenance({**facts.evaluation_contract, "value": facts.evaluation_contract}, evidence, ["evaluation_contract"])
     if name == "get_environment_snapshot":
-        return _with_provenance({**facts.repository_and_environment, "value": facts.repository_and_environment}, evidence, ["repository_and_environment"])
+        value = facts.repository_and_environment.get("environment_snapshot")
+        status = value.get("status") if isinstance(value, dict) else "unavailable"
+        return _with_provenance(
+            {"status": status, "value": value},
+            evidence,
+            ["repository_and_environment.environment_snapshot"],
+        )
     if name == "get_champion":
         return _with_provenance({**facts.candidate_and_champion, "value": facts.candidate_and_champion}, evidence, ["candidate_and_champion"])
     if name == "get_budget_usage":

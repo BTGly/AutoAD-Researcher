@@ -1,5 +1,9 @@
+import json
 from pathlib import Path
 
+import pytest
+
+from autoad_researcher.environments.snapshot import EnvironmentSnapshot, environment_snapshot_sha256
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.tools import ReportToolCall, execute_tools
@@ -17,6 +21,48 @@ def _ready_report(tmp_path: Path):
     session = ExperimentSessionStore().create_or_get(
         run_dir, task_ref="tasks/task.json", task_hash="b" * 64, execution_mode="approve_each_step"
     )[0]
+    request, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    for _ in range(5):
+        _process_pending_jobs(run_dir)
+    return run_dir, request["manifest"].report_id
+
+
+def _ready_report_with_environment(tmp_path: Path):
+    run_dir = tmp_path / "run_report_tools_environment"
+    run_dir.mkdir()
+    session = ExperimentSessionStore().create_or_get(
+        run_dir, task_ref="tasks/task.json", task_hash="c" * 64, execution_mode="approve_each_step"
+    )[0]
+    payload = {
+        "schema_version": 1,
+        "environment_kind": "python_uv_venv",
+        "runtime_versions": {"python": "3.12.0"},
+        "package_manager": "uv",
+        "package_manager_version": "0.6.1",
+        "packages": [{"name": "numpy", "version": "2.2.0", "source": "registry"}],
+        "platform": "linux",
+        "accelerator": {"kind": "cuda", "devices": ["GPU 0"], "runtime_version": "12.4"},
+        "repository_fingerprint": "repo-fingerprint",
+        "environment_path": "/private/local/environment",
+        "package_inventory_sha256": "d" * 64,
+        "repository_commit": "abc123",
+        "validation_report_sha256": "e" * 64,
+        "project_smoke_evidence": [{"validation_id": "smoke", "status": "passed"}],
+    }
+    payload["environment_sha256"] = environment_snapshot_sha256(payload)
+    snapshot = EnvironmentSnapshot.model_validate(payload)
+    path = run_dir / "environment" / "snapshot.json"
+    path.parent.mkdir()
+    path.write_text(snapshot.model_dump_json(), encoding="utf-8")
+    ExperimentSessionStore().update_environment_state(
+        run_dir,
+        session_id=session.session_id,
+        status="READY_FOR_BASELINE",
+        environment_status="ready",
+        readiness_status="ready",
+        readiness_blockers=[],
+        environment_snapshot_ref="environment/snapshot.json",
+    )
     request, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
     for _ in range(5):
         _process_pending_jobs(run_dir)
@@ -46,12 +92,46 @@ def test_typed_tools_are_report_local_and_return_only_frozen_context(tmp_path: P
 
 def test_typed_tools_reject_unknown_attempt_and_evidence(tmp_path: Path):
     run_dir, report_id = _ready_report(tmp_path)
-    import pytest
-
     with pytest.raises(ValueError, match="unknown frozen Attempt"):
         execute_tools(run_dir, report_id=report_id, calls=[ReportToolCall(name="get_metrics", arguments={"attempt_id": "attempt_missing"})])
     with pytest.raises(ValueError, match="unknown registered Evidence"):
         execute_tools(run_dir, report_id=report_id, calls=[ReportToolCall(name="resolve_evidence", arguments={"evidence_id": "evidence_missing"})])
+
+
+def test_environment_tool_returns_safe_snapshot_with_registered_evidence(tmp_path: Path):
+    run_dir, report_id = _ready_report_with_environment(tmp_path)
+    facts = json.loads((run_dir / "reports" / report_id / "report_facts.json").read_text(encoding="utf-8"))
+    projection = facts["repository_and_environment"]["environment_snapshot"]
+    assert projection["status"] == "available"
+    assert projection["snapshot"]["packages"] == [{"name": "numpy", "version": "2.2.0", "source": "registry"}]
+    assert "environment_path" not in projection["snapshot"]
+
+    result = execute_tools(
+        run_dir,
+        report_id=report_id,
+        calls=[ReportToolCall(name="get_environment_snapshot")],
+    )[0]["result"]
+
+    assert result["status"] == "available"
+    assert result["value"] == projection
+    assert result["evidence_ids"]
+    index = json.loads((run_dir / "reports" / report_id / "evidence_index.json").read_text(encoding="utf-8"))
+    python_entry = next(item for item in index["entries"] if item["field_path"] == "runtime_versions.python")
+    path_entry = next(item for item in index["entries"] if item["field_path"] == "environment_path")
+    assert python_entry["fact_refs"] == ["repository_and_environment.environment_snapshot.snapshot.runtime_versions.python"]
+    assert path_entry["fact_refs"] == []
+
+
+def test_typed_tools_reject_snapshot_identity_mismatch(tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+
+    with pytest.raises(ValueError, match="snapshot identity conflicts with manifest"):
+        execute_tools(
+            run_dir,
+            report_id=report_id,
+            calls=[ReportToolCall(name="get_report_digest")],
+            snapshot_content_sha256_expected="f" * 64,
+        )
 
 
 def test_patch_diff_without_registered_artifact_is_explicitly_unavailable(tmp_path: Path):

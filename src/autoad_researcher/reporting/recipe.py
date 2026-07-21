@@ -5,9 +5,13 @@ from __future__ import annotations
 import os
 
 from autoad_researcher.reporting.default_narrative import NARRATIVE_MODEL_PROFILE, NARRATIVE_TEMPLATE_VERSION
+from autoad_researcher.reporting.bundle import REPORT_BUNDLE_FORMAT_VERSION
+from autoad_researcher.reporting.digest import REPORT_DIGEST_BUILD_VERSION
+from autoad_researcher.reporting.evidence import EVIDENCE_INDEX_BUILD_VERSION
 from autoad_researcher.reporting.facts import REPORT_FACTS_SCHEMA_VERSION
 from autoad_researcher.reporting.narrative import NarrativeSectionsV1
 from autoad_researcher.reporting.narrative_agent import NARRATIVE_AGENT_PROFILE, narrative_system_prompt
+from autoad_researcher.reporting.pdf import PDF_RENDERER_VERSION
 from autoad_researcher.reporting.renderer_html import HTML_RENDERER_VERSION
 from autoad_researcher.reporting.renderer_markdown import MARKDOWN_RENDERER_VERSION
 from autoad_researcher.reporting.snapshot import canonical_sha256
@@ -40,6 +44,10 @@ def report_recipe_hash(generation_profile: dict[str, str] | None = None) -> str:
     return canonical_sha256(
         {
             "facts_schema_version": REPORT_FACTS_SCHEMA_VERSION,
+            "facts_projections": {
+                "evidence_index": EVIDENCE_INDEX_BUILD_VERSION,
+                "digest": REPORT_DIGEST_BUILD_VERSION,
+            },
             "narrative": {
                 "model_profile": NARRATIVE_MODEL_PROFILE,
                 "template_version": NARRATIVE_TEMPLATE_VERSION,
@@ -49,6 +57,8 @@ def report_recipe_hash(generation_profile: dict[str, str] | None = None) -> str:
             "renderers": {
                 "html": HTML_RENDERER_VERSION,
                 "markdown": MARKDOWN_RENDERER_VERSION,
+                "pdf": PDF_RENDERER_VERSION,
+                "bundle": REPORT_BUNDLE_FORMAT_VERSION,
             },
         }
     )

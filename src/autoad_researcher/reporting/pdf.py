@@ -14,6 +14,7 @@ from autoad_researcher.reporting.persistence import write_immutable_report_json
 from autoad_researcher.reporting.store import ReportStore
 
 REPORT_PDF_JOB_TYPE = "report_render_pdf"
+PDF_RENDERER_VERSION = "v1"
 
 
 class PdfRenderResult(BaseModel):
