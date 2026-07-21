@@ -79,6 +79,11 @@ test('updates review and isolates human proposals by selected report version', a
   await expect(page.getByText('REQUEST_HUMAN · REJECTED', { exact: true })).toBeVisible();
 
   await page.locator('select').selectOption(pendingReport.report_id);
+  await expect(page.getByText(/较新版本/)).not.toBeVisible();
   await expect(page.getByText('请人工决定下一步', { exact: true })).not.toBeVisible();
+  await expect(page.getByText('Frozen report', { exact: true })).not.toBeVisible();
   await expect(page.getByText('此版本尚无可读 Markdown。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '接受' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '需要更多证据' })).toBeDisabled();
+  await expect(page.getByLabel('人工跟进 Proposal')).toBeDisabled();
 });

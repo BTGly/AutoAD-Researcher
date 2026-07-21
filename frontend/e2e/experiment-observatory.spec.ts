@@ -23,7 +23,8 @@ const projection = {
   developer_refs: { run_id: run.run_id, session_id: 'session_aaaaaaaaaaaaaaaa', event_ids: [1], artifact_paths: [], pipeline_job_ids: [], event_log_path: 'events/events.jsonl' },
 } satisfies ExperimentProjection;
 
-async function prepare(page: Page, getProjection: (sessionId?: string) => object = () => projection, withWebSocket = false) {
+async function prepare(page: Page, getProjection: (sessionId?: string) => object = () => projection, withWebSocket = false, delayedRefreshMs = 0) {
+  let projectionRequests = 0;
   if (withWebSocket) {
     await page.addInitScript(() => {
       const sockets: Array<{ onmessage: ((event: { data: string }) => void) | null; readyState: number }> = [];
@@ -54,7 +55,10 @@ async function prepare(page: Page, getProjection: (sessionId?: string) => object
     if (path === `/api/runs/${run.run_id}/intent-summary`) return route.fulfill({ json: { goal: '', confirmed_facts: [], inferred_facts: [], unresolved_conflicts: [], blocking_question: null } });
     if (path === `/api/runs/${run.run_id}/experiment/projection`) {
       try {
-        return route.fulfill({ json: getProjection(new URL(route.request().url()).searchParams.get('session_id') || undefined) });
+        projectionRequests += 1;
+        const value = getProjection(new URL(route.request().url()).searchParams.get('session_id') || undefined);
+        if (delayedRefreshMs > 0 && projectionRequests > 1) await new Promise(resolve => setTimeout(resolve, delayedRefreshMs));
+        return route.fulfill({ json: value });
       } catch {
         return route.fulfill({ status: 500, json: { detail: 'fixture refresh failure' } });
       }
@@ -107,6 +111,17 @@ test('derives a selected detail from the refreshed projection', async ({ page })
   await page.getByRole('button', { name: '刷新' }).click();
   await expect(page.getByRole('heading', { name: '刷新后的局部特征重加权' })).toBeVisible();
   await expect(page.getByText('刷新后的可检验假设', { exact: true })).toBeVisible();
+});
+
+test('keeps the last observatory snapshot visible during an in-flight refresh', async ({ page }) => {
+  await prepare(page, () => projection, false, 350);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
+  await page.getByRole('button', { name: '刷新' }).click();
+  await expect(page.locator('.observatory-sync-state')).toBeVisible();
+  await expect(page.locator('.observatory')).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByText('验证一个可审计的异常检测假设')).toBeVisible();
+  await expect(page.locator('.observatory-sync-state')).not.toBeVisible();
 });
 
 test('does not present an invalid assessment as not materialized', async ({ page }) => {

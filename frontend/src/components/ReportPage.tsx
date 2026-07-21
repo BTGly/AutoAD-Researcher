@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Download, ExternalLink, RefreshCw, Send } from 'lucide-react';
 import { confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
 import type { DiscussionMessage, ReportDigest, ReportEvidence, ReportManifest, ReportProposal, ReportState } from '../lib/types';
 import { MarkdownContent } from './MarkdownContent';
+import { AppButton } from './ui/AppButton';
+import { EmptyState } from './ui/EmptyState';
+import { StatusBadge } from './ui/StatusBadge';
 
 interface Props { runId: string; onBack: () => void; }
 const artifactUrl = (runId: string, reportId: string, artifact: string) => `/api/runs/${runId}/reports/${reportId}/download/${artifact}`;
@@ -24,7 +27,8 @@ export function ReportPage({ runId, onBack }: Props) {
   const [proposals, setProposals] = useState<ReportProposal[]>([]);
   const [proposalRationale, setProposalRationale] = useState('');
   const [reviewComment, setReviewComment] = useState('');
-  const load = async () => {
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const load = useCallback(async () => {
     if (!runId) return;
     setLoading(true); setError(null);
     try {
@@ -33,8 +37,8 @@ export function ReportPage({ runId, onBack }: Props) {
       setSelectedId(current => current && all.some(item => item.report_id === current) ? current : (ready?.report_id ?? created?.report_id ?? null));
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取报告状态'); }
     finally { setLoading(false); }
-  };
-  useEffect(() => { void load(); }, [runId]);
+  }, [runId]);
+  useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (!selectedId) { setState(null); setDigest(null); setContent(null); setEvidence([]); setDiscussion([]); setProposals([]); return; }
     let active = true;
@@ -60,40 +64,52 @@ export function ReportPage({ runId, onBack }: Props) {
     return () => { active = false; };
   }, [runId, selectedId, selectedRevision]);
   const selected = reports.find(item => item.report_id === selectedId) ?? null;
-  const artifacts = state?.available_artifacts ?? [];
-  const discussionReady = state?.generation_status === 'content_ready' && artifacts.includes('report.md') && artifacts.includes('report_validation.json');
+  const visibleState = state?.report_id === selectedId ? state : null;
+  const visibleDigest = visibleState ? digest : null;
+  const visibleContent = visibleState ? content : null;
+  const visibleEvidence = visibleState ? evidence : [];
+  const visibleDiscussion = visibleState ? discussion : [];
+  const visibleProposals = visibleState ? proposals : [];
+  const artifacts = visibleState?.available_artifacts ?? [];
+  const readable = visibleState?.generation_status === 'content_ready';
+  const discussionReady = readable && artifacts.includes('report.md') && artifacts.includes('report_validation.json');
   const sendDiscussion = async () => { if (!selected || !discussionReady || !question.trim() || sending) return; setSending(true); try { await sendReportDiscussion(runId, selected.report_id, `report.${selected.report_id}.${crypto.randomUUID()}`, question.trim()); setQuestion(''); setDiscussion((await getReportDiscussion(runId, selected.report_id)).messages); } catch (reason) { setError(reason instanceof Error ? reason.message : '讨论请求失败'); } finally { setSending(false); } };
   const refreshProposals = async () => { if (selected) setProposals(await listReportProposals(runId, selected.report_id)); };
-  const proposeHuman = async () => { if (!selected || !proposalRationale.trim()) return; try { await createHumanProposal(runId, selected.report_id, proposalRationale.trim()); setProposalRationale(''); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 创建失败'); } };
-  const changeProposal = async (proposalId: string, action: 'confirm' | 'reject') => { if (!selected) return; try { if (action === 'confirm') await confirmReportProposal(runId, selected.report_id, proposalId); else await rejectReportProposal(runId, selected.report_id, proposalId); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 更新失败'); } };
-  const submitReview = async (decision: string) => { if (!selected) return; try { await recordReportReview(runId, selected.report_id, decision, reviewComment); setReviewComment(''); await load(); setSelectedRevision(value => value + 1); } catch (reason) { setError(reason instanceof Error ? reason.message : '审阅提交失败'); } };
-  return <main className="report-workspace">
+  const proposeHuman = async () => { if (!selected || !readable || !proposalRationale.trim() || actionBusy) return; setActionBusy('proposal:create'); try { await createHumanProposal(runId, selected.report_id, proposalRationale.trim()); setProposalRationale(''); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 创建失败'); } finally { setActionBusy(null); } };
+  const changeProposal = async (proposalId: string, action: 'confirm' | 'reject') => { if (!selected || actionBusy) return; setActionBusy(`proposal:${proposalId}:${action}`); try { if (action === 'confirm') await confirmReportProposal(runId, selected.report_id, proposalId); else await rejectReportProposal(runId, selected.report_id, proposalId); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 更新失败'); } finally { setActionBusy(null); } };
+  const submitReview = async (decision: string) => { if (!selected || !readable || actionBusy) return; setActionBusy(`review:${decision}`); try { await recordReportReview(runId, selected.report_id, decision, reviewComment); setReviewComment(''); await load(); setSelectedRevision(value => value + 1); } catch (reason) { setError(reason instanceof Error ? reason.message : '审阅提交失败'); } finally { setActionBusy(null); } };
+  return <main className="report-workspace" aria-busy={loading || Boolean(selectedId && !visibleState)}>
     <header className="report-toolbar">
-      <div><h1 style={{ fontSize: '1.15rem', margin: 0 }}>实验报告</h1><div style={{ color: 'var(--text-muted)', fontSize: '.82rem', marginTop: 3 }}>固定版本、证据与交付制品</div></div>
-      <div style={{ display: 'flex', gap: 8 }}><button title="刷新报告" aria-label="刷新报告" onClick={() => void load()} disabled={loading}><RefreshCw size={16} /></button><button onClick={onBack}>返回对话</button></div>
+      <div className="report-heading"><h1>实验报告</h1><p>固定版本、证据与交付制品</p></div>
+      <div className="report-toolbar-actions"><span className="report-toolbar-state" role="status" aria-live="polite">{loading ? '同步中' : selectedId && !visibleState ? '读取版本中' : '已同步'}</span><AppButton title="刷新报告" aria-label="刷新报告" onClick={() => void load()} disabled={loading}><RefreshCw size={15} aria-hidden="true" />刷新</AppButton><AppButton onClick={onBack}>返回对话</AppButton></div>
     </header>
-    {latest && latest.report_id !== selectedId && <div className="report-version-notice">较新版本 v{latest.version} 正在{latest.generation_status}，当前继续显示已选可读版本。</div>}
+    {latest && selected && latest.version > selected.version && <div className="report-version-notice">较新版本 v{latest.version} 正在{latest.generation_status}，当前继续显示已选可读版本。</div>}
     {error && <div role="alert" style={{ color: 'var(--orange)', marginBottom: 12 }}>{error}</div>}
-    {!selected && !loading && <div style={{ color: 'var(--text-muted)', padding: 36 }}>当前 run 尚未生成报告。</div>}
-    {selected && <><section style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: 12 }}>
-      <label>版本 <select value={selectedId ?? ''} onChange={event => setSelectedId(event.target.value)}>{reports.map(item => <option key={item.report_id} value={item.report_id}>v{item.version} · {item.generation_status}</option>)}</select></label>
-      <span>生成：{state?.generation_status ?? selected.generation_status}</span><span>审阅：{state?.review_status ?? selected.review_status}</span>
-      {Object.entries(state?.format_status ?? selected.format_status).map(([name, value]) => <span key={name}>{name}: {value}</span>)}
-      {artifacts.includes('report.html') && <a title="在新窗口打开 HTML" href={artifactUrl(runId, selected.report_id, 'report.html')} target="_blank" rel="noreferrer"><ExternalLink size={16} /></a>}
-      {['report.pdf', 'report_bundle.zip'].filter(item => artifacts.includes(item)).map(item => <a key={item} title={`下载 ${item}`} href={artifactUrl(runId, selected.report_id, item)}><Download size={16} /></a>)}
+    {!selected && !loading && <EmptyState title="当前 run 尚未生成报告。" detail="报告生成后，版本、证据和交付制品会在这里显示。" />}
+    {selected && <><section className="report-status-band">
+      <div className="report-version-control"><span>版本</span><select aria-label="报告版本" value={selectedId ?? ''} onChange={event => setSelectedId(event.target.value)}>{reports.map(item => <option key={item.report_id} value={item.report_id}>v{item.version} · {item.generation_status}</option>)}</select></div>
+      <div className="report-status-list" aria-label="报告状态"><StatusBadge tone={reportTone(visibleState?.generation_status ?? selected.generation_status)}>生成：{visibleState?.generation_status ?? selected.generation_status}</StatusBadge><StatusBadge tone={reportTone(visibleState?.review_status ?? selected.review_status)}>审阅：{visibleState?.review_status ?? selected.review_status}</StatusBadge>{Object.entries(visibleState?.format_status ?? selected.format_status).map(([name, value]) => <StatusBadge key={name} tone={reportTone(value)}>{name}: {value}</StatusBadge>)}</div>
+      <div className="report-delivery-actions" aria-label="报告交付制品">{artifacts.includes('report.html') && <a className="report-delivery-link" title="在新窗口打开 HTML" aria-label="在新窗口打开 HTML" href={artifactUrl(runId, selected.report_id, 'report.html')} target="_blank" rel="noreferrer"><ExternalLink size={16} aria-hidden="true" /></a>}{['report.pdf', 'report_bundle.zip'].filter(item => artifacts.includes(item)).map(item => <a className="report-delivery-link" key={item} title={`下载 ${item}`} aria-label={`下载 ${item}`} href={artifactUrl(runId, selected.report_id, item)}><Download size={16} aria-hidden="true" /></a>)}</div>
     </section>
-    {state?.jobs.length ? <section className="report-job-list">
-      {state.jobs.map(job => <div key={job.job_id}>{job.job_type}: {job.status}{job.blocked_reason ? ` (${job.blocked_reason})` : ''}</div>)}
+    {visibleState?.jobs.length ? <section className="report-job-list">
+      {visibleState.jobs.map(job => <div key={job.job_id}>{job.job_type}: {job.status}{job.blocked_reason ? ` (${job.blocked_reason})` : ''}</div>)}
     </section> : null}
     <div className="report-layout">
-      <section className="report-paper">{content ? <MarkdownContent>{content}</MarkdownContent> : <div style={{ color: 'var(--text-muted)', padding: 24 }}>{state?.last_error ? `生成失败：${state.last_error}` : '此版本尚无可读 Markdown。'}</div>}</section>
+      <section className="report-paper" data-loading={!visibleState} data-state={visibleState?.generation_status ?? selected.generation_status} aria-live="polite">{!visibleState ? <div className="report-loading-state" role="status"><RefreshCw className="report-loading-icon" size={18} aria-hidden="true" />正在读取固定版本…</div> : visibleContent ? <MarkdownContent>{visibleContent}</MarkdownContent> : <div className="report-empty-content">{visibleState.last_error ? `生成失败：${visibleState.last_error}` : '此版本尚无可读 Markdown。'}</div>}</section>
       <aside className="report-inspector">
-        <section className="report-section"><h2>摘要</h2>{digest ? <div className="report-digest"><div>工程：{digest.engineering_status ?? '未记录'}</div><div>执行：{digest.execution_status ?? '未记录'}</div><div>科学：{digest.scientific_status ?? '未记录'}</div><div>Champion：{String(digest.champion.current_by_contract ? '已记录' : digest.champion.status ?? '未记录')}</div><div>停止：{String(digest.stop_decision.reason ?? digest.stop_decision.status ?? '未记录')}</div><div>Attempts：{digest.attempt_count}，失败：{digest.failed_attempt_count}，不可比：{digest.non_comparable_attempt_count}</div>{digest.primary_metrics.map(item => <div key={`${item.attempt_id}.${item.metric}`}>{item.attempt_id} · {item.metric}: {String(item.value)}</div>)}{digest.uncertainties.map(item => <div key={item} className="report-uncertainty">{item}</div>)}</div> : <div style={{ color: 'var(--text-muted)' }}>摘要尚不可用。</div>}</section>
-        <section className="report-section report-review"><h2>审阅与后续</h2><textarea aria-label="审阅说明" value={reviewComment} onChange={event => setReviewComment(event.target.value)} placeholder="可选审阅说明" /><div className="report-action-row"><button onClick={() => void submitReview('accept')}>接受</button><button onClick={() => void submitReview('needs_more')}>需要更多证据</button></div><input aria-label="人工跟进 Proposal" value={proposalRationale} onChange={event => setProposalRationale(event.target.value)} placeholder="需要人工跟进的事项" /><button onClick={() => void proposeHuman()} disabled={!proposalRationale.trim()}>创建人工 Proposal</button></section>
-        {proposals.length > 0 && <section className="report-section report-proposals"><h2>人工 Proposal</h2>{proposals.map(item => <div key={item.proposal_id} className="report-proposal"><div>{item.proposal_type} · {item.status}</div><div>{item.rationale}</div>{item.validation_errors.map(error => <div key={error} className="report-error-detail">{error}</div>)}{item.status === 'READY_FOR_CONFIRMATION' && <div className="report-action-row"><button onClick={() => void changeProposal(item.proposal_id, 'confirm')}>确认转交</button><button onClick={() => void changeProposal(item.proposal_id, 'reject')}>拒绝</button></div>}{item.handoff && <div className="report-muted">已转交：{item.handoff.kind}</div>}</div>)}</section>}
-        <section className="report-section report-evidence"><h2>证据</h2>{evidence.map(item => <details id={`evidence-${item.evidence_id}`} key={item.evidence_id}><summary>{item.evidence_kind} · {item.evidence_id}</summary><div>{item.summary}</div>{item.attempt_id && <div>Attempt：{item.attempt_id}</div>}{item.idea_id && <div>Idea：{item.idea_id}</div>}<div className="report-break">SHA：{item.artifact_ref.sha256}</div></details>)}</section>
-        <section className="report-section report-discussion"><h2>讨论</h2><div className="report-discussion-list">{discussion.map(item => <div key={item.message_id} className={item.role === 'assistant' ? 'report-discussion-assistant' : 'report-discussion-user'}>{item.content}</div>)}</div><div className="report-discussion-input"><input aria-label="报告讨论" value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void sendDiscussion(); }} disabled={!discussionReady} /><button aria-label="发送报告讨论" title="发送报告讨论" onClick={() => void sendDiscussion()} disabled={!discussionReady || sending || !question.trim()}><Send size={16} /></button></div></section>
+        <section className="report-section"><h2>摘要</h2>{visibleDigest ? <div className="report-digest"><div>工程：{visibleDigest.engineering_status ?? '未记录'}</div><div>执行：{visibleDigest.execution_status ?? '未记录'}</div><div>科学：{visibleDigest.scientific_status ?? '未记录'}</div><div>Champion：{String(visibleDigest.champion.current_by_contract ? '已记录' : visibleDigest.champion.status ?? '未记录')}</div><div>停止：{String(visibleDigest.stop_decision.reason ?? visibleDigest.stop_decision.status ?? '未记录')}</div><div>Attempts：{visibleDigest.attempt_count}，失败：{visibleDigest.failed_attempt_count}，不可比：{visibleDigest.non_comparable_attempt_count}</div>{visibleDigest.primary_metrics.map(item => <div key={`${item.attempt_id}.${item.metric}`}>{item.attempt_id} · {item.metric}: {String(item.value)}</div>)}{visibleDigest.uncertainties.map(item => <div key={item} className="report-uncertainty">{item}</div>)}</div> : <div className="report-muted">{visibleState ? '摘要尚不可用。' : '等待版本状态返回。'}</div>}</section>
+        <section className="report-section report-review"><div className="report-section-heading"><h2>审阅与后续</h2><div className="report-section-state">{actionBusy && <span className="report-action-state" role="status"><RefreshCw className="report-loading-icon" size={13} aria-hidden="true" />提交中</span>}{!readable && <StatusBadge tone="warning">{visibleState?.generation_status ? `当前状态：${visibleState.generation_status}` : '等待可读内容'}</StatusBadge>}</div></div>{!readable && <p className="report-unavailable-note">当前版本尚未形成可读报告，审阅、人工跟进和讨论会在内容可用后开放。</p>}<textarea aria-label="审阅说明" value={reviewComment} onChange={event => setReviewComment(event.target.value)} placeholder="可选审阅说明" disabled={!readable || actionBusy !== null} /><div className="report-action-row"><AppButton variant="primary" onClick={() => void submitReview('accept')} disabled={!readable || actionBusy !== null} aria-busy={actionBusy === 'review:accept'}>接受</AppButton><AppButton onClick={() => void submitReview('needs_more')} disabled={!readable || actionBusy !== null} aria-busy={actionBusy === 'review:needs_more'}>需要更多证据</AppButton></div><input aria-label="人工跟进 Proposal" value={proposalRationale} onChange={event => setProposalRationale(event.target.value)} placeholder="需要人工跟进的事项" disabled={!readable || actionBusy !== null} /><AppButton onClick={() => void proposeHuman()} disabled={!readable || actionBusy !== null || !proposalRationale.trim()} aria-busy={actionBusy === 'proposal:create'}>创建人工 Proposal</AppButton></section>
+        {visibleProposals.length > 0 && <section className="report-section report-proposals"><h2>人工 Proposal</h2>{visibleProposals.map(item => <div key={item.proposal_id} className="report-proposal"><div>{item.proposal_type} · {item.status}</div><div>{item.rationale}</div>{item.validation_errors.map(error => <div key={error} className="report-error-detail">{error}</div>)}{item.status === 'READY_FOR_CONFIRMATION' && <div className="report-action-row"><AppButton onClick={() => void changeProposal(item.proposal_id, 'confirm')} disabled={actionBusy !== null} aria-busy={actionBusy === `proposal:${item.proposal_id}:confirm`}>确认转交</AppButton><AppButton onClick={() => void changeProposal(item.proposal_id, 'reject')} disabled={actionBusy !== null} aria-busy={actionBusy === `proposal:${item.proposal_id}:reject`}>拒绝</AppButton></div>}{item.handoff && <div className="report-muted">已转交：{item.handoff.kind}</div>}</div>)}</section>}
+        <section className="report-section report-evidence"><h2>证据</h2>{visibleEvidence.map(item => <details id={`evidence-${item.evidence_id}`} key={item.evidence_id}><summary>{item.evidence_kind} · {item.evidence_id}</summary><div>{item.summary}</div>{item.attempt_id && <div>Attempt：{item.attempt_id}</div>}{item.idea_id && <div>Idea：{item.idea_id}</div>}<div className="report-break">SHA：{item.artifact_ref.sha256}</div></details>)}</section>
+        <section className="report-section report-discussion"><h2>讨论</h2><div className="report-discussion-list">{visibleDiscussion.map(item => <div key={item.message_id} className={item.role === 'assistant' ? 'report-discussion-assistant' : 'report-discussion-user'}>{item.content}</div>)}</div><div className="report-discussion-input"><input aria-label="报告讨论" value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void sendDiscussion(); }} disabled={!discussionReady} /><button className={sending ? 'is-sending' : ''} aria-label="发送报告讨论" title="发送报告讨论" onClick={() => void sendDiscussion()} disabled={!discussionReady || sending || !question.trim()}><Send className="report-discussion-send-icon" size={16} /></button></div></section>
       </aside>
     </div></>}
   </main>;
+}
+
+function reportTone(value: string): 'neutral' | 'success' | 'warning' | 'danger' {
+  if (['failed', 'rejected', 'invalid'].includes(value)) return 'danger';
+  if (['queued', 'pending', 'running', 'generating', 'unreviewed'].includes(value)) return 'warning';
+  if (['ready', 'content_ready', 'accepted', 'completed', 'HANDED_OFF'].includes(value)) return 'success';
+  return 'neutral';
 }

@@ -283,7 +283,7 @@ html, body, #root {
   font-size: 0.82em;
 }
 .sidebar-card.warning {
-  border-color: #4c3b1f;
+  border-color: color-mix(in srgb, var(--orange) 45%, var(--border));
 }
 .sidebar-card-head {
   display: flex;
@@ -351,19 +351,19 @@ html, body, #root {
 }
 .sidebar-badge.good {
   color: var(--green);
-  border-color: #28462a;
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
 }
 .sidebar-badge.warn {
   color: var(--orange);
-  border-color: #584019;
+  border-color: color-mix(in srgb, var(--orange) 45%, var(--border));
 }
 .sidebar-badge.bad {
   color: var(--red);
-  border-color: #5a2927;
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
 }
 .sidebar-badge.info {
   color: var(--blue);
-  border-color: #23485a;
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--border));
 }
 .sidebar-badge.muted {
   color: var(--text-dim);
@@ -512,7 +512,7 @@ html, body, #root {
   color: var(--text-muted); cursor: pointer;
 }
 .session-row:hover { background: var(--bg-hover); border-color: var(--border); }
-.session-row.active { background: var(--bg); border-color: #333; color: var(--text); }
+.session-row.active { background: var(--bg); border-color: var(--separator-strong); color: var(--text); }
 .session-row-main { min-width: 0; }
 .session-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9em; }
 .session-row-meta { color: var(--text-dim); font-size: 0.72em; margin-top: 1px; }
@@ -526,8 +526,8 @@ html, body, #root {
   width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
   padding: 0; background: transparent; border-color: transparent; color: var(--text-dim);
 }
-.session-row-button:hover { background: #242424; color: var(--text); border-color: #383838; }
-.session-row-button.danger:hover { color: var(--red); border-color: #513030; }
+.session-row-button:hover { background: var(--control-hover-bg); color: var(--text); border-color: var(--separator-strong); }
+.session-row-button.danger:hover { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
 .session-empty { color: var(--text-dim); font-size: 0.85em; padding: 10px 8px; }
 
 button {
@@ -535,7 +535,7 @@ button {
   border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 0.88em;
   transition: transform var(--duration-press) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard);
 }
-button:hover { background: #222; border-color: #444; }
+button:hover { background: var(--control-hover-bg); border-color: var(--separator-strong); }
 button:not(:disabled):active { transform: scale(.98); }
 button.primary { background: var(--blue); color: #000; border-color: var(--blue); font-weight: 600; }
 button.primary:hover { opacity: 0.85; }
@@ -881,4 +881,70 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     border-color: var(--separator-strong);
   }
   .app-status, .status-badge { box-shadow: inset 0 0 0 1px var(--separator-strong); }
+}
+
+/* New feature surfaces: status is legible without moving the data itself. */
+.observatory-heading h1, .report-heading h1 { margin: 0; font-size: 20px; line-height: 1.25; letter-spacing: -0.01em; }
+.observatory-heading p, .report-heading p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.observatory-header-actions, .report-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.observatory-sync-state, .report-toolbar-state { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.observatory-sync-icon, .report-loading-icon { animation: uiSpin 900ms linear infinite; }
+@keyframes uiSpin { to { transform: rotate(360deg); } }
+.observatory-session-picker h2 { margin: 0; font-size: 14px; }
+.observatory-session-picker p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.session-overview-heading, .experiment-actions-header, .report-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.session-goal { font-size: 16px; font-weight: 650; line-height: 1.35; }
+.observatory-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px 12px; margin-top: 14px; }
+.observatory-fact { min-width: 0; display: grid; gap: 4px; }
+.observatory-fact > span { color: var(--text-dim); font-size: 11px; }
+.observatory-fact > strong { min-width: 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 550; }
+.observatory-fact .status-badge { width: fit-content; max-width: 100%; }
+.experiment-actions-header h2 { margin: 0; font-size: 14px; }
+.experiment-actions-header p { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
+.experiment-action-item { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--separator); }
+.experiment-action-copy { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.experiment-action-form { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
+.experiment-action-form label { display: grid; gap: 4px; min-width: 180px; color: var(--text-muted); font-size: 12px; }
+.experiment-action-form label input { margin: 0; }
+.experiment-action-form .app-button { flex-shrink: 0; }
+.experiment-actions-empty { margin-top: 12px; color: var(--text-muted); font-size: 12px; }
+
+.report-status-band { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--separator); }
+.report-version-control { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
+.report-version-control select { width: auto; min-width: 170px; margin: 0; }
+.report-status-list { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
+.report-status-list .status-badge { overflow-wrap: anywhere; }
+.report-delivery-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.report-delivery-link { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); }
+.report-delivery-link:hover { background: var(--surface-secondary); border-color: var(--separator); color: var(--text); }
+.report-paper { transition: opacity 160ms var(--ease-standard), filter 160ms var(--ease-standard); }
+.report-paper[data-loading='true'] { opacity: .72; filter: blur(.45px); }
+.report-loading-state { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 220px; color: var(--text-muted); font-size: 13px; }
+.report-empty-content { padding: 24px; color: var(--text-muted); }
+.report-section-heading h2 { margin: 0; }
+.report-section-state { display: inline-flex; align-items: center; gap: 6px; }
+.report-action-state { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 11px; }
+.report-unavailable-note { margin: -2px 0 4px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.report-review textarea:disabled, .report-review input:disabled { opacity: .62; cursor: not-allowed; }
+.report-review .app-button:disabled { cursor: not-allowed; }
+.report-review .app-button-primary:disabled { background: var(--control-bg); border-color: var(--border); color: var(--text-muted); opacity: .72; }
+.report-discussion-send-icon { transition: transform 160ms var(--ease-standard), opacity 160ms var(--ease-standard); }
+.report-discussion-input button.is-sending .report-discussion-send-icon { animation: uiSpin 900ms linear infinite; opacity: .72; }
+
+@media (max-width: 720px) {
+  .observatory-header-actions, .report-toolbar-actions { justify-content: flex-start; }
+  .observatory-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .experiment-action-form { align-items: stretch; flex-direction: column; }
+  .experiment-action-form label { min-width: 0; }
+  .experiment-action-form .app-button { width: 100%; }
+  .report-status-band { align-items: stretch; }
+  .report-delivery-actions { margin-left: 0; }
+  .report-version-control { width: 100%; }
+  .report-version-control select { flex: 1; min-width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .observatory-sync-icon, .report-loading-icon { animation: none; }
+  .report-paper { transition-duration: 100ms; }
+  .report-discussion-input button.is-sending .report-discussion-send-icon { animation: none; opacity: .72; }
 }
