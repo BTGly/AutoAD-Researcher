@@ -10,7 +10,6 @@ import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
 import { LeftSidebar } from './components/LeftSidebar';
 import { ExperimentPage } from './components/ExperimentPage';
-import { SettingsPage } from './components/SettingsPage';
 import { ReportPage } from './components/ReportPage';
 import { DevMockPanel } from './components/DevMockPanel';
 import { MarkdownContent } from './components/MarkdownContent';
@@ -69,7 +68,7 @@ function hasIntentSummary(summary: IntentSummary | null): boolean {
 const MAX_VISIBLE_TOASTS = 3;
 
 export default function App() {
-  const { config, saveConfig, saveExperimentConfig, showConfig, openConfig, closeConfig, DEFAULT_EXPERIMENT } = useConfig();
+  const { config, saveConfig, showConfig, openConfig, closeConfig } = useConfig();
   const [runId, setRunId] = useState<string>('');
   const [tasks, setTasks] = useState<TaskRun[]>([]);
   const [taskStatus, setTaskStatus] = useState<string>('Ready');
@@ -83,7 +82,6 @@ export default function App() {
   const [intentSummary, setIntentSummary] = useState<IntentSummary | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
   const [showDev, setShowDev] = useState(false);
-  const [showExperimentSettings, setShowExperimentSettings] = useState(false);
   const [experimentRefreshTick, setExperimentRefreshTick] = useState(0);
   const [page, setPage] = useState<PageId>('chat');
   const [composerText, setComposerText] = useState('');
@@ -630,10 +628,7 @@ export default function App() {
       </div>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        <LeftSidebar page={page} onPage={nextPage => {
-          setPage(nextPage);
-          if (nextPage !== 'experiment') setShowExperimentSettings(false);
-        }} />
+        <LeftSidebar page={page} onPage={setPage} />
 
         {page === 'chat' && (
           <>
@@ -713,25 +708,11 @@ export default function App() {
           <ExperimentPage
             runId={runId}
             experimentRefreshTick={experimentRefreshTick}
-            onOpenExperimentSettings={() => setShowExperimentSettings(true)}
             onDiscuss={text => {
-              setShowExperimentSettings(false);
               setComposerText(text);
               setPage('chat');
             }}
           />
-        )}
-
-        {page === 'experiment' && showExperimentSettings && (
-          <div role="dialog" aria-modal="true" aria-label="实验配置" style={{ position: 'fixed', inset: 0, zIndex: 20, overflow: 'auto', background: 'var(--bg)' }}>
-            <SettingsPage
-              experiment={config.experiment ?? DEFAULT_EXPERIMENT}
-              defaultApiKey={config.apiKey}
-              onSave={saveExperimentConfig}
-              onBack={() => setShowExperimentSettings(false)}
-              backLabel="返回工作台"
-            />
-          </div>
         )}
 
         {page === 'report' && (

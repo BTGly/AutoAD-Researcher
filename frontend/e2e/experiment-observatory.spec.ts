@@ -182,18 +182,6 @@ test('reports a bounded activity scan even when no activity card was produced', 
   await expect(page.getByText('为控制读取开销，较早动态未完成扫描。')).toBeVisible();
 });
 
-test('returns from experiment configuration without remounting the selected workbench detail', async ({ page }) => {
-  await prepare(page);
-  await page.getByRole('button', { name: '实验工作台' }).click();
-  await page.getByRole('button', { name: '局部特征重加权' }).click();
-  await expect(page.getByRole('heading', { name: '局部特征重加权' })).toBeVisible();
-  await page.getByRole('button', { name: '实验配置' }).click();
-  await expect(page.getByRole('dialog', { name: '实验配置' })).toBeVisible();
-  await page.getByRole('button', { name: '保存配置' }).click();
-  await expect(page.getByRole('dialog', { name: '实验配置' })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: '局部特征重加权' })).toBeVisible();
-});
-
 test('coalesces WebSocket events and refreshes the selected detail', async ({ page }) => {
   let requests = 0;
   await prepare(page, () => {

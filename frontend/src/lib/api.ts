@@ -220,12 +220,6 @@ export async function getArtifact(runId: string, path: string): Promise<{ path: 
   return res.json();
 }
 
-export async function getExperimentConfig(runId: string): Promise<any> {
-  const res = await fetch(`/api/runs/${runId}/experiment-config`);
-  if (!res.ok) return {};
-  return res.json();
-}
-
 export async function getExperimentProjection(runId: string, sessionId?: string, signal?: AbortSignal): Promise<ExperimentProjection> {
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
   const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders(), signal });
@@ -252,16 +246,6 @@ export async function promoteCandidate(runId: string, candidateId: string, appro
     method: 'POST', headers: getHeaders(), body: JSON.stringify({ candidate_id: candidateId, approved_by: approvedBy }),
   });
   if (!res.ok) throw await apiError(res, `Champion promotion error: ${res.status}`);
-  return res.json();
-}
-
-export async function saveExperimentConfig(runId: string, config: any): Promise<any> {
-  const res = await fetch(`/api/runs/${runId}/experiment-config`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
-  if (!res.ok) throw new Error(`Save experiment config error: ${res.status}`);
   return res.json();
 }
 

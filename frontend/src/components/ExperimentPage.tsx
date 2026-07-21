@@ -9,7 +9,6 @@ import type { ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, Experim
 interface Props {
   runId: string;
   experimentRefreshTick: number;
-  onOpenExperimentSettings: () => void;
   onDiscuss: (text: string) => void;
 }
 
@@ -20,7 +19,7 @@ type ExperimentDetailSelectionKey =
   | { kind: 'activity'; id: number }
   | null;
 
-export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentSettings, onDiscuss }: Props) {
+export function ExperimentPage({ runId, experimentRefreshTick, onDiscuss }: Props) {
   const [projection, setProjection] = useState<ExperimentProjection | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,7 +99,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onOpenExperimentS
   return <main style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: 20 }}>
     <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
       <div><h1 style={{ margin: 0, fontSize: '1.25em' }}>实验工作台</h1><div style={{ color: 'var(--text-muted)', fontSize: '0.82em', marginTop: 4 }}>持久化实验状态的只读观测 + 受限显式审批动作</div></div>
-      <div style={{ display: 'flex', gap: 8 }}><button onClick={() => void loadProjection(runId, sessionId)} disabled={!runId || loading}>刷新</button><button onClick={onOpenExperimentSettings}>实验配置</button></div>
+      <div style={{ display: 'flex', gap: 8 }}><button onClick={() => void loadProjection(runId, sessionId)} disabled={!runId || loading}>刷新</button></div>
     </header>
     {!runId && <EmptyState title="请先创建一个研究任务。" />}
     {runId && loading && !projection && <EmptyState title="正在读取实验状态…" />}

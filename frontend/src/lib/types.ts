@@ -155,19 +155,6 @@ export interface WSMessage {
   delay?: number;
 }
 
-export interface ExperimentConfig {
-  provider: string;
-  model: string;
-  apiKey: string;
-  baseUrl: string;
-  reasoningEffort: string;
-  maxCycles: number;
-  maxTurns: number;
-  executorTimeout: number;
-  searchEnabled: boolean;
-  autoSearch: boolean;
-}
-
 export interface ExperimentProjectionSession {
   session_id: string;
   task_ref: string;
