@@ -7,7 +7,8 @@ import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.default_narrative import build_default_narrative
-from autoad_researcher.reporting.facts import assemble_facts
+from autoad_researcher.reporting.digest import build_report_digest
+from autoad_researcher.reporting.facts import ExperimentReportFactsV1, assemble_facts
 from autoad_researcher.reporting.facts_enrichment import enrich_facts
 from autoad_researcher.reporting.inventory import _add_registered_patch_diffs, _add_registered_resource_reports
 from autoad_researcher.reporting.models import ReportSnapshot
@@ -73,6 +74,24 @@ def test_facts_stage_uses_frozen_control_plane_after_live_session_changes(tmp_pa
 
     assert _process_pending_jobs(run_dir) == 1
     assert ReportStore().load_state(run_dir, report_id).generation_status == "generating_narrative"
+
+
+def test_digest_separates_engineering_execution_and_insufficient_scientific_status():
+    facts = ExperimentReportFactsV1.model_validate({
+        "run_id": "run_digest", "session_id": "session_digest", "research_objective": {}, "evaluation_contract": {},
+        "repository_and_environment": {"status": "READY"}, "baseline": [], "candidate_and_champion": {}, "ideas": [],
+        "attempts": [{"attempt_id": "attempt_000001", "outcome": {"execution_status": "COMPLETED"}}],
+        "primary_metrics": [{"attempt_id": "attempt_000001", "metric": "image_auroc", "value": 0.91}],
+        "guardrail_metrics": [], "validity": [], "failed_attempts": [], "non_comparable_attempts": [],
+        "stop_decision": {}, "cognitive_cost_summary": {}, "compute_resource_summary": {}, "uncertainties": [], "source_refs": [],
+    })
+
+    digest = build_report_digest(report_id="report_digest", facts=facts)
+
+    assert digest.engineering_status == "READY"
+    assert digest.execution_status == "COMPLETED"
+    assert digest.scientific_status == "EVIDENCE_INSUFFICIENT"
+    assert digest.primary_metrics == [{"attempt_id": "attempt_000001", "metric": "image_auroc", "value": 0.91}]
 
 
 def test_execution_result_is_sha_bound_and_metrics_render_as_values(tmp_path: Path):

@@ -111,6 +111,34 @@ def test_generation_profile_hashes_the_actual_prompt_and_schema(monkeypatch):
     assert report_generation_profile()["prompt_sha256"] != baseline
 
 
+def test_model_narrative_failure_persists_a_retryable_report_job(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_reporting_model_failure"
+    run_dir.mkdir()
+    session = _session(run_dir)
+    monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "test-key")
+    monkeypatch.setenv("AUTOAD_REPORT_BASE_URL", "https://provider.test")
+    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "test-model")
+    monkeypatch.setattr(
+        "autoad_researcher.reporting.narrative_agent.call_research_chat",
+        lambda *_args, **_kwargs: {"error": "provider unavailable"},
+    )
+    result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = result["manifest"].report_id
+
+    assert _process_pending_jobs(run_dir) == 1  # facts
+    assert _process_pending_jobs(run_dir) == 1  # configured model failure
+
+    narrative_job = next(item for item in load_pipeline_jobs(run_dir) if item["job_type"] == "report_narrative_generate")
+    assert narrative_job["status"] == "failed"
+    assert ReportStore().load_state(run_dir, report_id).generation_status == "failed"
+    assert not (run_dir / "reports" / report_id / "narrative_sections.json").exists()
+
+    retried = retry_failed_report_job(run_dir, report_id=report_id, job_id=narrative_job["job_id"])
+    assert retried["status"] == "queued"
+    assert retried["retry_count"] == 1
+    assert ReportStore().load_state(run_dir, report_id).generation_status == "generating_narrative"
+
+
 def test_explicit_report_retry_requeues_only_the_failed_job(tmp_path: Path):
     run_dir = tmp_path / "run_reporting"
     run_dir.mkdir()

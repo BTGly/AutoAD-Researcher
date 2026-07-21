@@ -108,7 +108,7 @@ def _execute(run_dir, call: ReportToolCall, facts, evidence, digest, markdown: s
         entry = _evidence(evidence, args)
         return {"status": "available", "value": entry.model_dump(mode="json"), "fact_refs": entry.fact_refs, "evidence_ids": [entry.evidence_id]}
     if name == "get_patch_diff":
-        return _text_evidence(run_dir, evidence, args, expected=("patch", "diff"), query=None, start=None, end=None)
+        return _patch_diff(run_dir, evidence, args)
     if name == "search_log":
         return _text_evidence(run_dir, evidence, args, expected=("log",), query=args.get("query"), start=None, end=None)
     if name == "read_log_range":
@@ -181,6 +181,27 @@ def _text_evidence(run_dir, index: EvidenceIndex, args, *, expected: tuple[str, 
         raise ValueError("read_log_range requires a bounded positive line range")
     value = {"evidence_id": entry.evidence_id, "lines": [{"line": index + 1, "text": line} for index, line in enumerate(lines[first - 1:last])], "truncated": len(path.read_bytes()) > MAX_TEXT_BYTES}
     return {"status": "available", **value, "value": value, "fact_refs": entry.fact_refs, "evidence_ids": [entry.evidence_id]}
+
+
+def _patch_diff(run_dir, index: EvidenceIndex, args: dict[str, Any]) -> dict[str, Any]:
+    """Read a snapshot-registered patch only; never infer one from Git state."""
+
+    evidence_id = args.get("evidence_id")
+    if isinstance(evidence_id, str):
+        entry = next((item for item in index.entries if item.evidence_id == evidence_id), None)
+        if entry is None or entry.evidence_kind != "patch_diff":
+            return _unavailable_patch_diff("requested patch Evidence is not registered")
+        return _text_evidence(run_dir, index, args, expected=("patch", "diff"), query=None, start=None, end=None)
+
+    attempt_id = args.get("attempt_id")
+    candidates = [item for item in index.entries if item.evidence_kind == "patch_diff" and (attempt_id is None or item.attempt_id == attempt_id)]
+    if len(candidates) != 1:
+        return _unavailable_patch_diff("no unambiguous registered patch artifact is available")
+    return _text_evidence(run_dir, index, {"evidence_id": candidates[0].evidence_id}, expected=("patch", "diff"), query=None, start=None, end=None)
+
+
+def _unavailable_patch_diff(reason: str) -> dict[str, Any]:
+    return {"status": "unavailable", "value": None, "reason": reason, "fact_refs": [], "evidence_ids": []}
 
 
 def _text_entry(index: EvidenceIndex, args: dict[str, Any]):
