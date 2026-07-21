@@ -20,6 +20,7 @@ export function ReportPage({ runId, onBack }: Props) {
   const [discussion, setDiscussion] = useState<DiscussionMessage[]>([]);
   const [question, setQuestion] = useState('');
   const [sending, setSending] = useState(false);
+  const [selectedRevision, setSelectedRevision] = useState(0);
   const [proposals, setProposals] = useState<ReportProposal[]>([]);
   const [proposalRationale, setProposalRationale] = useState('');
   const [reviewComment, setReviewComment] = useState('');
@@ -35,14 +36,14 @@ export function ReportPage({ runId, onBack }: Props) {
   };
   useEffect(() => { void load(); }, [runId]);
   useEffect(() => {
-    if (!selectedId) { setState(null); setDigest(null); setContent(null); setEvidence([]); return; }
+    if (!selectedId) { setState(null); setDigest(null); setContent(null); setEvidence([]); setDiscussion([]); setProposals([]); return; }
     let active = true;
     void getReportState(runId, selectedId)
       .then(async nextState => {
         if (!active) return;
         setState(nextState);
         if (nextState.generation_status !== 'content_ready') {
-          setDigest(null); setContent(null); setEvidence([]); setDiscussion([]);
+          setDigest(null); setContent(null); setEvidence([]); setDiscussion([]); setProposals([]);
           return;
         }
         const [nextDigest, nextContent, nextEvidence, nextDiscussion, nextProposals] = await Promise.all([
@@ -57,7 +58,7 @@ export function ReportPage({ runId, onBack }: Props) {
       })
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : '无法读取固定版本报告'); });
     return () => { active = false; };
-  }, [runId, selectedId]);
+  }, [runId, selectedId, selectedRevision]);
   const selected = reports.find(item => item.report_id === selectedId) ?? null;
   const artifacts = state?.available_artifacts ?? [];
   const discussionReady = state?.generation_status === 'content_ready' && artifacts.includes('report.md') && artifacts.includes('report_validation.json');
@@ -65,7 +66,7 @@ export function ReportPage({ runId, onBack }: Props) {
   const refreshProposals = async () => { if (selected) setProposals(await listReportProposals(runId, selected.report_id)); };
   const proposeHuman = async () => { if (!selected || !proposalRationale.trim()) return; try { await createHumanProposal(runId, selected.report_id, proposalRationale.trim()); setProposalRationale(''); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 创建失败'); } };
   const changeProposal = async (proposalId: string, action: 'confirm' | 'reject') => { if (!selected) return; try { if (action === 'confirm') await confirmReportProposal(runId, selected.report_id, proposalId); else await rejectReportProposal(runId, selected.report_id, proposalId); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 更新失败'); } };
-  const submitReview = async (decision: string) => { if (!selected) return; try { await recordReportReview(runId, selected.report_id, decision, reviewComment); setReviewComment(''); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : '审阅提交失败'); } };
+  const submitReview = async (decision: string) => { if (!selected) return; try { await recordReportReview(runId, selected.report_id, decision, reviewComment); setReviewComment(''); await load(); setSelectedRevision(value => value + 1); } catch (reason) { setError(reason instanceof Error ? reason.message : '审阅提交失败'); } };
   return <main style={{ flex: 1, overflow: 'auto', padding: '20px 28px', color: 'var(--text)' }}>
     <header style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
       <div><h1 style={{ fontSize: '1.15rem', margin: 0 }}>实验报告</h1><div style={{ color: 'var(--text-muted)', fontSize: '.82rem', marginTop: 3 }}>固定版本、证据与交付制品</div></div>

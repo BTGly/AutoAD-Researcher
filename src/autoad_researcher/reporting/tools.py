@@ -12,6 +12,7 @@ from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
 from autoad_researcher.reporting.snapshot import resolve_run_relative_file, sha256_file, snapshot_content_sha256
 from autoad_researcher.reporting.store import ReportStore
+from autoad_researcher.reporting.verified_read import load_verified_report_facts
 
 ToolName = Literal[
     "get_report_digest", "get_report_section", "list_attempts", "get_outcome_card",
@@ -71,7 +72,7 @@ def execute_tools(
     ]
 
 
-def _context(run_dir, report_id: str, *, snapshot_content_sha256_expected: str | None = None):
+def load_verified_report_context(run_dir, report_id: str, *, snapshot_content_sha256_expected: str | None = None):
     directory = run_dir / "reports" / report_id
     store = ReportStore()
     manifest = store.load_manifest(run_dir, report_id)
@@ -80,7 +81,7 @@ def _context(run_dir, report_id: str, *, snapshot_content_sha256_expected: str |
         raise ValueError("report discussion snapshot identity conflicts with manifest")
     if snapshot_content_sha256(store.load_snapshot(run_dir, report_id)) != expected:
         raise ValueError("report discussion snapshot content no longer matches manifest")
-    facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
+    facts = load_verified_report_facts(run_dir, report_id=report_id)
     evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
     if evidence.snapshot_content_sha256 != expected:
         raise ValueError("report discussion Evidence snapshot identity conflicts with manifest")
@@ -88,6 +89,9 @@ def _context(run_dir, report_id: str, *, snapshot_content_sha256_expected: str |
     if digest.report_id != report_id:
         raise ValueError("report discussion Digest identity conflicts with report")
     return facts, evidence, digest, (directory / "report.md").read_text(encoding="utf-8")
+
+
+_context = load_verified_report_context
 
 
 def _execute(run_dir, call: ReportToolCall, facts, evidence, digest, markdown: str) -> dict[str, Any]:

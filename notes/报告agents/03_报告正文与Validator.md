@@ -107,7 +107,7 @@ improvement_respects_existing_scientific_assessment
 
 “报告所有数字必须出现在 Facts”不再作为主校验，因为自由文本中的章节号、日期、版本号、GPU 型号和格式化小数会产生大量误报。数字表格由确定性 renderer 直接从 Facts 生成；首版不从普通 prose 用关键词、正则或数值模式猜测事实性声明，也不以此产生 lint。
 
-发布约束只由结构化 Claim、Facts、Evidence、Attempt 和科学评估关系确定性校验；未解析 placeholder、没有 fact ref 的事实性 claim 或模板直接携带事实数字属于阻断项。
+发布约束只由结构化 Claim、Facts、Evidence、Attempt 和科学评估关系确定性校验；未解析 placeholder、没有 fact ref 的事实性 claim、Attempt 或科学评估关系不一致属于阻断项。
 
 ## 7. 发布与重试
 

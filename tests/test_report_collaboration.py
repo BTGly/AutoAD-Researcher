@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, _recent_history, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
+from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, _recent_history, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -50,6 +50,27 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
     assert completed.status == "completed"
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
+
+
+def test_direct_discussion_response_verifies_turn_snapshot_before_model_call(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_snapshot", content="请解释")
+    mismatched = turn.model_copy(update={"snapshot_content_sha256": "f" * 64})
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *_args, **_kwargs: pytest.fail("model must not receive a mismatched report context"),
+    )
+
+    with pytest.raises(ValueError, match="snapshot identity conflicts with manifest"):
+        _respond_with_slot(
+            run_dir,
+            report_id=report_id,
+            turn=mismatched,
+            api_key="test",
+            provider_url="https://example.test",
+            model="test",
+            budget=ReportDiscussionBudget(),
+        )
 
 
 def test_discussion_response_receives_bounded_completed_history(monkeypatch, tmp_path: Path):

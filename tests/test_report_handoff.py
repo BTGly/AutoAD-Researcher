@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,14 @@ from autoad_researcher.assistant.v2.research_intent_summary import ResearchInten
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.experiment.executor_agent import ExecutorProposal
 from autoad_researcher.experiment.executor_contracts import InterventionContract
+from autoad_researcher.experiment.cognitive_budget import CognitiveBudget
+from autoad_researcher.experiment.cost_summary import CognitiveCostSummaryBuilder
+from autoad_researcher.experiment.evaluation_contract import (
+    EvaluationContract,
+    EvaluationContractStore,
+    EvaluationMetric,
+    EvaluationResourceBudget,
+)
 from autoad_researcher.reporting.review import (
     PivotTaskContext,
     ProposalBudgetEstimate,
@@ -23,7 +30,7 @@ from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.worker.main import _process_pending_jobs
 
 
-def _ready_report(tmp_path: Path) -> tuple[Path, str]:
+def _ready_report(tmp_path: Path, *, with_budget: bool = False) -> tuple[Path, str]:
     run_dir = tmp_path / "run_report_handoff"
     run_dir.mkdir()
     session, _ = ExperimentSessionStore().create_or_get(
@@ -32,6 +39,45 @@ def _ready_report(tmp_path: Path) -> tuple[Path, str]:
         task_hash="e" * 64,
         execution_mode="approve_each_step",
     )
+    if with_budget:
+        contract = EvaluationContract(
+            contract_id="evaluation_contract_000001",
+            session_id=session.session_id,
+            revision=0,
+            baseline_commit="a" * 40,
+            dataset_identity="fixture",
+            split_identity="fixture-split",
+            b_dev_ref="splits/b_dev.json",
+            b_test_ref="splits/b_test.json",
+            category_set=["bottle"],
+            metrics=[EvaluationMetric(name="auroc", direction="maximize", implementation_ref="eval.py")],
+            primary_metric="auroc",
+            aggregation="mean",
+            seeds=[1],
+            checkpoint_selection="best",
+            resource_budget=EvaluationResourceBudget(max_wall_seconds=60, max_gpu_seconds=40),
+            protected_paths=["eval.py"],
+        )
+        frozen = EvaluationContractStore().freeze(run_dir, contract=contract)
+        ExperimentSessionStore().bind_evaluation_contract(
+            run_dir,
+            session_id=session.session_id,
+            evaluation_contract_ref=frozen.ref,
+            evaluation_contract_sha256=frozen.sha256,
+            evaluation_contract_revision=frozen.contract.revision,
+        )
+        CognitiveCostSummaryBuilder().build_and_persist(
+            run_dir,
+            session_id=session.session_id,
+            budget=CognitiveBudget(
+                max_calls=3,
+                max_tokens=100,
+                max_compact_cycles=3,
+                max_exploratory_cycles=3,
+                max_subagent_calls=3,
+                max_wall_seconds=20,
+            ),
+        )
     result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
     for _ in range(5):
         _process_pending_jobs(run_dir)
@@ -107,17 +153,7 @@ def _refine_input() -> CandidateLaunchInput:
 
 
 def _budgeted_report(tmp_path: Path) -> tuple[Path, str]:
-    run_dir, report_id = _ready_report(tmp_path)
-    path = run_dir / "reports" / report_id / "report_facts.json"
-    facts = json.loads(path.read_text(encoding="utf-8"))
-    facts["evaluation_contract"] = {"resource_budget": {"max_wall_seconds": 60, "max_gpu_seconds": 40}}
-    facts["cognitive_cost_summary"] = {
-        "remaining_calls": 3,
-        "remaining_tokens": 100,
-        "remaining_wall_seconds": 20,
-    }
-    path.write_text(json.dumps(facts), encoding="utf-8")
-    return run_dir, report_id
+    return _ready_report(tmp_path, with_budget=True)
 
 
 def test_refine_requires_reviewed_input_then_delegates_to_candidate_control(tmp_path: Path, monkeypatch):

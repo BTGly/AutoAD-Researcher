@@ -12,6 +12,7 @@ from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
 from autoad_researcher.reporting.snapshot import sha256_file
 from autoad_researcher.reporting.tools import _execute
+from autoad_researcher.reporting.verified_read import load_verified_report_facts
 from autoad_researcher.worker.main import _process_pending_jobs
 
 
@@ -132,6 +133,15 @@ def test_typed_tools_reject_snapshot_identity_mismatch(tmp_path: Path):
             calls=[ReportToolCall(name="get_report_digest")],
             snapshot_content_sha256_expected="f" * 64,
         )
+
+
+def test_verified_facts_reader_rejects_a_changed_registered_artifact(tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    path = run_dir / "reports" / report_id / "report_facts.json"
+    path.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="SHA-256 no longer matches"):
+        load_verified_report_facts(run_dir, report_id=report_id)
 
 
 def test_patch_diff_without_registered_artifact_is_explicitly_unavailable(tmp_path: Path):

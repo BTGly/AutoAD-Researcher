@@ -30,6 +30,7 @@ from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.narrative import NarrativeSectionsV1
 from autoad_researcher.reporting.store import ReportStore
+from autoad_researcher.reporting.verified_read import load_verified_report_facts
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.task_workspace.task_profile import create_task_profile
 
@@ -196,12 +197,11 @@ def _validate_proposal_budget(run_dir: Path, proposal: FollowUpProposal) -> list
     estimate = proposal.estimated_budget
     if estimate is None:
         return ["execution-producing Proposal requires a typed budget estimate"]
-    directory = run_dir / "reports" / proposal.source_report_id
     try:
-        facts = json.loads((directory / "report_facts.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        facts = load_verified_report_facts(run_dir, report_id=proposal.source_report_id)
+    except (FileNotFoundError, ValueError):
         return ["source report Facts are unavailable for budget validation"]
-    contract = facts.get("evaluation_contract")
+    contract = facts.evaluation_contract
     resource_budget = contract.get("resource_budget") if isinstance(contract, dict) else None
     if not isinstance(resource_budget, dict):
         return ["source EvaluationContract has no verified resource budget"]
@@ -215,7 +215,7 @@ def _validate_proposal_budget(run_dir: Path, proposal: FollowUpProposal) -> list
     if estimate.max_gpu_seconds > max_gpu:
         errors.append("proposal GPU-time estimate exceeds the frozen EvaluationContract budget")
     if any((estimate.cognitive_calls, estimate.cognitive_tokens, estimate.cognitive_wall_seconds)):
-        cost = facts.get("cognitive_cost_summary")
+        cost = facts.cognitive_cost_summary
         if not isinstance(cost, dict):
             return [*errors, "source report has no verified cognitive budget summary"]
         for estimate_name, summary_name in (

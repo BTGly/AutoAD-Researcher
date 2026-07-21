@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.store import ReportStore
-from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, TOOL_CATALOG, ReportToolCall, execute_tools
+from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, TOOL_CATALOG, ReportToolCall, execute_tools, load_verified_report_context
 
 MAX_TURNS = 40
 MAX_MESSAGE_CHARS = 8000
@@ -148,9 +148,12 @@ def _respond_with_slot(
     model: str,
     budget: ReportDiscussionBudget,
 ) -> DiscussionTurn:
-    directory = run_dir / "reports" / report_id
-    digest = json.loads((directory / "report_digest.json").read_text(encoding="utf-8"))
-    index = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
+    _facts, index, digest_model, _markdown = load_verified_report_context(
+        run_dir,
+        report_id,
+        snapshot_content_sha256_expected=turn.snapshot_content_sha256,
+    )
+    digest = digest_model.model_dump(mode="json")
     evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id} for item in index.entries[:24]]
     messages = [
         {"role": "system", "content": "You answer only from frozen report context. Return either DiscussionResponse JSON, or {tool_calls:[{name,arguments}]}. Use typed tools for deep details; never claim file access, execution, or unlisted evidence."},
