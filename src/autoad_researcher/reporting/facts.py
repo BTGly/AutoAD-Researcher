@@ -38,7 +38,8 @@ class ExperimentReportFactsV1(BaseModel):
     failed_attempts: list[dict[str, Any]]
     non_comparable_attempts: list[dict[str, Any]]
     stop_decision: dict[str, Any]
-    cost_summary: dict[str, Any]
+    cognitive_cost_summary: dict[str, Any]
+    compute_resource_summary: dict[str, Any]
     uncertainties: list[str]
     source_refs: list[ArtifactReferenceV2]
 
@@ -77,7 +78,8 @@ def assemble_facts(run_dir: Path, *, snapshot: ReportSnapshot) -> ExperimentRepo
         failed_attempts=failed,
         non_comparable_attempts=non_comparable,
         stop_decision={"status": "unknown", "reason": "StopDecision is not in this snapshot"},
-        cost_summary={"status": "unknown", "reason": "CognitiveCostSummary is not in this snapshot"},
+        cognitive_cost_summary={"status": "unknown", "reason": "CognitiveCostSummary is not in this snapshot"},
+        compute_resource_summary={"status": "unknown", "reason": "ResourceUsageReport is not in this snapshot"},
         uncertainties=uncertainties,
         source_refs=snapshot.source_refs,
     )

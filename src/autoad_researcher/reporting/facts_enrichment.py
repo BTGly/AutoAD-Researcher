@@ -54,7 +54,7 @@ def enrich_facts(run_dir: Path, *, snapshot: ReportSnapshot, facts: ExperimentRe
             "primary_metrics": primary,
             "guardrail_metrics": guardrails,
             "stop_decision": stop_value,
-            "cost_summary": cost_value,
+            "cognitive_cost_summary": cost_value,
             "uncertainties": sorted(set(uncertainties)),
         }
     )

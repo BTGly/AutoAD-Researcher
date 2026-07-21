@@ -34,6 +34,7 @@ async def test_versioned_report_api_reads_only_fixed_report_artifacts(tmp_path: 
     state = await reports.get_state(run_id, report_id)
     assert state["generation_status"] == "content_ready"
     assert "report.md" in state["available_artifacts"]
+    assert {item["job_type"] for item in state["jobs"]} >= {"report_facts_assemble", "report_validate", "report_render_html"}
     assert (await reports.get_digest(run_id, report_id))["report_id"] == report_id
     assert (await reports.get_content(run_id, report_id))["format"] == "md"
     download = await reports.download_report_artifact(run_id, report_id, "report.html")

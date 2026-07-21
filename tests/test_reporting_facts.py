@@ -36,6 +36,8 @@ def test_facts_stage_writes_immutable_facts_evidence_and_digest(tmp_path: Path):
     state = ReportStore().load_state(run_dir, report_id)
     assert facts["attempts"] == []
     assert facts["uncertainties"]
+    assert facts["cognitive_cost_summary"]["status"] == "unknown"
+    assert facts["compute_resource_summary"]["status"] == "unknown"
     assert len(evidence["entries"]) == 1
     assert digest["facts_content_sha256"] == state.facts_content_sha256
     assert {ref.artifact_type for ref in state.artifact_refs} >= {

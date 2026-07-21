@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.reporting.evidence import EvidenceIndex
+from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.reporting.render_request import request_optional_format
 from autoad_researcher.reporting.service import ReportRequestService, retry_failed_report_job
 from autoad_researcher.reporting.snapshot import sha256_file
@@ -108,7 +109,12 @@ async def get_state(run_id: str, report_id: str):
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(404, "report not found") from exc
     payload = state.model_dump(mode="json")
-    payload.update({"available_artifacts": _available_artifacts(run_dir, report_id, state)})
+    payload.update(
+        {
+            "available_artifacts": _available_artifacts(run_dir, report_id, state),
+            "jobs": [item for item in load_pipeline_jobs(run_dir) if item.get("job_id") in state.job_ids and item.get("report_id") == report_id],
+        }
+    )
     return payload
 
 
