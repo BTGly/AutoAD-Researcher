@@ -29,7 +29,7 @@ export function Sidebar({ sources, jobs, evidence, unusableParsedSources, eviden
   ];
 
   return (
-    <div className="right-sidebar">
+    <aside className="right-sidebar chat-inspector" aria-label="研究上下文 Inspector">
       <div className="sidebar-tabs">
         {tabs.map(t => (
           <button
@@ -49,7 +49,7 @@ export function Sidebar({ sources, jobs, evidence, unusableParsedSources, eviden
         {tab === 'summary' && <IntentSummaryPanel summary={intentSummary || null} />}
       </div>
       {children}
-    </div>
+    </aside>
   );
 }
 

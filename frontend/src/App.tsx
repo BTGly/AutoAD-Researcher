@@ -637,9 +637,8 @@ export default function App() {
 
         {page === 'chat' && (
           <>
-            {/* Chat area */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-              <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px' }}>
+            <section className="chat-workspace" aria-label="研究对话">
+              <div className="chat-document-flow">
                 {messages.length === 0 && <WelcomeMessage />}
                 {messages.map(msg =>
                   msg.role === 'user'
@@ -648,14 +647,14 @@ export default function App() {
                 )}
                 {messages.length > 0 && <div ref={bottomRef} />}
               </div>
-              <div style={{ padding: '0 16px', flexShrink: 0 }}>
+              <div className="chat-composer-area">
                 <FollowupQueue
                   items={queuedMessages}
                   paused={queuePaused}
                   onRestore={handleRestoreQueuedMessage}
                 />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ flex: 1 }}>
+                <div className="chat-composer-row">
+                  <div className="chat-composer-fill">
                     <ChatInput
                       value={composerText}
                       onChange={setComposerText}
@@ -665,10 +664,10 @@ export default function App() {
                   </div>
                   <PlusMenu onFile={handleFile} />
                 </div>
-                <div className="kbd-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
+                <div className="kbd-hint chat-keyboard-hint">Enter 发送 · Shift+Enter 换行 · 粘贴 arXiv/GitHub 链接到输入框</div>
                 <StatusBar sources={sources} jobs={jobs} evidenceCount={evidence.length} summaryAvailable={hasIntentSummary(intentSummary)} />
               </div>
-            </div>
+            </section>
 
             {/* Right sidebar */}
             <Sidebar
