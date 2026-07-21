@@ -61,6 +61,18 @@ class PivotTaskContext(BaseModel):
     research_summary: ResearchIntentSummary
 
 
+class ProposalBudgetEstimate(BaseModel):
+    """Explicit upper bounds for one confirmed follow-up, with fixed units."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_wall_seconds: int = Field(ge=0)
+    max_gpu_seconds: int = Field(ge=0)
+    cognitive_calls: int = Field(default=0, ge=0)
+    cognitive_tokens: int = Field(default=0, ge=0)
+    cognitive_wall_seconds: float = Field(default=0, ge=0)
+
+
 class FollowUpProposal(BaseModel):
     """A frozen request that can be reviewed before any control-plane action."""
 
@@ -76,7 +88,7 @@ class FollowUpProposal(BaseModel):
     evidence_refs: list[ArtifactReferenceV2] = Field(default_factory=list)
     requested_changes: list[str] = Field(default_factory=list)
     required_experiments: list[str] = Field(default_factory=list)
-    estimated_budget: str | None = None
+    estimated_budget: ProposalBudgetEstimate | None = None
     unresolved_questions: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
     target_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
@@ -101,7 +113,7 @@ def create_proposal(
     evidence_ids: list[str] | None = None,
     requested_changes: list[str] | None = None,
     required_experiments: list[str] | None = None,
-    estimated_budget: str | None = None,
+    estimated_budget: ProposalBudgetEstimate | None = None,
     unresolved_questions: list[str] | None = None,
     risk_level: Literal["low", "medium", "high"] = "medium",
     target_attempt_id: str | None = None,
@@ -175,6 +187,49 @@ def validate_proposal(run_dir: Path, proposal: FollowUpProposal) -> list[str]:
     elif proposal.proposal_type == "PIVOT":
         if proposal.pivot_context is None:
             errors.append("PIVOT requires a new task context; it cannot reuse a materialized Session")
+    if proposal.proposal_type in {"RETRY_FAILED", "ADD_CONFIRMATION", "REFINE_CURRENT"}:
+        errors.extend(_validate_proposal_budget(run_dir, proposal))
+    return errors
+
+
+def _validate_proposal_budget(run_dir: Path, proposal: FollowUpProposal) -> list[str]:
+    estimate = proposal.estimated_budget
+    if estimate is None:
+        return ["execution-producing Proposal requires a typed budget estimate"]
+    directory = run_dir / "reports" / proposal.source_report_id
+    try:
+        facts = json.loads((directory / "report_facts.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ["source report Facts are unavailable for budget validation"]
+    contract = facts.get("evaluation_contract")
+    resource_budget = contract.get("resource_budget") if isinstance(contract, dict) else None
+    if not isinstance(resource_budget, dict):
+        return ["source EvaluationContract has no verified resource budget"]
+    max_wall = resource_budget.get("max_wall_seconds")
+    max_gpu = resource_budget.get("max_gpu_seconds")
+    if not isinstance(max_wall, int) or not isinstance(max_gpu, int):
+        return ["source EvaluationContract resource budget is invalid"]
+    errors: list[str] = []
+    if estimate.max_wall_seconds > max_wall:
+        errors.append("proposal wall-time estimate exceeds the frozen EvaluationContract budget")
+    if estimate.max_gpu_seconds > max_gpu:
+        errors.append("proposal GPU-time estimate exceeds the frozen EvaluationContract budget")
+    if any((estimate.cognitive_calls, estimate.cognitive_tokens, estimate.cognitive_wall_seconds)):
+        cost = facts.get("cognitive_cost_summary")
+        if not isinstance(cost, dict):
+            return [*errors, "source report has no verified cognitive budget summary"]
+        for estimate_name, summary_name in (
+            ("cognitive_calls", "remaining_calls"),
+            ("cognitive_tokens", "remaining_tokens"),
+            ("cognitive_wall_seconds", "remaining_wall_seconds"),
+        ):
+            value = getattr(estimate, estimate_name)
+            available = cost.get(summary_name)
+            if not isinstance(available, (int, float)):
+                errors.append("source report has no verified cognitive budget summary")
+                break
+            if value > available:
+                errors.append(f"proposal {estimate_name} exceeds the frozen cognitive budget")
     return errors
 
 

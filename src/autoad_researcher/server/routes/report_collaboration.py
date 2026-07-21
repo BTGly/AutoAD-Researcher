@@ -9,6 +9,7 @@ from autoad_researcher.reporting.discussion import load_messages, load_turns, re
 from autoad_researcher.server.routes.chat import _extract_api_headers
 from autoad_researcher.reporting.review import (
     PivotTaskContext,
+    ProposalBudgetEstimate,
     confirm_proposal,
     create_proposal,
     record_review,
@@ -35,7 +36,7 @@ class ProposalRequest(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
     requested_changes: list[str] = Field(default_factory=list)
     required_experiments: list[str] = Field(default_factory=list)
-    estimated_budget: str | None = None
+    estimated_budget: ProposalBudgetEstimate | None = None
     unresolved_questions: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
     target_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")

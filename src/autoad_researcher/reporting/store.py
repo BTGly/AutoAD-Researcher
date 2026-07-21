@@ -44,10 +44,21 @@ class ReportStore:
         *,
         snapshot: ReportSnapshot,
         report_recipe_hash: str,
+        previous_report_id: str | None = None,
+        parent_report_id: str | None = None,
+        source_proposal_id: str | None = None,
     ) -> tuple[ReportManifest, bool]:
         content_sha = snapshot_content_sha256(snapshot)
         with self._lock(run_dir):
-            existing = self._find_by_snapshot_unlocked(run_dir, snapshot.session_id, content_sha, report_recipe_hash)
+            existing = self._find_by_snapshot_unlocked(
+                run_dir,
+                snapshot.session_id,
+                content_sha,
+                report_recipe_hash,
+                previous_report_id=previous_report_id,
+                parent_report_id=parent_report_id,
+                source_proposal_id=source_proposal_id,
+            )
             if existing is not None:
                 return existing, False
             version = self._next_version_unlocked(run_dir, snapshot.session_id)
@@ -62,6 +73,9 @@ class ReportStore:
                 snapshot_policy_hash=snapshot_policy_hash(),
                 report_recipe_hash=report_recipe_hash,
                 created_at=now,
+                previous_report_id=previous_report_id,
+                parent_report_id=parent_report_id,
+                source_proposal_id=source_proposal_id,
             )
             state = ReportState(report_id=report_id, updated_at=now)
             directory = self._report_dir(run_dir, report_id)
@@ -170,11 +184,18 @@ class ReportStore:
         session_id: str,
         content_sha: str,
         report_recipe_hash: str,
+        *,
+        previous_report_id: str | None,
+        parent_report_id: str | None,
+        source_proposal_id: str | None,
     ) -> ReportManifest | None:
         for manifest in self.list_manifests(run_dir, session_id=session_id):
             if (
                 manifest.source_snapshot_content_sha256 == content_sha
                 and manifest.report_recipe_hash == report_recipe_hash
+                and manifest.previous_report_id == previous_report_id
+                and manifest.parent_report_id == parent_report_id
+                and manifest.source_proposal_id == source_proposal_id
             ):
                 return manifest
         return None

@@ -32,11 +32,16 @@ class ReportRequestService:
     def __init__(self, *, store: ReportStore | None = None) -> None:
         self._store = store or ReportStore()
 
-    def request(self, run_dir: Path, *, session_id: str) -> tuple[dict[str, Any], bool]:
+    def request(self, run_dir: Path, *, session_id: str, source_proposal_id: str | None = None) -> tuple[dict[str, Any], bool]:
         snapshot = build_report_snapshot(run_dir, session_id=session_id)
         generation_profile = report_generation_profile()
         recipe_hash = report_recipe_hash(generation_profile)
-        manifest, created = self._store.create_or_get(run_dir, snapshot=snapshot, report_recipe_hash=recipe_hash)
+        manifest, created = self._store.create_or_get(
+            run_dir,
+            snapshot=snapshot,
+            report_recipe_hash=recipe_hash,
+            **_lineage_from_proposal(run_dir, session_id=session_id, source_proposal_id=source_proposal_id),
+        )
         common_payload = {
             "report_id": manifest.report_id,
             "session_id": session_id,
@@ -80,6 +85,26 @@ class ReportRequestService:
                 {"report_id": manifest.report_id, "session_id": session_id, "job_id": job["job_id"]},
             )
         return {"manifest": manifest, "job": job}, created or job_created
+
+
+def _lineage_from_proposal(run_dir: Path, *, session_id: str, source_proposal_id: str | None) -> dict[str, str | None]:
+    if source_proposal_id is None:
+        return {"previous_report_id": None, "parent_report_id": None, "source_proposal_id": None}
+    from autoad_researcher.reporting.review import load_proposal
+
+    paths = list((run_dir / "reports").glob(f"report_*/proposals/{source_proposal_id}.json"))
+    if len(paths) != 1:
+        raise ValueError("source_proposal_id does not resolve to one report Proposal")
+    proposal = load_proposal(run_dir, report_id=paths[0].parent.parent.name, proposal_id=source_proposal_id)
+    if proposal.status != "HANDED_OFF":
+        raise ValueError("source Proposal must be handed off before it can parent a report")
+    if proposal.source_session_id != session_id:
+        raise ValueError("source Proposal Session does not match the new report Session")
+    return {
+        "previous_report_id": proposal.source_report_id,
+        "parent_report_id": proposal.source_report_id,
+        "source_proposal_id": proposal.proposal_id,
+    }
 
 
 def retry_failed_report_job(run_dir: Path, *, report_id: str, job_id: str) -> dict[str, Any]:

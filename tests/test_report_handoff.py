@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from autoad_researcher.experiment.executor_agent import ExecutorProposal
 from autoad_researcher.experiment.executor_contracts import InterventionContract
 from autoad_researcher.reporting.review import (
     PivotTaskContext,
+    ProposalBudgetEstimate,
     confirm_proposal,
     create_proposal,
     reject_proposal,
@@ -51,6 +53,30 @@ def test_human_proposal_only_handoffs_after_confirmation_and_replays(tmp_path: P
     assert first.handoff == second.handoff == {"kind": "human_queue", "proposal_id": proposal.proposal_id}
 
 
+def test_child_report_requires_a_handed_off_explicit_proposal(tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    proposal = create_proposal(
+        run_dir,
+        report_id=report_id,
+        proposal_type="REQUEST_HUMAN",
+        rationale="记录新报告的显式父 Proposal",
+    )
+    with pytest.raises(ValueError, match="must be handed off"):
+        ReportRequestService().request(run_dir, session_id=proposal.source_session_id, source_proposal_id=proposal.proposal_id)
+
+    confirm_proposal(run_dir, report_id=report_id, proposal_id=proposal.proposal_id)
+    child, created = ReportRequestService().request(
+        run_dir,
+        session_id=proposal.source_session_id,
+        source_proposal_id=proposal.proposal_id,
+    )
+
+    assert created is True
+    assert child["manifest"].previous_report_id == report_id
+    assert child["manifest"].parent_report_id == report_id
+    assert child["manifest"].source_proposal_id == proposal.proposal_id
+
+
 def test_rejected_proposal_cannot_handoff(tmp_path: Path):
     run_dir, report_id = _ready_report(tmp_path)
     proposal = create_proposal(
@@ -80,8 +106,22 @@ def _refine_input() -> CandidateLaunchInput:
     )
 
 
-def test_refine_requires_reviewed_input_then_delegates_to_candidate_control(tmp_path: Path, monkeypatch):
+def _budgeted_report(tmp_path: Path) -> tuple[Path, str]:
     run_dir, report_id = _ready_report(tmp_path)
+    path = run_dir / "reports" / report_id / "report_facts.json"
+    facts = json.loads(path.read_text(encoding="utf-8"))
+    facts["evaluation_contract"] = {"resource_budget": {"max_wall_seconds": 60, "max_gpu_seconds": 40}}
+    facts["cognitive_cost_summary"] = {
+        "remaining_calls": 3,
+        "remaining_tokens": 100,
+        "remaining_wall_seconds": 20,
+    }
+    path.write_text(json.dumps(facts), encoding="utf-8")
+    return run_dir, report_id
+
+
+def test_refine_requires_reviewed_input_then_delegates_to_candidate_control(tmp_path: Path, monkeypatch):
+    run_dir, report_id = _budgeted_report(tmp_path)
     missing = create_proposal(
         run_dir,
         report_id=report_id,
@@ -113,6 +153,7 @@ def test_refine_requires_reviewed_input_then_delegates_to_candidate_control(tmp_
         rationale="基于当前结果缩小干预范围",
         requested_changes=["仅调整 model.py 中的投影层"],
         refine_input=_refine_input(),
+        estimated_budget=ProposalBudgetEstimate(max_wall_seconds=30, max_gpu_seconds=20, cognitive_calls=1),
     )
     handed_off = confirm_proposal(run_dir, report_id=report_id, proposal_id=proposal.proposal_id)
     assert handed_off.handoff == {
@@ -122,6 +163,23 @@ def test_refine_requires_reviewed_input_then_delegates_to_candidate_control(tmp_
     }
     assert captured["session_id"] == proposal.source_session_id
     assert captured["value"].idempotency_key == f"report-proposal:{proposal.proposal_id}"
+
+
+def test_execution_proposal_budget_must_fit_frozen_contract(tmp_path: Path):
+    run_dir, report_id = _budgeted_report(tmp_path)
+    proposal = create_proposal(
+        run_dir,
+        report_id=report_id,
+        proposal_type="REFINE_CURRENT",
+        rationale="受冻结资源上限约束的修改",
+        requested_changes=["仅调整 model.py 中的投影层"],
+        refine_input=_refine_input(),
+        estimated_budget=ProposalBudgetEstimate(max_wall_seconds=61, max_gpu_seconds=20, cognitive_calls=4),
+    )
+
+    assert proposal.status == "DRAFT"
+    assert "proposal wall-time estimate exceeds the frozen EvaluationContract budget" in proposal.validation_errors
+    assert "proposal cognitive_calls exceeds the frozen cognitive budget" in proposal.validation_errors
 
 
 def test_pivot_creates_an_isolated_pending_task_with_report_lineage(tmp_path: Path):

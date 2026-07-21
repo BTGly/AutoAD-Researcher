@@ -67,6 +67,7 @@ class ReportManifest(BaseModel):
     created_at: str
     previous_report_id: str | None = None
     parent_report_id: str | None = None
+    source_proposal_id: str | None = None
 
 
 class ReportArtifactDelivery(BaseModel):

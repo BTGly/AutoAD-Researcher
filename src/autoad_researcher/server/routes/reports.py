@@ -29,6 +29,7 @@ _DOWNLOAD_ARTIFACTS = {
 class ReportCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session_id: str = Field(min_length=1)
+    source_proposal_id: str | None = None
 
 
 class ReportRetryRequest(BaseModel):
@@ -50,7 +51,11 @@ async def list_reports(run_id: str, session_id: str | None = None):
 async def create_report(run_id: str, request: ReportCreateRequest):
     run_dir, _ = _store(run_id)
     try:
-        result, created = ReportRequestService().request(run_dir, session_id=request.session_id)
+        result, created = ReportRequestService().request(
+            run_dir,
+            session_id=request.session_id,
+            source_proposal_id=request.source_proposal_id,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
