@@ -582,6 +582,24 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue); }
 .empty-state strong { color: var(--text); font-size: 15px; }
 .empty-state span { max-width: 360px; font-size: 13px; }
 
+.observatory { flex: 1; min-width: 0; overflow: auto; padding: 12px; }
+.observatory-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 2px 2px 14px; }
+.observatory-header h1 { margin: 0; font-size: 20px; line-height: 1.25; }
+.observatory-header h1 + div { margin-top: 4px; color: var(--text-muted); font-size: 13px; }
+.observatory-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.observatory-alert { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--warning); border-radius: var(--radius-sm); color: var(--warning); background: var(--status-working-bg); }
+.observatory-session-picker { display: grid; gap: 12px; max-width: 560px; padding: 18px; }
+.session-overview { padding: 16px; }
+.session-goal { font-size: 16px; font-weight: 650; }
+.session-facts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.observatory-layout { display: grid; grid-template-columns: minmax(190px, .82fr) minmax(260px, 1.15fr) minmax(280px, 1fr); gap: 12px; align-items: start; margin-top: 12px; }
+.observatory-panel { min-height: 260px; padding: 14px; }
+.observatory-panel h2 { margin: 0 0 12px; font-size: 13px; }
+.observatory-inspector { display: grid; gap: 12px; min-width: 0; }
+.experiment-actions { padding: 14px; border-color: color-mix(in srgb, var(--tint) 55%, var(--separator)); }
+@media (max-width: 1060px) { .observatory-layout { grid-template-columns: minmax(190px, .8fr) minmax(280px, 1.2fr); } .observatory-inspector { grid-column: 1 / -1; } }
+@media (max-width: 720px) { .observatory { padding: 8px; } .observatory-header { align-items: stretch; flex-direction: column; } .observatory-layout { grid-template-columns: 1fr; } .observatory-inspector { grid-column: auto; } .observatory-actions > * { flex: 1; } }
+
 .app-shell { height: 100vh; display: flex; flex-direction: column; background: var(--app-bg); }
 .app-toolbar {
   z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 16px;
