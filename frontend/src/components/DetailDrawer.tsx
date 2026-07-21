@@ -40,7 +40,7 @@ function AttemptDetail({ item, onDiscuss }: { item: ExperimentAttempt; onDiscuss
       <Field label="状态" value={assessmentDetail.status} /><Field label="详情" value={assessmentDetail.detail} />
       {assessment && <><Field label="Guardrail 变化" value={recordDetail(assessment.guardrail_deltas)} /><Field label="补丁已应用" value={bool(assessment.patch_applied)} /><Field label="Smoke 测试通过" value={bool(assessment.smoke_passed)} /><Field label="OutcomeCard 引用" value={assessment.outcome_card_ref} /><Field label="评价输入引用" value={assessment.inputs_ref} /></>}
     </section>
-    <section><b>权威边界</b><Field label="Assessment reconciliation" value={reconciliationDetail(item.assessment_reconciliation)} /></section>
+    <section><b>权威边界</b><Field label="Assessment reconciliation" value={reconciliationDetail(item.assessment_reconciliation)} /><Field label="科学评价引用" value={scientificAssessmentRef(item.assessment_reconciliation)} /></section>
     <button onClick={() => onDiscuss(`请讨论实验 ${item.attempt_id} 的结果。`)}>在研究助手中讨论</button>
   </div>;
 }
@@ -64,6 +64,11 @@ function reconciliationDetail(value: Record<string, unknown> | null): string {
   const execution = typeof value.execution_protocol_authority === 'string' ? `执行事实权威：${value.execution_protocol_authority}` : null;
   const science = typeof value.scientific_comparison_authority === 'string' ? `科学比较权威：${value.scientific_comparison_authority}` : null;
   return [status, execution, science].filter(Boolean).join('；') || '已记录评价链路';
+}
+
+function scientificAssessmentRef(value: Record<string, unknown> | null): string {
+  const ref = value?.scientific_assessment_ref;
+  return typeof ref === 'string' ? ref : '暂无';
 }
 
 function scientificAssessmentDetail(item: ExperimentAttempt): { status: string; detail: string } {

@@ -118,6 +118,31 @@ test('does not present an invalid assessment as not materialized', async ({ page
   await expect(page.getByText('执行事实已记录，科学评价尚未物化。')).not.toBeVisible();
 });
 
+test('shows the durable scientific assessment reference in an Attempt detail', async ({ page }) => {
+  const assessedProjection = structuredClone(projection) as { attempts: Array<Record<string, unknown>> };
+  assessedProjection.attempts[0].scientific_assessment_status = 'available';
+  assessedProjection.attempts[0].scientific_assessment = {
+    scientific_effect: 'IMPROVEMENT',
+    primary_delta: 0.1,
+    evaluation_status: 'COMPARABLE',
+    guardrail_deltas: {},
+    patch_applied: true,
+    smoke_passed: true,
+    outcome_card_ref: 'attempts/attempt_000001/outcome_card.json',
+    inputs_ref: 'attempts/attempt_000001/scientific_evaluation_inputs.json',
+  };
+  assessedProjection.attempts[0].assessment_reconciliation = {
+    effective_evaluation_status: 'COMPARABLE',
+    execution_protocol_authority: 'outcome_card',
+    scientific_comparison_authority: 'scientific_assessment',
+    scientific_assessment_ref: 'attempts/attempt_000001/scientific_assessment.json',
+  };
+  await prepare(page, () => assessedProjection);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: /attempt_000001/ }).click();
+  await expect(page.getByText('attempts/attempt_000001/scientific_assessment.json', { exact: true })).toBeVisible();
+});
+
 test('uses the projection status vocabulary and preserves complete Session facts', async ({ page }) => {
   const detailedProjection = structuredClone(projection);
   detailedProjection.session.budget = { gpu_hours: 10 };

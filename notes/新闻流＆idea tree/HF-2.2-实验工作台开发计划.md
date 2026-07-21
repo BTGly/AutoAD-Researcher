@@ -136,7 +136,7 @@ Session.evaluation_contract_sha256
   → 读取已有科学评价
 ```
 
-`champion_status` 使用 `absent`、`available`、`assessment_missing`、`assessment_invalid`。无评价合同、无对应 Pointer、Candidate 不属于当前 Session 或 Pointer/Candidate 本身无效时才是 `absent`；Champion 已登记但科学评价 Artifact 缺失或无效时，保留 Champion 身份和引用，分别显示“科学评价详情缺失”或“科学评价详情无效”。
+`champion_status` 使用 `absent`、`available`、`assessment_missing`、`assessment_invalid`、`control_plane_invalid`。无评价合同或无对应 Pointer 时才是 `absent`；Champion 已登记但科学评价 Artifact 缺失或无效时，保留 Champion 身份和引用，分别显示“科学评价详情缺失”或“科学评价详情无效”。Candidate 清单损坏、Pointer 无法校验、Pointer 指向的 Candidate 缺失或与当前 Session/合同不匹配时为 `control_plane_invalid`，不能据此声称不存在 Champion。
 
 ### 4.6 Idea Tree 和 Activity
 
@@ -144,7 +144,7 @@ Session.evaluation_contract_sha256
 - `experiment.idea_tree.mutated` 只显示“Idea Tree 已更新”和 revision。
 - 不从 mutation receipt 推断历史节点或剪枝原因。
 - Activity 映射使用确定性逻辑，不调用 LLM。
-- Activity 首版只返回当前 Session 最近 100 条可靠卡片，并通过 `activity_truncated` 标识是否截断；不引入分页、游标或新索引。
+- Activity 首版只返回当前 Session 最近 100 条可靠卡片，并通过 `activity_truncated` 标识可靠卡片是否截断；扫描达到当前事件读取上限时，通过 `activity_scan_truncated` 表示较早事件尚未完成扫描。不引入分页、游标或新索引。
 
 ### 4.7 API
 
@@ -170,7 +170,7 @@ GET /api/runs/{run_id}/experiment/projection?session_id={session_id}
 - 执行事实和科学评价分层。
 - Champion 使用当前评价合同精确选择；详情缺失时不掩盖已登记状态。
 - `session_id` 不能绕过候选 Session 文件集合访问目录外路径。
-- Activity 数量上限和截断标记正确。
+- Activity 数量上限、可靠卡片截断和扫描截断标记正确。
 - GET 前后 Artifact 内容和文件修改时间不变。
 
 ## 5. 提交三：工作台数据展示
@@ -256,7 +256,7 @@ Idea 状态按当前 `IdeaNodeStatus` 映射。未知值显示“未知状态（
 2. 编写对应的 Python 测试；前端首版按现有工具链执行 `npm run build` 和 `npm run lint`，不假设已经存在 Vitest/Jest；
 3. 更新当天 `notes/YYYY-MM-DD.md`；
 4. 运行 `bash scripts/verify.sh`；
-5. 通过后按项目交付要求运行 `bash scripts/verify_and_push.sh "<message>"`；本次仅做计划补丁，按用户要求不执行提交和推送；
+5. 通过后按项目交付要求运行 `bash scripts/verify_and_push.sh "<message>"`；
 6. 确认 `git status --short --branch`、`git log --oneline -3` 和 GitHub Actions。
 
 不得把审阅报告中的示例字段当成现有代码事实，也不得在未验证参考项目实现的情况下声称“直接复用”。
