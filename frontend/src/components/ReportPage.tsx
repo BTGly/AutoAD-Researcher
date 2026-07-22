@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Download, ExternalLink, RefreshCw, Send } from 'lucide-react';
 import { confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
 import type { DiscussionMessage, ReportDigest, ReportEvidence, ReportManifest, ReportProposal, ReportState } from '../lib/types';
@@ -24,7 +24,7 @@ export function ReportPage({ runId, onBack }: Props) {
   const [proposals, setProposals] = useState<ReportProposal[]>([]);
   const [proposalRationale, setProposalRationale] = useState('');
   const [reviewComment, setReviewComment] = useState('');
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!runId) return;
     setLoading(true); setError(null);
     try {
@@ -33,8 +33,8 @@ export function ReportPage({ runId, onBack }: Props) {
       setSelectedId(current => current && all.some(item => item.report_id === current) ? current : (ready?.report_id ?? created?.report_id ?? null));
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法读取报告状态'); }
     finally { setLoading(false); }
-  };
-  useEffect(() => { void load(); }, [runId]);
+  }, [runId]);
+  useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (!selectedId) { setState(null); setDigest(null); setContent(null); setEvidence([]); setDiscussion([]); setProposals([]); return; }
     let active = true;

@@ -96,7 +96,7 @@ export default function App() {
   const completedAssistantIdsRef = useRef(new Set<string>());
   const drainingQueueRunIdRef = useRef<string | null>(null);
   const [chatTurnActive, setChatTurnActive] = useState(false);
-  const bottomRef = useAutoScroll([messages]);
+  const bottomRef = useAutoScroll(messages);
   const activeTask = tasks.find(task => task.run_id === runId) || null;
   const visibleTaskStatus = chatTurnActive ? 'Working' : taskStatus;
   const queuedMessages = useMemo(() => queuedMessagesByRun[runId] || [], [queuedMessagesByRun, runId]);
