@@ -31,7 +31,7 @@ def fixture_repository(tmp_path: Path) -> Path:
 
 
 def _contract() -> InterventionContract:
-    return InterventionContract(idea_id="idea_000001", mechanism="parameter adjustment", hypothesis="h", target_modules=["train.py"], allowed_paths=["train.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["learning_rate"], evaluation_invariants=["fixed evaluator"], max_repairs=3, time_budget=60)
+    return InterventionContract(idea_id="idea_000001", mechanism="parameter adjustment", hypothesis="h", target_modules=["train.py"], allowed_paths=["train.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["learning_rate"], evaluation_invariants=["fixed evaluator"], time_budget=60)
 
 
 def _workspace(fixture_repository: Path, tmp_path: Path):

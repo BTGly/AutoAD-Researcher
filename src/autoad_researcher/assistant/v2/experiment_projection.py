@@ -13,7 +13,7 @@ from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.assistant.v2.event_service import iter_events_reverse
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCommitStore
-from autoad_researcher.experiment.cognitive_budget import CognitiveBudgetStore
+from autoad_researcher.experiment.cognitive_budget import CognitiveUsageStore
 from autoad_researcher.experiment.finalizer import OutcomeCard
 from autoad_researcher.experiment.idea_tree import IdeaNode, IdeaTreeStore
 from autoad_researcher.experiment.promotion import CandidateRegistry, CandidateSnapshot
@@ -403,7 +403,7 @@ def _load_input_task(run_dir: Path, task_ref: str) -> InputTask | None:
 
 
 def _budget_consumed(run_dir: Path, session_id: str) -> dict[str, object] | None:
-    usages = CognitiveBudgetStore().load(run_dir, session_id=session_id)
+    usages = CognitiveUsageStore().load(run_dir, session_id=session_id)
     if not usages:
         return None
     return {

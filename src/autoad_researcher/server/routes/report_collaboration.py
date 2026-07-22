@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/runs/{run_id}/reports/{report_id}", tags=["repor
 class DiscussionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$")
-    content: str = Field(min_length=1, max_length=8000)
+    content: str = Field(min_length=1)
     evidence_ids: list[str] = Field(default_factory=list)
 
 

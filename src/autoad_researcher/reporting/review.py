@@ -63,15 +63,12 @@ class PivotTaskContext(BaseModel):
 
 
 class ProposalBudgetEstimate(BaseModel):
-    """Explicit upper bounds for one confirmed follow-up, with fixed units."""
+    """Verified execution-resource estimate for one confirmed follow-up."""
 
     model_config = ConfigDict(extra="forbid")
 
     max_wall_seconds: int = Field(ge=0)
     max_gpu_seconds: int = Field(ge=0)
-    cognitive_calls: int = Field(default=0, ge=0)
-    cognitive_tokens: int = Field(default=0, ge=0)
-    cognitive_wall_seconds: float = Field(default=0, ge=0)
 
 
 class FollowUpProposal(BaseModel):
@@ -214,22 +211,6 @@ def _validate_proposal_budget(run_dir: Path, proposal: FollowUpProposal) -> list
         errors.append("proposal wall-time estimate exceeds the frozen EvaluationContract budget")
     if estimate.max_gpu_seconds > max_gpu:
         errors.append("proposal GPU-time estimate exceeds the frozen EvaluationContract budget")
-    if any((estimate.cognitive_calls, estimate.cognitive_tokens, estimate.cognitive_wall_seconds)):
-        cost = facts.cognitive_cost_summary
-        if not isinstance(cost, dict):
-            return [*errors, "source report has no verified cognitive budget summary"]
-        for estimate_name, summary_name in (
-            ("cognitive_calls", "remaining_calls"),
-            ("cognitive_tokens", "remaining_tokens"),
-            ("cognitive_wall_seconds", "remaining_wall_seconds"),
-        ):
-            value = getattr(estimate, estimate_name)
-            available = cost.get(summary_name)
-            if not isinstance(available, (int, float)):
-                errors.append("source report has no verified cognitive budget summary")
-                break
-            if value > available:
-                errors.append(f"proposal {estimate_name} exceeds the frozen cognitive budget")
     return errors
 
 

@@ -20,7 +20,7 @@ from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.worker.main import _process_pending_jobs
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.schemas.execution import ResourceUsageReport
-from autoad_researcher.experiment.cognitive_budget import CognitiveBudget, CognitiveBudgetStore, new_usage
+from autoad_researcher.experiment.cognitive_budget import CognitiveUsageStore, new_usage
 from autoad_researcher.experiment.cost_summary import CognitiveCostSummaryBuilder
 
 
@@ -180,10 +180,9 @@ def test_resource_reports_are_projected_only_from_registered_snapshot_refs(tmp_p
 
 
 def test_cognitive_summary_binds_the_usage_ledger_fingerprint(tmp_path: Path):
-    budget = CognitiveBudget(max_calls=4, max_tokens=100, max_compact_cycles=4, max_exploratory_cycles=4, max_subagent_calls=4, max_wall_seconds=100)
-    store = CognitiveBudgetStore()
-    store.append(tmp_path, session_id="session_cost", budget=budget, usage=new_usage(cycle_id="cycle_1", cycle_kind="compact", role="coordinator", input_tokens=3, output_tokens=4, wall_seconds=1))
-    summary = CognitiveCostSummaryBuilder(store=store).build_and_persist(tmp_path, session_id="session_cost", budget=budget)
+    store = CognitiveUsageStore()
+    store.append(tmp_path, session_id="session_cost", usage=new_usage(cycle_id="cycle_1", cycle_kind="compact", role="coordinator", input_tokens=3, output_tokens=4, wall_seconds=1))
+    summary = CognitiveCostSummaryBuilder(store=store).build_and_persist(tmp_path, session_id="session_cost")
     assert summary.cognitive_usage_sha256 is not None
     payload = json.loads((tmp_path / "experiments" / "cognition" / "session_cost" / "cost_summary.json").read_text(encoding="utf-8"))
     assert payload["cognitive_usage_sha256"] == summary.cognitive_usage_sha256

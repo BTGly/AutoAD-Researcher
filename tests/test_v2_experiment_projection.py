@@ -14,7 +14,7 @@ from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.experiment.attempt import ExperimentAttempt
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.cognition import CognitiveCommitStore
-from autoad_researcher.experiment.cognitive_budget import CognitiveBudget, CognitiveBudgetStore, CognitiveUsage
+from autoad_researcher.experiment.cognitive_budget import CognitiveUsageStore, CognitiveUsage
 from autoad_researcher.experiment.finalizer import OutcomeCard
 from autoad_researcher.experiment.idea_tree import IdeaTreeStore
 from autoad_researcher.experiment.promotion import CandidateRegistry, CandidateSnapshot, ChampionPointer
@@ -672,20 +672,12 @@ def test_projection_reads_cognitive_commits_and_budget_usage(tmp_path: Path):
             model_profile="fixture",
             prompt_version="fixture-v1",
         )
-    budget = CognitiveBudget(
-        max_calls=2,
-        max_tokens=100,
-        max_compact_cycles=2,
-        max_exploratory_cycles=2,
-        max_subagent_calls=2,
-        max_wall_seconds=10,
-    )
     usages = [
         CognitiveUsage(cycle_id="cycle-1", cycle_kind="compact", role="coordinator", input_tokens=3, output_tokens=5, wall_seconds=1.5, created_at=NOW),
         CognitiveUsage(cycle_id="cycle-2", cycle_kind="exploratory", role="idea_explorer", input_tokens=7, output_tokens=11, wall_seconds=2.5, created_at=NOW),
     ]
     for usage in usages:
-        assert CognitiveBudgetStore().append(tmp_path, session_id=session.session_id, budget=budget, usage=usage).allowed
+        assert CognitiveUsageStore().append(tmp_path, session_id=session.session_id, usage=usage).recorded
 
     projection = build_projection(tmp_path)
 

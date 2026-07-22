@@ -17,13 +17,11 @@ from autoad_researcher.experiment.executor_repair import RepairRecord, append_re
 
 
 class ExecutorLimits(BaseModel):
-    """Explicit bounds for a disposable ExecutorAgent invocation."""
+    """Operational timeout and command policy for one disposable invocation."""
 
     model_config = ConfigDict(extra="forbid")
 
-    max_steps: int = Field(gt=0)
     max_wall_seconds: int = Field(gt=0)
-    max_model_calls: int = Field(ge=0)
     allowed_commands: list[str] = Field(default_factory=lambda: ["python", "python3"])
 
 
@@ -42,7 +40,7 @@ class ExecutorSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
-    status: Literal["completed", "implementation_failed", "budget_exhausted"]
+    status: Literal["completed", "implementation_failed", "operation_timed_out"]
     model_calls: int = Field(ge=0)
     steps: int = Field(ge=0)
     changed_files: list[str]
@@ -97,10 +95,8 @@ class ExecutorTools:
         return subprocess.run(argv, cwd=self._root, env=environment, text=True, capture_output=True, timeout=timeout_seconds, shell=False, check=False)
 
     def _step(self) -> None:
-        if self.steps >= self._limits.max_steps:
-            raise RuntimeError("Executor step budget exhausted")
         if self._remaining_wall_seconds() <= 0:
-            raise TimeoutError("Executor wall-time budget exhausted")
+            raise TimeoutError("Executor operation timed out")
         self.steps += 1
 
     def _remaining_wall_seconds(self) -> int:
@@ -134,15 +130,36 @@ class ExecutorAgent:
         tools = ExecutorTools(worktree_path=Path(self._workspace.worktree_path), applier=applier, limits=self._limits, started_at=started_at)
         summary: ExecutorSummary | None = None
         try:
-            if self._limits.max_model_calls < 1:
-                summary = ExecutorSummary(status="budget_exhausted", model_calls=0, steps=0, changed_files=[], changed_symbols=[], error="Executor model-call budget exhausted")
-                return summary
             changed_files: list[str] = []
-            hard_failures = 0
+            failure_signatures: set[tuple[str, str]] = set()
             proposal: ExecutorProposal | None = None
-            for model_call in range(1, min(self._limits.max_model_calls, self._contract.max_repairs + 1) + 1):
+            model_call = 0
+            while True:
+                model_call += 1
                 proposal = ExecutorProposal.model_validate(proposal_provider(tools))
                 if not proposal.edits:
+                    signature = ("empty_proposal", "proposal did not include edits")
+                    if signature in failure_signatures:
+                        summary = ExecutorSummary(status="implementation_failed", model_calls=model_call, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence, error=signature[1])
+                        return summary
+                    failure_signatures.add(signature)
+                    append_repair_record(self._artifact_dir / "repair_log.jsonl", RepairRecord(repair_index=model_call, trigger=signature[0], classification="no_progress", patch_ref="patch.diff", validation_result=signature[1]))
+                    continue
+                failed = None
+                for edit in proposal.edits:
+                    result = tools.apply_edit(edit, diff_path=self._artifact_dir / "patch.diff")
+                    if result.status == "applied":
+                        changed_files.append(edit.path)
+                    elif result.status in {"rejected", "rolled_back"}:
+                        failed = result
+                        break
+                if failed is None:
+                    summary = ExecutorSummary(status="completed", model_calls=model_call, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence)
+                    return summary
+                classification = classify_repair_failure(failed.decision.code)
+                signature = (failed.decision.code, failed.decision.detail)
+                append_repair_record(self._artifact_dir / "repair_log.jsonl", RepairRecord(repair_index=model_call, trigger=failed.decision.code, classification=classification, patch_ref="patch.diff", validation_result=failed.decision.detail))
+                if signature in failure_signatures:
                     summary = ExecutorSummary(
                         status="implementation_failed",
                         model_calls=model_call,
@@ -151,34 +168,18 @@ class ExecutorAgent:
                         changed_symbols=proposal.changed_symbols,
                         possible_contract_deviation=proposal.possible_contract_deviation,
                         confidence=proposal.confidence,
-                        error="proposal did not include edits",
+                        error=f"repeated failure without new diagnostics: {failed.decision.code}: {failed.decision.detail}",
                     )
                     return summary
-                failed = None
-                for edit in proposal.edits:
-                    result = tools.apply_edit(edit, diff_path=self._artifact_dir / "patch.diff")
-                    if result.status == "applied": changed_files.append(edit.path)
-                    elif result.status in {"rejected", "rolled_back"}:
-                        failed = result; break
-                if failed is None:
-                    summary = ExecutorSummary(status="completed", model_calls=model_call, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence)
-                    return summary
-                classification = classify_repair_failure(failed.decision.code)
-                if classification == "hard_policy_violation": hard_failures += 1
-                repair_index = model_call
-                if repair_index <= self._contract.max_repairs:
-                    append_repair_record(self._artifact_dir / "repair_log.jsonl", RepairRecord(repair_index=repair_index, trigger=failed.decision.code, classification=classification, patch_ref="patch.diff", validation_result=failed.decision.detail))
-                if hard_failures >= 2 or repair_index > self._contract.max_repairs:
-                    summary = ExecutorSummary(status="implementation_failed", model_calls=model_call, steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence, error=f"{failed.decision.code}: {failed.decision.detail}")
-                    return summary
-            assert proposal is not None
-            summary = ExecutorSummary(status="implementation_failed", model_calls=min(self._limits.max_model_calls, self._contract.max_repairs + 1), steps=tools.steps, changed_files=sorted(set(changed_files)), changed_symbols=proposal.changed_symbols, possible_contract_deviation=proposal.possible_contract_deviation, confidence=proposal.confidence, error="repair budget exhausted")
+                failure_signatures.add(signature)
+        except TimeoutError as exc:
+            summary = ExecutorSummary(status="operation_timed_out", model_calls=model_call if "model_call" in locals() else 0, steps=tools.steps, changed_files=[], changed_symbols=[], error=str(exc))
             return summary
-        except (RuntimeError, TimeoutError) as exc:
-            summary = ExecutorSummary(status="budget_exhausted", model_calls=1 if summary is None else summary.model_calls, steps=tools.steps, changed_files=[], changed_symbols=[], error=str(exc))
+        except RuntimeError as exc:
+            summary = ExecutorSummary(status="implementation_failed", model_calls=model_call if "model_call" in locals() else 0, steps=tools.steps, changed_files=[], changed_symbols=[], error=str(exc))
             return summary
         except Exception as exc:
-            summary = ExecutorSummary(status="implementation_failed", model_calls=1, steps=tools.steps, changed_files=[], changed_symbols=[], error=str(exc))
+            summary = ExecutorSummary(status="implementation_failed", model_calls=model_call if "model_call" in locals() else 0, steps=tools.steps, changed_files=[], changed_symbols=[], error=str(exc))
             return summary
         finally:
             if summary is None:

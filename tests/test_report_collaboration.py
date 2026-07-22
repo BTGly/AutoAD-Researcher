@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, _recent_history, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
+from autoad_researcher.reporting.discussion import DiscussionResponse, DiscussionTurn, _recent_history, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -69,7 +69,6 @@ def test_direct_discussion_response_verifies_turn_snapshot_before_model_call(mon
             api_key="test",
             provider_url="https://example.test",
             model="test",
-            budget=ReportDiscussionBudget(),
         )
 
 
@@ -89,7 +88,7 @@ def test_discussion_response_receives_bounded_completed_history(monkeypatch, tmp
     contents = [item["content"] for item in captured["messages"]]
     assert "刚才的实验" in contents and "先前回答" in contents and contents[-1] == "继续解释"
     history = _recent_history(load_turns(run_dir, report_id=report_id), current_turn_id="missing")
-    assert sum(len(item["content"].encode("utf-8")) for item in history) <= 16 * 1024 + len(history[0]["content"].encode("utf-8"))
+    assert "刚才的实验" in [item["content"] for item in history]
 
 
 def test_discussion_budget_and_factual_evidence_requirements(monkeypatch, tmp_path: Path):
@@ -110,14 +109,46 @@ def test_discussion_budget_and_factual_evidence_requirements(monkeypatch, tmp_pa
         api_key="test",
         provider_url="https://example.test",
         model="test",
-        budget=ReportDiscussionBudget(max_output_tokens=128, max_wall_time_seconds=12),
     )
     assert completed.status == "completed"
-    assert captured["max_tokens"] == 128 and captured["timeout_s"] == 12
+    assert "max_tokens" not in captured and captured["timeout_s"] == 60
 
     missing = start_turn(run_dir, report_id=report_id, request_id="turn_missing_evidence", content="请解释")
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", lambda *_args, **_kwargs: {"reply": '{"answer":"解释。","response_kind":"explain","evidence_ids":[],"unsupported_claims":[]}', "error": ""})
     assert respond_to_turn(run_dir, report_id=report_id, turn_id=missing.turn_id, api_key="test", provider_url="https://example.test", model="test").status == "failed"
+
+
+def test_discussion_compresses_old_turns_only_at_real_context_boundary(tmp_path: Path):
+    turns = [
+        DiscussionTurn(
+            turn_id=f"turn_{index}", request_id=f"request_{index}", report_id="report_1",
+            snapshot_content_sha256="a" * 64, user_message="用户问题 " + ("x" * 200),
+            response=DiscussionResponse(answer="回答 " + ("y" * 200), response_kind="insufficient_evidence"),
+            status="completed", created_at=f"2026-01-01T00:00:0{index}+00:00",
+        )
+        for index in range(2)
+    ]
+    compressed = _recent_history(turns, current_turn_id="missing", context_window=1)
+    assert all(item["role"] == "system" for item in compressed)
+    assert all("compressed_turn" in item["content"] for item in compressed)
+    assert "用户问题" not in compressed[0]["content"]
+
+
+def test_discussion_stops_repeated_typed_action_without_call_quota(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_repeated_tool", content="请核查")
+    calls = 0
+
+    def fake_call(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"reply": '{"tool_calls":[{"name":"get_report_digest","arguments":{}}]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
+    assert completed.status == "failed"
+    assert calls == 2
+    assert "repeated an identical typed action" in (completed.error or "")
 
 
 def test_proposal_is_not_handoff_and_accept_is_only_review(tmp_path: Path):

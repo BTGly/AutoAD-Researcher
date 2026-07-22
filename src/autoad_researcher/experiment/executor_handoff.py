@@ -54,7 +54,7 @@ class ExecutorAttemptHandoffService:
         summary = (
             ExecutorSummary.model_validate_json(summary_path.read_text(encoding="utf-8"))
             if summary_path.is_file() and admission_path.is_file()
-            else ExecutorAgent(contract=request.intervention_contract, workspace=workspace, artifact_dir=staging, limits=ExecutorLimits(max_steps=8, max_wall_seconds=request.intervention_contract.time_budget, max_model_calls=request.intervention_contract.max_repairs + 1)).run(proposal_provider)
+            else ExecutorAgent(contract=request.intervention_contract, workspace=workspace, artifact_dir=staging, limits=ExecutorLimits(max_wall_seconds=request.intervention_contract.time_budget)).run(proposal_provider)
         )
         if summary.status != "completed": return ExecutorHandoffResult(status="blocked", blocker=summary.error, workspace=workspace)
         plan, refs = self._adapter.build_execution(adapter_result, request.adapter_inputs.model_copy(update={"worktree_ref": workspace_ref}))

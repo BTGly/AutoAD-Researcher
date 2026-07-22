@@ -72,7 +72,7 @@ class PatchCore07HInterventionHandoff:
             if summary_path.is_file() and admission_path.is_file()
             else ExecutorAgent(
                 contract=request.intervention_contract, workspace=workspace, artifact_dir=staging,
-                limits=ExecutorLimits(max_steps=8, max_wall_seconds=request.intervention_contract.time_budget, max_model_calls=request.intervention_contract.max_repairs + 1),
+                limits=ExecutorLimits(max_wall_seconds=request.intervention_contract.time_budget),
             ).run(proposal_provider)
         )
         if summary.status != "completed":

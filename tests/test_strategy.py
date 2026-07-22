@@ -16,8 +16,6 @@ def _skill(run_dir: Path, skill_id: str, **updates) -> SkillDescriptor:
         "task_types": ["anomaly_detection"],
         "scope": "global",
         "effect_lifetime": "attempt",
-        "estimated_calls": 1,
-        "estimated_tokens": 10,
     }
     values.update(updates)
     return SkillDescriptor.model_validate(values)
@@ -47,8 +45,6 @@ def test_selector_filters_and_ranks_without_choosing_for_coordinator(tmp_path: P
         context=StrategyContext(
             task_type="anomaly_detection",
             approved_skill_ids={"revisit-pruned-lessons"},
-            remaining_calls=3,
-            remaining_tokens=100,
         ),
     )
     assert selection.eligible_skill_candidates == ["diversify-axes", "revisit-pruned-lessons"]
@@ -66,8 +62,6 @@ def test_selector_rejects_missing_skill_budget_and_repetition(tmp_path: Path):
         task_types=["anomaly_detection"],
         scope="axis",
         effect_lifetime="session",
-        estimated_calls=2,
-        estimated_tokens=20,
     )
     repeated = _skill(tmp_path, "diversify-axes")
     selection = StrategySelector().filter_and_rank(
@@ -77,14 +71,11 @@ def test_selector_rejects_missing_skill_budget_and_repetition(tmp_path: Path):
         context=StrategyContext(
             task_type="anomaly_detection",
             repeated_skill_ids={"diversify-axes"},
-            remaining_calls=1,
-            remaining_tokens=5,
         ),
     )
     assert selection.eligible_skill_candidates == []
     reasons = {item.skill_id: item.reasons for item in selection.evaluations}
     assert "skill directory or SKILL.md is missing" in reasons["missing"]
-    assert "insufficient remaining model-call budget" in reasons["missing"]
     assert "skill was already repeated consecutively" in reasons["diversify-axes"]
 
 
@@ -95,7 +86,7 @@ def test_resolve_selected_skill_directories_validates_coordinator_choice(tmp_pat
         tmp_path,
         alert=_alert(),
         skills=[descriptor],
-        context=StrategyContext(task_type="anomaly_detection", remaining_calls=2, remaining_tokens=20),
+        context=StrategyContext(task_type="anomaly_detection"),
     )
     resolved = selector.resolve_selected_skill_directories(
         tmp_path,

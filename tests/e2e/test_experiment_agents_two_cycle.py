@@ -175,7 +175,6 @@ def _handoff_request(
             target_modules=["run.py"],
             allowed_paths=["run.py"],
             forbidden_paths=["evaluate.py"],
-            max_repairs=1,
             time_budget=30,
         ),
         job_timeout_sec=30,
@@ -196,7 +195,7 @@ def test_two_result_driven_cycles_reach_confirmed_champion(tmp_path: Path):
         task_hash="a" * 64,
         execution_mode="agent_assisted_after_approval",
         repository_ref="baseline_repo",
-        budget={"gpu_seconds": 100, "cognitive_calls": 20},
+            budget={"gpu_seconds": 100},
     )
     session_store.update_environment_state(
         run_dir,
@@ -559,10 +558,6 @@ def test_two_result_driven_cycles_reach_confirmed_champion(tmp_path: Path):
     assert not StopPolicy().evaluate(
         StopInputs(
             session_id=session.session_id,
-            compute_budget_remaining=10,
-            cognitive_calls_remaining=10,
-            cognitive_tokens_remaining=100,
-            wall_seconds_remaining=100,
             valid_frontier_count=1,
             consecutive_terminal_failures=0,
             convergence_alert=convergence,

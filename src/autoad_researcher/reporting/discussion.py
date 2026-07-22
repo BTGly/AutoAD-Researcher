@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 from contextlib import contextmanager
@@ -16,29 +17,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.assistant.model_routing import ModelRoute
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.store import ReportStore
-from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, TOOL_CATALOG, ReportToolCall, execute_tools, load_verified_report_context
+from autoad_researcher.reporting.tools import TOOL_CATALOG, ReportToolCall, execute_tools, load_verified_report_context
 
-MAX_TURNS = 40
-MAX_MESSAGE_CHARS = 8000
-MAX_HISTORY_MESSAGES = 12
-MAX_HISTORY_BYTES = 16 * 1024
-
-
-class ReportDiscussionBudget(BaseModel):
-    """Service-side limits for one report-bound LLM response."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    max_llm_calls: int = Field(default=2, ge=1, le=2)
-    max_output_tokens: int = Field(default=700, ge=64, le=2000)
-    max_wall_time_seconds: int = Field(default=30, ge=1, le=60)
-    max_concurrent_requests: int = Field(default=1, ge=1, le=1)
-    max_retries: int = Field(default=0, ge=0, le=1)
+REPORT_REQUEST_TIMEOUT_SECONDS = 60
 
 
 class DiscussionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    answer: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    answer: str = Field(min_length=1)
     response_kind: Literal["explain", "verify", "compare", "evidence", "next_step", "insufficient_evidence"]
     evidence_ids: list[str] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
@@ -50,7 +36,7 @@ class DiscussionTurn(BaseModel):
     request_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$")
     report_id: str
     snapshot_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    user_message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    user_message: str = Field(min_length=1)
     response: DiscussionResponse | None = None
     status: Literal["pending", "completed", "failed"]
     evidence_ids: list[str] = Field(default_factory=list)
@@ -80,8 +66,6 @@ def start_turn(run_dir: Path, *, report_id: str, request_id: str, content: str, 
             if (existing.user_message, existing.evidence_ids) != (content, ids):
                 raise ValueError("discussion request_id conflicts with an existing turn")
             return existing
-        if len(turns) >= MAX_TURNS:
-            raise ValueError("discussion transcript reached its turn limit")
         turn = DiscussionTurn(turn_id=f"turn_{uuid4().hex}", request_id=request_id, report_id=report_id, snapshot_content_sha256=manifest.source_snapshot_content_sha256, user_message=content, evidence_ids=ids, status="pending", created_at=_utc_now())
         _append_unlocked(_path(run_dir, report_id), turn)
         return turn
@@ -102,7 +86,7 @@ def fail_turn(run_dir: Path, *, report_id: str, turn_id: str, error: str) -> Dis
     with _lock(run_dir, report_id):
         turn = _require_turn(_load_turns_unlocked(run_dir, report_id), turn_id)
         if turn.status != "pending": return turn
-        failed = turn.model_copy(update={"status": "failed", "error": error[:500], "completed_at": _utc_now()})
+        failed = turn.model_copy(update={"status": "failed", "error": error, "completed_at": _utc_now()})
         _append_unlocked(_path(run_dir, report_id), failed)
         return failed
 
@@ -115,7 +99,6 @@ def respond_to_turn(
     api_key: str,
     provider_url: str,
     model: str,
-    budget: ReportDiscussionBudget | None = None,
     model_route: ModelRoute | None = None,
 ) -> DiscussionTurn:
     """Complete one persisted turn using only frozen report summaries and evidence."""
@@ -123,7 +106,6 @@ def respond_to_turn(
     if turn.status != "pending": return turn
     if not api_key or not model:
         return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error="report discussion model is not configured")
-    limits = budget or ReportDiscussionBudget()
     if not _try_response_slot(run_dir, report_id):
         return turn
     try:
@@ -134,7 +116,6 @@ def respond_to_turn(
             api_key=api_key,
             provider_url=provider_url,
             model=model,
-            budget=limits,
             model_route=model_route,
         )
     finally:
@@ -149,7 +130,6 @@ def _respond_with_slot(
     api_key: str,
     provider_url: str,
     model: str,
-    budget: ReportDiscussionBudget,
     model_route: ModelRoute | None = None,
 ) -> DiscussionTurn:
     _facts, index, digest_model, _markdown = load_verified_report_context(
@@ -158,59 +138,49 @@ def _respond_with_slot(
         snapshot_content_sha256_expected=turn.snapshot_content_sha256,
     )
     digest = digest_model.model_dump(mode="json")
-    evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id} for item in index.entries[:24]]
+    evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id, "artifact_ref": item.artifact_ref.model_dump(mode="json"), "field_path": item.field_path} for item in index.entries]
+    context_window = model_route.context_window if model_route is not None else 1_000_000
     messages = [
-        {"role": "system", "content": "You answer only from frozen report context. Return either DiscussionResponse JSON, or {tool_calls:[{name,arguments}]}. Use typed tools for deep details; never claim file access, execution, or unlisted evidence."},
-        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "tool_catalog": TOOL_CATALOG, "max_tool_calls": MAX_TOOL_CALLS}, ensure_ascii=False)},
+        {"role": "system", "content": "You answer only from frozen report context. Return either DiscussionResponse JSON, or {tool_calls:[{name,arguments}]}. Use typed tools for deep details; never claim file access, execution, or unlisted evidence. The transcript and evidence index are durable; the prompt may contain a traceable compression of old dialogue when the provider context requires it."},
+        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "tool_catalog": TOOL_CATALOG}, ensure_ascii=False)},
         {"role": "assistant", "content": "I will use only this frozen report context and registered Evidence."},
-        *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id),
+        *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id, context_window=context_window),
         {"role": "user", "content": turn.user_message},
     ]
     from autoad_researcher.ui.chat_client import call_research_chat
-    result = call_research_chat(
-        api_key,
-        provider_url,
-        messages,
-        model=model,
-        timeout_s=budget.max_wall_time_seconds,
-        priority="interactive",
-        response_format_json=True,
-        max_tokens=budget.max_output_tokens,
-        temperature=0.1,
-        thinking_type=model_route.thinking_type if model_route is not None else None,
-        reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
-    )
     try:
-        if result.get("error"): raise ValueError(str(result["error"]))
-        reply = str(result.get("reply") or "")
-        try:
-            response = DiscussionResponse.model_validate_json(reply)
-        except Exception:
-            plan = _tool_plan(reply)
-            if budget.max_llm_calls < 2:
-                raise ValueError("report discussion budget does not allow a typed deep-read response")
-            tool_results = execute_tools(
-                run_dir,
-                report_id=report_id,
-                calls=plan,
-                snapshot_content_sha256_expected=turn.snapshot_content_sha256,
-            )
-            final = call_research_chat(
+        seen_plans: set[str] = set()
+        while True:
+            result = call_research_chat(
                 api_key,
                 provider_url,
-                [*messages, {"role": "tool", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False)}, {"role": "system", "content": "Return only DiscussionResponse JSON. Cite only evidence_ids from the frozen report."}],
+                messages,
                 model=model,
-                timeout_s=budget.max_wall_time_seconds,
+                timeout_s=REPORT_REQUEST_TIMEOUT_SECONDS,
                 priority="interactive",
                 response_format_json=True,
-                max_tokens=budget.max_output_tokens,
                 temperature=0.1,
                 thinking_type=model_route.thinking_type if model_route is not None else None,
                 reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
             )
-            if final.get("error"):
-                raise ValueError(str(final["error"]))
-            response = DiscussionResponse.model_validate_json(str(final.get("reply") or ""))
+            if result.get("error"):
+                raise ValueError(str(result["error"]))
+            reply = str(result.get("reply") or "")
+            try:
+                response = DiscussionResponse.model_validate_json(reply)
+                break
+            except Exception:
+                plan = _tool_plan(reply)
+                plan_key = json.dumps([item.model_dump(mode="json") for item in plan], ensure_ascii=False, sort_keys=True)
+                if plan_key in seen_plans:
+                    raise ValueError("report discussion repeated an identical typed action without new diagnostics")
+                seen_plans.add(plan_key)
+                tool_results = execute_tools(run_dir, report_id=report_id, calls=plan, snapshot_content_sha256_expected=turn.snapshot_content_sha256)
+                messages.extend([
+                    {"role": "assistant", "content": reply},
+                    {"role": "tool", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False)},
+                    {"role": "system", "content": "Continue from the verified tool results. Return DiscussionResponse JSON or request another typed tool action. Cite only evidence_ids from the frozen report."},
+                ])
         _validated_evidence_ids(run_dir, report_id, response.evidence_ids)
         if response.response_kind in {"explain", "verify", "compare"} and not response.evidence_ids:
             raise ValueError("factual report discussion responses require Evidence IDs")
@@ -219,8 +189,8 @@ def _respond_with_slot(
     return complete_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, response=response)
 
 
-def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str) -> list[dict[str, str]]:
-    """Keep the latest completed dialogue as data within a fixed request budget."""
+def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str, context_window: int = 1_000_000) -> list[dict[str, str]]:
+    """Keep all dialogue until the real provider context requires traceable compression."""
 
     messages: list[dict[str, str]] = []
     for item in turns:
@@ -230,21 +200,33 @@ def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str) -> lis
             {"role": "user", "content": item.user_message},
             {"role": "assistant", "content": item.response.answer},
         ))
-    selected: list[dict[str, str]] = []
-    used = 0
-    for item in reversed(messages[-MAX_HISTORY_MESSAGES:]):
-        size = len(item["content"].encode("utf-8"))
-        if selected and used + size > MAX_HISTORY_BYTES:
+    limit_bytes = max(1, context_window * 4)
+    total = sum(len(item["content"].encode("utf-8")) for item in messages)
+    if total <= limit_bytes:
+        return messages
+    completed = [item for item in turns if item.turn_id != current_turn_id and item.status == "completed" and item.response is not None]
+    result = list(messages)
+    replaced = 0
+    for index, item in enumerate(completed):
+        if total <= limit_bytes:
             break
-        if size > MAX_HISTORY_BYTES:
-            selected.append({"role": item["role"], "content": item["content"].encode("utf-8")[-MAX_HISTORY_BYTES:].decode("utf-8", errors="ignore")})
-            break
-        selected.append(item)
-        used += size
-    selected.reverse()
-    if len(selected) < len(messages):
-        return [{"role": "system", "content": "Earlier report discussion turns were omitted to preserve the bounded context window."}, *selected]
-    return selected
+        compressed = {
+            "role": "system",
+            "content": json.dumps({
+                "compressed_turn": item.turn_id,
+                "snapshot_content_sha256": item.snapshot_content_sha256,
+                "evidence_ids": sorted(set([*item.evidence_ids, *item.response.evidence_ids])),
+                "user_message_sha256": hashlib.sha256(item.user_message.encode("utf-8")).hexdigest(),
+                "assistant_answer_sha256": hashlib.sha256(item.response.answer.encode("utf-8")).hexdigest(),
+                "source": "full turn remains in the durable discussion transcript and can be re-read by turn_id",
+            }, ensure_ascii=False, sort_keys=True),
+        }
+        pair_start = index * 2 - replaced
+        old_size = sum(len(result[position]["content"].encode("utf-8")) for position in (pair_start, pair_start + 1))
+        result[pair_start:pair_start + 2] = [compressed]
+        total += len(compressed["content"].encode("utf-8")) - old_size
+        replaced += 1
+    return result
 
 
 def _tool_plan(reply: str) -> list[ReportToolCall]:
@@ -268,7 +250,7 @@ def load_messages(run_dir: Path, *, report_id: str) -> list[DiscussionMessage]:
         messages.append(DiscussionMessage(message_id=f"{turn.turn_id}:user", report_id=report_id, snapshot_content_sha256=turn.snapshot_content_sha256, role="user", content=turn.user_message, evidence_ids=turn.evidence_ids, created_at=turn.created_at))
         if turn.response is not None:
             messages.append(DiscussionMessage(message_id=f"{turn.turn_id}:assistant", report_id=report_id, snapshot_content_sha256=turn.snapshot_content_sha256, role="assistant", content=turn.response.answer, evidence_ids=turn.response.evidence_ids, created_at=turn.completed_at or turn.created_at))
-    return messages[-MAX_TURNS * 2:]
+    return messages
 
 
 def append_message(run_dir: Path, *, report_id: str, role: str, content: str, evidence_ids: list[str] | None = None) -> DiscussionMessage:
@@ -328,7 +310,7 @@ def _try_response_slot(run_dir: Path, report_id: str) -> bool:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
     except FileExistsError:
         try:
-            if time.time() - path.stat().st_mtime > ReportDiscussionBudget().max_wall_time_seconds + 5:
+            if time.time() - path.stat().st_mtime > REPORT_REQUEST_TIMEOUT_SECONDS + 5:
                 path.unlink()
                 return _try_response_slot(run_dir, report_id)
         except OSError:

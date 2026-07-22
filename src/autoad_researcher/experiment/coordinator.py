@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
-from autoad_researcher.experiment.cognitive_budget import CognitiveBudget, CognitiveBudgetCheck, CognitiveBudgetStore, CognitiveUsage, new_usage
+from autoad_researcher.experiment.cognitive_budget import CognitiveUsage, CognitiveUsageStore, new_usage
 from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCommitStore, ObservationSnapshot
 from autoad_researcher.experiment.idea_tree import IdeaTree, IdeaTreeMutation, IdeaTreeStore
 from autoad_researcher.experiment.noise_floor import NoiseFloorStore
@@ -178,12 +178,11 @@ class IdeaExplorerInvocation(BaseModel):
 class ExploratoryCycleResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    disposition: Literal["explored", "fallback_compact"]
+    disposition: Literal["explored"]
     context_pack: ContextPack
     candidates: list[IdeaCandidate] = Field(default_factory=list)
     tree: IdeaTree | None = None
-    budget_check: CognitiveBudgetCheck
-    fallback_reason: str | None = None
+    usage: CognitiveUsage
 
 
 class CoordinatorToolContext(BaseModel):
@@ -419,12 +418,12 @@ class IdeaExplorerAgentFactory:
 
 
 class ExploratoryCycleService:
-    """Spend an explicitly admitted specialist call, or deterministically fall back."""
+    """Run a specialist call and record its observed usage without gating it."""
 
-    def __init__(self, *, context_builder: CoordinatorContextBuilder | None = None, tree_store: IdeaTreeStore | None = None, budget_store: CognitiveBudgetStore | None = None):
+    def __init__(self, *, context_builder: CoordinatorContextBuilder | None = None, tree_store: IdeaTreeStore | None = None, usage_store: CognitiveUsageStore | None = None):
         self._contexts = context_builder or CoordinatorContextBuilder()
         self._trees = tree_store or IdeaTreeStore()
-        self._budget = budget_store or CognitiveBudgetStore()
+        self._usage = usage_store or CognitiveUsageStore()
 
     def run(
         self,
@@ -434,26 +433,11 @@ class ExploratoryCycleService:
         cycle_id: str,
         parent_id: str,
         triggers: Sequence[ExploratoryTrigger],
-        budget: CognitiveBudget,
-        expected_input_tokens: int,
-        expected_output_tokens: int,
-        expected_wall_seconds: float,
         explorer: Callable[[ContextPack, Sequence[ExploratoryTrigger]], IdeaExplorerInvocation | dict[str, Any]],
     ) -> ExploratoryCycleResult:
         if not triggers:
             raise ValueError("Exploratory Cycle requires at least one structured trigger")
         context = self._contexts.build(run_dir, session_id=session_id)
-        projected = new_usage(
-            cycle_id=cycle_id,
-            cycle_kind="exploratory",
-            role="idea_explorer",
-            input_tokens=expected_input_tokens,
-            output_tokens=expected_output_tokens,
-            wall_seconds=expected_wall_seconds,
-        )
-        preflight = self._budget.preflight(run_dir, session_id=session_id, budget=budget, candidate=projected)
-        if not preflight.allowed:
-            return self._fallback(run_dir, session_id=session_id, cycle_id=cycle_id, context=context, check=preflight, reason="CognitiveBudget preflight rejected exploratory call")
         invocation = IdeaExplorerInvocation.model_validate(explorer(context, triggers))
         actual = new_usage(
             cycle_id=cycle_id,
@@ -463,9 +447,7 @@ class ExploratoryCycleService:
             output_tokens=invocation.output_tokens,
             wall_seconds=invocation.wall_seconds,
         )
-        actual_check = self._budget.append(run_dir, session_id=session_id, budget=budget, usage=actual)
-        if not actual_check.allowed:
-            return self._fallback(run_dir, session_id=session_id, cycle_id=cycle_id, context=context, check=actual_check, reason="CognitiveBudget actual usage exceeded the exploratory limit")
+        self._usage.append(run_dir, session_id=session_id, usage=actual)
         tree = self._trees.apply_mutations(
             run_dir,
             session_id=session_id,
@@ -495,12 +477,7 @@ class ExploratoryCycleService:
             "trigger_kinds": [trigger.kind for trigger in triggers],
             "candidate_count": len(invocation.result.candidates),
         })
-        return ExploratoryCycleResult(disposition="explored", context_pack=context, candidates=invocation.result.candidates, tree=tree, budget_check=actual_check)
-
-    @staticmethod
-    def _fallback(run_dir: Path, *, session_id: str, cycle_id: str, context: ContextPack, check: CognitiveBudgetCheck, reason: str) -> ExploratoryCycleResult:
-        append_event(run_dir, "experiment.coordinator.exploratory_cycle.fallback", {"session_id": session_id, "cycle_id": cycle_id, "context_sha256": context.context_sha256, "reason": reason, "exceeded_limits": check.exceeded_limits})
-        return ExploratoryCycleResult(disposition="fallback_compact", context_pack=context, budget_check=check, fallback_reason=reason)
+        return ExploratoryCycleResult(disposition="explored", context_pack=context, candidates=invocation.result.candidates, tree=tree, usage=actual)
 
 
 class CoordinatorAgentFactory:
