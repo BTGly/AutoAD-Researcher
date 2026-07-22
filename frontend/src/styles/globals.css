@@ -517,10 +517,11 @@ html, body, #root {
 .session-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9em; }
 .session-row-meta { color: var(--text-dim); font-size: 0.72em; margin-top: 1px; }
 .session-row-actions {
-  display: flex; align-items: center; gap: 4px; opacity: 0; pointer-events: none;
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 4px; opacity: 0; pointer-events: auto;
 }
 .session-row:hover .session-row-actions, .session-row.active:hover .session-row-actions {
-  opacity: 1; pointer-events: auto;
+  opacity: 1;
 }
 .session-row-button {
   width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
@@ -681,7 +682,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   transition: opacity 180ms var(--ease-standard), transform 180ms var(--ease-standard);
 }
 .project-sidebar.expanded::before { opacity: 1; transform: translateX(0); }
-.project-sidebar-toggle, .project-sidebar-item {
+.project-sidebar-item {
   position: relative;
   z-index: 1;
   display: flex;
@@ -697,9 +698,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   text-align: left;
   white-space: nowrap;
 }
-.project-sidebar-toggle { margin-bottom: 3px; color: var(--text-dim); }
 .project-sidebar-item:hover { background: var(--surface-secondary); color: var(--text); }
-.project-sidebar-toggle:hover { background: var(--surface-secondary); color: var(--text); }
 .project-sidebar-item.active { background: var(--surface-secondary); color: var(--blue); }
 .project-sidebar-label {
   position: absolute;

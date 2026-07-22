@@ -34,28 +34,33 @@ async function prepare(page: Page, reducedMotion?: 'reduce' | 'no-preference') {
   await expect(page.getByPlaceholder('输入问题，或粘贴 URL…')).toBeVisible();
 }
 
-test('keeps the sidebar footprint fixed and supports keyboard and touch expansion', async ({ page }) => {
+test('keeps the sidebar footprint fixed and expands only from hover or focus', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await prepare(page);
   const chat = page.locator('.chat-workspace');
   const leftBefore = await chat.evaluate(element => element.getBoundingClientRect().left);
-  const toggle = page.getByRole('button', { name: '展开导航' });
-  await toggle.focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByRole('button', { name: '收起导航' })).toHaveAttribute('aria-expanded', 'true');
+  const sidebar = page.locator('.project-sidebar');
+  await expect(page.getByRole('button', { name: '展开导航' })).toHaveCount(0);
+  await expect(sidebar).not.toHaveClass(/expanded/);
+  await page.locator('.project-sidebar-item').first().hover();
+  await expect(sidebar).toHaveClass(/expanded/);
   const leftAfter = await chat.evaluate(element => element.getBoundingClientRect().left);
   expect(leftAfter).toBe(leftBefore);
+  await chat.hover();
+  await expect(sidebar).not.toHaveClass(/expanded/);
+
+  await page.getByRole('button', { name: '研究对话' }).focus();
+  await expect(sidebar).toHaveClass(/expanded/);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await page.getByRole('button', { name: '展开导航' }).click();
   await page.getByRole('button', { name: '实验工作台' }).click();
   await expect(page.getByText('实验尚未启动。')).toBeVisible();
 });
 
 test('keeps non-decorative feedback available under Reduced Motion', async ({ page }) => {
   await prepare(page, 'reduce');
-  await page.getByRole('button', { name: '展开导航' }).click();
+  await page.getByRole('button', { name: '研究对话' }).focus();
   const motion = await page.locator('.project-sidebar-label').first().evaluate(element => {
     const style = getComputedStyle(element);
     return { transform: style.transform, duration: style.transitionDuration };

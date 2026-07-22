@@ -69,6 +69,14 @@ function hasIntentSummary(summary: IntentSummary | null): boolean {
 
 const MAX_VISIBLE_TOASTS = 3;
 
+function describeRequestError(reason: unknown, fallback: string): string {
+  const message = reason instanceof Error ? reason.message.trim() : '';
+  if (!message || message === 'Failed to fetch' || message === 'NetworkError') {
+    return `${fallback}。请确认后端已启动在 8000 端口。`;
+  }
+  return message;
+}
+
 export default function App() {
   const { config, saveConfig, showConfig, openConfig, closeConfig } = useConfig();
   const [runId, setRunId] = useState<string>('');
@@ -207,33 +215,34 @@ export default function App() {
   }, [config.apiKey, switchRun]);
 
   const handleCreateTask = useCallback(async () => {
-    const created = await createRun().catch(() => null);
-    if (!created) {
-      addToast('创建任务失败', 'error');
-      return;
+    try {
+      const created = await createRun();
+      await refreshTasks();
+      await switchRun(created.run_id);
+      addToast('任务已创建', 'success');
+    } catch (error) {
+      addToast(`创建任务失败：${describeRequestError(error, '无法创建任务')}`, 'error');
     }
-    await refreshTasks();
-    await switchRun(created.run_id);
-    addToast('任务已创建', 'success');
   }, [addToast, refreshTasks, switchRun]);
 
   const handleRenameTask = useCallback(async (title: string) => {
     if (!runId) return;
-    const updated = await renameRun(runId, title).catch(() => null);
-    if (!updated) {
-      addToast('重命名失败', 'error');
-      return;
+    try {
+      const updated = await renameRun(runId, title);
+      setTasks(prev => prev.map(task => task.run_id === updated.run_id ? updated : task));
+      addToast('任务已重命名', 'success');
+    } catch (error) {
+      addToast(`重命名失败：${describeRequestError(error, '无法更新任务名称')}`, 'error');
     }
-    setTasks(prev => prev.map(task => task.run_id === updated.run_id ? updated : task));
-    addToast('任务已重命名', 'success');
   }, [addToast, runId]);
 
   const handleDeleteTask = useCallback(async (targetRunId: string) => {
     const ok = window.confirm('删除这个 session 会移除该任务目录，确认删除？');
     if (!ok) return;
-    const deleted = await deleteRun(targetRunId).catch(() => null);
-    if (!deleted) {
-      addToast('删除失败', 'error');
+    try {
+      await deleteRun(targetRunId);
+    } catch (error) {
+      addToast(`删除失败：${describeRequestError(error, '无法删除任务')}`, 'error');
       return;
     }
     setQueuedMessagesByRun(prev => {
@@ -350,12 +359,12 @@ export default function App() {
       }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
       return true;
-    } catch {
+    } catch (error) {
       if (currentRunIdRef.current === targetRunId) {
         setTaskStatus('Error');
         setMessages(prev => prev.map(msg => (
           msg.id === assistantId
-            ? { ...msg, content: '抱歉，后端未启动。请运行: uv run uvicorn autoad_researcher.server.main:app --port 8000' }
+            ? { ...msg, content: `抱歉，${describeRequestError(error, '请求未完成')}` }
             : msg
         )));
       }
@@ -456,10 +465,11 @@ export default function App() {
       }
       await refreshSidebarForRun(targetRunId);
       setTaskStatus('Ready');
-    } catch {
+    } catch (error) {
       setTaskStatus('Error');
-      setMessages(prev => [...prev, { id: generateId(), role: 'assistant', content: `上传失败：${file.name}` , timestamp: Date.now() }]);
-      addToast('上传失败', 'error');
+      const detail = describeRequestError(error, '无法上传资料');
+      setMessages(prev => [...prev, { id: generateId(), role: 'assistant', content: `上传失败：${file.name}。${detail}`, timestamp: Date.now() }]);
+      addToast(`上传失败：${detail}`, 'error');
     }
   }, [addToast, refreshSidebarForRun, runId]);
 
@@ -467,9 +477,10 @@ export default function App() {
     if (!runId) return;
     const ok = window.confirm('删除这个资料会移除对应 Source 和 Evidence，确认删除？');
     if (!ok) return;
-    const deleted = await deleteSource(runId, sourceId).catch(() => null);
-    if (!deleted) {
-      addToast('删除资料失败', 'error');
+    try {
+      await deleteSource(runId, sourceId);
+    } catch (error) {
+      addToast(`删除资料失败：${describeRequestError(error, '无法删除资料')}`, 'error');
       return;
     }
     await refreshSidebarForRun(runId);

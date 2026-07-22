@@ -82,7 +82,7 @@ export async function sendChat(
       transcript_tail: transcriptTail,
     }),
   });
-  if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Chat API error: ${res.status}`);
   return res.json();
 }
 
@@ -127,7 +127,7 @@ export async function confirmPrimaryMetrics(
 
 export async function getRuns(includeArchived = false): Promise<TaskRun[]> {
   const res = await fetch(`/api/runs?include_archived=${includeArchived ? 'true' : 'false'}`);
-  if (!res.ok) throw new Error(`Runs API error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Runs API error: ${res.status}`);
   return res.json();
 }
 
@@ -137,7 +137,7 @@ export async function createRun(taskTitle?: string): Promise<TaskRun> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_title: taskTitle || null }),
   });
-  if (!res.ok) throw new Error(`Create run error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Create run error: ${res.status}`);
   return res.json();
 }
 
@@ -147,25 +147,25 @@ export async function renameRun(runId: string, taskTitle: string): Promise<TaskR
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_title: taskTitle }),
   });
-  if (!res.ok) throw new Error(`Rename run error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Rename run error: ${res.status}`);
   return res.json();
 }
 
 export async function archiveRun(runId: string): Promise<TaskRun> {
   const res = await fetch(`/api/runs/${runId}/archive`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Archive run error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Archive run error: ${res.status}`);
   return res.json();
 }
 
 export async function restoreRun(runId: string): Promise<TaskRun> {
   const res = await fetch(`/api/runs/${runId}/restore`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Restore run error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Restore run error: ${res.status}`);
   return res.json();
 }
 
 export async function deleteRun(runId: string): Promise<{ run_id: string; deleted: boolean }> {
   const res = await fetch(`/api/runs/${runId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Delete run error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Delete run error: ${res.status}`);
   return res.json();
 }
 
@@ -187,13 +187,13 @@ export async function uploadSource(runId: string, file: File): Promise<any> {
     headers: { 'X-AutoAD-Filename': encodeURIComponent(file.name) },
     body: await file.arrayBuffer(),
   });
-  if (!res.ok) throw new Error(`Upload source error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Upload source error: ${res.status}`);
   return res.json();
 }
 
 export async function deleteSource(runId: string, sourceId: string): Promise<any> {
   const res = await fetch(`/api/runs/${runId}/sources/${sourceId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Delete source error: ${res.status}`);
+  if (!res.ok) throw await apiError(res, `Delete source error: ${res.status}`);
   return res.json();
 }
 
