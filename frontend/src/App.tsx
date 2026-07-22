@@ -11,7 +11,6 @@ import { Sidebar } from './components/Sidebar';
 import { LeftSidebar } from './components/LeftSidebar';
 import { ExperimentPage } from './components/ExperimentPage';
 import { ReportPage } from './components/ReportPage';
-import { DevMockPanel } from './components/DevMockPanel';
 import { MarkdownContent } from './components/MarkdownContent';
 import { TaskMenu } from './components/TaskMenu';
 import { ExperimentTaskConfirmation } from './components/ExperimentTaskConfirmation';
@@ -94,7 +93,6 @@ export default function App() {
   const [unusableParsedSources, setUnusableParsedSources] = useState<UnusableParsedSource[]>([]);
   const [intentSummary, setIntentSummary] = useState<IntentSummary | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
-  const [showDev, setShowDev] = useState(false);
   const [experimentRefreshTick, setExperimentRefreshTick] = useState(0);
   const [page, setPage] = useState<PageId>('chat');
   const [composerText, setComposerText] = useState('');
@@ -695,21 +693,6 @@ export default function App() {
                 </div>
               )}
 
-              <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-                <button onClick={() => setShowDev(!showDev)} style={{ width: '100%', fontSize: '0.78em', padding: '4px 0', background: 'transparent', border: 'none', color: 'var(--text-dim)' }}>
-                  {showDev ? '▼' : '▶'} 开发者详情
-                </button>
-                {showDev && (
-                  <div style={{ fontSize: '0.72em', color: 'var(--text-dim)', marginTop: 4 }}>
-                    <div>run_id: {runId || '未创建'}</div>
-                    <div>资料：{sources.length} | 任务：{jobs.length}</div>
-                    {artifacts.map(a => <div key={a.path}>产物：{a.path}</div>)}
-                    {import.meta.env.DEV && (
-                      <DevMockPanel addToast={addToast} setMessages={setMessages} />
-                    )}
-                  </div>
-                )}
-              </div>
             </Sidebar>
           </>
         )}

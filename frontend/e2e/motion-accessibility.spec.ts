@@ -119,11 +119,13 @@ test('reverses anchored Popovers without leaving a stuck overlay', async ({ page
 
 test('keeps repeated Toast feedback interruptible and restores Modal focus', async ({ page }) => {
   await prepare(page);
-  await page.getByRole('button', { name: /开发者详情/ }).click();
-  const demo = page.getByRole('button', { name: /演示/ });
-  for (const label of ['成功', '失败', '信息']) {
-    await demo.click();
-    await page.getByRole('button', { name: new RegExp(label) }).click();
+  await page.route(`**/api/runs/${run.run_id}/sources/upload`, route => route.fulfill({ status: 500, json: { detail: 'fixture upload failure' } }));
+  for (let index = 0; index < 3; index += 1) {
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: '上传文件' }).click();
+    await page.getByRole('button', { name: '选择 PDF / txt / md' }).click();
+    await (await chooser).setFiles({ name: `toast-fixture-${index}.txt`, mimeType: 'text/plain', buffer: Buffer.from('fixture') });
+    await expect(page.locator('.toast')).toHaveCount(index + 1);
   }
   await expect(page.locator('.toast')).toHaveCount(3);
   await expect(page.locator('.toast').first()).toHaveCSS('transition-property', /transform/);

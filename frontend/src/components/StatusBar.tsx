@@ -17,9 +17,11 @@ export function StatusBar({ sources, jobs, evidenceCount, summaryAvailable }: Pr
   if (evidenceCount) parts.push(`证据：${evidenceCount} 条可用`);
   if (summaryAvailable) parts.push('研究摘要：已生成');
 
+  if (!parts.length) return null;
+
   return (
     <div className="kbd-hint" style={{ textAlign: 'left', paddingLeft: 8 }}>
-      {parts.length ? parts.join('  │  ') : '尚无资料。输入问题开始…'}
+      {parts.join('  │  ')}
     </div>
   );
 }

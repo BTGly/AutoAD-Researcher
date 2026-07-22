@@ -185,6 +185,8 @@ test('captures reviewed, handed-off, and pending Report workspace states', async
 test('captures anchored upload, history, and Toast surfaces', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await prepareChat(page);
+  await expect(page.getByRole('button', { name: /开发者详情/ })).toHaveCount(0);
+  await expect(page.getByText('尚无资料。输入问题开始…', { exact: true })).toHaveCount(0);
 
   await page.getByRole('button', { name: '上传文件' }).click();
   await expect(page.locator('.plus-menu-popover')).toHaveAttribute('data-state', 'open');
@@ -198,11 +200,13 @@ test('captures anchored upload, history, and Toast surfaces', async ({ page }) =
   await expect(page).toHaveScreenshot('session-history.png', { fullPage: true, animations: 'disabled' });
   await page.getByRole('button', { name: 'Session history' }).click();
 
-  await page.getByRole('button', { name: /开发者详情/ }).click();
-  await page.getByRole('button', { name: '演示' }).click();
-  await page.getByRole('button', { name: '成功' }).click();
+  await page.route(`**/api/runs/${run.run_id}/sources/upload`, route => route.fulfill({ status: 500, json: { detail: 'fixture upload failure' } }));
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: '上传文件' }).click();
+  await page.getByRole('button', { name: '选择 PDF / txt / md' }).click();
+  await (await chooser).setFiles({ name: 'toast-fixture.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture') });
   await expect(page.locator('.toast')).toHaveCount(1);
-  await expect(page).toHaveScreenshot('toast-success.png', { fullPage: true, animations: 'disabled' });
+  await expect(page).toHaveScreenshot('toast-error.png', { fullPage: true, animations: 'disabled' });
 });
 
 test('captures the first-run and configuration surfaces in both themes', async ({ page }) => {
