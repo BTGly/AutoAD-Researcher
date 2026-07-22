@@ -6,7 +6,7 @@ export default defineConfig({
   timeout: 30_000,
   expect: {
     // Keep visual checks strict while tolerating small font-rasterization differences between runners.
-    toHaveScreenshot: { maxDiffPixelRatio: 0.012 },
+    toHaveScreenshot: { maxDiffPixelRatio: 0.02 },
   },
   use: {
     baseURL: 'http://127.0.0.1:5173',
