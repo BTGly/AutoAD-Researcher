@@ -32,7 +32,9 @@ def test_switching_models_does_not_change_role_thinking_policy():
     assert select_model_route("research_dialogue", "deepseek-v4-pro").thinking_type == "disabled"
 
 
-def test_model_ids_are_exact_and_legacy_aliases_are_rejected():
+def test_model_ids_are_exact_and_legacy_aliases_are_migrated():
     assert normalize_model_id("deepseek-v4-pro", default="deepseek-v4-flash") == "deepseek-v4-pro"
+    assert normalize_model_id("deepseek-chat", default="deepseek-v4-flash") == "deepseek-v4-flash"
+    assert normalize_model_id("deepseek-reasoner", default="deepseek-v4-flash") == "deepseek-v4-pro"
     with pytest.raises(ValueError, match="unsupported AutoAD model"):
-        normalize_model_id("deepseek-chat", default="deepseek-v4-flash")
+        normalize_model_id("model-a", default="deepseek-v4-flash")

@@ -91,14 +91,14 @@ def test_generation_profile_participates_in_report_identity(tmp_path: Path, monk
 
     monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "not-persisted")
     monkeypatch.setenv("AUTOAD_REPORT_BASE_URL", "https://provider.test/")
-    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "model-a")
+    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "deepseek-v4-pro")
     model, created = ReportRequestService().request(run_dir, session_id=session.session_id)
     replay, replayed = ReportRequestService().request(run_dir, session_id=session.session_id)
 
     assert created is True and replayed is False
     assert fallback["manifest"].report_id != model["manifest"].report_id == replay["manifest"].report_id
     profile = model["job"]["payload"]["generation_profile"]
-    assert profile["mode"] == "model" and profile["model"] == "model-a"
+    assert profile["mode"] == "model" and profile["model"] == "deepseek-v4-pro"
     assert "not-persisted" not in str(profile)
 
 
@@ -137,7 +137,7 @@ def test_model_narrative_failure_persists_a_retryable_report_job(monkeypatch, tm
     session = _session(run_dir)
     monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "test-key")
     monkeypatch.setenv("AUTOAD_REPORT_BASE_URL", "https://provider.test")
-    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "test-model")
+    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "deepseek-v4-flash")
     monkeypatch.setattr(
         "autoad_researcher.reporting.narrative_agent.call_research_chat",
         lambda *_args, **_kwargs: {"error": "provider unavailable"},

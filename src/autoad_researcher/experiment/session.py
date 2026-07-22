@@ -56,6 +56,7 @@ class ExperimentSession(BaseModel):
     evaluation_contract_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evaluation_contract_revision: int | None = Field(default=None, ge=0)
     budget: dict[str, Any] = Field(default_factory=dict)
+    model_route: dict[str, Any] = Field(default_factory=dict)
     readiness_status: ReadinessStatus = "unresolved"
     readiness_blockers: list[str] = Field(default_factory=list)
     environment_revision: int = Field(default=0, ge=0)

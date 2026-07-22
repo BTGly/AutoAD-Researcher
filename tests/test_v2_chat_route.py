@@ -12,6 +12,7 @@ from autoad_researcher.server.routes.chat import (
     _extract_api_headers,
     _load_transcript_tail,
     _resolve_message_id,
+    _extract_role_route,
 )
 
 
@@ -62,3 +63,25 @@ def test_chat_headers_supply_the_dialogue_model():
         "https://example.test",
         "configured-dialogue-model",
     )
+
+
+def test_chat_role_headers_resolve_exact_model_routes():
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/chat/send",
+        "headers": [
+            (b"x-autoad-api-key", b"sk-test"),
+            (b"x-autoad-dialogue-model", b"deepseek-v4-pro"),
+            (b"x-autoad-report-model", b"deepseek-v4-pro"),
+            (b"x-autoad-experiment-model", b"deepseek-v4-flash"),
+        ],
+    })
+
+    dialogue = _extract_role_route(request, "research_dialogue")
+    report = _extract_role_route(request, "report")
+    experiment = _extract_role_route(request, "experiment_agent")
+
+    assert dialogue.model_id == "deepseek-v4-pro" and dialogue.thinking_type == "disabled"
+    assert report.model_id == "deepseek-v4-pro" and report.thinking_type == "disabled"
+    assert experiment.model_id == "deepseek-v4-flash" and experiment.thinking_type == "enabled"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -68,6 +68,7 @@ class ReportManifest(BaseModel):
     previous_report_id: str | None = None
     parent_report_id: str | None = None
     source_proposal_id: str | None = None
+    model_route: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReportArtifactDelivery(BaseModel):

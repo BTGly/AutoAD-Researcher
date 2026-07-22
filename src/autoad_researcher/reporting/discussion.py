@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.model_routing import ModelRoute
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, TOOL_CATALOG, ReportToolCall, execute_tools, load_verified_report_context
@@ -115,6 +116,7 @@ def respond_to_turn(
     provider_url: str,
     model: str,
     budget: ReportDiscussionBudget | None = None,
+    model_route: ModelRoute | None = None,
 ) -> DiscussionTurn:
     """Complete one persisted turn using only frozen report summaries and evidence."""
     turn = _require_turn(load_turns(run_dir, report_id=report_id), turn_id)
@@ -133,6 +135,7 @@ def respond_to_turn(
             provider_url=provider_url,
             model=model,
             budget=limits,
+            model_route=model_route,
         )
     finally:
         _release_response_slot(run_dir, report_id)
@@ -147,6 +150,7 @@ def _respond_with_slot(
     provider_url: str,
     model: str,
     budget: ReportDiscussionBudget,
+    model_route: ModelRoute | None = None,
 ) -> DiscussionTurn:
     _facts, index, digest_model, _markdown = load_verified_report_context(
         run_dir,
@@ -173,6 +177,8 @@ def _respond_with_slot(
         response_format_json=True,
         max_tokens=budget.max_output_tokens,
         temperature=0.1,
+        thinking_type=model_route.thinking_type if model_route is not None else None,
+        reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
     )
     try:
         if result.get("error"): raise ValueError(str(result["error"]))
@@ -199,6 +205,8 @@ def _respond_with_slot(
                 response_format_json=True,
                 max_tokens=budget.max_output_tokens,
                 temperature=0.1,
+                thinking_type=model_route.thinking_type if model_route is not None else None,
+                reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
             )
             if final.get("error"):
                 raise ValueError(str(final["error"]))

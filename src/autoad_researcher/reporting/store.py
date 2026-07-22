@@ -7,7 +7,7 @@ import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 from autoad_researcher.reporting.models import (
     FormatState,
@@ -47,6 +47,7 @@ class ReportStore:
         previous_report_id: str | None = None,
         parent_report_id: str | None = None,
         source_proposal_id: str | None = None,
+        model_route: dict[str, Any] | None = None,
     ) -> tuple[ReportManifest, bool]:
         content_sha = snapshot_content_sha256(snapshot)
         with self._lock(run_dir):
@@ -58,6 +59,7 @@ class ReportStore:
                 previous_report_id=previous_report_id,
                 parent_report_id=parent_report_id,
                 source_proposal_id=source_proposal_id,
+                model_route=model_route or {},
             )
             if existing is not None:
                 return existing, False
@@ -76,6 +78,7 @@ class ReportStore:
                 previous_report_id=previous_report_id,
                 parent_report_id=parent_report_id,
                 source_proposal_id=source_proposal_id,
+                model_route=model_route or {},
             )
             state = ReportState(report_id=report_id, updated_at=now)
             directory = self._report_dir(run_dir, report_id)
@@ -188,6 +191,7 @@ class ReportStore:
         previous_report_id: str | None,
         parent_report_id: str | None,
         source_proposal_id: str | None,
+        model_route: dict[str, Any],
     ) -> ReportManifest | None:
         for manifest in self.list_manifests(run_dir, session_id=session_id):
             if (
@@ -196,6 +200,7 @@ class ReportStore:
                 and manifest.previous_report_id == previous_report_id
                 and manifest.parent_report_id == parent_report_id
                 and manifest.source_proposal_id == source_proposal_id
+                and manifest.model_route == model_route
             ):
                 return manifest
         return None

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
+from autoad_researcher.assistant.model_routing import select_model_route
 from autoad_researcher.reporting.default_narrative import NARRATIVE_MODEL_PROFILE, NARRATIVE_TEMPLATE_VERSION
 from autoad_researcher.reporting.bundle import REPORT_BUNDLE_FORMAT_VERSION
 from autoad_researcher.reporting.digest import REPORT_DIGEST_BUILD_VERSION
@@ -18,12 +20,12 @@ from autoad_researcher.reporting.snapshot import canonical_sha256
 from autoad_researcher.reporting.validator import REPORT_VALIDATOR_VERSION
 
 
-def report_generation_profile() -> dict[str, str]:
+def report_generation_profile() -> dict[str, Any]:
     """Capture the non-secret provider behavior that changes report content."""
 
-    model = os.environ.get("AUTOAD_REPORT_MODEL", "").strip()
+    route = select_model_route("report", os.environ.get("AUTOAD_REPORT_MODEL", "").strip() or None)
     base_url = os.environ.get("AUTOAD_REPORT_BASE_URL", "").strip().rstrip("/")
-    configured = bool(os.environ.get("AUTOAD_REPORT_API_KEY", "").strip() and model and base_url)
+    configured = bool(os.environ.get("AUTOAD_REPORT_API_KEY", "").strip() and base_url)
     prompt_hash = canonical_sha256(
         {
             "agent_profile": NARRATIVE_AGENT_PROFILE,
@@ -34,9 +36,18 @@ def report_generation_profile() -> dict[str, str]:
     return {
         "profile_version": "v1",
         "mode": "model" if configured else "deterministic_fallback",
-        "model": model if configured else "",
+        "model": route.model_id,
+        "model_id": route.model_id,
+        "role": route.role,
+        "thinking_type": route.thinking_type,
+        "reasoning_effort": route.reasoning_effort or "",
+        "context_window": route.context_window,
+        "max_output_capability": route.max_output_capability,
+        "routing_schema_version": route.routing_schema_version,
+        "model_route": route.snapshot(),
         "provider_base_url": base_url if configured else "",
         "prompt_sha256": prompt_hash,
+        "profile_hash": canonical_sha256({"route": route.snapshot(), "prompt_sha256": prompt_hash}),
     }
 def report_recipe_hash(generation_profile: dict[str, str] | None = None) -> str:
     """Hash every component whose behavior can change a report version."""

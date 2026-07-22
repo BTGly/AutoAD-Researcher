@@ -22,6 +22,10 @@ SUPPORTED_MODEL_IDS: tuple[ModelID, ...] = (
     "deepseek-v4-flash",
     "deepseek-v4-pro",
 )
+LEGACY_MODEL_ALIASES: dict[str, ModelID] = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-pro",
+}
 
 
 @dataclass(frozen=True)
@@ -29,7 +33,7 @@ class ModelRoute:
     role: ModelRole
     model_id: ModelID
     thinking_type: ThinkingType
-    reasoning_effort: str | None
+    reasoning_effort: Literal["high", "max"] | None
     context_window: int = CONTEXT_WINDOW
     max_output_capability: int = MAX_OUTPUT_CAPABILITY
     routing_schema_version: str = ROUTING_SCHEMA_VERSION
@@ -44,6 +48,8 @@ def normalize_model_id(value: str | None, *, default: ModelID) -> ModelID:
     candidate = (value or "").strip()
     if not candidate:
         return default
+    if candidate in LEGACY_MODEL_ALIASES:
+        return LEGACY_MODEL_ALIASES[candidate]
     if candidate not in SUPPORTED_MODEL_IDS:
         raise ValueError(f"unsupported AutoAD model: {candidate}")
     return cast(ModelID, candidate)

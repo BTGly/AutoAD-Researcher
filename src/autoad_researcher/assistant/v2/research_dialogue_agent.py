@@ -19,6 +19,7 @@ from pydantic import (
     model_validator,
 )
 
+from autoad_researcher.assistant.model_routing import ModelRoute
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.research_intent_summary import (
@@ -241,6 +242,7 @@ class ResearchDecisionAgent:
         provider_url: str = "",
         model: str = "",
         temperature: float = 0.0,
+        model_route: ModelRoute | None = None,
     ) -> DialogueDecision:
         if not api_key or not model.strip():
             return _fallback_decision()
@@ -258,6 +260,7 @@ class ResearchDecisionAgent:
             messages=messages,
             model=model,
             temperature=temperature,
+            model_route=model_route,
             validate_reply=_validate_decision_reply,
             repair_messages=_decision_repair_messages,
         )
@@ -347,6 +350,7 @@ def _call_with_schema_repair(
     messages: list[dict[str, str]],
     model: str,
     temperature: float,
+    model_route: ModelRoute | None,
     validate_reply: Callable[[str], tuple[T | None, dict[str, Any]]],
     repair_messages: Callable[
         [list[dict[str, str]], str, dict[str, Any]],
@@ -360,11 +364,13 @@ def _call_with_schema_repair(
         api_key,
         provider_url,
         messages,
-        model=model,
+        model=model_route.model_id if model_route is not None else model,
         timeout_s=30,
         priority="interactive",
         response_format_json=True,
         temperature=temperature,
+        thinking_type=model_route.thinking_type if model_route is not None else None,
+        reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
     )
     if result.get("error"):
         return None
@@ -379,11 +385,13 @@ def _call_with_schema_repair(
         api_key,
         provider_url,
         repair_messages(messages, raw_reply, failure),
-        model=model,
+        model=model_route.model_id if model_route is not None else model,
         timeout_s=30,
         priority="interactive",
         response_format_json=True,
         temperature=0.0,
+        thinking_type=model_route.thinking_type if model_route is not None else None,
+        reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
     )
     repair_raw_reply = str(repair_result.get("reply") or "")
     repaired, _ = (
@@ -443,6 +451,7 @@ class ResearchReplyAgent:
         provider_url: str = "",
         model: str = "",
         temperature: float = 0.0,
+        model_route: ModelRoute | None = None,
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> ResearchReplyResponse:
         if not api_key:
@@ -470,6 +479,7 @@ class ResearchReplyAgent:
             messages=messages,
             model=model,
             temperature=temperature,
+            model_route=model_route,
             validate_reply=lambda reply: _validate_reply_response(
                 reply,
                 user_input=user_input,

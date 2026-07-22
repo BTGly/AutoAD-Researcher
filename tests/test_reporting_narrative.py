@@ -102,13 +102,13 @@ def test_narrative_agent_uses_only_frozen_context_when_configured(tmp_path: Path
 
     monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "test-key")
     monkeypatch.setenv("AUTOAD_REPORT_BASE_URL", "https://provider.test")
-    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "test-model")
+    monkeypatch.setenv("AUTOAD_REPORT_MODEL", "deepseek-v4-flash")
     monkeypatch.setattr("autoad_researcher.reporting.narrative_agent.call_research_chat", fake_call)
     from autoad_researcher.reporting.narrative_agent import generate_narrative
 
     generated = generate_narrative(facts=facts, evidence=evidence)
     assert generated.mode == "model"
-    assert generated.model == "test-model"
+    assert generated.model == "deepseek-v4-flash"
     context = observed["messages"][1]["content"]
     assert "test-key" not in context
     assert "uncertainties" in context
@@ -126,7 +126,7 @@ def test_selected_model_failure_does_not_publish_a_fallback(tmp_path: Path, monk
     directory = run_dir / "reports" / report_id
     facts = ExperimentReportFactsV1.model_validate_json((directory / "report_facts.json").read_text(encoding="utf-8"))
     evidence = EvidenceIndex.model_validate_json((directory / "evidence_index.json").read_text(encoding="utf-8"))
-    profile = {"mode": "model", "model": "test-model", "provider_base_url": "https://provider.test", "prompt_sha256": "a" * 64}
+    profile = {"mode": "model", "model": "deepseek-v4-flash", "provider_base_url": "https://provider.test", "prompt_sha256": "a" * 64}
     monkeypatch.setenv("AUTOAD_REPORT_API_KEY", "test-key")
     monkeypatch.setattr("autoad_researcher.reporting.narrative_agent.call_research_chat", lambda *_args, **_kwargs: {"error": "down"})
     from autoad_researcher.reporting.narrative_agent import NarrativeGenerationError, generate_narrative

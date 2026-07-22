@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from autoad_researcher.assistant.model_routing import ModelRoute
 from autoad_researcher.assistant.v2.context_builder import build_llm_context
 from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
 from autoad_researcher.assistant.v2.dialogue_state import append_dialogue_transition
@@ -74,6 +75,7 @@ class ResearchOrchestratorV2:
         provider_url: str = "",
         model: str = "",
         temperature: float = 0.0,
+        model_route: ModelRoute | None = None,
         on_reply_delta: Callable[[str], None] | None = None,
     ) -> OrchestratorResult:
         user_input = user_input.strip()
@@ -111,6 +113,7 @@ class ResearchOrchestratorV2:
             provider_url=provider_url,
             model=model,
             temperature=temperature,
+            model_route=model_route,
         )
         decision = DialogueGate.validate(
             candidate,
@@ -234,6 +237,7 @@ class ResearchOrchestratorV2:
             provider_url=provider_url,
             model=model,
             temperature=temperature,
+            model_route=model_route,
             on_reply_delta=None,
         )
         if reply_response.should_persist:
