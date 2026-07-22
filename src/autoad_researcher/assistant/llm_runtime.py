@@ -7,58 +7,39 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from email.utils import parsedate_to_datetime
-from functools import wraps
-from typing import Any, Literal, ParamSpec, TypeVar
+from typing import Any, Literal
 
 import httpx
 
 
 CallPriority = Literal["interactive", "routing", "contract", "background"]
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
-@dataclass(frozen=True)
-class ConversationDeadline:
-    """One monotonic deadline shared by every model phase in a chat turn."""
-
-    started_at: float
-    deadline_at: float
-
-    @classmethod
-    def start(cls, timeout_s: float | None = None) -> "ConversationDeadline":
-        now = time.monotonic()
-        budget = timeout_s if timeout_s is not None else _env_float(
-            "AUTOAD_CONVERSATION_DEADLINE_SECONDS", 30.0, minimum=1.0
-        )
-        return cls(started_at=now, deadline_at=now + budget)
-
-    def remaining_seconds(self) -> float:
-        return max(0.0, self.deadline_at - time.monotonic())
 
 
 @dataclass(frozen=True)
 class LLMCallRequest:
     api_key: str
     provider_base_url: str
-    messages: list[dict[str, str]]
-    model: str = "deepseek-chat"
+    messages: list[dict[str, Any]]
+    model: str = "deepseek-v4-flash"
     timeout_s: float = 60.0
-    max_tokens: int = 2048
-    temperature: float = 0.3
+    max_tokens: int | None = None
+    temperature: float | None = None
+    thinking_type: Literal["enabled", "disabled"] | None = None
+    reasoning_effort: Literal["high", "max"] | None = None
+    tools: list[dict[str, Any]] | None = None
     priority: CallPriority = "contract"
     response_format_json: bool = False
     on_delta: Callable[[str], None] | None = None
+    on_reasoning_delta: Callable[[str], None] | None = None
 
 
 @dataclass
 class LLMCallResult:
     reply: str = ""
+    reasoning: str = ""
     error: str = ""
     provider_request_id: str = ""
     http_status: int | None = None
@@ -72,6 +53,9 @@ class LLMCallResult:
     circuit_breaker_state: str = "closed"
     fallback_reason: str = ""
     compatibility_reason: str = ""
+    finish_reason: str = ""
+    usage: dict[str, int] | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
     def as_public_dict(self) -> dict[str, Any]:
         runtime = asdict(self)
@@ -97,42 +81,8 @@ class _ProviderState:
         self.circuit_lock = threading.Lock()
 
 
-_CURRENT_DEADLINE: ContextVar[ConversationDeadline | None] = ContextVar(
-    "autoad_conversation_deadline", default=None
-)
-
-
-@contextmanager
-def conversation_deadline_scope(timeout_s: float | None = None) -> Iterator[ConversationDeadline]:
-    existing = _CURRENT_DEADLINE.get()
-    if existing is not None:
-        yield existing
-        return
-    deadline = ConversationDeadline.start(timeout_s)
-    token = _CURRENT_DEADLINE.set(deadline)
-    try:
-        yield deadline
-    finally:
-        _CURRENT_DEADLINE.reset(token)
-
-
-def with_conversation_deadline(func: Callable[P, R]) -> Callable[P, R]:
-    """Wrap one synchronous orchestration entry point in the shared deadline."""
-
-    @wraps(func)
-    def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
-        with conversation_deadline_scope():
-            return func(*args, **kwargs)
-
-    return wrapped
-
-
-def current_conversation_deadline() -> ConversationDeadline | None:
-    return _CURRENT_DEADLINE.get()
-
-
 class LLMCallBroker:
-    """Connection-pooled, deadline-aware and concurrency-bounded model broker."""
+    """Connection-pooled, request-timeout-aware and concurrency-bounded broker."""
 
     def __init__(self) -> None:
         self._states: dict[str, _ProviderState] = {}
@@ -153,9 +103,6 @@ class LLMCallBroker:
             state.client.close()
 
     def call(self, request: LLMCallRequest) -> LLMCallResult:
-        if current_conversation_deadline() is None:
-            with conversation_deadline_scope(request.timeout_s):
-                return self.call(request)
         started = time.monotonic()
         state = self._provider_state(request.provider_base_url)
         circuit_state, probe_allowed = self._enter_circuit(state)
@@ -204,7 +151,7 @@ class LLMCallBroker:
             return state
 
     def _acquire(self, semaphore: threading.BoundedSemaphore, requested_timeout_s: float) -> bool:
-        remaining = _remaining_budget(requested_timeout_s)
+        remaining = max(0.0, requested_timeout_s)
         return remaining > 0 and semaphore.acquire(timeout=remaining)
 
     def _queue_timeout_result(
@@ -217,11 +164,11 @@ class LLMCallBroker:
         if probe_allowed:
             self._release_half_open_probe(state)
         return LLMCallResult(
-            error="本轮处理时间已用尽，请重试。",
+            error="模型服务排队超时，请重试。",
             error_type="queue_timeout",
             queue_wait_ms=_elapsed_ms(queue_started),
             total_latency_ms=_elapsed_ms(started),
-            fallback_reason="conversation_deadline_exhausted",
+            fallback_reason="provider_queue_timeout",
         )
 
     def _call_with_retry(
@@ -235,20 +182,9 @@ class LLMCallBroker:
         compatibility_reason = ""
         observed_retry_after_ms: float | None = None
         while True:
-            timeout_s = _remaining_budget(request.timeout_s)
-            if timeout_s <= 0:
-                return LLMCallResult(
-                    error="本轮处理时间已用尽，请重试。",
-                    error_type="deadline_exceeded",
-                    retry_count=retry_count,
-                    total_latency_ms=_elapsed_ms(started),
-                    fallback_reason="conversation_deadline_exhausted",
-                    compatibility_reason=compatibility_reason,
-                )
             result = self._send_once(
                 state.client,
                 request,
-                timeout_s=timeout_s,
                 response_format_json=response_format_json,
             )
             result.retry_count = retry_count
@@ -264,8 +200,7 @@ class LLMCallBroker:
                 observed_retry_after_ms = result.retry_after_ms
                 delay_s = min((result.retry_after_ms or 0.0) / 1000.0, 2.0)
                 if delay_s > 0:
-                    remaining = _remaining_budget(request.timeout_s)
-                    if delay_s >= remaining:
+                    if delay_s >= request.timeout_s:
                         return result
                     time.sleep(delay_s)
                 continue
@@ -276,19 +211,26 @@ class LLMCallBroker:
         client: httpx.Client,
         request: LLMCallRequest,
         *,
-        timeout_s: float,
         response_format_json: bool,
     ) -> LLMCallResult:
         url = _chat_completions_url(request.provider_base_url)
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": request.messages,
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
         }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+        if request.thinking_type is not None:
+            payload["thinking"] = {"type": request.thinking_type}
+        if request.reasoning_effort is not None:
+            payload["reasoning_effort"] = request.reasoning_effort
+        if request.tools:
+            payload["tools"] = request.tools
         if response_format_json:
             payload["response_format"] = {"type": "json_object"}
-        if request.on_delta is not None:
+        if request.on_delta is not None or request.on_reasoning_delta is not None:
             payload["stream"] = True
         headers = {
             "Authorization": f"Bearer {request.api_key}",
@@ -301,7 +243,7 @@ class LLMCallBroker:
                 url,
                 json=payload,
                 headers=headers,
-                timeout=httpx.Timeout(timeout_s),
+                timeout=httpx.Timeout(request.timeout_s),
             ) as response:
                 ttfb_ms = _elapsed_ms(started)
                 request_id = _safe_request_id(response.headers.get("x-request-id", ""))
@@ -318,10 +260,11 @@ class LLMCallBroker:
                         retry_after_ms=retry_after_ms,
                         fallback_reason=unsupported_detail,
                     )
-                if request.on_delta is not None:
+                if request.on_delta is not None or request.on_reasoning_delta is not None:
                     return _consume_streaming_response(
                         response,
-                        request.on_delta,
+                        request.on_delta or (lambda _delta: None),
+                        request.on_reasoning_delta,
                         started=started,
                         ttfb_ms=ttfb_ms,
                         request_id=request_id,
@@ -329,7 +272,14 @@ class LLMCallBroker:
                 try:
                     response.read()
                     body = response.json()
-                    content = body["choices"][0]["message"]["content"]
+                    if not isinstance(body, dict):
+                        raise TypeError("response body is not an object")
+                    message = body["choices"][0]["message"]
+                    if not isinstance(message, dict):
+                        raise TypeError("response message is not an object")
+                    content = message.get("content", "")
+                    if content is None:
+                        content = ""
                     if not isinstance(content, str):
                         raise TypeError("message content is not text")
                 except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
@@ -343,9 +293,13 @@ class LLMCallBroker:
                     )
                 return LLMCallResult(
                     reply=content.strip(),
+                    reasoning=_reasoning_from_message(message),
                     provider_request_id=request_id,
                     http_status=200,
                     ttfb_ms=ttfb_ms,
+                    finish_reason=_finish_reason(body),
+                    usage=_usage_from_body(body),
+                    tool_calls=message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else None,
                 )
         except httpx.TimeoutException:
             return LLMCallResult(
@@ -444,6 +398,8 @@ def runtime_trace_fields(result: dict[str, Any]) -> dict[str, Any]:
         "retry_after_ms",
         "circuit_breaker_state",
         "compatibility_reason",
+        "finish_reason",
+        "usage",
     }
     fields = {key: runtime.get(key) for key in allowed if key in runtime}
     if "fallback_reason" in runtime:
@@ -454,13 +410,18 @@ def runtime_trace_fields(result: dict[str, Any]) -> dict[str, Any]:
 def _consume_streaming_response(
     response: httpx.Response,
     on_delta: Callable[[str], None],
+    on_reasoning_delta: Callable[[str], None] | None,
     *,
     started: float,
     ttfb_ms: float,
     request_id: str,
 ) -> LLMCallResult:
     chunks: list[str] = []
+    reasoning_chunks: list[str] = []
+    tool_calls: dict[int, dict[str, Any]] = {}
     first_token_ms: float | None = None
+    finish_reason = ""
+    usage: dict[str, int] | None = None
     for line in response.iter_lines():
         data = _sse_data(line)
         if data is None:
@@ -479,27 +440,49 @@ def _consume_streaming_response(
                 first_token_ms=first_token_ms,
                 fallback_reason="provider_stream_invalid",
             )
+        if not finish_reason:
+            finish_reason = _finish_reason(event)
+        if usage is None:
+            usage = _usage_from_body(event)
+        reasoning_delta = _reasoning_delta_from_stream_event(event)
+        if reasoning_delta:
+            if first_token_ms is None:
+                first_token_ms = _elapsed_ms(started)
+            reasoning_chunks.append(reasoning_delta)
+            if on_reasoning_delta is not None:
+                on_reasoning_delta(reasoning_delta)
+        for fragment in _tool_call_deltas_from_stream_event(event):
+            index = fragment["index"]
+            current = tool_calls.setdefault(
+                index,
+                {"index": index, "id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+            )
+            if fragment.get("id"):
+                current["id"] = fragment["id"]
+            function = fragment.get("function") or {}
+            current_function = current["function"]
+            if function.get("name"):
+                current_function["name"] = function["name"]
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                current_function["arguments"] += arguments
         delta = _content_delta_from_stream_event(event)
-        if delta is None:
-            continue
-        if first_token_ms is None:
-            first_token_ms = _elapsed_ms(started)
-        chunks.append(delta)
-        on_delta(delta)
+        if delta:
+            if first_token_ms is None:
+                first_token_ms = _elapsed_ms(started)
+            chunks.append(delta)
+            on_delta(delta)
     return LLMCallResult(
         reply="".join(chunks).strip(),
+        reasoning="".join(reasoning_chunks),
         provider_request_id=request_id,
         http_status=200,
         ttfb_ms=ttfb_ms,
         first_token_ms=first_token_ms,
+        finish_reason=finish_reason,
+        usage=usage,
+        tool_calls=[tool_calls[index] for index in sorted(tool_calls)] or None,
     )
-
-
-def _remaining_budget(requested_timeout_s: float) -> float:
-    deadline = current_conversation_deadline()
-    if deadline is None:
-        return max(0.0, requested_timeout_s)
-    return max(0.0, min(requested_timeout_s, deadline.remaining_seconds()))
 
 
 def _normalize_provider_base(provider_base_url: str) -> str:
@@ -591,6 +574,96 @@ def _content_delta_from_stream_event(event: dict[str, Any]) -> str | None:
         if isinstance(content, str):
             parts.append(content)
     return "".join(parts) or None
+
+
+def _reasoning_delta_from_stream_event(event: dict[str, Any]) -> str | None:
+    choices = event.get("choices")
+    if not isinstance(choices, list):
+        return None
+    parts: list[str] = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        for key in ("reasoning_content", "reasoning"):
+            value = delta.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+                break
+    return "".join(parts) or None
+
+
+def _tool_call_deltas_from_stream_event(event: dict[str, Any]) -> list[dict[str, Any]]:
+    choices = event.get("choices")
+    if not isinstance(choices, list):
+        return []
+    fragments: list[dict[str, Any]] = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict) or not isinstance(delta.get("tool_calls"), list):
+            continue
+        for raw in delta["tool_calls"]:
+            if not isinstance(raw, dict):
+                continue
+            index = raw.get("index", 0)
+            if not isinstance(index, int) or index < 0:
+                continue
+            function = raw.get("function")
+            fragments.append({
+                "index": index,
+                "id": raw.get("id", "") if isinstance(raw.get("id", ""), str) else "",
+                "function": function if isinstance(function, dict) else {},
+            })
+    return fragments
+
+
+def _reasoning_from_message(message: dict[str, Any]) -> str:
+    for key in ("reasoning_content", "reasoning"):
+        value = message.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _finish_reason(body: dict[str, Any]) -> str:
+    choices = body.get("choices")
+    if not isinstance(choices, list):
+        return ""
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        value = choice.get("finish_reason")
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _usage_from_body(body: dict[str, Any]) -> dict[str, int] | None:
+    raw = body.get("usage")
+    if not isinstance(raw, dict):
+        return None
+    usage: dict[str, int] = {}
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens",
+    ):
+        value = raw.get(key)
+        if isinstance(value, int):
+            usage[key] = value
+    prompt_details = raw.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict) and isinstance(prompt_details.get("cached_tokens"), int):
+        usage["cached_tokens"] = prompt_details["cached_tokens"]
+    completion_details = raw.get("completion_tokens_details")
+    if isinstance(completion_details, dict) and isinstance(completion_details.get("reasoning_tokens"), int):
+        usage["reasoning_tokens"] = completion_details["reasoning_tokens"]
+    return usage or None
 
 
 def _elapsed_ms(started: float) -> float:

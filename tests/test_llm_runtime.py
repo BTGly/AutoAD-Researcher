@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +12,6 @@ import pytest
 from autoad_researcher.assistant import llm_runtime
 from autoad_researcher.assistant.llm_runtime import (
     LLMCallRequest,
-    conversation_deadline_scope,
     get_llm_call_broker,
     reset_llm_call_broker,
 )
@@ -26,7 +26,6 @@ def _isolated_runtime(monkeypatch):
         "AUTOAD_LLM_RESERVED_INTERACTIVE_SLOTS",
         "AUTOAD_LLM_CIRCUIT_FAILURE_THRESHOLD",
         "AUTOAD_LLM_CIRCUIT_COOLDOWN_SECONDS",
-        "AUTOAD_CONVERSATION_DEADLINE_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     reset_llm_call_broker()
@@ -150,7 +149,7 @@ def test_reserved_interactive_slot_is_not_consumed_by_routing(monkeypatch):
         assert interactive_call.result(timeout=2).reply == "ok"
 
 
-def test_queue_wait_obeys_remaining_conversation_deadline(monkeypatch):
+def test_queue_wait_uses_the_individual_request_timeout(monkeypatch):
     monkeypatch.setenv("AUTOAD_LLM_MAX_INFLIGHT_PER_PROVIDER", "1")
     reset_llm_call_broker()
     entered = threading.Event()
@@ -167,15 +166,114 @@ def test_queue_wait_obeys_remaining_conversation_deadline(monkeypatch):
         active = executor.submit(broker.call, _request(timeout_s=2))
         assert entered.wait(timeout=1)
         started = time.monotonic()
-        with conversation_deadline_scope(0.05):
-            queued = broker.call(_request(timeout_s=2))
+        queued = broker.call(_request(timeout_s=0.05))
         elapsed = time.monotonic() - started
         release.set()
         assert active.result(timeout=2).reply == "ok"
 
     assert queued.error_type == "queue_timeout"
-    assert queued.fallback_reason == "conversation_deadline_exhausted"
+    assert queued.fallback_reason == "provider_queue_timeout"
     assert elapsed < 0.2
+
+
+def test_default_request_omits_generation_limits(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def handler(request):
+        captured.update(json.loads(request.content))
+        return _completion()
+
+    _install_transport(monkeypatch, handler)
+    result = get_llm_call_broker().call(_request())
+
+    assert result.reply == "ok"
+    assert captured == {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+
+def test_deepseek_reasoning_route_and_usage_are_preserved(monkeypatch):
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["thinking"] == {"type": "enabled"}
+        assert body["reasoning_effort"] == "max"
+        assert body["tools"] == [{"type": "function", "function": {"name": "inspect"}}]
+        return httpx.Response(200, json={
+            "choices": [{
+                "message": {
+                    "content": "answer",
+                    "reasoning_content": "internal reasoning",
+                    "tool_calls": [{"id": "call_1", "type": "function"}],
+                },
+                "finish_reason": "length",
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "total_tokens": 30,
+                "prompt_cache_hit_tokens": 4,
+                "prompt_tokens_details": {"cached_tokens": 4},
+                "completion_tokens_details": {"reasoning_tokens": 12},
+            },
+        })
+
+    _install_transport(monkeypatch, handler)
+    result = get_llm_call_broker().call(replace(
+        _request(),
+        model="deepseek-v4-pro",
+        thinking_type="enabled",
+        reasoning_effort="max",
+        tools=[{"type": "function", "function": {"name": "inspect"}}],
+    ))
+
+    assert result.reply == "answer"
+    assert result.reasoning == "internal reasoning"
+    assert result.finish_reason == "length"
+    assert result.usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "total_tokens": 30,
+        "prompt_cache_hit_tokens": 4,
+        "cached_tokens": 4,
+        "reasoning_tokens": 12,
+    }
+    assert result.tool_calls == [{"id": "call_1", "type": "function"}]
+
+
+def test_streaming_preserves_reasoning_and_tool_call_fragments(monkeypatch):
+    content = "\n".join([
+        'data: {"choices":[{"delta":{"reasoning_content":"think "}}]}',
+        'data: {"choices":[{"delta":{"reasoning_content":"more","tool_calls":[{"index":0,"id":"call_1","function":{"name":"inspect","arguments":"{\\"path\\":"}}]}}]}',
+        'data: {"choices":[{"delta":{"content":"answer","tool_calls":[{"index":0,"function":{"arguments":"\\\"x\\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}',
+        "data: [DONE]",
+        "",
+    ]).encode()
+
+    _install_transport(monkeypatch, lambda request: httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=content,
+    ))
+    visible: list[str] = []
+    reasoning: list[str] = []
+    result = get_llm_call_broker().call(replace(
+        _request(),
+        on_delta=visible.append,
+        on_reasoning_delta=reasoning.append,
+    ))
+
+    assert result.reply == "answer"
+    assert visible == ["answer"]
+    assert reasoning == ["think ", "more"]
+    assert result.finish_reason == "tool_calls"
+    assert result.usage == {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8}
+    assert result.tool_calls == [{
+        "index": 0,
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "inspect", "arguments": '{"path":"x"}'},
+    }]
 
 
 def test_only_recoverable_network_failure_is_retried_once(monkeypatch):
