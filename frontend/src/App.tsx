@@ -41,11 +41,14 @@ import {
 } from './lib/api';
 import { generateId } from './lib/mock';
 import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary, ExperimentTaskDraft } from './lib/types';
-import { Settings } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, FileText, FolderArchive, Globe2, Settings } from 'lucide-react';
+
+type ArtifactKind = 'paper' | 'repo' | 'web' | 'file';
 
 interface ArtifactEntry {
   path: string;
   label: string;
+  kind: ArtifactKind;
   content?: string;
 }
 
@@ -282,19 +285,13 @@ export default function App() {
 
   // ── First-run: create run on save ──
   const handleFirstRunSave = useCallback(async (c: typeof config) => {
+    const r = await createRun();
     saveConfig(c);
-    try {
-      const r = await createRun();
-      currentRunIdRef.current = r.run_id;
-      setLoadedRunId(r.run_id);
-      setRunId(r.run_id);
-      setTasks([r]);
-      setTaskStatus('Ready');
-    } catch {
-      currentRunIdRef.current = 'run_default';
-      setLoadedRunId('run_default');
-      setRunId('run_default');
-    }
+    currentRunIdRef.current = r.run_id;
+    setLoadedRunId(r.run_id);
+    setRunId(r.run_id);
+    setTasks([r]);
+    setTaskStatus('Ready');
   }, [saveConfig]);
 
   // ── Real chat turn ──
@@ -442,7 +439,7 @@ export default function App() {
   // ── File upload — goes through real backend ──
   const handleFile = useCallback(async (file: File) => {
     const targetRunId = runId || 'run_default';
-    setMessages(prev => [...prev, { id: generateId(), role: 'user', content: '📎 ' + file.name, timestamp: Date.now() }]);
+    setMessages(prev => [...prev, { id: generateId(), role: 'user', content: '附件：' + file.name, timestamp: Date.now() }]);
     setTaskStatus('Working');
     try {
       const result = await uploadSource(targetRunId, file);
@@ -531,12 +528,15 @@ export default function App() {
       const paths: string[] = (msg as any).paths || [];
       for (const p of paths) {
         const isMd = p.endsWith('.md');
+        const kind: ArtifactKind = isMd
+          ? p.includes('paper') ? 'paper' : p.includes('repo') ? 'repo' : p.includes('source') ? 'web' : 'file'
+          : 'file';
         const label = isMd
-          ? (p.includes('paper') ? '📄 论文摘要' : p.includes('repo') ? '📦 仓库摘要' : p.includes('source') ? '🌐 网页摘要' : `📝 ${p.split('/').pop()}`)
+          ? (kind === 'paper' ? '论文摘要' : kind === 'repo' ? '仓库摘要' : kind === 'web' ? '网页摘要' : p.split('/').pop() || p)
           : p;
         setArtifacts(prev => {
           if (prev.some(a => a.path === p)) return prev;
-          return [...prev, { path: p, label }];
+          return [...prev, { path: p, label, kind }];
         });
       }
       refreshSidebar();
@@ -687,8 +687,8 @@ export default function App() {
               onDeleteSource={handleDeleteSource}
             >
               {artifacts.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>Markdown 摘要</div>
+                <div className="artifact-list">
+                  <div className="artifact-list-title">Markdown 摘要</div>
                   {artifacts.map(a => (
                     <ArtifactItem key={a.path} artifact={a} runId={runId} />
                   ))}
@@ -776,20 +776,23 @@ function ArtifactItem({ artifact, runId }: { artifact: ArtifactEntry; runId: str
     }
   };
 
+  const Icon = artifact.kind === 'paper'
+    ? FileText
+    : artifact.kind === 'repo'
+      ? FolderArchive
+      : artifact.kind === 'web'
+        ? Globe2
+        : File;
+  const DisclosureIcon = open ? ChevronDown : ChevronRight;
+
   return (
-    <div style={{ marginBottom: 4 }}>
-      <button onClick={load} style={{
-        width: '100%', textAlign: 'left', padding: '4px 8px', fontSize: '0.82em',
-        background: 'transparent', border: 'none', color: 'var(--blue)', cursor: 'pointer',
-      }}>
-        {open ? '▼' : '▶'} {artifact.label}
+    <div className="artifact-item">
+      <button className="artifact-button" onClick={load} type="button">
+        <Icon size={14} strokeWidth={1.8} aria-hidden="true" />
+        <span><DisclosureIcon size={13} strokeWidth={1.8} aria-hidden="true" />{artifact.label}</span>
       </button>
       {open && content && (
-        <div style={{
-          maxHeight: 300, overflow: 'auto', padding: '6px 8px', fontSize: '0.78em',
-          color: 'var(--text)', background: 'var(--bg)', borderRadius: 4, margin: '4px 0',
-          border: '1px solid var(--border)',
-        }}>
+        <div className="artifact-preview">
           <MarkdownContent>{content.slice(0, 3000)}</MarkdownContent>
         </div>
       )}

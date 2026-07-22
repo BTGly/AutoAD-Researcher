@@ -67,6 +67,25 @@ test('keeps non-decorative feedback available under Reduced Motion', async ({ pa
   });
   expect(motion.transform).toBe('none');
   expect(Number.parseFloat(motion.duration)).toBeGreaterThan(0);
+
+  const upload = page.getByRole('button', { name: '上传文件' });
+  await upload.click();
+  const popoverMotion = await page.locator('.plus-menu-popover').evaluate(element => {
+    const style = getComputedStyle(element);
+    return { transform: style.transform, duration: style.transitionDuration };
+  });
+  expect(popoverMotion.transform).toBe('none');
+  expect(Number.parseFloat(popoverMotion.duration)).toBeGreaterThan(0);
+  await page.locator('.plus-menu-scrim').click({ position: { x: 10, y: 10 } });
+
+  const config = page.getByRole('button', { name: '配置' });
+  await config.click();
+  const modalMotion = await page.locator('.modal').evaluate(element => {
+    const style = getComputedStyle(element);
+    return { transform: style.transform, duration: style.transitionDuration };
+  });
+  expect(modalMotion.transform).toBe('none');
+  expect(Number.parseFloat(modalMotion.duration)).toBeGreaterThan(0);
 });
 
 test('reverses anchored Popovers without leaving a stuck overlay', async ({ page }) => {
@@ -112,7 +131,7 @@ test('keeps repeated Toast feedback interruptible and restores Modal focus', asy
   const config = page.getByRole('button', { name: '配置' });
   await config.click();
   await expect(page.getByRole('dialog', { name: '配置 API Key' })).toBeVisible();
-  await expect(page.getByPlaceholder('sk-…')).toBeFocused();
+  await expect(page.getByPlaceholder('输入 API Key')).toBeFocused();
   await page.getByRole('button', { name: '取消' }).click();
   await expect(config).toBeFocused();
 });

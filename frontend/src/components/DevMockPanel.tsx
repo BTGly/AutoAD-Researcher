@@ -14,7 +14,7 @@ export function DevMockPanel({ addToast, setMessages }: Props) {
     else if (kind === 'url') events = mockUrlFlow(fileName).events;
     else events = mockSearchFlow(fileName).events;
 
-    const userMsg = { id: generateId(), role: 'user', content: kind === 'parse' ? '📎 ' + fileName : kind === 'url' ? '🔗 ' + fileName : '搜索 ' + fileName, timestamp: Date.now() };
+    const userMsg = { id: generateId(), role: 'user', content: kind === 'parse' ? '附件：' + fileName : kind === 'url' ? '链接：' + fileName : '搜索 ' + fileName, timestamp: Date.now() };
     setMessages((prev: any[]) => [...prev, userMsg]);
     const aid = generateId();
     const initial = events.find((e: any) => e.type === 'job.started');

@@ -39,6 +39,7 @@ async function prepare(page: Page, options: { confirmStatus?: number } = {}) {
   await page.getByPlaceholder('输入问题，或粘贴 URL…').fill('请生成实验草案');
   await page.getByRole('button', { name: '发送' }).click();
   await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
+  await expect(page).toHaveScreenshot('experiment-confirmation.png', { fullPage: true, animations: 'disabled' });
 }
 
 async function selectMicroRepository(page: Page) {

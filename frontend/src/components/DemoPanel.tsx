@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Bell, Check, CircleX, FileText, Globe2, Info, Package, Search } from 'lucide-react';
 
 interface Props {
   onParsePdf: () => void;
@@ -14,7 +15,7 @@ export function DemoPanel({ onParsePdf, onUrl, onClone, onSearch, onToast }: Pro
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
       <button onClick={() => setOpen(!open)} style={{ background: 'var(--orange)', color: '#000', border: 'none', fontWeight: 600 }}>
-        🔔 演示
+        <Bell size={15} strokeWidth={1.8} aria-hidden="true" /> 演示
       </button>
       {open && (
         <>
@@ -26,27 +27,27 @@ export function DemoPanel({ onParsePdf, onUrl, onClone, onSearch, onToast }: Pro
           }}>
             <div style={{ fontSize: '0.82em', color: 'var(--text-muted)', marginBottom: 10 }}>点一下看完整模拟</div>
             <button onClick={() => { onParsePdf(); setOpen(false); }} style={{ width: '100%', marginBottom: 6 }}>
-              📄 模拟解析 PDF
+              <FileText size={15} strokeWidth={1.8} aria-hidden="true" /> 模拟解析 PDF
             </button>
             <button onClick={() => { onUrl('https://arxiv.org/abs/2303.15140'); setOpen(false); }} style={{ width: '100%', marginBottom: 6 }}>
-              🔗 模拟下载 arXiv
+              <Globe2 size={15} strokeWidth={1.8} aria-hidden="true" /> 模拟下载 arXiv
             </button>
             <button onClick={() => { onClone(); setOpen(false); }} style={{ width: '100%', marginBottom: 6 }}>
-              📦 模拟 clone GitHub
+              <Package size={15} strokeWidth={1.8} aria-hidden="true" /> 模拟 clone GitHub
             </button>
             <button onClick={() => { onSearch(); setOpen(false); }} style={{ width: '100%', marginBottom: 12 }}>
-              🔍 模拟搜索论文
+              <Search size={15} strokeWidth={1.8} aria-hidden="true" /> 模拟搜索论文
             </button>
             <div style={{ fontSize: '0.82em', color: 'var(--text-muted)', marginBottom: 8 }}>Toast 演示</div>
             <div style={{ display: 'flex', gap: 6 }}>
               <button onClick={() => { onToast('PDF 解析完成 · paper_brief.md 已生成', 'success'); setOpen(false); }} style={{ flex: 1, fontSize: '0.8em' }}>
-                ✅ 成功
+                <Check size={14} strokeWidth={1.8} aria-hidden="true" /> 成功
               </button>
               <button onClick={() => { onToast('PDF 解析失败 · 文件可能为扫描件', 'error'); setOpen(false); }} style={{ flex: 1, fontSize: '0.8em' }}>
-                ❌ 失败
+                <CircleX size={14} strokeWidth={1.8} aria-hidden="true" /> 失败
               </button>
               <button onClick={() => { onToast('找到 5 个候选来源', 'info'); setOpen(false); }} style={{ flex: 1, fontSize: '0.8em' }}>
-                ℹ️ 信息
+                <Info size={14} strokeWidth={1.8} aria-hidden="true" /> 信息
               </button>
             </div>
           </div>
