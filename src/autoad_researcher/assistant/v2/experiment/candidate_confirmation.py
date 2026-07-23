@@ -153,6 +153,8 @@ class CandidateConfirmationService:
             command_plan=plan,
             input_refs=refs,
             job_timeout_sec=contract.resource_budget.max_wall_seconds,
+            required_device_count=contract.required_device_count,
+            required_vram_mb=contract.required_vram_mb,
             evaluation_contract_ref=session.evaluation_contract_ref,
             evaluation_contract_sha256=session.evaluation_contract_sha256,
             protected_artifact_report_ref=protected_ref,

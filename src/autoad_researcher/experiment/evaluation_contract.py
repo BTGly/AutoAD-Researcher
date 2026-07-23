@@ -96,6 +96,8 @@ class EvaluationContract(BaseModel):
     seed_policy: EvaluationSeedPolicy | None = None
     checkpoint_selection: str = Field(min_length=1)
     resource_budget: EvaluationResourceBudget
+    required_device_count: int = Field(default=0, ge=0)
+    required_vram_mb: int = Field(default=0, ge=0)
     protected_paths: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")

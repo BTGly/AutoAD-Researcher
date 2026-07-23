@@ -109,6 +109,8 @@ export interface BaselineContractInput {
   checkpoint_selection: string;
   max_wall_seconds: number;
   max_gpu_seconds: number;
+  required_device_count: number;
+  required_vram_mb: number;
 }
 
 export interface JobItem {

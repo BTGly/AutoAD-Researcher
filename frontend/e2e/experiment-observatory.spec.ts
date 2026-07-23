@@ -113,10 +113,42 @@ test('launches a Baseline from an environment-ready Session with an explicit con
   await page.getByLabel('最大 GPU 秒数').fill('0');
   await page.getByLabel('指标方向 image AUROC').selectOption('maximize');
   await page.getByLabel('指标角色 image AUROC').selectOption('primary');
-  await page.getByLabel('指标实现引用 image AUROC').fill('metrics.json');
+  await page.getByLabel('指标实现引用 image AUROC').fill('metric.py');
   await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
   await expect.poll(() => requestBody).not.toBeNull();
-  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_gpu_seconds: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
+  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_gpu_seconds: 0, required_device_count: 0, required_vram_mb: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
+});
+
+test('keeps an additional confirmed metric as a recorded observation by default', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  baselineProjection.input_task.primary_metrics = ['image AUROC', 'latency'];
+  let requestBody: Record<string, unknown> | null = null;
+  await prepare(page, () => baselineProjection);
+  await page.route(`**/api/runs/${run.run_id}/sessions/${baselineProjection.session.session_id}/baseline`, async route => {
+    requestBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: { started: {}, evaluation_contract_ref: 'contract.json', execution_inputs_ref: 'inputs.json' } });
+  });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByLabel('Split 标识').fill('fixture-split');
+  await page.getByLabel('B_dev 文件引用').fill('inputs/dev.json');
+  await page.getByLabel('B_test 文件引用').fill('inputs/test.json');
+  await page.getByLabel('Checkpoint 选择').fill('best');
+  await page.getByLabel('Seeds').fill('1');
+  await page.getByLabel('最大墙钟秒数').fill('30');
+  await page.getByLabel('最大 GPU 秒数').fill('0');
+  await page.getByLabel('指标方向 image AUROC').selectOption('maximize');
+  await page.getByLabel('指标角色 image AUROC').selectOption('primary');
+  await page.getByLabel('指标实现引用 image AUROC').fill('metric.py');
+  await page.getByLabel('指标方向 latency').selectOption('minimize');
+  await page.getByLabel('指标实现引用 latency').fill('metric.py');
+  await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
+  await expect.poll(() => requestBody).not.toBeNull();
+  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', guardrails: [], metrics: [{ name: 'image AUROC' }, { name: 'latency' }] } });
 });
 
 test('derives a selected detail from the refreshed projection', async ({ page }) => {

@@ -51,6 +51,8 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
         env["AUTOAD_ATTEMPT_DIR"] = str(output_dir.resolve())
         if lease is not None:
             env["CUDA_VISIBLE_DEVICES"] = lease.cuda_visible_devices
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = ""
         cwd = _resolve_run_relative_path(run_dir, attempt.command_plan.cwd)
         stdout = (output_dir / "stdout.log").open("w", encoding="utf-8")
         stderr = (output_dir / "stderr.log").open("w", encoding="utf-8")

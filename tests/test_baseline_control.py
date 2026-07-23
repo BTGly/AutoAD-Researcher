@@ -38,11 +38,12 @@ def _ready_session(run_dir: Path):
     repository = run_dir / "repos" / "source_micro"
     repository.mkdir(parents=True)
     (repository / "evaluate.py").write_text("protected = True\n", encoding="utf-8")
+    (repository / "metric.py").write_text("def score(value):\n    return value\n", encoding="utf-8")
     (repository / "run.py").write_text(
-        "import json, os, sys\nfrom pathlib import Path\n"
+        "import json, os, sys\nsys.dont_write_bytecode = True\nfrom pathlib import Path\nfrom metric import score\n"
         "split_ref = Path(sys.argv[sys.argv.index('--split-ref') + 1])\n"
         "assert split_ref.is_file()\n"
-        "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n",
+        "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))\n",
         encoding="utf-8",
     )
     manifest = {
@@ -102,10 +103,10 @@ def _ready_session(run_dir: Path):
 
 def _contract() -> BaselineContractInput:
     return BaselineContractInput(
-        primary_metric="score", metrics=[EvaluationMetric(name="score", direction="maximize", implementation_ref="metrics.json")], guardrails=[], dataset_identity="fixture-dataset",
+        primary_metric="score", metrics=[EvaluationMetric(name="score", direction="maximize", implementation_ref="metric.py")], guardrails=[], dataset_identity="fixture-dataset",
         split_identity="fixture-split", b_dev_ref="inputs/dev.json", b_test_ref="inputs/test.json",
         category_set=["fixture"], seeds=[1], checkpoint_selection="not_applicable", max_wall_seconds=30,
-        max_gpu_seconds=30,
+        max_gpu_seconds=0,
     )
 
 
@@ -145,6 +146,12 @@ def test_baseline_control_freezes_server_owned_attempt_and_projects_ready(tmp_pa
     assert (run_dir / first.evaluation_contract_ref).is_file()
     assert (run_dir / first.execution_inputs_ref).is_file()
     assert len(load_pipeline_jobs(run_dir)) == 1
+    contract = json.loads((run_dir / first.evaluation_contract_ref).read_text(encoding="utf-8"))
+    implementation_path = next(path for path in contract["protected_paths"] if path.endswith("/metric.py"))
+    protected = json.loads((run_dir / "experiments" / "protected_artifacts" / f"{session.session_id}.json").read_text(encoding="utf-8"))
+    assert implementation_path in protected["hashes"]
+    assert contract["required_device_count"] == 0
+    assert contract["required_vram_mb"] == 0
 
     for _ in range(100):
         _process_pending_jobs(run_dir)
@@ -192,6 +199,48 @@ def test_baseline_contract_accepts_cpu_only_and_category_free_protocol(tmp_path:
     assert started.started.attempt.required_device_count == 0
 
 
+def test_baseline_explicit_gpu_resources_are_frozen_and_bound(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    payload = _contract().model_dump(mode="json")
+    payload.update({"max_gpu_seconds": 30, "required_device_count": 1, "required_vram_mb": 10_000})
+    value = BaselineContractInput.model_validate(payload)
+    started = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=value)
+    frozen = json.loads((run_dir / started.evaluation_contract_ref).read_text(encoding="utf-8"))
+    assert frozen["required_device_count"] == 1
+    assert frozen["required_vram_mb"] == 10_000
+    assert started.started.attempt.required_device_count == 1
+    assert started.started.attempt.required_vram_mb == 10_000
+
+
+def test_baseline_contract_keeps_unclassified_confirmed_metrics_as_observations():
+    value = BaselineContractInput(
+        primary_metric="score",
+        metrics=[
+            EvaluationMetric(name="score", direction="maximize", implementation_ref="metric.py"),
+            EvaluationMetric(name="latency", direction="minimize", implementation_ref="metric.py"),
+        ],
+        guardrails=[],
+        dataset_identity="fixture-dataset",
+        split_identity="fixture-split",
+        b_dev_ref="inputs/dev.json",
+        b_test_ref="inputs/test.json",
+        seeds=[1],
+        checkpoint_selection="not_applicable",
+        max_wall_seconds=30,
+        max_gpu_seconds=0,
+    )
+    assert value.primary_metric == "score"
+    assert value.guardrails == []
+
+
+def test_baseline_gpu_budget_requires_explicit_resources():
+    payload = _contract().model_dump(mode="json")
+    payload["max_gpu_seconds"] = 30
+    with pytest.raises(ValueError, match="explicit device request"):
+        BaselineContractInput.model_validate(payload)
+
+
 def test_baseline_control_queues_explicit_b_test_baseline_and_waits_for_both(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
@@ -222,7 +271,7 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
         time.sleep(0.02)
     tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
     IdeaTreeStore().add_node(run_dir, session_id=session.session_id, expected_revision=tree.revision, idempotency_key="idea-confirm", parent_id="idea_000000", mechanism="score change", hypothesis="raise score", observable="score", grounding=[], expected_cost="low")
-    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n"
+    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))\n"
     candidate = CandidateControlService().start(
         run_dir,
         session_id=session.session_id,
@@ -317,6 +366,23 @@ def test_finalizer_rejects_a_split_changed_after_baseline_freeze(tmp_path: Path)
     assert "inputs/dev.json" in " ".join(card["protocol_errors"])
 
 
+def test_finalizer_rejects_a_metric_implementation_changed_after_baseline_freeze(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    started = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    implementation = run_dir / started.started.attempt.command_plan.cwd / "metric.py"
+    implementation.write_text("def score(value):\n    return value + 0.1\n", encoding="utf-8")
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        attempt = ExperimentAttemptStore().load(run_dir, started.started.attempt.attempt_id)
+        if attempt is not None and attempt.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+    card = json.loads((run_dir / "attempts" / started.started.attempt.attempt_id / "outcome_card.json").read_text())
+    assert card["attempt_category"] == "protocol_violated"
+    assert "metric.py" in " ".join(card["protocol_errors"])
+
+
 def test_candidate_control_derives_execution_from_completed_baseline(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
@@ -333,8 +399,8 @@ def test_candidate_control_derives_execution_from_completed_baseline(tmp_path: P
         parent_id="idea_000000", mechanism="score change", hypothesis="raise score", observable="score",
         grounding=[], expected_cost="low",
     )
-    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n"
-    after = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.9}))\n"
+    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))\n"
+    after = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.9)}))\n"
     started = CandidateControlService().start(
         run_dir,
         session_id=session.session_id,
@@ -383,7 +449,7 @@ def test_candidate_control_rejects_conflicting_replay_without_a_new_job(tmp_path
         time.sleep(0.02)
     tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
     IdeaTreeStore().add_node(run_dir, session_id=session.session_id, expected_revision=tree.revision, idempotency_key="idea-conflict", parent_id="idea_000000", mechanism="score change", hypothesis="raise score", observable="score", grounding=[], expected_cost="low")
-    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n"
+    before = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))\n"
     candidate = CandidateLaunchInput(
         idempotency_key="candidate:conflict", comparison_seed=1,
         intervention_contract=InterventionContract(idea_id="idea_000001", mechanism="score change", hypothesis="raise score", target_modules=["run.py"], allowed_paths=["run.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["score"], time_budget=30),
