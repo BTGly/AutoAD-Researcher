@@ -193,6 +193,7 @@ class ExperimentActionsProjection(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    baseline_launch_available: bool = False
     candidate_confirmations: list[CandidateConfirmationAction] = Field(default_factory=list)
     candidate_promotions: list[CandidatePromotionAction] = Field(default_factory=list)
 
@@ -556,8 +557,15 @@ def _actions_projection(
     candidate_inventory: CandidateInventory,
     champion: ChampionProjection | None,
 ) -> ExperimentActionsProjection:
-    if session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available":
+    baseline_launch_available = (
+        session.status == "READY_FOR_BASELINE" and session.baseline_status == "not_started"
+    )
+    if not baseline_launch_available and (
+        session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available"
+    ):
         return ExperimentActionsProjection()
+    if session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available":
+        return ExperimentActionsProjection(baseline_launch_available=baseline_launch_available)
     registered_attempts = {item.attempt_id for item in candidate_inventory.candidates}
     confirmations = [
         CandidateConfirmationAction(candidate_attempt_id=item.attempt_id)
@@ -582,6 +590,7 @@ def _actions_projection(
         )
     ]
     return ExperimentActionsProjection(
+        baseline_launch_available=baseline_launch_available,
         candidate_confirmations=confirmations,
         candidate_promotions=promotions,
     )

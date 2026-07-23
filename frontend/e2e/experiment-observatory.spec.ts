@@ -15,7 +15,7 @@ const projection = {
   attempts: [{ attempt_id: 'attempt_000001', attempt_purpose: 'exploration', runtime_status: 'COMPLETED', job_type: 'experiment_attempt', pipeline_job_id: null, required_device_count: 1, required_vram_mb: 1, retry_of: null, retry_count: 0, max_retries: 0, retry_exhausted: false, failure_code: null, command_plan_summary: 'python run.py', execution_outcome: { execution_status: 'COMPLETED' }, scientific_assessment: null, assessment_reconciliation: null, scientific_assessment_status: 'not_materialized', related_idea_ids: ['idea_000001'], pid: null, heartbeat_at: null, resource_lease_id: null, created_at: '2026-07-20T00:00:00Z', updated_at: '2026-07-20T00:00:00Z' }],
   candidates: [{ candidate_id: 'candidate_000001', idea_id: 'idea_000001', attempt_id: 'attempt_000001', b_test_passed: true, guardrails_passed: true }],
   candidate_inventory_status: 'available',
-  actions: { candidate_confirmations: [], candidate_promotions: [{ candidate_id: 'candidate_000001' }] },
+  actions: { baseline_launch_available: false, candidate_confirmations: [], candidate_promotions: [{ candidate_id: 'candidate_000001' }] },
   cognitive_commits: [], champion_status: 'absent', champion: null,
   activity: [{ event_id: 1, event_type: 'experiment.idea_tree.mutated', created_at: '2026-07-20T00:00:00Z', title: 'Idea Tree 已更新', summary: '树版本：1', card_kind: 'idea_tree', related_idea_id: null, related_attempt_id: null, related_commit_id: null, related_outcome: null, detail: '', evidence_refs: [] }],
   activity_limit: 100, activity_truncated: false,
@@ -88,6 +88,35 @@ test('sends an explicit human Champion approval instead of auto-promoting', asyn
   await page.getByLabel('批准人').fill('fixture-user');
   await page.getByRole('button', { name: '批准并推广 Champion' }).click();
   expect(requestBody).toEqual({ candidate_id: 'candidate_000001', approved_by: 'fixture-user' });
+});
+
+test('launches a Baseline from an environment-ready Session with an explicit contract', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  let requestBody: Record<string, unknown> | null = null;
+  await prepare(page, () => baselineProjection);
+  await page.route(`**/api/runs/${run.run_id}/sessions/${baselineProjection.session.session_id}/baseline`, async route => {
+    requestBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: { started: {}, evaluation_contract_ref: 'contract.json', execution_inputs_ref: 'inputs.json' } });
+  });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByLabel('Split 标识').fill('fixture-split');
+  await page.getByLabel('B_dev 文件引用').fill('inputs/dev.json');
+  await page.getByLabel('B_test 文件引用').fill('inputs/test.json');
+  await page.getByLabel('Checkpoint 选择').fill('best');
+  await page.getByLabel('Seeds').fill('1');
+  await page.getByLabel('最大墙钟秒数').fill('30');
+  await page.getByLabel('最大 GPU 秒数').fill('0');
+  await page.getByLabel('指标方向 image AUROC').selectOption('maximize');
+  await page.getByLabel('指标角色 image AUROC').selectOption('primary');
+  await page.getByLabel('指标实现引用 image AUROC').fill('metrics.json');
+  await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
+  await expect.poll(() => requestBody).not.toBeNull();
+  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_gpu_seconds: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
 });
 
 test('derives a selected detail from the refreshed projection', async ({ page }) => {

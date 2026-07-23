@@ -219,6 +219,24 @@ def test_projection_preserves_unready_session_facts(tmp_path: Path):
     assert projection.session.readiness_blockers == ["environment job is still running"]
 
 
+def test_projection_exposes_baseline_launch_only_when_session_is_ready(tmp_path: Path):
+    session = _session(tmp_path).model_copy(update={
+        "status": "READY_FOR_BASELINE",
+        "readiness_status": "ready",
+        "environment_status": "ready",
+        "baseline_status": "not_started",
+    })
+    _write_session(tmp_path, session)
+
+    projection = build_projection(tmp_path)
+
+    assert projection.actions.baseline_launch_available is True
+
+    _write_session(tmp_path, session.model_copy(update={"status": "BASELINE_RUNNING", "baseline_status": "queued"}))
+    running = build_projection(tmp_path)
+    assert running.actions.baseline_launch_available is False
+
+
 def test_multiple_sessions_stay_ambiguous_and_external_selection_is_exact(tmp_path: Path):
     first = _session(tmp_path, "session_aaaaaaaaaaaaaaaa")
     second = _session(tmp_path, "session_bbbbbbbbbbbbbbbb").model_copy(

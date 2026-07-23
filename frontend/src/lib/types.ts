@@ -90,6 +90,27 @@ export interface ExperimentTaskConfirmationResult {
   disposition: 'plan_only' | 'created' | 'repaired' | 'reused';
 }
 
+export interface BaselineMetricInput {
+  name: string;
+  direction: 'maximize' | 'minimize';
+  implementation_ref: string;
+}
+
+export interface BaselineContractInput {
+  primary_metric: string;
+  metrics: BaselineMetricInput[];
+  guardrails: string[];
+  dataset_identity: string;
+  split_identity: string;
+  b_dev_ref: string;
+  b_test_ref: string;
+  category_set: string[];
+  seeds: number[];
+  checkpoint_selection: string;
+  max_wall_seconds: number;
+  max_gpu_seconds: number;
+}
+
 export interface JobItem {
   jobId: string;
   jobType: string;
@@ -333,6 +354,7 @@ export interface ExperimentProjection {
   candidates: Array<{ candidate_id: string; idea_id: string; attempt_id: string; b_test_passed: boolean; guardrails_passed: boolean }>;
   candidate_inventory_status: 'available' | 'invalid';
   actions: {
+    baseline_launch_available?: boolean;
     candidate_confirmations: Array<{ candidate_attempt_id: string }>;
     candidate_promotions: Array<{ candidate_id: string }>;
   };

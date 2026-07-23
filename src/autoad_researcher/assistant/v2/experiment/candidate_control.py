@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineControlService
+from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineControlService, resolve_split_artifact
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
@@ -109,6 +109,7 @@ class CandidateControlService:
             asset_manifest_sha256=asset_sha,
             python_executable=python_executable,
             timeout_seconds=contract.resource_budget.max_wall_seconds,
+            split_ref=str(resolve_split_artifact(run_dir, contract.b_dev_ref)),
         )
         command_identity = _semantic_command_identity(ExecutorAdapter(), run_dir / binding.repository_ref, adapter_inputs)
         identity = ComparisonIdentity(

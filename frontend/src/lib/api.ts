@@ -11,6 +11,7 @@ import type {
   DiscussionTurn,
   ReportProposal,
   TaskRun,
+  BaselineContractInput,
 } from './types';
 
 export class ApiError extends Error {
@@ -223,6 +224,20 @@ export async function getExperimentProjection(runId: string, sessionId?: string,
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
   const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders(), signal });
   if (!res.ok) throw await apiError(res, `Experiment projection error: ${res.status}`);
+  return res.json();
+}
+
+export async function startBaseline(
+  runId: string,
+  sessionId: string,
+  contract: BaselineContractInput,
+): Promise<unknown> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/baseline`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ contract }),
+  });
+  if (!res.ok) throw await apiError(res, `Baseline launch error: ${res.status}`);
   return res.json();
 }
 

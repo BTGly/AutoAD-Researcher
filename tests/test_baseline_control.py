@@ -19,6 +19,7 @@ from autoad_researcher.environments.context_collector import CollectedValidation
 from autoad_researcher.environments.snapshot import EnvironmentSnapshot
 from autoad_researcher.environments.validation import ValidationContext
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+from autoad_researcher.experiment.evaluation_contract import EvaluationMetric
 from autoad_researcher.experiment.executor_agent import ExecutorProposal
 from autoad_researcher.experiment.executor_contracts import InterventionContract
 from autoad_researcher.experiment.idea_tree import IdeaTreeStore
@@ -38,13 +39,18 @@ def _ready_session(run_dir: Path):
     repository.mkdir(parents=True)
     (repository / "evaluate.py").write_text("protected = True\n", encoding="utf-8")
     (repository / "run.py").write_text(
-        "import json, os\nfrom pathlib import Path\n"
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "split_ref = Path(sys.argv[sys.argv.index('--split-ref') + 1])\n"
+        "assert split_ref.is_file()\n"
         "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': 0.8}))\n",
         encoding="utf-8",
     )
     manifest = {
         "adapter_id": "generic_python", "entrypoint": "run.py", "smoke_argv": [sys.executable, "run.py"],
         "metrics_output": "metrics.json", "allowed_paths": ["run.py"], "protected_paths": ["evaluate.py"],
+        "evaluation_commands": {
+            "b_dev": {"args": ["run.py", "--split-ref", ""], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
+        },
         "activation_evidence": "observed",
     }
     (repository / "autoad_executor_adapter.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -96,7 +102,7 @@ def _ready_session(run_dir: Path):
 
 def _contract() -> BaselineContractInput:
     return BaselineContractInput(
-        primary_metric="score", primary_metric_direction="maximize", dataset_identity="fixture-dataset",
+        primary_metric="score", metrics=[EvaluationMetric(name="score", direction="maximize", implementation_ref="metrics.json")], guardrails=[], dataset_identity="fixture-dataset",
         split_identity="fixture-split", b_dev_ref="inputs/dev.json", b_test_ref="inputs/test.json",
         category_set=["fixture"], seeds=[1], checkpoint_selection="not_applicable", max_wall_seconds=30,
         max_gpu_seconds=30,
@@ -107,8 +113,8 @@ def _declare_b_test_adapter(run_dir: Path, session_id: str) -> None:
     manifest_path = run_dir / "repos" / "source_micro" / "autoad_executor_adapter.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["evaluation_commands"] = {
-        "b_dev": {"args": ["run.py"], "metrics_output": "metrics.json"},
-        "b_test": {"args": ["run.py"], "metrics_output": "metrics.json"},
+        "b_dev": {"args": ["run.py", "--split-ref", ""], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
+        "b_test": {"args": ["run.py", "--split-ref", ""], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     binding_path = run_dir / "task_bridge" / "execution_repository_binding.json"
@@ -158,15 +164,32 @@ def test_baseline_control_refuses_metric_that_was_not_confirmed(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
 
-    with pytest.raises(ValueError, match="user-confirmed task metrics"):
+    with pytest.raises(ValueError, match="baseline metrics must exactly match"):
         BaselineControlService().start(
             run_dir,
             session_id=session.session_id,
-            contract_input=_contract().model_copy(update={"primary_metric": "other"}),
+            contract_input=_contract().model_copy(update={
+                "primary_metric": "other",
+                "metrics": [EvaluationMetric(name="other", direction="maximize", implementation_ref="metrics.json")],
+            }),
         )
 
     assert not (run_dir / "experiments" / "attempts").exists()
     assert load_pipeline_jobs(run_dir) == []
+
+
+def test_baseline_contract_accepts_cpu_only_and_category_free_protocol(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    started = BaselineControlService().start(
+        run_dir,
+        session_id=session.session_id,
+        contract_input=_contract().model_copy(update={"category_set": [], "max_gpu_seconds": 0}),
+    )
+    frozen = json.loads((run_dir / started.evaluation_contract_ref).read_text(encoding="utf-8"))
+    assert frozen["category_set"] == []
+    assert frozen["resource_budget"]["max_gpu_seconds"] == 0
+    assert started.started.attempt.required_device_count == 0
 
 
 def test_baseline_control_queues_explicit_b_test_baseline_and_waits_for_both(tmp_path: Path):

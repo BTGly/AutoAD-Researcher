@@ -23,6 +23,7 @@ class ExecutorEvaluationCommand(BaseModel):
     args: list[str] = Field(min_length=1)
     environment: dict[str, str] = Field(default_factory=dict)
     metrics_output: str = Field(min_length=1)
+    split_ref_arg_index: int | None = Field(default=None, ge=0)
 
 
 class ExecutorAdapterEvidence(BaseModel):
@@ -54,6 +55,7 @@ class ExecutorAdapterInputs(BaseModel):
     python_executable: str = Field(default_factory=lambda: sys.executable, min_length=1)
     timeout_seconds: int = Field(default=60, gt=0)
     evaluation_phase: Literal["b_dev", "b_test"] = "b_dev"
+    split_ref: str | None = None
 
 class ExecutorAdapter:
     """Read one explicit repository-local adapter manifest, never infer an argv."""
@@ -84,11 +86,23 @@ class ExecutorAdapter:
         evidence = result.evidence
         phase_command = evidence.evaluation_commands.get(inputs.evaluation_phase)
         if phase_command is None:
-            if inputs.evaluation_phase == "b_test":
-                raise ValueError("adapter has no explicit b_test evaluation command")
+            if inputs.split_ref is not None:
+                raise ValueError(
+                    f"adapter has no explicit {inputs.evaluation_phase} command for the frozen split"
+                )
             args, environment, metrics_output = [evidence.entrypoint], {}, evidence.metrics_output
         else:
-            args, environment, metrics_output = phase_command.args, phase_command.environment, phase_command.metrics_output
+            args = list(phase_command.args)
+            if inputs.split_ref is not None:
+                index = phase_command.split_ref_arg_index
+                if index is None:
+                    raise ValueError(
+                        f"adapter {inputs.evaluation_phase} command does not declare a split reference argument"
+                    )
+                if index >= len(args):
+                    raise ValueError("adapter split reference argument index is outside the declared command")
+                args[index] = inputs.split_ref
+            environment, metrics_output = phase_command.environment, phase_command.metrics_output
         plan = ExperimentCommandPlan(schema_version=1, command_id=f"{evidence.adapter_id}_{inputs.evaluation_phase}", program=inputs.python_executable, args=args, cwd=inputs.worktree_ref, environment=environment, timeout_seconds=inputs.timeout_seconds, network=False, expected_outputs=[metrics_output])
         refs = ExperimentInputRefs(repository_fingerprint=inputs.repository_fingerprint, environment_sha256=inputs.environment_sha256, dataset_manifest_sha256=inputs.dataset_manifest_sha256, asset_manifest_sha256=inputs.asset_manifest_sha256, command_sha256=experiment_command_sha256(plan))
         return plan, refs

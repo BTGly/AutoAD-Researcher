@@ -60,6 +60,15 @@ def test_contract_rejects_btest_invariants_and_ambiguous_metrics():
         EvaluationMetric(name="auroc", direction="maximize", implementation_ref="../eval.py")
 
 
+def test_contract_allows_cpu_only_and_category_free_protocol():
+    contract = _contract().model_copy(update={
+        "category_set": [],
+        "resource_budget": EvaluationResourceBudget(max_wall_seconds=3600, max_gpu_seconds=0),
+    })
+    assert contract.category_set == []
+    assert contract.resource_budget.max_gpu_seconds == 0
+
+
 def test_v2_contract_requires_explicit_forward_seed_policy():
     v2 = _contract(revision=1, contract_id="evaluation_contract_000002").model_copy(
         update={

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityFeed } from './ActivityFeed';
 import { DetailDrawer, type ExperimentDetailSelection } from './DetailDrawer';
 import { IdeaTree } from './IdeaTree';
-import { ApiError, confirmCandidate, getExperimentProjection, promoteCandidate } from '../lib/api';
+import { ApiError, confirmCandidate, getExperimentProjection, promoteCandidate, startBaseline } from '../lib/api';
 import { attemptStatusLabel, baselineStatusLabel, environmentStatusLabel, sessionStatusLabel } from '../lib/experimentLabels';
-import type { ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, ExperimentProjection } from '../lib/types';
+import type { BaselineContractInput, BaselineMetricInput, ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, ExperimentProjection } from '../lib/types';
 
 interface Props {
   runId: string;
@@ -140,18 +140,115 @@ function ExperimentActions({ runId, projection, onChanged }: { runId: string; pr
   const [approvedBy, setApprovedBy] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  if (projection.session?.execution_mode !== 'approve_each_step') return null;
+  const baselineAvailable = projection.actions.baseline_launch_available === true;
+  if (projection.session?.execution_mode !== 'approve_each_step' && !baselineAvailable) return null;
   const confirmations = projection.actions.candidate_confirmations;
   const promotions = projection.actions.candidate_promotions;
   const reportError = (reason: unknown) => setError(reason instanceof ApiError ? reason.message : '操作未完成，请保留当前证据后重试。');
   return <section aria-label="实验确认动作" style={{ border: '1px solid var(--blue)', borderRadius: 8, padding: 14, marginTop: 12, background: 'var(--bg-panel)' }}>
     <b>需要确认的实验动作</b><div style={{ color: 'var(--text-muted)', fontSize: '0.8em', marginTop: 5 }}>命令、仓库、输入和合并目标均由已冻结工件派生；本页不会接受任意命令。</div>
     {error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 8 }}>{error}</div>}
+    {baselineAvailable && <BaselineLaunchForm runId={runId} projection={projection} onChanged={onChanged} />}
     {confirmations.map(confirmation => <div key={confirmation.candidate_attempt_id} style={{ marginTop: 12 }}><div>候选 {confirmation.candidate_attempt_id} 已记录 B_dev 比较结果。提交阈值后，服务端会重新验证是否可进行 B_test。</div><label style={{ display: 'block', marginTop: 7 }}>噪声阈值 <input aria-label={`噪声阈值 ${confirmation.candidate_attempt_id}`} value={noise} onChange={event => setNoise(event.target.value)} inputMode="decimal" /></label><button disabled={busy !== null || !Number.isFinite(Number(noise)) || Number(noise) < 0} onClick={async () => { setBusy(`confirm:${confirmation.candidate_attempt_id}`); setError(null); try { await confirmCandidate(runId, projection.session!.session_id, confirmation.candidate_attempt_id, Number(noise)); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>确认 B_test 评估</button></div>)}
     {promotions.map(promotable => <div key={promotable.candidate_id} style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}><div>候选 {promotable.candidate_id} 已具备服务端投影的推广事实。推广会合并到 run-owned 主 checkout，并记录 Champion journal。</div><label style={{ display: 'block', marginTop: 7 }}>批准人 <input aria-label={`批准人 ${promotable.candidate_id}`} value={approvedBy} onChange={event => setApprovedBy(event.target.value)} /></label><button disabled={busy !== null || !approvedBy.trim()} onClick={async () => { setBusy(`promote:${promotable.candidate_id}`); setError(null); try { await promoteCandidate(runId, promotable.candidate_id, approvedBy.trim()); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>批准并推广 Champion</button></div>)}
-    {!confirmations.length && !promotions.length && <div style={{ color: 'var(--text-muted)', marginTop: 10, fontSize: '0.85em' }}>当前没有需要人工确认的 B_test 或 Champion 推广动作。</div>}
+    {!baselineAvailable && !confirmations.length && !promotions.length && <div style={{ color: 'var(--text-muted)', marginTop: 10, fontSize: '0.85em' }}>当前没有需要人工确认的 B_test 或 Champion 推广动作。</div>}
   </section>;
 }
+
+type MetricDraft = {
+  name: string;
+  direction: BaselineMetricInput['direction'] | '';
+  implementation_ref: string;
+  role: 'primary' | 'guardrail' | '';
+};
+
+function BaselineLaunchForm({ runId, projection, onChanged }: { runId: string; projection: ExperimentProjection; onChanged: () => void }) {
+  const task = projection.input_task;
+  const sessionId = projection.session?.session_id;
+  const [datasetIdentity, setDatasetIdentity] = useState(task?.dataset || '');
+  const [splitIdentity, setSplitIdentity] = useState('');
+  const [bDevRef, setBDevRef] = useState('');
+  const [bTestRef, setBTestRef] = useState('');
+  const [categoryText, setCategoryText] = useState('');
+  const [seedsText, setSeedsText] = useState('');
+  const [checkpointSelection, setCheckpointSelection] = useState('');
+  const [maxWallSeconds, setMaxWallSeconds] = useState('');
+  const [maxGpuSeconds, setMaxGpuSeconds] = useState('');
+  const [metrics, setMetrics] = useState<MetricDraft[]>(() => (task?.primary_metrics || []).map(name => ({ name, direction: '', implementation_ref: '', role: '' })));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateMetric = (index: number, patch: Partial<MetricDraft>) => {
+    setMetrics(values => values.map((value, itemIndex) => itemIndex === index ? { ...value, ...patch } : value));
+  };
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!sessionId) return;
+    const primary = metrics.filter(metric => metric.role === 'primary');
+    const incompleteMetric = metrics.find(metric => !metric.direction || !metric.implementation_ref.trim() || !metric.role);
+    const seeds = parseIntegers(seedsText);
+    const wall = parseNonNegativeInteger(maxWallSeconds);
+    const gpu = parseNonNegativeInteger(maxGpuSeconds);
+    let validationError: string | null = null;
+    if (!datasetIdentity.trim() || !splitIdentity.trim() || !bDevRef.trim() || !bTestRef.trim() || !checkpointSelection.trim()) validationError = '数据集、split、checkpoint 选择和冻结文件引用均不能为空。';
+    else if (primary.length !== 1) validationError = '必须明确选择一个 primary metric。';
+    else if (incompleteMetric) validationError = '每个已确认指标都需要方向、角色和实现引用。';
+    else if (!seeds.length) validationError = '至少填写一个整数 seed。';
+    else if (seeds.length !== new Set(seeds).size) validationError = 'seed 不能重复。';
+    else if (wall === null || wall <= 0) validationError = '最大墙钟时间必须是正整数。';
+    else if (gpu === null) validationError = '最大 GPU 时间必须是大于等于 0 的整数。';
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    const contract: BaselineContractInput = {
+      primary_metric: primary[0].name,
+      metrics: metrics.map(metric => ({ name: metric.name, direction: metric.direction as BaselineMetricInput['direction'], implementation_ref: metric.implementation_ref.trim() })),
+      guardrails: metrics.filter(metric => metric.role === 'guardrail').map(metric => metric.name),
+      dataset_identity: datasetIdentity.trim(),
+      split_identity: splitIdentity.trim(),
+      b_dev_ref: bDevRef.trim(),
+      b_test_ref: bTestRef.trim(),
+      category_set: splitLines(categoryText),
+      seeds,
+      checkpoint_selection: checkpointSelection.trim(),
+      max_wall_seconds: wall as number,
+      max_gpu_seconds: gpu as number,
+    };
+    setBusy(true);
+    setError(null);
+    try {
+      await startBaseline(runId, sessionId, contract);
+      onChanged();
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : 'Baseline 启动失败，请保留当前契约后重试。');
+      setBusy(false);
+    }
+  };
+
+  return <form onSubmit={submit} style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+    <h3 style={{ margin: 0, fontSize: '0.95em' }}>启动 Baseline</h3>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 8, marginTop: 10 }}>
+      <label>数据集标识<input aria-label="数据集标识" value={datasetIdentity} onChange={event => setDatasetIdentity(event.target.value)} /></label>
+      <label>Split 标识<input aria-label="Split 标识" value={splitIdentity} onChange={event => setSplitIdentity(event.target.value)} /></label>
+      <label>B_dev 文件引用<input aria-label="B_dev 文件引用" placeholder="run-relative path" value={bDevRef} onChange={event => setBDevRef(event.target.value)} /></label>
+      <label>B_test 文件引用<input aria-label="B_test 文件引用" placeholder="run-relative path" value={bTestRef} onChange={event => setBTestRef(event.target.value)} /></label>
+      <label>Checkpoint 选择<input aria-label="Checkpoint 选择" value={checkpointSelection} onChange={event => setCheckpointSelection(event.target.value)} /></label>
+      <label>Seeds<input aria-label="Seeds" placeholder="例如 1, 2" value={seedsText} onChange={event => setSeedsText(event.target.value)} /></label>
+      <label>最大墙钟秒数<input aria-label="最大墙钟秒数" inputMode="numeric" value={maxWallSeconds} onChange={event => setMaxWallSeconds(event.target.value)} /></label>
+      <label>最大 GPU 秒数<input aria-label="最大 GPU 秒数" inputMode="numeric" value={maxGpuSeconds} onChange={event => setMaxGpuSeconds(event.target.value)} /></label>
+    </div>
+    <label style={{ display: 'block', marginTop: 8 }}>类别集合（可为空）<textarea aria-label="类别集合" rows={2} placeholder="每行一个类别" value={categoryText} onChange={event => setCategoryText(event.target.value)} /></label>
+    <div style={{ marginTop: 10 }}><b style={{ fontSize: '0.85em' }}>已确认指标</b>{metrics.map((metric, index) => <div key={metric.name} style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, .8fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(150px, 1.4fr)', gap: 6, marginTop: 6, alignItems: 'center' }}><input aria-label={`指标名称 ${metric.name}`} value={metric.name} readOnly /><select aria-label={`指标方向 ${metric.name}`} value={metric.direction} onChange={event => updateMetric(index, { direction: event.target.value as MetricDraft['direction'] })}><option value="">方向</option><option value="maximize">maximize</option><option value="minimize">minimize</option></select><select aria-label={`指标角色 ${metric.name}`} value={metric.role} onChange={event => updateMetric(index, { role: event.target.value as MetricDraft['role'] })}><option value="">角色</option><option value="primary">primary</option><option value="guardrail">guardrail</option></select><input aria-label={`指标实现引用 ${metric.name}`} placeholder="implementation ref" value={metric.implementation_ref} onChange={event => updateMetric(index, { implementation_ref: event.target.value })} /></div>)}</div>
+    {error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 8 }}>{error}</div>}
+    <button type="submit" disabled={busy} style={{ marginTop: 10 }}>{busy ? 'Baseline 排队中…' : '冻结契约并启动 Baseline'}</button>
+  </form>;
+}
+
+function splitLines(value: string): string[] { return value.split(/\r?\n/).map(item => item.trim()).filter(Boolean); }
+function parseIntegers(value: string): number[] { const items = value.split(/[\s,，]+/).map(item => item.trim()).filter(Boolean); return items.every(item => /^-?\d+$/.test(item)) ? items.map(Number) : []; }
+function parseNonNegativeInteger(value: string): number | null { return /^\d+$/.test(value.trim()) ? Number(value.trim()) : null; }
 
 function SessionOverview({ projection }: { projection: ExperimentProjection }) {
   const task = projection.input_task;
