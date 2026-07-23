@@ -27,7 +27,7 @@ async function prepare(page: Page, discussionMode: 'failed' | 'response_lost' = 
     if (path === `/api/runs/${run.run_id}/reports/${pendingReport.report_id}/state`) return route.fulfill({ json: { ...pendingReport, job_ids: [], jobs: [], retry_count: 0, last_error: null, available_artifacts: [] } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/digest`) return route.fulfill({ json: { report_id: report.report_id, facts_content_sha256: report.facts_content_sha256, research_objective: {}, engineering_status: 'READY', execution_status: 'COMPLETED', scientific_status: 'EVIDENCE_INSUFFICIENT', attempt_count: 1, failed_attempt_count: 0, non_comparable_attempt_count: 0, champion: {}, primary_metrics: [{ attempt_id: 'attempt_000001', metric: 'image_auroc', value: 0.91 }], stop_decision: {}, uncertainties: ['Scientific assessment is evidence-insufficient.'] } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/content`) return route.fulfill({ json: { content: '# Frozen report' } });
-    if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/evidence`) return route.fulfill({ json: { entries: [] } });
+    if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/evidence`) return route.fulfill({ json: { entries: [{ evidence_id: 'evidence_session_status', evidence_kind: 'frozen_experiment_session', source_object_id: 'experiment_session:session_000001', field_path: 'status', attempt_id: null, idea_id: null, summary: '冻结 Session 状态', artifact_ref: { locator: 'reports/report_000001/report_snapshot.json', sha256: 'c'.repeat(64), artifact_type: 'frozen_experiment_session', source_id: 'session_000001', size_bytes: 2048 } }] } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion` && route.request().method() === 'GET') return route.fulfill({ json: { messages: [], turns: [] } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion` && route.request().method() === 'POST') {
       discussionPostCount += 1;
@@ -71,6 +71,19 @@ test('renders separated report states, core metrics, and the HTML delivery', asy
   await expect(page.getByText('科学：证据不足', { exact: true })).toBeVisible();
   await expect(page.getByText('attempt_000001 · image_auroc: 0.91', { exact: true })).toBeVisible();
   await expect(page.getByTitle('在新窗口打开 HTML')).toHaveAttribute('href', `/api/runs/${run.run_id}/reports/${report.report_id}/download/report.html`);
+});
+
+test('shows readable evidence metadata with technical references on demand', async ({ page }) => {
+  await prepare(page);
+  await page.getByRole('button', { name: '研究报告' }).click();
+  const evidence = page.locator('details').filter({ hasText: '冻结的 Session' });
+  await expect(evidence).toBeVisible();
+  await evidence.locator('summary').click();
+  await expect(evidence).toContainText('制品类型：冻结的 Session');
+  await expect(evidence).toContainText('大小：2.0 KB');
+  await expect(evidence).toContainText('来源：session_000001');
+  await expect(evidence).toContainText('技术引用：reports/report_000001/report_snapshot.json');
+  await expect(evidence).toContainText(`SHA：${'c'.repeat(64)}`);
 });
 
 test('updates review and isolates human proposals by selected report version', async ({ page }) => {

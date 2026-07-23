@@ -100,11 +100,23 @@ export const reportProposalStatusLabel = (value: string) => label(value, {
 });
 
 export const reportEvidenceKindLabel = (value: string) => label(value, {
+  frozen_experiment_session: '冻结的 Session',
   frozen_session: '冻结的 Session',
+  experiment_session: '实验 Session',
+  experiment_attempt: '实验 Attempt',
+  idea_tree: 'Idea 树',
+  cognitive_cost_summary: '认知成本摘要',
+  stop_decision: '停止决策',
+  candidate_snapshot: '候选快照',
+  champion_pointers: 'Champion 指针',
+  execution_result: '执行结果',
   outcome_card: '实验结果卡片',
+  scientific_assessment: '科学评价',
+  assessment_reconciliation: '评价边界',
   attempt_stdout_log: '实验标准输出',
   patch_diff: '代码变更',
   approval_artifact: '审批记录',
+  resource_usage_report: '资源使用报告',
 });
 
 export const reportHandoffKindLabel = (value: string) => label(value, {

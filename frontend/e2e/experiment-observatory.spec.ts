@@ -123,6 +123,38 @@ test('launches a Baseline from an environment-ready Session with an explicit con
   expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_gpu_seconds: 0, required_device_count: 0, required_vram_mb: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
 });
 
+test('moves focus to the first invalid Baseline field while retaining the error', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  await prepare(page, () => baselineProjection);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
+  await expect(page.getByRole('alert')).toHaveText('数据集、split、checkpoint 选择和冻结文件引用均不能为空。');
+  await expect(page.getByLabel('Split 标识')).toBeFocused();
+  await expect(page.getByRole('form', { name: 'Baseline 启动表单' })).toHaveAttribute('aria-describedby', 'baseline-launch-error');
+});
+
+test('keeps the Baseline form usable without horizontal overflow on mobile', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  await prepare(page, () => baselineProjection);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  const dimensions = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 1);
+  const launchButton = page.getByRole('button', { name: '冻结契约并启动 Baseline' });
+  await launchButton.scrollIntoViewIfNeeded();
+  await expect(launchButton).toBeInViewport();
+});
+
 test('releases the Baseline form when the post-start projection refresh fails', async ({ page }) => {
   const baselineProjection = structuredClone(projection);
   baselineProjection.session.status = 'READY_FOR_BASELINE';
