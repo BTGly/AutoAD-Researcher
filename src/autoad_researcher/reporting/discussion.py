@@ -29,7 +29,8 @@ DISCUSSION_EVIDENCE_RULE = (
     "For requests about direct failure evidence, stderr or stdout details, root cause, or a minimal repair, "
     "first use a registered read-only Attempt or log tool such as get_outcome_card, search_log, or read_log_range. "
     "Do not infer an error class from a task profile or generic failure pattern. If the tool result does not support "
-    "a claim, say that the evidence is insufficient."
+    "a claim, say that the evidence is insufficient. If a registered log explicitly states a repair scope, "
+    "report only that scope and the next authorized retry or review step; do not infer implementation details."
 )
 RESPONSE_CAPACITY_ERROR = "报告讨论当前繁忙，请稍后重试。"
 
@@ -171,9 +172,26 @@ def _respond_with_slot(
     )
     digest = digest_model.model_dump(mode="json")
     evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id, "artifact_ref": item.artifact_ref.model_dump(mode="json"), "field_path": item.field_path} for item in index.entries]
+    context_payload: dict[str, Any] = {
+        "report_id": report_id,
+        "snapshot_sha256": turn.snapshot_content_sha256,
+        "digest": digest,
+        "evidence": evidence,
+    }
+    failure_log_context = _registered_failure_log_context(
+        run_dir,
+        report_id=report_id,
+        facts=_facts,
+        snapshot_content_sha256=turn.snapshot_content_sha256,
+    )
+    if failure_log_context:
+        context_payload["registered_failure_log_context"] = failure_log_context
+    failed_attempt_facts = _failed_attempt_facts(_facts)
+    if failed_attempt_facts:
+        context_payload["failed_attempt_facts"] = failed_attempt_facts
     messages = [
-        {"role": "system", "content": f"You answer only from frozen report context. {DISCUSSION_RESPONSE_CONTRACT} {DISCUSSION_EVIDENCE_RULE} Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
-        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence}, ensure_ascii=False)},
+        {"role": "system", "content": f"You answer only from frozen report context. {DISCUSSION_RESPONSE_CONTRACT} {DISCUSSION_EVIDENCE_RULE} Preserve exact field names and values from structured tool results; never replace one status or failure_code with another field's value. State a repair action only when it is explicitly supported by a registered log or repair artifact; do not invent algorithmic changes. Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
+        {"role": "user", "content": json.dumps(context_payload, ensure_ascii=False)},
         {"role": "assistant", "content": "I will use only this frozen report context and registered Evidence."},
         *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id, context_window=model_route.context_window if model_route is not None else 1_000_000),
         {"role": "user", "content": turn.user_message},
@@ -288,6 +306,67 @@ def _respond_with_slot(
     except Exception as exc:
         return fail_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, error=str(exc))
     return complete_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, response=response)
+
+
+def _registered_failure_log_context(
+    run_dir: Path,
+    *,
+    report_id: str,
+    facts: Any,
+    snapshot_content_sha256: str,
+) -> list[dict[str, Any]]:
+    """Prefetch only SHA-bound stderr for frozen failed Attempts."""
+    calls: list[ReportToolCall] = []
+    for attempt in facts.attempts:
+        if attempt.get("runtime_status") != "FAILED":
+            continue
+        attempt_id = attempt.get("attempt_id")
+        if isinstance(attempt_id, str) and attempt_id:
+            calls.append(
+                ReportToolCall(
+                    name="read_log_range",
+                    arguments={"attempt_id": attempt_id, "stream": "stderr"},
+                )
+            )
+    if not calls:
+        return []
+    return execute_tools(
+        run_dir,
+        report_id=report_id,
+        calls=calls,
+        snapshot_content_sha256_expected=snapshot_content_sha256,
+    )
+
+
+def _failed_attempt_facts(facts: Any) -> list[dict[str, Any]]:
+    """Expose exact failure fields without asking the provider to reconcile them."""
+    result: list[dict[str, Any]] = []
+    for attempt in facts.attempts:
+        if attempt.get("runtime_status") != "FAILED":
+            continue
+        outcome = attempt.get("outcome") if isinstance(attempt.get("outcome"), dict) else {}
+        execution_result = attempt.get("execution_result") if isinstance(attempt.get("execution_result"), dict) else {}
+        classification = attempt.get("failure_classification") if isinstance(attempt.get("failure_classification"), dict) else {}
+        result.append(
+            {
+                "attempt_id": attempt.get("attempt_id"),
+                "attempt_purpose": attempt.get("attempt_purpose"),
+                "runtime_status": attempt.get("runtime_status"),
+                "outcome": {
+                    key: outcome.get(key)
+                    for key in ("attempt_category", "execution_status", "evaluation_status", "metrics_parsed")
+                },
+                "execution_result": {
+                    key: execution_result.get(key)
+                    for key in ("exit_code", "failure_code", "failure_message", "timed_out")
+                },
+                "failure_classification": {
+                    key: classification.get(key)
+                    for key in ("attempt_category", "failure_code", "matched_detector", "retryable")
+                },
+            }
+        )
+    return result
 
 
 def _discussion_repair_prompt(diagnostic: str) -> str:

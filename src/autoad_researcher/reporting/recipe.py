@@ -9,6 +9,7 @@ from autoad_researcher.assistant.model_routing import select_model_route
 from autoad_researcher.reporting.default_narrative import NARRATIVE_MODEL_PROFILE, NARRATIVE_TEMPLATE_VERSION
 from autoad_researcher.reporting.bundle import REPORT_BUNDLE_FORMAT_VERSION
 from autoad_researcher.reporting.digest import REPORT_DIGEST_BUILD_VERSION
+from autoad_researcher.reporting.discussion import DISCUSSION_EVIDENCE_RULE, DISCUSSION_RESPONSE_CONTRACT
 from autoad_researcher.reporting.evidence import EVIDENCE_INDEX_BUILD_VERSION
 from autoad_researcher.reporting.facts import REPORT_FACTS_SCHEMA_VERSION
 from autoad_researcher.reporting.narrative import NarrativeSectionsV1
@@ -63,6 +64,10 @@ def report_recipe_hash(generation_profile: dict[str, Any] | None = None) -> str:
                 "model_profile": NARRATIVE_MODEL_PROFILE,
                 "template_version": NARRATIVE_TEMPLATE_VERSION,
                 "generation_profile": generation_profile or report_generation_profile(),
+            },
+            "discussion": {
+                "response_contract": DISCUSSION_RESPONSE_CONTRACT,
+                "evidence_rule": DISCUSSION_EVIDENCE_RULE,
             },
             "validator_version": REPORT_VALIDATOR_VERSION,
             "renderers": {
