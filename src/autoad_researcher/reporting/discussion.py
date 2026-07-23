@@ -19,10 +19,16 @@ from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, ReportToolCall, execute_tools, load_verified_report_context, native_tool_definitions
 
-MAX_TURNS = 40
-MAX_MESSAGE_CHARS = 8000
 REPORT_REQUEST_TIMEOUT_SECONDS = 60
 RESPONSE_CAPACITY_ERROR = "报告讨论当前繁忙，请稍后重试。"
+
+
+class DiscussionCapacityBusy(RuntimeError):
+    """The durable turn remains pending until its request can acquire a slot."""
+
+    def __init__(self, turn_id: str) -> None:
+        self.turn_id = turn_id
+        super().__init__(RESPONSE_CAPACITY_ERROR)
 
 
 class ReportDiscussionBudget(BaseModel):
@@ -35,7 +41,7 @@ class ReportDiscussionBudget(BaseModel):
 
 class DiscussionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    answer: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    answer: str = Field(min_length=1)
     response_kind: Literal["explain", "verify", "compare", "evidence", "next_step", "insufficient_evidence"]
     evidence_ids: list[str] = Field(default_factory=list)
     unsupported_claims: list[str] = Field(default_factory=list)
@@ -47,7 +53,7 @@ class DiscussionTurn(BaseModel):
     request_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$")
     report_id: str
     snapshot_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    user_message: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    user_message: str = Field(min_length=1)
     response: DiscussionResponse | None = None
     status: Literal["pending", "completed", "failed"]
     evidence_ids: list[str] = Field(default_factory=list)
@@ -77,8 +83,6 @@ def start_turn(run_dir: Path, *, report_id: str, request_id: str, content: str, 
             if (existing.user_message, existing.evidence_ids) != (content, ids):
                 raise ValueError("discussion request_id conflicts with an existing turn")
             return existing
-        if len(turns) >= MAX_TURNS:
-            raise ValueError("discussion transcript reached its turn limit")
         turn = DiscussionTurn(turn_id=f"turn_{uuid4().hex}", request_id=request_id, report_id=report_id, snapshot_content_sha256=manifest.source_snapshot_content_sha256, user_message=content, evidence_ids=ids, status="pending", created_at=_utc_now())
         _append_unlocked(_path(run_dir, report_id), turn)
         return turn
@@ -122,7 +126,7 @@ def respond_to_turn(
         return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error="report discussion model is not configured")
     limits = budget or ReportDiscussionBudget()
     if not _try_response_slot(run_dir, report_id):
-        return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error=RESPONSE_CAPACITY_ERROR)
+        raise DiscussionCapacityBusy(turn.turn_id)
     try:
         return _respond_with_slot(
             run_dir,
@@ -339,7 +343,7 @@ def load_messages(run_dir: Path, *, report_id: str) -> list[DiscussionMessage]:
         messages.append(DiscussionMessage(message_id=f"{turn.turn_id}:user", report_id=report_id, snapshot_content_sha256=turn.snapshot_content_sha256, role="user", content=turn.user_message, evidence_ids=turn.evidence_ids, created_at=turn.created_at))
         if turn.response is not None:
             messages.append(DiscussionMessage(message_id=f"{turn.turn_id}:assistant", report_id=report_id, snapshot_content_sha256=turn.snapshot_content_sha256, role="assistant", content=turn.response.answer, evidence_ids=turn.response.evidence_ids, created_at=turn.completed_at or turn.created_at))
-    return messages[-MAX_TURNS * 2:]
+    return messages
 
 
 def append_message(run_dir: Path, *, report_id: str, role: str, content: str, evidence_ids: list[str] | None = None) -> DiscussionMessage:

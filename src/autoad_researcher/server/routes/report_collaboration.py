@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.reporting.discussion import RESPONSE_CAPACITY_ERROR, load_messages, load_turns, respond_to_turn, start_turn
+from autoad_researcher.reporting.discussion import DiscussionCapacityBusy, load_messages, load_turns, respond_to_turn, start_turn
 from autoad_researcher.server.routes.chat import _extract_api_headers, _extract_role_route
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.reporting.review import (
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/runs/{run_id}/reports/{report_id}", tags=["repor
 class DiscussionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]+$")
-    content: str = Field(min_length=1, max_length=8000)
+    content: str = Field(min_length=1)
     evidence_ids: list[str] = Field(default_factory=list)
 
 
@@ -81,11 +81,6 @@ async def post_discussion(run_id: str, report_id: str, request: DiscussionReques
         if item.status == "pending":
             return JSONResponse(status_code=202, content=item.model_dump(mode="json"))
         if item.status == "failed":
-            if item.error == RESPONSE_CAPACITY_ERROR:
-                raise HTTPException(
-                    status_code=429,
-                    detail={"code": "report_discussion_busy", "message": item.error, "turn_id": item.turn_id, "status": item.status},
-                )
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -96,6 +91,17 @@ async def post_discussion(run_id: str, report_id: str, request: DiscussionReques
                 },
             )
         return item.model_dump(mode="json")
+    except DiscussionCapacityBusy as exc:
+        raise HTTPException(
+            status_code=429,
+            headers={"Retry-After": "2"},
+            detail={
+                "code": "report_discussion_busy",
+                "message": str(exc),
+                "turn_id": exc.turn_id,
+                "status": "pending",
+            },
+        ) from exc
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
 

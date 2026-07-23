@@ -11,7 +11,6 @@ import pytest
 from autoad_researcher.assistant import llm_runtime
 from autoad_researcher.assistant.llm_runtime import (
     LLMCallRequest,
-    conversation_deadline_scope,
     get_llm_call_broker,
     reset_llm_call_broker,
 )
@@ -27,7 +26,6 @@ def _isolated_runtime(monkeypatch):
         "AUTOAD_LLM_RESERVED_INTERACTIVE_SLOTS",
         "AUTOAD_LLM_CIRCUIT_FAILURE_THRESHOLD",
         "AUTOAD_LLM_CIRCUIT_COOLDOWN_SECONDS",
-        "AUTOAD_CONVERSATION_DEADLINE_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
     reset_llm_call_broker()
@@ -151,7 +149,7 @@ def test_reserved_interactive_slot_is_not_consumed_by_routing(monkeypatch):
         assert interactive_call.result(timeout=2).reply == "ok"
 
 
-def test_queue_wait_obeys_remaining_conversation_deadline(monkeypatch):
+def test_queue_wait_obeys_single_request_timeout(monkeypatch):
     monkeypatch.setenv("AUTOAD_LLM_MAX_INFLIGHT_PER_PROVIDER", "1")
     reset_llm_call_broker()
     entered = threading.Event()
@@ -168,14 +166,13 @@ def test_queue_wait_obeys_remaining_conversation_deadline(monkeypatch):
         active = executor.submit(broker.call, _request(timeout_s=2))
         assert entered.wait(timeout=1)
         started = time.monotonic()
-        with conversation_deadline_scope(0.05):
-            queued = broker.call(_request(timeout_s=2))
+        queued = broker.call(_request(timeout_s=0.05))
         elapsed = time.monotonic() - started
         release.set()
-        assert active.result(timeout=2).reply == "ok"
+    assert active.result(timeout=2).reply == "ok"
 
     assert queued.error_type == "queue_timeout"
-    assert queued.fallback_reason == "conversation_deadline_exhausted"
+    assert queued.fallback_reason == "provider_queue_timeout"
     assert elapsed < 0.2
 
 

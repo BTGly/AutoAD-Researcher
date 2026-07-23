@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, ExternalLink, RefreshCw, Send } from 'lucide-react';
-import { confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
+import { ApiError, confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
 import type { DiscussionMessage, ReportDigest, ReportEvidence, ReportManifest, ReportProposal, ReportState } from '../lib/types';
 import { MarkdownContent } from './MarkdownContent';
 import { AppButton } from './ui/AppButton';
@@ -28,6 +28,7 @@ export function ReportPage({ runId, onBack }: Props) {
   const [proposalRationale, setProposalRationale] = useState('');
   const [reviewComment, setReviewComment] = useState('');
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const discussionRetry = useRef<{ reportId: string; content: string; requestId: string } | null>(null);
   const load = useCallback(async () => {
     if (!runId) return;
     setLoading(true); setError(null);
@@ -73,7 +74,27 @@ export function ReportPage({ runId, onBack }: Props) {
   const artifacts = visibleState?.available_artifacts ?? [];
   const readable = visibleState?.generation_status === 'content_ready';
   const discussionReady = readable && artifacts.includes('report.md') && artifacts.includes('report_validation.json');
-  const sendDiscussion = async () => { if (!selected || !discussionReady || !question.trim() || sending) return; const requestedQuestion = question.trim(); setSending(true); try { await sendReportDiscussion(runId, selected.report_id, `report.${selected.report_id}.${crypto.randomUUID()}`, requestedQuestion); setQuestion(''); setDiscussion((await getReportDiscussion(runId, selected.report_id)).messages); } catch (reason) { setError(reason instanceof Error ? reason.message : '讨论请求失败'); } finally { setSending(false); } };
+  const sendDiscussion = async () => {
+    if (!selected || !discussionReady || !question.trim() || sending) return;
+    const requestedQuestion = question.trim();
+    const previous = discussionRetry.current;
+    const requestId = previous?.reportId === selected.report_id && previous.content === requestedQuestion
+      ? previous.requestId
+      : `report.${selected.report_id}.${crypto.randomUUID()}`;
+    discussionRetry.current = { reportId: selected.report_id, content: requestedQuestion, requestId };
+    setSending(true);
+    try {
+      await sendReportDiscussion(runId, selected.report_id, requestId, requestedQuestion);
+      discussionRetry.current = null;
+      setQuestion('');
+      setDiscussion((await getReportDiscussion(runId, selected.report_id)).messages);
+    } catch (reason) {
+      if (!(reason instanceof ApiError) || reason.status !== 429) discussionRetry.current = null;
+      setError(reason instanceof Error ? reason.message : '讨论请求失败');
+    } finally {
+      setSending(false);
+    }
+  };
   const refreshProposals = async () => { if (selected) setProposals(await listReportProposals(runId, selected.report_id)); };
   const proposeHuman = async () => { if (!selected || !readable || !proposalRationale.trim() || actionBusy) return; setActionBusy('proposal:create'); try { await createHumanProposal(runId, selected.report_id, proposalRationale.trim()); setProposalRationale(''); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 创建失败'); } finally { setActionBusy(null); } };
   const changeProposal = async (proposalId: string, action: 'confirm' | 'reject') => { if (!selected || actionBusy) return; setActionBusy(`proposal:${proposalId}:${action}`); try { if (action === 'confirm') await confirmReportProposal(runId, selected.report_id, proposalId); else await rejectReportProposal(runId, selected.report_id, proposalId); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 更新失败'); } finally { setActionBusy(null); } };

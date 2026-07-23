@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, _recent_history, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
+from autoad_researcher.reporting.discussion import DiscussionCapacityBusy, DiscussionResponse, ReportDiscussionBudget, _recent_history, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -56,6 +56,50 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
     assert completed.status == "completed"
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
+
+
+def test_capacity_busy_keeps_pending_turn_for_same_request_retry(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_capacity", content="请解释当前证据")
+    slot_available = False
+    monkeypatch.setattr(
+        "autoad_researcher.reporting.discussion._try_response_slot",
+        lambda *_args: slot_available,
+    )
+
+    with pytest.raises(DiscussionCapacityBusy) as excinfo:
+        respond_to_turn(
+            run_dir,
+            report_id=report_id,
+            turn_id=turn.turn_id,
+            api_key="test",
+            provider_url="https://example.test",
+            model="test",
+        )
+
+    assert excinfo.value.turn_id == turn.turn_id
+    assert load_turns(run_dir, report_id=report_id)[-1].status == "pending"
+    replay = start_turn(run_dir, report_id=report_id, request_id="turn_capacity", content="请解释当前证据")
+    assert replay.turn_id == turn.turn_id
+
+    slot_available = True
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *_args, **_kwargs: {
+            "reply": '{"answer":"当前没有可核验的提升结论。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":[]}',
+            "error": "",
+        },
+    )
+    completed = respond_to_turn(
+        run_dir,
+        report_id=report_id,
+        turn_id=replay.turn_id,
+        api_key="test",
+        provider_url="https://example.test",
+        model="test",
+    )
+    assert completed.status == "completed"
+    assert not (run_dir / "reports" / report_id / "discussion" / ".response.lock").exists()
 
 
 def test_discussion_responder_repairs_plain_provider_text(monkeypatch, tmp_path: Path):
@@ -188,6 +232,41 @@ async def test_discussion_route_maps_failed_turn_to_bad_gateway(monkeypatch, tmp
 
     assert excinfo.value.status_code == 502
     assert excinfo.value.detail["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_discussion_route_maps_capacity_busy_to_retryable_429(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    monkeypatch.setattr(report_route, "RUNS_ROOT", str(tmp_path))
+
+    def busy_response(*_args, **_kwargs):
+        raise DiscussionCapacityBusy("turn_busy")
+
+    monkeypatch.setattr(report_route, "respond_to_turn", busy_response)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": f"/api/runs/{run_dir.name}/reports/{report_id}/discussion",
+        "headers": [],
+        "query_string": b"",
+    })
+
+    with pytest.raises(HTTPException) as excinfo:
+        await report_route.post_discussion(
+            run_dir.name,
+            report_id,
+            report_route.DiscussionRequest(request_id="route_busy", content="请解释"),
+            request,
+        )
+
+    assert excinfo.value.status_code == 429
+    assert excinfo.value.headers["Retry-After"] == "2"
+    assert excinfo.value.detail == {
+        "code": "report_discussion_busy",
+        "message": "报告讨论当前繁忙，请稍后重试。",
+        "turn_id": "turn_busy",
+        "status": "pending",
+    }
 
 
 def test_direct_discussion_response_verifies_turn_snapshot_before_model_call(monkeypatch, tmp_path: Path):
