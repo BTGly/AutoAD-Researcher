@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -12,6 +13,8 @@ from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.server.routes import report_collaboration as report_route
 from autoad_researcher.worker.main import _process_pending_jobs
+from autoad_researcher.assistant import llm_runtime
+from autoad_researcher.assistant.llm_runtime import reset_llm_call_broker
 
 
 def _ready_report(tmp_path: Path):
@@ -66,7 +69,7 @@ def test_discussion_responder_uses_native_tool_call_pairing(monkeypatch, tmp_pat
             assert kwargs["tools"]
             return {
                 "reply": "",
-                "reasoning_content": "需要读取冻结摘要。",
+                "reasoning": "需要读取冻结摘要。",
                 "tool_calls": [{
                     "id": "call_digest",
                     "type": "function",
@@ -86,6 +89,56 @@ def test_discussion_responder_uses_native_tool_call_pairing(monkeypatch, tmp_pat
 
     assert completed.status == "completed"
     assert len(calls) == 2
+
+
+def test_discussion_native_tool_loop_uses_real_broker_facade(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_broker_tool", content="请读取报告摘要")
+    calls: list[dict] = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        if len(calls) == 1:
+            return httpx.Response(200, json={
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": None,
+                        "reasoning_content": "读取冻结摘要。",
+                        "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "get_report_digest", "arguments": "{}"}}],
+                    },
+                }],
+            })
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "stop", "message": {"content": '{"answer":"摘要已读取。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":[]}'}}],
+        })
+
+    transport = httpx.MockTransport(handler)
+    client_type = httpx.Client
+
+    def client_factory(**kwargs):
+        kwargs.pop("limits", None)
+        return client_type(transport=transport, **kwargs)
+
+    monkeypatch.setattr(llm_runtime.httpx, "Client", client_factory)
+    reset_llm_call_broker()
+    try:
+        completed = respond_to_turn(
+            run_dir,
+            report_id=report_id,
+            turn_id=turn.turn_id,
+            api_key="sk-test",
+            provider_url="https://provider.test",
+            model="deepseek-v4-flash",
+        )
+    finally:
+        reset_llm_call_broker()
+
+    assert completed.status == "completed"
+    assert len(calls) == 2
+    assert calls[0]["tools"]
+    assert any(message.get("role") == "tool" and message.get("tool_call_id") == "call_1" for message in calls[1]["messages"])
 
 
 @pytest.mark.asyncio
@@ -139,7 +192,7 @@ def test_direct_discussion_response_verifies_turn_snapshot_before_model_call(mon
         )
 
 
-def test_discussion_response_receives_bounded_completed_history(monkeypatch, tmp_path: Path):
+def test_discussion_response_receives_completed_history(monkeypatch, tmp_path: Path):
     run_dir, report_id = _ready_report(tmp_path)
     earlier = start_turn(run_dir, report_id=report_id, request_id="turn_earlier", content="刚才的实验")
     complete_turn(run_dir, report_id=report_id, turn_id=earlier.turn_id, response=DiscussionResponse(answer="先前回答", response_kind="insufficient_evidence"))
@@ -155,7 +208,7 @@ def test_discussion_response_receives_bounded_completed_history(monkeypatch, tmp
     contents = [item["content"] for item in captured["messages"]]
     assert "刚才的实验" in contents and "先前回答" in contents and contents[-1] == "继续解释"
     history = _recent_history(load_turns(run_dir, report_id=report_id), current_turn_id="missing")
-    assert sum(len(item["content"].encode("utf-8")) for item in history) <= 16 * 1024 + len(history[0]["content"].encode("utf-8"))
+    assert [item["content"] for item in history] == ["刚才的实验", "先前回答", "继续解释", "上下文已加载。"]
 
 
 def test_discussion_budget_and_factual_evidence_requirements(monkeypatch, tmp_path: Path):
@@ -176,10 +229,10 @@ def test_discussion_budget_and_factual_evidence_requirements(monkeypatch, tmp_pa
         api_key="test",
         provider_url="https://example.test",
         model="test",
-        budget=ReportDiscussionBudget(max_output_tokens=128, max_wall_time_seconds=12),
+        budget=ReportDiscussionBudget(max_wall_time_seconds=12),
     )
     assert completed.status == "completed"
-    assert captured["max_tokens"] == 128 and captured["timeout_s"] == 12
+    assert "max_tokens" not in captured and captured["timeout_s"] == 12
 
     missing = start_turn(run_dir, report_id=report_id, request_id="turn_missing_evidence", content="请解释")
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", lambda *_args, **_kwargs: {"reply": '{"answer":"解释。","response_kind":"explain","evidence_ids":[],"unsupported_claims":[]}', "error": ""})

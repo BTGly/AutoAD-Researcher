@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { KeyRound, Save, X } from 'lucide-react';
-import type { AppConfig } from '../hooks/useConfig';
+import { MODEL_OPTIONS } from '../hooks/useConfig';
+import type { AppConfig, ModelId } from '../hooks/useConfig';
 import { useDialogFocus } from '../hooks/useDialogFocus';
 import { AppButton } from './ui/AppButton';
 
@@ -13,7 +14,9 @@ interface Props {
 export function ConfigModal({ config, onSave, onClose }: Props) {
   const [key, setKey] = useState(config.apiKey);
   const [url, setUrl] = useState(config.baseUrl);
-  const [model, setModel] = useState(config.model);
+  const [dialogueModel, setDialogueModel] = useState<ModelId>(config.dialogueModel);
+  const [reportModel, setReportModel] = useState<ModelId>(config.reportModel);
+  const [experimentModel, setExperimentModel] = useState<ModelId>(config.experimentModel);
   const keyRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocus(keyRef, { dialogRef, onClose });
@@ -22,7 +25,7 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
     event.preventDefault();
     const apiKey = key.trim();
     if (!apiKey) return;
-    onSave({ apiKey, baseUrl: url.trim(), model: model.trim() });
+    onSave({ apiKey, baseUrl: url.trim(), dialogueModel, reportModel, experimentModel });
   };
 
   return (
@@ -35,7 +38,7 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
             <p>修改模型连接设置。</p>
           </div>
         </header>
-        <p className="config-modal-note">API Key 只保存在本设备浏览器中，不上传服务器。</p>
+        <p className="config-modal-note">API Key 保存在当前浏览器；在线请求会发送给当前 AutoAD 服务，不写入实验产物、报告或任务记录。</p>
 
         <form className="config-form" onSubmit={handleSubmit}>
           <label className="config-field" htmlFor="config-api-key">
@@ -46,10 +49,9 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
             <span>Base URL</span>
             <input id="config-base-url" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://api.deepseek.com" inputMode="url" autoComplete="url" required />
           </label>
-          <label className="config-field" htmlFor="config-model">
-            <span>Model</span>
-            <input id="config-model" value={model} onChange={event => setModel(event.target.value)} placeholder="deepseek-v4-flash" autoComplete="off" required />
-          </label>
+          <ModelSelect id="config-dialogue-model" label="研究对话模型" value={dialogueModel} onChange={setDialogueModel} />
+          <ModelSelect id="config-report-model" label="实验报告模型" value={reportModel} onChange={setReportModel} />
+          <ModelSelect id="config-experiment-model" label="实验 Agent 模型" value={experimentModel} onChange={setExperimentModel} />
 
           <div className="config-actions">
             <AppButton variant="primary" type="submit" disabled={!key.trim()}>
@@ -66,5 +68,16 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
         </form>
       </div>
     </div>
+  );
+}
+
+function ModelSelect({ id, label, value, onChange }: { id: string; label: string; value: ModelId; onChange: (value: ModelId) => void }) {
+  return (
+    <label className="config-field" htmlFor={id}>
+      <span>{label}</span>
+      <select id={id} value={value} onChange={event => onChange(event.target.value as ModelId)}>
+        {MODEL_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
   );
 }

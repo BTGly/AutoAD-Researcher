@@ -6,8 +6,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.reporting.discussion import load_messages, load_turns, respond_to_turn, start_turn
-from autoad_researcher.server.routes.chat import _extract_api_headers
+from autoad_researcher.reporting.discussion import RESPONSE_CAPACITY_ERROR, load_messages, load_turns, respond_to_turn, start_turn
+from autoad_researcher.server.routes.chat import _extract_api_headers, _extract_role_route
+from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.reporting.review import (
     PivotTaskContext,
     ProposalBudgetEstimate,
@@ -73,11 +74,18 @@ async def post_discussion(run_id: str, report_id: str, request: DiscussionReques
         # A discussion never invokes jobs or exposes filesystem/executor tools.
         root = run_dir_or_400(RUNS_ROOT, run_id)
         item = start_turn(root, report_id=report_id, request_id=request.request_id, content=request.content, evidence_ids=request.evidence_ids)
-        api_key, provider_url, model = _extract_api_headers(http_request)
-        item = respond_to_turn(root, report_id=report_id, turn_id=item.turn_id, api_key=api_key, provider_url=provider_url, model=model)
+        api_key, provider_url, _model = _extract_api_headers(http_request)
+        route = _extract_role_route(http_request, "report")
+        append_event(root, "report.discussion.model_route.selected", {"report_id": report_id, **route.snapshot()})
+        item = respond_to_turn(root, report_id=report_id, turn_id=item.turn_id, api_key=api_key, provider_url=provider_url, model=route.model_id, model_route=route)
         if item.status == "pending":
             return JSONResponse(status_code=202, content=item.model_dump(mode="json"))
         if item.status == "failed":
+            if item.error == RESPONSE_CAPACITY_ERROR:
+                raise HTTPException(
+                    status_code=429,
+                    detail={"code": "report_discussion_busy", "message": item.error, "turn_id": item.turn_id, "status": item.status},
+                )
             raise HTTPException(
                 status_code=502,
                 detail={

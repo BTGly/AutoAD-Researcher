@@ -35,6 +35,7 @@ class ExperimentSessionStore:
         execution_repository_binding_ref: str | None = None,
         execution_repository_binding_sha256: str | None = None,
         budget: dict[str, Any] | None = None,
+        model_route: dict[str, Any] | None = None,
     ) -> tuple[ExperimentSession, bool]:
         session_id = f"session_{task_hash[:16]}"
         path = self._session_path(run_dir, session_id)
@@ -62,6 +63,7 @@ class ExperimentSessionStore:
                 execution_repository_binding_ref=execution_repository_binding_ref,
                 execution_repository_binding_sha256=execution_repository_binding_sha256,
                 budget=budget or {},
+                model_route=model_route or {},
                 authorization=ExperimentAuthorization(
                     execution_mode=execution_mode,
                     confirmed_at=now,

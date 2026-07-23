@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
+from autoad_researcher.assistant.model_routing import ModelRole, ModelRoute, select_model_route
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.server.models import ChatRequest, ChatResponse
 from autoad_researcher.assistant.v2.event_service import append_event
@@ -33,7 +34,7 @@ def _extract_api_headers(request: Request) -> tuple[str, str, str]:
     if not provider:
         provider = _load_config_value("provider_url") or DEFAULT_PROVIDER
     if not model:
-        model = _load_config_value("model") or DEFAULT_MODEL
+        model = _load_config_value("dialogue_model") or _load_config_value("model") or DEFAULT_MODEL
 
     return api_key, provider, model
 
@@ -49,20 +50,25 @@ def _load_config_value(key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _extract_experiment_headers(request: Request) -> dict[str, str]:
-    """Read experiment agent config from request headers."""
-    return {
-        "provider": request.headers.get("X-AutoAD-Exp-Provider", ""),
-        "model": request.headers.get("X-AutoAD-Exp-Model", ""),
-        "api_key": request.headers.get("X-AutoAD-Exp-Api-Key", ""),
-        "base_url": request.headers.get("X-AutoAD-Exp-Base-URL", ""),
-        "reasoning_effort": request.headers.get("X-AutoAD-Exp-Reasoning", ""),
-        "max_cycles": request.headers.get("X-AutoAD-Exp-Max-Cycles", ""),
-        "max_turns": request.headers.get("X-AutoAD-Exp-Max-Turns", ""),
-        "executor_timeout": request.headers.get("X-AutoAD-Exp-Timeout", ""),
-        "search_enabled": request.headers.get("X-AutoAD-Exp-Search", "0"),
-        "auto_search": request.headers.get("X-AutoAD-Exp-Auto-Search", "0"),
-    }
+def _extract_role_route(request: Request, role: ModelRole) -> ModelRoute:
+    """Resolve a role model while keeping credentials outside durable state."""
+    _api_key, _provider, dialogue_fallback = _extract_api_headers(request)
+    header_name = {
+        "research_dialogue": "X-AutoAD-Dialogue-Model",
+        "report": "X-AutoAD-Report-Model",
+        "experiment_agent": "X-AutoAD-Experiment-Model",
+    }[role]
+    requested = request.headers.get(header_name, "")
+    if not requested and role == "research_dialogue":
+        requested = dialogue_fallback
+    if not requested and role == "report":
+        requested = _load_config_value("report_model") or os.environ.get("AUTOAD_REPORT_MODEL", "")
+    if not requested and role == "experiment_agent":
+        requested = _load_config_value("experiment_model") or os.environ.get("AUTOAD_EXPERIMENT_MODEL", "")
+    try:
+        return select_model_route(role, requested or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/send", response_model=ChatResponse)
@@ -70,7 +76,9 @@ async def chat_send(req: ChatRequest, request: Request):
     run_dir = run_dir_or_400(RUNS_ROOT, req.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    api_key, provider_url, model = _extract_api_headers(request)
+    api_key, provider_url, _model = _extract_api_headers(request)
+    route = _extract_role_route(request, "research_dialogue")
+    append_event(run_dir, "assistant.model_route.selected", route.snapshot())
     stored_transcript_tail = _load_transcript_tail(run_dir)
     transcript_tail = req.transcript_tail or stored_transcript_tail
     message_id = _resolve_message_id(req.request_id)
@@ -99,7 +107,8 @@ async def chat_send(req: ChatRequest, request: Request):
         transcript_tail=transcript_tail,
         api_key=api_key,
         provider_url=provider_url,
-        model=model,
+        model=route.model_id,
+        model_route=route,
         on_reply_delta=on_reply_delta,
     )
     _append_transcript(run_dir, "user", req.user_input)

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import ValidationError
 
+from autoad_researcher.assistant.model_routing import ModelRoute, select_model_route
 from autoad_researcher.reporting.default_narrative import build_default_narrative
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
@@ -27,10 +29,10 @@ class NarrativeGeneration:
     mode: str
     model: str | None
     fallback_reason: str | None = None
-    profile: dict[str, str] | None = None
+    profile: dict[str, Any] | None = None
 
 
-def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, profile: dict[str, str] | None = None) -> NarrativeGeneration:
+def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceIndex, profile: dict[str, Any] | None = None) -> NarrativeGeneration:
     """Generate only structured prose bound to a frozen Facts/Evidence context."""
 
     selected = profile or _configured_profile()
@@ -45,7 +47,7 @@ def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceInde
     config = _configured_provider(selected)
     if config is None:
         raise NarrativeGenerationError("selected report Narrative model profile is unavailable at execution time")
-    api_key, provider_url, model = config
+    api_key, provider_url, model, route = config
     messages = _messages(facts, evidence)
     result = call_research_chat(
         api_key,
@@ -55,7 +57,8 @@ def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceInde
         timeout_s=90,
         response_format_json=True,
         temperature=0,
-        max_tokens=3200,
+        thinking_type=route.thinking_type,
+        reasoning_effort=route.reasoning_effort,
     )
     reply = result.get("reply")
     if result.get("error") or not isinstance(reply, str):
@@ -75,7 +78,8 @@ def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceInde
             timeout_s=90,
             response_format_json=True,
             temperature=0,
-            max_tokens=3200,
+            thinking_type=route.thinking_type,
+            reasoning_effort=route.reasoning_effort,
         )
         repaired_reply = repair.get("reply")
         if repair.get("error") or not isinstance(repaired_reply, str):
@@ -94,28 +98,37 @@ def generate_narrative(*, facts: ExperimentReportFactsV1, evidence: EvidenceInde
     return NarrativeGeneration(narrative=narrative, mode="model", model=model, profile=selected)
 
 
-def _configured_profile() -> dict[str, str]:
+def _configured_profile() -> dict[str, Any]:
+    route = select_model_route("report", os.environ.get("AUTOAD_REPORT_MODEL", "").strip() or None)
     api_key = os.environ.get("AUTOAD_REPORT_API_KEY", "").strip()
     provider_url = os.environ.get("AUTOAD_REPORT_BASE_URL", "").strip()
-    model = os.environ.get("AUTOAD_REPORT_MODEL", "").strip()
     return {
         "profile_version": "v1",
-        "mode": "model" if api_key and provider_url and model else "deterministic_fallback",
-        "model": model if api_key and provider_url and model else "",
-        "provider_base_url": provider_url.rstrip("/") if api_key and provider_url and model else "",
+        "mode": "model" if api_key and provider_url else "deterministic_fallback",
+        "model": route.model_id,
+        "model_id": route.model_id,
+        "role": route.role,
+        "thinking_type": route.thinking_type,
+        "reasoning_effort": route.reasoning_effort or "",
+        "context_window": route.context_window,
+        "max_output_capability": route.max_output_capability,
+        "routing_schema_version": route.routing_schema_version,
+        "model_route": route.snapshot(),
+        "provider_base_url": provider_url.rstrip("/") if api_key and provider_url else "",
         "prompt_sha256": "runtime-legacy-profile",
     }
 
 
-def _configured_provider(profile: dict[str, str]) -> tuple[str, str, str] | None:
+def _configured_provider(profile: dict[str, Any]) -> tuple[str, str, str, ModelRoute] | None:
     api_key = os.environ.get("AUTOAD_REPORT_API_KEY", "").strip()
     if profile.get("mode") != "model" or not api_key:
         return None
     provider_url = profile.get("provider_base_url", "").strip()
-    model = profile.get("model", "").strip()
+    model = str(profile.get("model_id") or profile.get("model") or "").strip()
     if not provider_url or not model:
         return None
-    return api_key, provider_url, model
+    route = select_model_route("report", model)
+    return api_key, provider_url, route.model_id, route
 
 
 def _messages(facts: ExperimentReportFactsV1, evidence: EvidenceIndex) -> list[dict[str, str]]:

@@ -15,6 +15,7 @@ from autoad_researcher.assistant.llm_runtime import (
     get_llm_call_broker,
     reset_llm_call_broker,
 )
+from autoad_researcher.ui.chat_client import call_research_chat
 
 _HTTPX_CLIENT = httpx.Client
 
@@ -250,8 +251,34 @@ def test_native_tool_response_is_returned_without_losing_reasoning_metadata(monk
     assert "tools" in captured
     assert result.reply == ""
     assert result.tool_calls[0]["id"] == "call_1"
-    assert result.reasoning_content == "先读取冻结摘要。"
+    assert result.reasoning == "先读取冻结摘要。"
     assert result.finish_reason == "tool_calls"
+
+
+def test_chat_facade_exposes_native_fields_at_public_boundary(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "reasoning_content": "需要读取证据。",
+                    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "inspect", "arguments": "{}"}}],
+                },
+            }],
+        })
+
+    _install_transport(monkeypatch, handler)
+    result = call_research_chat(
+        "sk-test",
+        "https://provider.test",
+        [{"role": "user", "content": "检查"}],
+        tools=[{"type": "function", "function": {"name": "inspect", "parameters": {"type": "object"}}}],
+    )
+
+    assert result["tool_calls"][0]["id"] == "call_1"
+    assert result["reasoning"] == "需要读取证据。"
+    assert result["runtime"]["finish_reason"] == "tool_calls"
 
 
 def test_circuit_opens_after_three_failures_and_half_open_probe_recovers(monkeypatch):

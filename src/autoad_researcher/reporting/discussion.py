@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 from contextlib import contextmanager
@@ -13,26 +14,23 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.model_routing import ModelRoute
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, ReportToolCall, execute_tools, load_verified_report_context, native_tool_definitions
 
 MAX_TURNS = 40
 MAX_MESSAGE_CHARS = 8000
-MAX_HISTORY_MESSAGES = 12
-MAX_HISTORY_BYTES = 16 * 1024
+REPORT_REQUEST_TIMEOUT_SECONDS = 60
+RESPONSE_CAPACITY_ERROR = "报告讨论当前繁忙，请稍后重试。"
 
 
 class ReportDiscussionBudget(BaseModel):
-    """Service-side limits for one report-bound LLM response."""
+    """Transport timeout for one report-bound request; model output is provider-controlled."""
 
     model_config = ConfigDict(extra="forbid")
 
-    max_llm_calls: int = Field(default=2, ge=1, le=2)
-    max_output_tokens: int = Field(default=700, ge=64, le=2000)
-    max_wall_time_seconds: int = Field(default=30, ge=1, le=60)
-    max_concurrent_requests: int = Field(default=1, ge=1, le=1)
-    max_retries: int = Field(default=0, ge=0, le=1)
+    max_wall_time_seconds: int = Field(default=60, ge=1, le=120)
 
 
 class DiscussionResponse(BaseModel):
@@ -115,6 +113,7 @@ def respond_to_turn(
     provider_url: str,
     model: str,
     budget: ReportDiscussionBudget | None = None,
+    model_route: ModelRoute | None = None,
 ) -> DiscussionTurn:
     """Complete one persisted turn using only frozen report summaries and evidence."""
     turn = _require_turn(load_turns(run_dir, report_id=report_id), turn_id)
@@ -123,7 +122,7 @@ def respond_to_turn(
         return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error="report discussion model is not configured")
     limits = budget or ReportDiscussionBudget()
     if not _try_response_slot(run_dir, report_id):
-        return turn
+        return fail_turn(run_dir, report_id=report_id, turn_id=turn_id, error=RESPONSE_CAPACITY_ERROR)
     try:
         return _respond_with_slot(
             run_dir,
@@ -133,6 +132,7 @@ def respond_to_turn(
             provider_url=provider_url,
             model=model,
             budget=limits,
+            model_route=model_route,
         )
     finally:
         _release_response_slot(run_dir, report_id)
@@ -147,6 +147,7 @@ def _respond_with_slot(
     provider_url: str,
     model: str,
     budget: ReportDiscussionBudget,
+    model_route: ModelRoute | None = None,
 ) -> DiscussionTurn:
     _facts, index, digest_model, _markdown = load_verified_report_context(
         run_dir,
@@ -154,12 +155,12 @@ def _respond_with_slot(
         snapshot_content_sha256_expected=turn.snapshot_content_sha256,
     )
     digest = digest_model.model_dump(mode="json")
-    evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id} for item in index.entries[:24]]
+    evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id, "artifact_ref": item.artifact_ref.model_dump(mode="json"), "field_path": item.field_path} for item in index.entries]
     messages = [
         {"role": "system", "content": "You answer only from frozen report context. Return DiscussionResponse JSON. Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
         {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence}, ensure_ascii=False)},
         {"role": "assistant", "content": "I will use only this frozen report context and registered Evidence."},
-        *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id),
+        *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id, context_window=model_route.context_window if model_route is not None else 1_000_000),
         {"role": "user", "content": turn.user_message},
     ]
     from autoad_researcher.ui.chat_client import call_research_chat
@@ -171,8 +172,9 @@ def _respond_with_slot(
         timeout_s=budget.max_wall_time_seconds,
         priority="interactive",
         response_format_json=False,
-        max_tokens=budget.max_output_tokens,
         temperature=0.1,
+        thinking_type=model_route.thinking_type if model_route is not None else None,
+        reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
         tools=native_tool_definitions(),
     )
     try:
@@ -180,8 +182,6 @@ def _respond_with_slot(
         reply = str(result.get("reply") or "")
         raw_tool_calls = result.get("tool_calls") or []
         if raw_tool_calls:
-            if budget.max_llm_calls < 2:
-                raise ValueError("report discussion budget does not allow a typed deep-read response")
             native_calls = _native_tool_calls(raw_tool_calls)
             tool_results = execute_tools(
                 run_dir,
@@ -194,9 +194,9 @@ def _respond_with_slot(
                 "content": reply or None,
                 "tool_calls": [item[0] for item in native_calls],
             }
-            reasoning_content = result.get("reasoning_content")
-            if isinstance(reasoning_content, str) and reasoning_content:
-                assistant_message["reasoning_content"] = reasoning_content
+            reasoning = result.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                assistant_message["reasoning_content"] = reasoning
             tool_messages = [
                 {
                     "role": "tool",
@@ -213,8 +213,9 @@ def _respond_with_slot(
                 timeout_s=budget.max_wall_time_seconds,
                 priority="interactive",
                 response_format_json=True,
-                max_tokens=budget.max_output_tokens,
                 temperature=0.1,
+                thinking_type=model_route.thinking_type if model_route is not None else None,
+                reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
             )
             if final.get("error"):
                 raise ValueError(str(final["error"]))
@@ -229,8 +230,8 @@ def _respond_with_slot(
     return complete_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, response=response)
 
 
-def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str) -> list[dict[str, str]]:
-    """Keep the latest completed dialogue as data within a fixed request budget."""
+def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str, context_window: int = 1_000_000) -> list[dict[str, str]]:
+    """Keep full history until the selected provider context requires traceable compression."""
 
     messages: list[dict[str, str]] = []
     for item in turns:
@@ -240,21 +241,33 @@ def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str) -> lis
             {"role": "user", "content": item.user_message},
             {"role": "assistant", "content": item.response.answer},
         ))
-    selected: list[dict[str, str]] = []
-    used = 0
-    for item in reversed(messages[-MAX_HISTORY_MESSAGES:]):
-        size = len(item["content"].encode("utf-8"))
-        if selected and used + size > MAX_HISTORY_BYTES:
+    limit_bytes = max(1, context_window * 4)
+    total = sum(len(item["content"].encode("utf-8")) for item in messages)
+    if total <= limit_bytes:
+        return messages
+    completed = [item for item in turns if item.turn_id != current_turn_id and item.status == "completed" and item.response is not None]
+    result = list(messages)
+    replaced = 0
+    for index, item in enumerate(completed):
+        if total <= limit_bytes:
             break
-        if size > MAX_HISTORY_BYTES:
-            selected.append({"role": item["role"], "content": item["content"].encode("utf-8")[-MAX_HISTORY_BYTES:].decode("utf-8", errors="ignore")})
-            break
-        selected.append(item)
-        used += size
-    selected.reverse()
-    if len(selected) < len(messages):
-        return [{"role": "system", "content": "Earlier report discussion turns were omitted to preserve the bounded context window."}, *selected]
-    return selected
+        compressed = {
+            "role": "system",
+            "content": json.dumps({
+                "compressed_turn": item.turn_id,
+                "snapshot_content_sha256": item.snapshot_content_sha256,
+                "evidence_ids": sorted(set([*item.evidence_ids, *item.response.evidence_ids])),
+                "user_message_sha256": hashlib.sha256(item.user_message.encode("utf-8")).hexdigest(),
+                "assistant_answer_sha256": hashlib.sha256(item.response.answer.encode("utf-8")).hexdigest(),
+                "source": "full turn remains in the durable discussion transcript and can be re-read by turn_id",
+            }, ensure_ascii=False, sort_keys=True),
+        }
+        pair_start = index * 2 - replaced
+        old_size = sum(len(result[position]["content"].encode("utf-8")) for position in (pair_start, pair_start + 1))
+        result[pair_start:pair_start + 2] = [compressed]
+        total += len(compressed["content"].encode("utf-8")) - old_size
+        replaced += 1
+    return result
 
 
 def _native_tool_calls(raw_tool_calls: Any) -> list[tuple[dict[str, Any], ReportToolCall]]:
@@ -355,7 +368,7 @@ def _try_response_slot(run_dir: Path, report_id: str) -> bool:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
     except FileExistsError:
         try:
-            if time.time() - path.stat().st_mtime > ReportDiscussionBudget().max_wall_time_seconds + 5:
+            if time.time() - path.stat().st_mtime > REPORT_REQUEST_TIMEOUT_SECONDS + 5:
                 path.unlink()
                 return _try_response_slot(run_dir, report_id)
         except OSError:

@@ -39,22 +39,14 @@ function getHeaders(): Record<string, string> {
   if (!cfg) return { 'Content-Type': 'application/json' };
   try {
     const c = JSON.parse(cfg);
-    const exp = c.experiment || {};
     return {
       'Content-Type': 'application/json',
       'X-AutoAD-API-Key': c.apiKey || '',
       'X-AutoAD-Base-URL': c.baseUrl || '',
-      'X-AutoAD-Model': c.model || '',
-      'X-AutoAD-Exp-Provider': exp.provider || '',
-      'X-AutoAD-Exp-Model': exp.model || '',
-      'X-AutoAD-Exp-Api-Key': exp.apiKey || '',
-      'X-AutoAD-Exp-Base-URL': exp.baseUrl || '',
-      'X-AutoAD-Exp-Reasoning': exp.reasoningEffort || '',
-      'X-AutoAD-Exp-Max-Cycles': exp.maxCycles ? String(exp.maxCycles) : '',
-      'X-AutoAD-Exp-Max-Turns': exp.maxTurns ? String(exp.maxTurns) : '',
-      'X-AutoAD-Exp-Timeout': exp.executorTimeout ? String(exp.executorTimeout) : '',
-      'X-AutoAD-Exp-Search': exp.searchEnabled ? '1' : '0',
-      'X-AutoAD-Exp-Auto-Search': exp.autoSearch ? '1' : '0',
+      'X-AutoAD-Model': c.dialogueModel || '',
+      'X-AutoAD-Dialogue-Model': c.dialogueModel || '',
+      'X-AutoAD-Report-Model': c.reportModel || '',
+      'X-AutoAD-Experiment-Model': c.experimentModel || '',
     };
   } catch {
     return { 'Content-Type': 'application/json' };

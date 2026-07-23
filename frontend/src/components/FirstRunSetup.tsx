@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { ArrowRight, KeyRound, ShieldCheck } from 'lucide-react';
-import type { AppConfig } from '../hooks/useConfig';
+import { MODEL_OPTIONS } from '../hooks/useConfig';
+import type { AppConfig, ModelId } from '../hooks/useConfig';
 import { AppButton } from './ui/AppButton';
 import { Surface } from './ui/Surface';
 import { ThemeToggle } from '../theme/ThemeToggle';
@@ -12,7 +13,9 @@ interface Props {
 export function FirstRunSetup({ onSave }: Props) {
   const [key, setKey] = useState('');
   const [url, setUrl] = useState('https://api.deepseek.com');
-  const [model, setModel] = useState('deepseek-v4-flash');
+  const [dialogueModel, setDialogueModel] = useState<ModelId>('deepseek-v4-flash');
+  const [reportModel, setReportModel] = useState<ModelId>('deepseek-v4-flash');
+  const [experimentModel, setExperimentModel] = useState<ModelId>('deepseek-v4-pro');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +26,7 @@ export function FirstRunSetup({ onSave }: Props) {
     setError(null);
     setSaving(true);
     try {
-      await onSave({ apiKey, baseUrl: url.trim(), model: model.trim() });
+      await onSave({ apiKey, baseUrl: url.trim(), dialogueModel, reportModel, experimentModel });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '配置保存失败，请重试。');
     } finally {
@@ -77,21 +80,13 @@ export function FirstRunSetup({ onSave }: Props) {
                 required
               />
             </label>
-            <label className="config-field" htmlFor="first-run-model">
-              <span>Model</span>
-              <input
-                id="first-run-model"
-                value={model}
-                onChange={event => setModel(event.target.value)}
-                placeholder="deepseek-v4-flash"
-                autoComplete="off"
-                required
-              />
-            </label>
+            <ModelSelect id="first-run-dialogue-model" label="研究对话模型" value={dialogueModel} onChange={setDialogueModel} />
+            <ModelSelect id="first-run-report-model" label="实验报告模型" value={reportModel} onChange={setReportModel} />
+            <ModelSelect id="first-run-experiment-model" label="实验 Agent 模型" value={experimentModel} onChange={setExperimentModel} />
 
             <div className="first-run-privacy">
               <ShieldCheck size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span>API Key 只保存在本设备浏览器中。</span>
+              <span>API Key 保存在当前浏览器；在线请求会发送给当前 AutoAD 服务。</span>
             </div>
             {error && <div className="config-error" role="alert">{error}</div>}
 
@@ -103,5 +98,16 @@ export function FirstRunSetup({ onSave }: Props) {
         </Surface>
       </div>
     </main>
+  );
+}
+
+function ModelSelect({ id, label, value, onChange }: { id: string; label: string; value: ModelId; onChange: (value: ModelId) => void }) {
+  return (
+    <label className="config-field" htmlFor={id}>
+      <span>{label}</span>
+      <select id={id} value={value} onChange={event => onChange(event.target.value as ModelId)}>
+        {MODEL_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+    </label>
   );
 }

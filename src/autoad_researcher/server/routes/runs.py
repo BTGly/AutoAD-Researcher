@@ -4,10 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from autoad_researcher.assistant.model_routing import select_model_route
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
+from autoad_researcher.server.routes.chat import _extract_role_route
 from autoad_researcher.assistant.v2.task_bridge import (
     ExperimentTaskDraft,
     ExperimentTaskConfirmationResult,
@@ -172,6 +174,7 @@ async def confirm_experiment_task(
     run_id: str,
     task_id: str,
     request: ConfirmExperimentTaskRequest,
+    http_request: Request = None,  # type: ignore[assignment]
 ):
     run_dir = _existing_run_dir(run_id)
     try:
@@ -188,6 +191,11 @@ async def confirm_experiment_task(
             run_dir,
             task,
             execution_mode=effective_mode,
+            model_route=(
+                _extract_role_route(http_request, "experiment_agent")
+                if http_request is not None
+                else select_model_route("experiment_agent")
+            ),
         )
         return ExperimentTaskConfirmationResult(
             task=task,

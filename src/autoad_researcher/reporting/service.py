@@ -40,6 +40,7 @@ class ReportRequestService:
             run_dir,
             snapshot=snapshot,
             report_recipe_hash=recipe_hash,
+            model_route=generation_profile.get("model_route") if isinstance(generation_profile.get("model_route"), dict) else None,
             **_lineage_from_proposal(run_dir, session_id=session_id, source_proposal_id=source_proposal_id),
         )
         common_payload = {

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from autoad_researcher.assistant.model_routing import ModelRoute, select_model_route
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
 from autoad_researcher.assistant.v2.task_bridge import ExperimentTaskDraft
@@ -39,6 +41,7 @@ class ExperimentStarter:
         confirmed_task: ExperimentTaskDraft,
         *,
         execution_mode: ExecutionMode,
+        model_route: ModelRoute | None = None,
     ) -> ExperimentStartResult:
         binding = confirmed_task.execution_repository_binding
         if execution_mode != "plan_only" and binding is None:
@@ -54,6 +57,9 @@ class ExperimentStarter:
             "experiment.start_requested",
             {"task_id": confirmed_task.task_id, "task_hash": task_hash, "execution_mode": execution_mode},
         )
+        selected_route = model_route or select_model_route(
+            "experiment_agent", os.environ.get("AUTOAD_EXPERIMENT_MODEL", "").strip() or None,
+        )
         session, session_created = self._session_store.create_or_get(
             run_dir,
             task_ref="input_task.yaml",
@@ -67,6 +73,7 @@ class ExperimentStarter:
             execution_repository_binding_sha256=(
                 canonical_sha256(binding) if binding is not None else None
             ),
+            model_route=selected_route.snapshot(),
         )
         if session_created:
             append_event(
@@ -107,6 +114,7 @@ class ExperimentStarter:
             "environment_revision": session.environment_revision,
             "execution_repository_binding_ref": session.execution_repository_binding_ref,
             "execution_repository_binding_sha256": session.execution_repository_binding_sha256,
+            "model_route": session.model_route,
         }
         job, job_created = create_or_get_pipeline_job(
             run_dir,

@@ -756,7 +756,7 @@ def test_orchestrator_policy_deny_uses_fallback_when_reply_is_invalid(monkeypatc
     assert "input_task.yaml" not in result.reply
 
 
-def test_orchestrator_calls_decision_then_reply_under_one_deadline(monkeypatch, tmp_path: Path):
+def test_orchestrator_calls_decision_then_reply_without_cross_stage_deadline(monkeypatch, tmp_path: Path):
     calls: list[dict[str, object]] = []
     replies = [_decision_payload(), _reply_payload()]
     context_builds = 0
@@ -792,7 +792,7 @@ def test_orchestrator_calls_decision_then_reply_under_one_deadline(monkeypatch, 
 
     assert len(calls) == 2
     assert context_builds == 1
-    assert all(item["deadline"] is not None for item in calls)
+    assert all(item["deadline"] is None for item in calls)
     assert calls[0]["deadline"] is calls[1]["deadline"]
     assert all(item["temperature"] == 0.0 for item in calls)
     assert (tmp_path / "assistant" / "v2_dialogue_transitions.jsonl").is_file()
