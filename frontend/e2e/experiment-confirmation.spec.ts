@@ -95,6 +95,8 @@ test('selects a discussed primary metric without a free-text fallback', async ({
     },
   });
   await expect(page.getByRole('textbox', { name: '主指标' })).toHaveCount(0);
+  await selectMicroRepository(page);
+  await expect(page.getByRole('button', { name: '确认任务' })).toBeDisabled();
   await page.getByRole('button', { name: 'image_auroc' }).click();
   await page.getByRole('button', { name: '确认所选主指标并刷新草案' }).click();
   await expect(page.getByText('主指标已确认；请检查刷新后的任务草案后再确认执行。')).toBeVisible();

@@ -30,6 +30,7 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
   const repositories = sources.filter(source => source.kind === 'github_repo' || source.kind === 'local_repo');
   const availableRepositories = repositories.filter(source => source.intakeStatus === 'ok');
   const requiresRepository = executionMode !== 'plan_only';
+  const executionContractReady = executionMode === 'plan_only' || task.input_task.primary_metrics.length > 0;
   const selectedRepository = availableRepositories.find(source => source.sourceId === executionRepositorySourceId);
   const metricCandidates = task.primary_metric_candidates ?? [];
   const goal = task.input_task.user_idea || task.input_task.request;
@@ -153,7 +154,7 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
           <button
             className="primary"
             onClick={submit}
-            disabled={submitting || (requiresRepository && !selectedRepository)}
+            disabled={submitting || !executionContractReady || (requiresRepository && !selectedRepository)}
             style={{ flex: 1 }}
           >
             {submitting ? '确认中…' : '确认任务'}
