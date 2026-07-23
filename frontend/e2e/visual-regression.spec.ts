@@ -163,8 +163,8 @@ test('captures reviewed, handed-off, and pending Report workspace states', async
   await page.setViewportSize({ width: 1440, height: 900 });
   await prepareReport(page);
   await page.getByRole('button', { name: '研究报告' }).click();
-  await expect(page.getByText('审阅：accepted', { exact: true })).toBeVisible();
-  await expect(page.getByText('REQUEST_HUMAN · HANDED_OFF', { exact: true })).toBeVisible();
+  await expect(page.getByText('审阅：已接受', { exact: true })).toBeVisible();
+  await expect(page.getByText('请求人工判断 · 已转交人工', { exact: true })).toBeVisible();
   await expect(page).toHaveScreenshot('report-reviewed-handoff.png', { fullPage: true, animations: 'disabled' });
   await assertNoHorizontalOverflow(page);
   await page.locator('select').selectOption(pendingReport.report_id);

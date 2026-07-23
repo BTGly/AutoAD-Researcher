@@ -66,9 +66,9 @@ test('renders separated report states, core metrics, and the HTML delivery', asy
   await prepare(page);
   await page.getByRole('button', { name: '研究报告' }).click();
 
-  await expect(page.getByText('工程：READY', { exact: true })).toBeVisible();
-  await expect(page.getByText('执行：COMPLETED', { exact: true })).toBeVisible();
-  await expect(page.getByText('科学：EVIDENCE_INSUFFICIENT', { exact: true })).toBeVisible();
+  await expect(page.getByText('工程：就绪', { exact: true })).toBeVisible();
+  await expect(page.getByText('执行：已完成', { exact: true })).toBeVisible();
+  await expect(page.getByText('科学：证据不足', { exact: true })).toBeVisible();
   await expect(page.getByText('attempt_000001 · image_auroc: 0.91', { exact: true })).toBeVisible();
   await expect(page.getByTitle('在新窗口打开 HTML')).toHaveAttribute('href', `/api/runs/${run.run_id}/reports/${report.report_id}/download/report.html`);
 });
@@ -77,18 +77,18 @@ test('updates review and isolates human proposals by selected report version', a
   await prepare(page);
   await page.getByRole('button', { name: '研究报告' }).click();
   await page.getByRole('button', { name: '接受' }).click();
-  await expect(page.getByText('审阅：accepted', { exact: true })).toBeVisible();
+  await expect(page.getByText('审阅：已接受', { exact: true })).toBeVisible();
 
   await page.getByLabel('人工跟进 Proposal').fill('请人工决定下一步');
   await page.getByRole('button', { name: '创建人工 Proposal' }).click();
-  await expect(page.getByText('REQUEST_HUMAN · READY_FOR_CONFIRMATION', { exact: true })).toBeVisible();
+  await expect(page.getByText('请求人工判断 · 待确认', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '确认转交' }).click();
-  await expect(page.getByText('REQUEST_HUMAN · HANDED_OFF', { exact: true })).toBeVisible();
+  await expect(page.getByText('请求人工判断 · 已转交人工', { exact: true })).toBeVisible();
 
   await page.getByLabel('人工跟进 Proposal').fill('请人工复核另一事项');
   await page.getByRole('button', { name: '创建人工 Proposal' }).click();
   await page.getByRole('button', { name: '拒绝' }).click();
-  await expect(page.getByText('REQUEST_HUMAN · REJECTED', { exact: true })).toBeVisible();
+  await expect(page.getByText('请求人工判断 · 已拒绝', { exact: true })).toBeVisible();
 
   await page.locator('select').selectOption(pendingReport.report_id);
   await expect(page.getByText(/较新版本/)).not.toBeVisible();
@@ -103,7 +103,7 @@ test('updates review and isolates human proposals by selected report version', a
 test('keeps a failed discussion question and exposes the provider error', async ({ page }) => {
   await prepare(page);
   await page.getByRole('button', { name: '研究报告' }).click();
-  await expect(page.getByText('工程：READY', { exact: true })).toBeVisible();
+  await expect(page.getByText('工程：就绪', { exact: true })).toBeVisible();
   const input = page.locator('input[aria-label="报告讨论"]');
   await input.fill('请解释这个失败');
   await page.getByRole('button', { name: '发送报告讨论' }).click();
@@ -114,7 +114,7 @@ test('keeps a failed discussion question and exposes the provider error', async 
 test('retries a lost discussion response with one durable request id', async ({ page }) => {
   await prepare(page, 'response_lost');
   await page.getByRole('button', { name: '研究报告' }).click();
-  await expect(page.getByText('工程：READY', { exact: true })).toBeVisible();
+  await expect(page.getByText('工程：就绪', { exact: true })).toBeVisible();
   const requestIds: string[] = [];
   page.on('request', request => {
     if (request.url().endsWith(`/api/runs/${run.run_id}/reports/${report.report_id}/discussion`) && request.method() === 'POST') {
