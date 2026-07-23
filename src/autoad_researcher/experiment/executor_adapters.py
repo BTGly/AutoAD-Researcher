@@ -101,6 +101,14 @@ class ExecutorAdapter:
                     )
                 if index >= len(args):
                     raise ValueError("adapter split reference argument index is outside the declared command")
+                if args[index] != "":
+                    raise ValueError(
+                        "adapter split reference binding must target an explicit empty argv slot"
+                    )
+                if args.count("") != 1:
+                    raise ValueError(
+                        "adapter split reference binding requires exactly one explicit empty argv slot"
+                    )
                 args[index] = inputs.split_ref
             environment, metrics_output = phase_command.environment, phase_command.metrics_output
         plan = ExperimentCommandPlan(schema_version=1, command_id=f"{evidence.adapter_id}_{inputs.evaluation_phase}", program=inputs.python_executable, args=args, cwd=inputs.worktree_ref, environment=environment, timeout_seconds=inputs.timeout_seconds, network=False, expected_outputs=[metrics_output])

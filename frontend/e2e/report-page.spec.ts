@@ -7,8 +7,10 @@ const report = {
 };
 const pendingReport = { ...report, report_id: 'report_000002', version: 2, generation_status: 'queued' };
 
-async function prepare(page: Page) {
+async function prepare(page: Page, discussionMode: 'failed' | 'response_lost' = 'failed') {
   let reviewStatus = 'unreviewed';
+  let discussionPostCount = 0;
+  const storedDiscussionRequestIds = new Set<string>();
   const proposals: Array<{ proposal_id: string; proposal_type: string; rationale: string; status: string; validation_errors: string[]; handoff: Record<string, string> | null }> = [];
   await page.addInitScript(() => localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' })));
   await page.route('**/api/**', async route => {
@@ -27,7 +29,16 @@ async function prepare(page: Page) {
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/content`) return route.fulfill({ json: { content: '# Frozen report' } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/evidence`) return route.fulfill({ json: { entries: [] } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion` && route.request().method() === 'GET') return route.fulfill({ json: { messages: [], turns: [] } });
-    if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion` && route.request().method() === 'POST') return route.fulfill({ json: { turn_id: 'turn_failed', request_id: 'request_failed', report_id: report.report_id, snapshot_content_sha256: 'a'.repeat(64), user_message: '请解释这个失败', response: null, status: 'failed', evidence_ids: [], created_at: '2026-07-22T00:00:00Z', completed_at: '2026-07-22T00:00:01Z', error: '模型服务返回 HTTP 400。' } });
+    if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion` && route.request().method() === 'POST') {
+      discussionPostCount += 1;
+      const body = route.request().postDataJSON() as { request_id: string; content: string };
+      if (discussionMode === 'response_lost') {
+        storedDiscussionRequestIds.add(body.request_id);
+        if (discussionPostCount === 1) return route.abort('connectionreset');
+        return route.fulfill({ json: { turn_id: 'turn_completed', request_id: body.request_id, report_id: report.report_id, snapshot_content_sha256: 'a'.repeat(64), user_message: body.content, response: { answer: '已从同一 durable turn 恢复。', response_kind: 'evidence_bound', evidence_ids: [] }, status: 'completed', evidence_ids: [], created_at: '2026-07-22T00:00:00Z', completed_at: '2026-07-22T00:00:01Z', error: null } });
+      }
+      return route.fulfill({ json: { turn_id: 'turn_failed', request_id: 'request_failed', report_id: report.report_id, snapshot_content_sha256: 'a'.repeat(64), user_message: '请解释这个失败', response: null, status: 'failed', evidence_ids: [], created_at: '2026-07-22T00:00:00Z', completed_at: '2026-07-22T00:00:01Z', error: '模型服务返回 HTTP 400。' } });
+    }
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/proposals`) {
       if (route.request().method() === 'GET') return route.fulfill({ json: { proposals } });
       const body = route.request().postDataJSON() as { rationale: string };
@@ -98,4 +109,25 @@ test('keeps a failed discussion question and exposes the provider error', async 
   await page.getByRole('button', { name: '发送报告讨论' }).click();
   await expect(page.getByRole('alert')).toContainText('模型服务返回 HTTP 400。');
   await expect(input).toHaveValue('请解释这个失败');
+});
+
+test('retries a lost discussion response with one durable request id', async ({ page }) => {
+  await prepare(page, 'response_lost');
+  await page.getByRole('button', { name: '研究报告' }).click();
+  await expect(page.getByText('工程：READY', { exact: true })).toBeVisible();
+  const requestIds: string[] = [];
+  page.on('request', request => {
+    if (request.url().endsWith(`/api/runs/${run.run_id}/reports/${report.report_id}/discussion`) && request.method() === 'POST') {
+      requestIds.push((request.postDataJSON() as { request_id: string }).request_id);
+    }
+  });
+  const input = page.locator('input[aria-label="报告讨论"]');
+  await input.fill('请解释这个响应丢失');
+  await page.getByRole('button', { name: '发送报告讨论' }).click();
+  await expect(input).toHaveValue('请解释这个响应丢失');
+  await page.getByRole('button', { name: '发送报告讨论' }).click();
+  await expect(input).toHaveValue('');
+  await expect(page.getByRole('alert')).not.toBeVisible();
+  expect(requestIds).toHaveLength(2);
+  expect(requestIds[0]).toBe(requestIds[1]);
 });

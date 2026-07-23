@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -77,6 +78,7 @@ def train(checkpoint_path: str) -> dict:
 
 EVALUATE = '''from __future__ import annotations
 import json
+import os
 from pathlib import Path
 import model
 from metric import roc_auc, f1_score
@@ -95,7 +97,8 @@ def evaluate(split_path: str, checkpoint_path: str, metrics_output: str, phase: 
         "sample_count": len(samples),
         "model_version": checkpoint["model_version"],
     }
-    path = Path(metrics_output)
+    artifact_dir = os.environ.get("AUTOAD_ATTEMPT_DIR")
+    path = Path(artifact_dir) / metrics_output if artifact_dir else Path(metrics_output)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     return metrics
@@ -166,21 +169,21 @@ MANIFEST = {
     "adapter_id": "generic_python",
     "entrypoint": "run_experiment.py",
     "smoke_argv": ["run_experiment.py", "--phase", "b_dev", "--split-ref", "data/b_dev.json", "--metrics-output", "outputs/smoke_metrics.json"],
-    "metrics_output": "outputs/metrics.json",
+    "metrics_output": "metrics.json",
     "allowed_paths": ["model.py"],
     "protected_paths": ["metric.py", "evaluate.py", "train.py", "run_experiment.py"],
     "activation_evidence": "observed",
     "evaluation_commands": {
         "b_dev": {
-            "args": ["run_experiment.py", "--phase", "b_dev", "--split-ref", "__SPLIT_REF__", "--metrics-output", "outputs/b_dev_metrics.json"],
+            "args": ["run_experiment.py", "--phase", "b_dev", "--split-ref", "", "--metrics-output", "metrics.json"],
             "environment": {},
-            "metrics_output": "outputs/b_dev_metrics.json",
+            "metrics_output": "metrics.json",
             "split_ref_arg_index": 4,
         },
         "b_test": {
-            "args": ["run_experiment.py", "--phase", "b_test", "--split-ref", "__SPLIT_REF__", "--metrics-output", "outputs/b_test_metrics.json"],
+            "args": ["run_experiment.py", "--phase", "b_test", "--split-ref", "", "--metrics-output", "metrics.json"],
             "environment": {},
-            "metrics_output": "outputs/b_test_metrics.json",
+            "metrics_output": "metrics.json",
             "split_ref_arg_index": 4,
         },
     },

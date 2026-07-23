@@ -90,3 +90,52 @@ def test_baseline_split_binding_requires_an_explicit_manifest_slot(tmp_path: Pat
                 split_ref="/run/inputs/dev.json",
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("args", "index", "message"),
+    [
+        (["run.py", "--split=", ""], 1, "explicit empty argv slot"),
+        (["run.py", "--split-file", "", "--other-split", ""], 2, "exactly one"),
+    ],
+)
+def test_split_binding_fails_closed_for_untyped_or_ambiguous_shapes(
+    tmp_path: Path, args: list[str], index: int, message: str
+):
+    (tmp_path / "run.py").write_text("", encoding="utf-8")
+    (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
+    (tmp_path / "autoad_executor_adapter.json").write_text(
+        json.dumps(
+            {
+                "adapter_id": "generic_python",
+                "entrypoint": "run.py",
+                "smoke_argv": [sys.executable, "run.py"],
+                "metrics_output": "metrics.json",
+                "allowed_paths": ["run.py"],
+                "protected_paths": ["evaluate.py"],
+                "evaluation_commands": {
+                    "b_dev": {
+                        "args": args,
+                        "metrics_output": "metrics.json",
+                        "split_ref_arg_index": index,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = ExecutorAdapter().inspect(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        ExecutorAdapter().build_execution(
+            result,
+            ExecutorAdapterInputs(
+                run_id="run_executor",
+                worktree_ref="executor_worktrees/attempt",
+                repository_fingerprint="fixture",
+                environment_sha256="a" * 64,
+                dataset_manifest_sha256="b" * 64,
+                asset_manifest_sha256="c" * 64,
+                evaluation_phase="b_dev",
+                split_ref="/run/inputs/dev.json",
+            ),
+        )

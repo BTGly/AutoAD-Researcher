@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, ExternalLink, RefreshCw, Send } from 'lucide-react';
-import { ApiError, confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
+import { confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
 import type { DiscussionMessage, ReportDigest, ReportEvidence, ReportManifest, ReportProposal, ReportState } from '../lib/types';
 import { MarkdownContent } from './MarkdownContent';
 import { AppButton } from './ui/AppButton';
@@ -86,10 +86,10 @@ export function ReportPage({ runId, onBack }: Props) {
     try {
       await sendReportDiscussion(runId, selected.report_id, requestId, requestedQuestion);
       discussionRetry.current = null;
+      setError(null);
       setQuestion('');
       setDiscussion((await getReportDiscussion(runId, selected.report_id)).messages);
     } catch (reason) {
-      if (!(reason instanceof ApiError) || reason.status !== 429) discussionRetry.current = null;
       setError(reason instanceof Error ? reason.message : '讨论请求失败');
     } finally {
       setSending(false);
