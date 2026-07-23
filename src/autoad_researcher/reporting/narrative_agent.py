@@ -135,6 +135,7 @@ def _messages(facts: ExperimentReportFactsV1, evidence: EvidenceIndex) -> list[d
     context = {
         "facts": facts.model_dump(mode="json"),
         "evidence": [item.model_dump(mode="json") for item in evidence.entries],
+        "fact_evidence_bindings": _fact_evidence_bindings(evidence),
     }
     return [
         {
@@ -155,11 +156,27 @@ def narrative_system_prompt() -> str:
         "sections, and claims. The sections array must contain summary, interpretation, limitations, and "
         "next_steps exactly once. Every section must contain at least one paragraph. Every factual claim must include fact_refs and "
         "evidence_ids from the supplied index. Do not state improvement for NON_COMPARABLE attempts. "
+        "Copy every claim fact_refs value exactly from the fact_ref values in fact_evidence_bindings; do not invent shorthand, top-level field names, or paths without a registered Evidence binding. "
+        "For each claim, choose evidence_ids from the matching binding entries for its fact_refs. "
+        "Every claim object must bind at least one Fact and one matching Evidence ID; never emit a claim with empty fact_refs or evidence_ids. "
+        "Only create claims for paragraphs that make a factual, interpretive, limiting, or recommendation assertion grounded in the supplied context; do not create empty claims for background or next_steps paragraphs. "
         "Do not create actions, metrics, attempts, or evidence IDs. Do not add fields outside this schema. "
         "The authoritative JSON Schema is: "
         f"{schema} "
         "The supplied frozen context is the only source of truth."
     )
+
+
+def _fact_evidence_bindings(evidence: EvidenceIndex) -> list[dict[str, Any]]:
+    bindings: dict[str, set[str]] = {}
+    for entry in evidence.entries:
+        for fact_ref in entry.fact_refs:
+            bindings.setdefault(fact_ref, set()).add(entry.evidence_id)
+    return [
+        {"fact_ref": fact_ref, "evidence_ids": sorted(evidence_ids)}
+        for fact_ref, evidence_ids in sorted(bindings.items())
+        if evidence_ids
+    ]
 
 
 def _repair_prompt(diagnostic: str) -> str:

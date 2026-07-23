@@ -221,13 +221,44 @@ def _respond_with_slot(
                 raise ValueError(str(final["error"]))
             response = DiscussionResponse.model_validate_json(str(final.get("reply") or ""))
         else:
-            response = DiscussionResponse.model_validate_json(reply)
+            try:
+                response = DiscussionResponse.model_validate_json(reply)
+            except ValueError as exc:
+                repair = call_research_chat(
+                    api_key,
+                    provider_url,
+                    [
+                        *messages,
+                        {"role": "assistant", "content": reply},
+                        {"role": "user", "content": _discussion_repair_prompt(str(exc))},
+                    ],
+                    model=model,
+                    timeout_s=budget.max_wall_time_seconds,
+                    priority="interactive",
+                    response_format_json=True,
+                    temperature=0.1,
+                    thinking_type=model_route.thinking_type if model_route is not None else None,
+                    reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
+                )
+                if repair.get("error"):
+                    raise ValueError(str(repair["error"])) from exc
+                response = DiscussionResponse.model_validate_json(str(repair.get("reply") or ""))
         _validated_evidence_ids(run_dir, report_id, response.evidence_ids)
         if response.response_kind in {"explain", "verify", "compare"} and not response.evidence_ids:
             raise ValueError("factual report discussion responses require Evidence IDs")
     except Exception as exc:
         return fail_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, error=str(exc))
     return complete_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, response=response)
+
+
+def _discussion_repair_prompt(diagnostic: str) -> str:
+    return (
+        "The previous response did not match DiscussionResponse JSON. Return only one valid JSON object with the keys "
+        "answer, response_kind, evidence_ids, and unsupported_claims. response_kind must be exactly one of explain, verify, "
+        "compare, evidence, next_step, or insufficient_evidence. Preserve the answer's meaning, cite only registered "
+        "Evidence IDs, and use response_kind=insufficient_evidence when no supported factual answer is available. "
+        f"Validation diagnostic: {diagnostic}"
+    )
 
 
 def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str, context_window: int = 1_000_000) -> list[dict[str, str]]:

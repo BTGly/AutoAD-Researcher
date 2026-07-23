@@ -120,6 +120,8 @@ def test_narrative_agent_uses_only_frozen_context_when_configured(tmp_path: Path
     context = observed["messages"][1]["content"]
     assert "test-key" not in context
     assert "uncertainties" in context
+    assert "fact_evidence_bindings" in context
+    assert "Copy every claim fact_refs value exactly" in observed["messages"][0]["content"]
 
 
 def test_selected_model_failure_does_not_publish_a_fallback(tmp_path: Path, monkeypatch):

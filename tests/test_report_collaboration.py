@@ -58,6 +58,25 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
 
 
+def test_discussion_responder_repairs_plain_provider_text(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_plain_text", content="请解释当前证据")
+    calls = []
+
+    def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return {"reply": "当前没有可核验的提升结论。", "error": ""}
+        assert kwargs["response_format_json"] is True
+        assert "DiscussionResponse JSON" in args[2][-1]["content"]
+        return {"reply": '{"answer":"当前没有可核验的提升结论。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":[]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
+    assert completed.status == "completed"
+    assert len(calls) == 2
+
+
 def test_discussion_responder_uses_native_tool_call_pairing(monkeypatch, tmp_path: Path):
     run_dir, report_id = _ready_report(tmp_path)
     turn = start_turn(run_dir, report_id=report_id, request_id="turn_native_tool", content="请读取报告摘要")
