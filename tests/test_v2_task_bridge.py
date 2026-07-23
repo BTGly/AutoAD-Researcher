@@ -8,7 +8,15 @@ import yaml
 
 from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
-from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
+from autoad_researcher.assistant.v2.orchestrator import (
+    ResearchOrchestratorV2,
+    _validated_dialogue_reply,
+)
+from autoad_researcher.assistant.v2.research_dialogue_agent import (
+    GatedDialogueDecision,
+    ResearchPolicyAssessment,
+    ResearchReplyResponse,
+)
 from autoad_researcher.assistant.v2.research_intent_summary import (
     BasedStatement,
     ConfirmedTaskParameters,
@@ -609,3 +617,26 @@ def test_orchestrator_act_request_prepares_missing_contract_without_task_action(
     assert not (run_dir / "input_task.yaml").exists()
     assert load_pipeline_jobs(run_dir) == []
     assert not (run_dir / "experiments" / "sessions").exists()
+
+
+def test_dialogue_only_execution_request_explains_mode_conflict_without_starting_work():
+    decision = GatedDialogueDecision(
+        dialogue_mode="act",
+        policy_assessment=ResearchPolicyAssessment(
+            decision="allow",
+            category="none",
+            reason="",
+            safe_alternative="",
+        ),
+        execution_gate="blocked_dialogue_only",
+    )
+    reply = ResearchReplyResponse(
+        reply_to_user="unused",
+        summary=ResearchIntentSummary(goal="执行实验"),
+    )
+
+    visible = _validated_dialogue_reply(decision, reply)
+
+    assert "自动执行与逐步确认不能同时生效" in visible
+    assert "不会修改代码或运行实验" in visible
+    assert "实验工作台确认唯一执行模式" in visible
