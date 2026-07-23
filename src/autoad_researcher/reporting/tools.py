@@ -46,10 +46,86 @@ TOOL_CATALOG = {
     "resolve_evidence": "Resolve one registered evidence_id to its SHA-bound metadata.",
 }
 
+_EMPTY_ARGUMENTS = {"type": "object", "properties": {}, "additionalProperties": False}
+_ATTEMPT_ARGUMENTS = {
+    "type": "object",
+    "properties": {"attempt_id": {"type": "string"}},
+    "required": ["attempt_id"],
+    "additionalProperties": False,
+}
+_EVIDENCE_ARGUMENTS = {
+    "type": "object",
+    "properties": {"evidence_id": {"type": "string"}},
+    "required": ["evidence_id"],
+    "additionalProperties": False,
+}
+
+TOOL_ARGUMENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "get_report_digest": _EMPTY_ARGUMENTS,
+    "get_report_section": {
+        "type": "object",
+        "properties": {"section": {"type": "integer", "minimum": 1, "maximum": 12}},
+        "required": ["section"],
+        "additionalProperties": False,
+    },
+    "list_attempts": _EMPTY_ARGUMENTS,
+    "get_outcome_card": _ATTEMPT_ARGUMENTS,
+    "get_scientific_assessment": _ATTEMPT_ARGUMENTS,
+    "get_metrics": _ATTEMPT_ARGUMENTS,
+    "get_patch_diff": {
+        "type": "object",
+        "properties": {"evidence_id": {"type": "string"}, "attempt_id": {"type": "string"}},
+        "additionalProperties": False,
+    },
+    "search_log": {
+        "type": "object",
+        "properties": {
+            "evidence_id": {"type": "string"},
+            "attempt_id": {"type": "string"},
+            "stream": {"type": "string", "enum": ["stdout", "stderr"]},
+            "query": {"type": "string"},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+    "read_log_range": {
+        "type": "object",
+        "properties": {
+            "evidence_id": {"type": "string"},
+            "attempt_id": {"type": "string"},
+            "stream": {"type": "string", "enum": ["stdout", "stderr"]},
+            "start_line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+        },
+        "additionalProperties": False,
+    },
+    "get_evaluation_contract": _EMPTY_ARGUMENTS,
+    "get_environment_snapshot": _EMPTY_ARGUMENTS,
+    "get_champion": _EMPTY_ARGUMENTS,
+    "get_budget_usage": _EMPTY_ARGUMENTS,
+    "resolve_evidence": _EVIDENCE_ARGUMENTS,
+}
+
 MAX_TOOL_CALLS = 4
 MAX_LOG_RESULTS = 20
 MAX_LOG_LINES = 120
 MAX_TEXT_BYTES = 48_000
+
+
+def native_tool_definitions() -> list[dict[str, Any]]:
+    """Return the OpenAI-compatible read-only tool contract for report discussion."""
+
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": TOOL_CATALOG[name],
+                "parameters": TOOL_ARGUMENT_SCHEMAS[name],
+            },
+        }
+        for name in TOOL_CATALOG
+    ]
 
 
 def execute_tools(

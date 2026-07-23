@@ -2,12 +2,15 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.discussion import DiscussionResponse, ReportDiscussionBudget, _recent_history, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
+from autoad_researcher.server.routes import report_collaboration as report_route
 from autoad_researcher.worker.main import _process_pending_jobs
 
 
@@ -50,6 +53,69 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
     assert completed.status == "completed"
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
+
+
+def test_discussion_responder_uses_native_tool_call_pairing(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_native_tool", content="请读取报告摘要")
+    calls = []
+
+    def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            assert kwargs["tools"]
+            return {
+                "reply": "",
+                "reasoning_content": "需要读取冻结摘要。",
+                "tool_calls": [{
+                    "id": "call_digest",
+                    "type": "function",
+                    "function": {"name": "get_report_digest", "arguments": "{}"},
+                }],
+                "error": "",
+            }
+        messages = calls[1][0][2]
+        assistant = next(item for item in messages if item.get("role") == "assistant" and item.get("tool_calls"))
+        tool = next(item for item in messages if item.get("role") == "tool")
+        assert assistant["reasoning_content"] == "需要读取冻结摘要。"
+        assert tool["tool_call_id"] == "call_digest"
+        return {"reply": '{"answer":"报告摘要已读取。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":[]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
+
+    assert completed.status == "completed"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_discussion_route_maps_failed_turn_to_bad_gateway(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    monkeypatch.setattr(report_route, "RUNS_ROOT", str(tmp_path))
+
+    def failed_response(run_dir, *, report_id, turn_id, **_kwargs):
+        pending = load_turns(run_dir, report_id=report_id)[-1]
+        return pending.model_copy(update={"status": "failed", "error": "模型服务返回 HTTP 400。"})
+
+    monkeypatch.setattr(report_route, "respond_to_turn", failed_response)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": f"/api/runs/{run_dir.name}/reports/{report_id}/discussion",
+        "headers": [],
+        "query_string": b"",
+    })
+
+    with pytest.raises(HTTPException) as excinfo:
+        await report_route.post_discussion(
+            run_dir.name,
+            report_id,
+            report_route.DiscussionRequest(request_id="route_failed", content="请解释"),
+            request,
+        )
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail["status"] == "failed"
 
 
 def test_direct_discussion_response_verifies_turn_snapshot_before_model_call(monkeypatch, tmp_path: Path):

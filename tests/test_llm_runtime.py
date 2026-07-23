@@ -212,6 +212,48 @@ def test_provider_schema_shape_error_is_not_retried(monkeypatch):
     assert calls == 1
 
 
+def test_native_tool_response_is_returned_without_losing_reasoning_metadata(monkeypatch):
+    captured = {}
+
+    def handler(request):
+        import json
+
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "reasoning_content": "先读取冻结摘要。",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_report_digest", "arguments": "{}"},
+                    }],
+                },
+            }],
+        })
+
+    _install_transport(monkeypatch, handler)
+    result = get_llm_call_broker().call(replace(
+        _request(),
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "get_report_digest",
+                "description": "Read the frozen report digest.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+    ))
+
+    assert "tools" in captured
+    assert result.reply == ""
+    assert result.tool_calls[0]["id"] == "call_1"
+    assert result.reasoning_content == "先读取冻结摘要。"
+    assert result.finish_reason == "tool_calls"
+
+
 def test_circuit_opens_after_three_failures_and_half_open_probe_recovers(monkeypatch):
     monkeypatch.setenv("AUTOAD_LLM_CIRCUIT_FAILURE_THRESHOLD", "3")
     monkeypatch.setenv("AUTOAD_LLM_CIRCUIT_COOLDOWN_SECONDS", "0.01")

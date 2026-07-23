@@ -79,11 +79,16 @@ def test_narrative_agent_uses_only_frozen_context_when_configured(tmp_path: Path
     root_evidence = next(item.evidence_id for item in evidence.entries if item.field_path == "$")
 
     observed = {}
+    calls = []
+
     def fake_call(api_key, provider_url, messages, **kwargs):
+        calls.append(messages)
         observed["messages"] = messages
         assert api_key == "test-key"
         assert provider_url == "https://provider.test"
         assert kwargs["response_format_json"] is True
+        if len(calls) == 1:
+            return {"reply": json.dumps({"schema_version": 2}), "error": ""}
         return {"reply": json.dumps({
             "schema_version": 2,
             "sections": [
@@ -109,6 +114,9 @@ def test_narrative_agent_uses_only_frozen_context_when_configured(tmp_path: Path
     generated = generate_narrative(facts=facts, evidence=evidence)
     assert generated.mode == "model"
     assert generated.model == "test-model"
+    assert len(calls) == 2
+    assert calls[1][2]["role"] == "assistant"
+    assert "schema_validation" in calls[1][3]["content"]
     context = observed["messages"][1]["content"]
     assert "test-key" not in context
     assert "uncertainties" in context

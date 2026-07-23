@@ -13,7 +13,7 @@ from autoad_researcher.assistant.llm_runtime import (
 def call_research_chat(
     api_key: str,
     provider_base_url: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     model: str = "deepseek-chat",
     timeout_s: int | float = 60,
     on_delta: Callable[[str], None] | None = None,
@@ -22,6 +22,7 @@ def call_research_chat(
     response_format_json: bool = False,
     max_tokens: int = 2048,
     temperature: float = 0.3,
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Call the shared broker and return a safe ``{reply, error, runtime}`` mapping."""
 
@@ -33,6 +34,7 @@ def call_research_chat(
         timeout_s=float(timeout_s),
         priority=priority,
         response_format_json=response_format_json,
+        tools=tools,
         max_tokens=max_tokens,
         temperature=temperature,
         on_delta=on_delta,

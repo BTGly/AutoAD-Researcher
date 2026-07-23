@@ -15,7 +15,8 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
   const [url, setUrl] = useState(config.baseUrl);
   const [model, setModel] = useState(config.model);
   const keyRef = useRef<HTMLInputElement>(null);
-  useDialogFocus(keyRef);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(keyRef, { dialogRef, onClose });
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -25,7 +26,7 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
   };
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
+    <div ref={dialogRef} className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
       <div className="modal config-modal">
         <header className="config-modal-heading">
           <span className="config-modal-icon"><KeyRound size={18} strokeWidth={1.8} aria-hidden="true" /></span>
@@ -37,17 +38,17 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
         <p className="config-modal-note">API Key 只保存在本设备浏览器中，不上传服务器。</p>
 
         <form className="config-form" onSubmit={handleSubmit}>
-          <label className="config-field">
+          <label className="config-field" htmlFor="config-api-key">
             <span>API Key</span>
-            <input ref={keyRef} type="password" value={key} onChange={event => setKey(event.target.value)} placeholder="输入 API Key" autoComplete="off" required />
+            <input id="config-api-key" ref={keyRef} type="password" value={key} onChange={event => setKey(event.target.value)} placeholder="输入 API Key" autoComplete="off" required />
           </label>
-          <label className="config-field">
+          <label className="config-field" htmlFor="config-base-url">
             <span>Base URL</span>
-            <input value={url} onChange={event => setUrl(event.target.value)} placeholder="https://api.deepseek.com" inputMode="url" autoComplete="url" required />
+            <input id="config-base-url" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://api.deepseek.com" inputMode="url" autoComplete="url" required />
           </label>
-          <label className="config-field">
+          <label className="config-field" htmlFor="config-model">
             <span>Model</span>
-            <input value={model} onChange={event => setModel(event.target.value)} placeholder="deepseek-v4-flash" autoComplete="off" required />
+            <input id="config-model" value={model} onChange={event => setModel(event.target.value)} placeholder="deepseek-v4-flash" autoComplete="off" required />
           </label>
 
           <div className="config-actions">

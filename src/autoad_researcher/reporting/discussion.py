@@ -8,14 +8,14 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.reporting.evidence import EvidenceIndex
 from autoad_researcher.reporting.store import ReportStore
-from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, TOOL_CATALOG, ReportToolCall, execute_tools, load_verified_report_context
+from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, ReportToolCall, execute_tools, load_verified_report_context, native_tool_definitions
 
 MAX_TURNS = 40
 MAX_MESSAGE_CHARS = 8000
@@ -156,8 +156,8 @@ def _respond_with_slot(
     digest = digest_model.model_dump(mode="json")
     evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id} for item in index.entries[:24]]
     messages = [
-        {"role": "system", "content": "You answer only from frozen report context. Return either DiscussionResponse JSON, or {tool_calls:[{name,arguments}]}. Use typed tools for deep details; never claim file access, execution, or unlisted evidence."},
-        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence, "tool_catalog": TOOL_CATALOG, "max_tool_calls": MAX_TOOL_CALLS}, ensure_ascii=False)},
+        {"role": "system", "content": "You answer only from frozen report context. Return DiscussionResponse JSON. Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
+        {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence}, ensure_ascii=False)},
         {"role": "assistant", "content": "I will use only this frozen report context and registered Evidence."},
         *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id),
         {"role": "user", "content": turn.user_message},
@@ -170,29 +170,45 @@ def _respond_with_slot(
         model=model,
         timeout_s=budget.max_wall_time_seconds,
         priority="interactive",
-        response_format_json=True,
+        response_format_json=False,
         max_tokens=budget.max_output_tokens,
         temperature=0.1,
+        tools=native_tool_definitions(),
     )
     try:
         if result.get("error"): raise ValueError(str(result["error"]))
         reply = str(result.get("reply") or "")
-        try:
-            response = DiscussionResponse.model_validate_json(reply)
-        except Exception:
-            plan = _tool_plan(reply)
+        raw_tool_calls = result.get("tool_calls") or []
+        if raw_tool_calls:
             if budget.max_llm_calls < 2:
                 raise ValueError("report discussion budget does not allow a typed deep-read response")
+            native_calls = _native_tool_calls(raw_tool_calls)
             tool_results = execute_tools(
                 run_dir,
                 report_id=report_id,
-                calls=plan,
+                calls=[item[1] for item in native_calls],
                 snapshot_content_sha256_expected=turn.snapshot_content_sha256,
             )
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": reply or None,
+                "tool_calls": [item[0] for item in native_calls],
+            }
+            reasoning_content = result.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                assistant_message["reasoning_content"] = reasoning_content
+            tool_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": raw_call["id"],
+                    "content": json.dumps(tool_result, ensure_ascii=False),
+                }
+                for raw_call, tool_result in zip((item[0] for item in native_calls), tool_results, strict=True)
+            ]
             final = call_research_chat(
                 api_key,
                 provider_url,
-                [*messages, {"role": "tool", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=False)}, {"role": "system", "content": "Return only DiscussionResponse JSON. Cite only evidence_ids from the frozen report."}],
+                [*messages, assistant_message, *tool_messages],
                 model=model,
                 timeout_s=budget.max_wall_time_seconds,
                 priority="interactive",
@@ -203,6 +219,8 @@ def _respond_with_slot(
             if final.get("error"):
                 raise ValueError(str(final["error"]))
             response = DiscussionResponse.model_validate_json(str(final.get("reply") or ""))
+        else:
+            response = DiscussionResponse.model_validate_json(reply)
         _validated_evidence_ids(run_dir, report_id, response.evidence_ids)
         if response.response_kind in {"explain", "verify", "compare"} and not response.evidence_ids:
             raise ValueError("factual report discussion responses require Evidence IDs")
@@ -239,14 +257,31 @@ def _recent_history(turns: list[DiscussionTurn], *, current_turn_id: str) -> lis
     return selected
 
 
-def _tool_plan(reply: str) -> list[ReportToolCall]:
-    raw = json.loads(reply)
-    if not isinstance(raw, dict) or not isinstance(raw.get("tool_calls"), list):
-        raise ValueError("discussion response was neither a structured answer nor a typed tool plan")
-    calls = [ReportToolCall.model_validate(item) for item in raw["tool_calls"]]
-    if not calls:
-        raise ValueError("typed tool plan must request at least one tool")
-    return calls
+def _native_tool_calls(raw_tool_calls: Any) -> list[tuple[dict[str, Any], ReportToolCall]]:
+    if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+        raise ValueError("native report tool calls must be a non-empty list")
+    if len(raw_tool_calls) > MAX_TOOL_CALLS:
+        raise ValueError("report discussion requested too many typed tools")
+    parsed: list[tuple[dict[str, Any], ReportToolCall]] = []
+    for raw_call in raw_tool_calls:
+        if not isinstance(raw_call, dict) or not isinstance(raw_call.get("id"), str) or not raw_call["id"]:
+            raise ValueError("native report tool call lacks a stable id")
+        function = raw_call.get("function")
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            raise ValueError("native report tool call lacks a function name")
+        raw_arguments = function.get("arguments", "{}")
+        if isinstance(raw_arguments, str):
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError as exc:
+                raise ValueError("native report tool arguments are not valid JSON") from exc
+        else:
+            arguments = raw_arguments
+        if not isinstance(arguments, dict):
+            raise ValueError("native report tool arguments must be a JSON object")
+        call = ReportToolCall.model_validate({"name": function["name"], "arguments": arguments})
+        parsed.append((raw_call, call))
+    return parsed
 
 
 def load_turns(run_dir: Path, *, report_id: str) -> list[DiscussionTurn]:

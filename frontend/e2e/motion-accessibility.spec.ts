@@ -134,6 +134,13 @@ test('keeps repeated Toast feedback interruptible and restores Modal focus', asy
   await config.click();
   await expect(page.getByRole('dialog', { name: '配置 API Key' })).toBeVisible();
   await expect(page.getByPlaceholder('输入 API Key')).toBeFocused();
-  await page.getByRole('button', { name: '取消' }).click();
+  await expect(page.locator('label[for="config-api-key"]')).toHaveCount(1);
+  await page.getByRole('button', { name: '取消' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(page.getByPlaceholder('输入 API Key')).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('button', { name: '取消' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '配置 API Key' })).toBeHidden();
   await expect(config).toBeFocused();
 });

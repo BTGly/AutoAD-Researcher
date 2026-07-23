@@ -1,6 +1,8 @@
 """AutoAD Researcher v2 — FastAPI backend."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,8 +10,31 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
 
-app = FastAPI(title="AutoAD Researcher v2")
-_worker_task: asyncio.Task | None = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Own the embedded worker and shared provider clients per app instance."""
+
+    from autoad_researcher.server.worker_runtime import embedded_worker_enabled, embedded_worker_loop
+
+    worker_task: asyncio.Task[None] | None = None
+    if embedded_worker_enabled():
+        worker_task = asyncio.create_task(embedded_worker_loop(), name="autoad-embedded-worker")
+    app.state.embedded_worker_task = worker_task
+    try:
+        yield
+    finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker_task
+        app.state.embedded_worker_task = None
+        from autoad_researcher.assistant.llm_runtime import reset_llm_call_broker
+
+        await asyncio.to_thread(reset_llm_call_broker)
+
+
+app = FastAPI(title="AutoAD Researcher v2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,30 +47,6 @@ app.add_middleware(
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
-
-
-@app.on_event("startup")
-async def start_embedded_worker():
-    global _worker_task
-    from autoad_researcher.server.worker_runtime import embedded_worker_enabled, embedded_worker_loop
-
-    if embedded_worker_enabled() and _worker_task is None:
-        _worker_task = asyncio.create_task(embedded_worker_loop())
-
-
-@app.on_event("shutdown")
-async def stop_embedded_worker():
-    global _worker_task
-    from autoad_researcher.assistant.llm_runtime import reset_llm_call_broker
-
-    if _worker_task is not None:
-        _worker_task.cancel()
-        try:
-            await _worker_task
-        except asyncio.CancelledError:
-            pass
-        _worker_task = None
-    await asyncio.to_thread(reset_llm_call_broker)
 
 
 from autoad_researcher.server.routes import artifacts, chat, evidence, experiment_attempts, experiment_config, experiment_projection, intent_summary, jobs, report_collaboration, report_route, reports, runs, sources, ws

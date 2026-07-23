@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from email.utils import parsedate_to_datetime
 from functools import wraps
 from typing import Any, Literal, ParamSpec, TypeVar
@@ -46,19 +46,23 @@ class ConversationDeadline:
 class LLMCallRequest:
     api_key: str
     provider_base_url: str
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     model: str = "deepseek-chat"
     timeout_s: float = 60.0
     max_tokens: int = 2048
     temperature: float = 0.3
     priority: CallPriority = "contract"
     response_format_json: bool = False
+    tools: list[dict[str, Any]] | None = None
     on_delta: Callable[[str], None] | None = None
 
 
 @dataclass
 class LLMCallResult:
     reply: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    reasoning_content: str = ""
+    finish_reason: str | None = None
     error: str = ""
     provider_request_id: str = ""
     http_status: int | None = None
@@ -288,6 +292,8 @@ class LLMCallBroker:
         }
         if response_format_json:
             payload["response_format"] = {"type": "json_object"}
+        if request.tools:
+            payload["tools"] = request.tools
         if request.on_delta is not None:
             payload["stream"] = True
         headers = {
@@ -329,9 +335,24 @@ class LLMCallBroker:
                 try:
                     response.read()
                     body = response.json()
-                    content = body["choices"][0]["message"]["content"]
-                    if not isinstance(content, str):
-                        raise TypeError("message content is not text")
+                    choice = body["choices"][0]
+                    message = choice["message"]
+                    if not isinstance(message, dict):
+                        raise TypeError("message is not an object")
+                    content = message.get("content") or ""
+                    tool_calls = message.get("tool_calls") or []
+                    if not isinstance(content, str) or not isinstance(tool_calls, list):
+                        raise TypeError("message content or tool_calls has an invalid shape")
+                    if not content and not tool_calls:
+                        raise ValueError("message contains neither content nor tool_calls")
+                    if any(not isinstance(item, dict) for item in tool_calls):
+                        raise TypeError("tool_calls contains an invalid item")
+                    reasoning_content = message.get("reasoning_content") or ""
+                    if not isinstance(reasoning_content, str):
+                        raise TypeError("reasoning_content is not text")
+                    finish_reason = choice.get("finish_reason")
+                    if finish_reason is not None and not isinstance(finish_reason, str):
+                        raise TypeError("finish_reason is not text")
                 except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
                     return LLMCallResult(
                         error="模型响应格式无法解析。",
@@ -343,6 +364,9 @@ class LLMCallBroker:
                     )
                 return LLMCallResult(
                     reply=content.strip(),
+                    tool_calls=tool_calls,
+                    reasoning_content=reasoning_content,
+                    finish_reason=finish_reason,
                     provider_request_id=request_id,
                     http_status=200,
                     ttfb_ms=ttfb_ms,

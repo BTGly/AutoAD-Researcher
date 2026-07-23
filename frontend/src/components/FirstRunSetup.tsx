@@ -52,9 +52,10 @@ export function FirstRunSetup({ onSave }: Props) {
           </div>
 
           <form className="first-run-form" onSubmit={handleSubmit} aria-busy={saving}>
-            <label className="config-field">
+            <label className="config-field" htmlFor="first-run-api-key">
               <span>API Key</span>
               <input
+                id="first-run-api-key"
                 type="password"
                 value={key}
                 onChange={event => setKey(event.target.value)}
@@ -64,9 +65,10 @@ export function FirstRunSetup({ onSave }: Props) {
                 required
               />
             </label>
-            <label className="config-field">
+            <label className="config-field" htmlFor="first-run-base-url">
               <span>Base URL</span>
               <input
+                id="first-run-base-url"
                 value={url}
                 onChange={event => setUrl(event.target.value)}
                 placeholder="https://api.deepseek.com"
@@ -75,9 +77,10 @@ export function FirstRunSetup({ onSave }: Props) {
                 required
               />
             </label>
-            <label className="config-field">
+            <label className="config-field" htmlFor="first-run-model">
               <span>Model</span>
               <input
+                id="first-run-model"
                 value={model}
                 onChange={event => setModel(event.target.value)}
                 placeholder="deepseek-v4-flash"

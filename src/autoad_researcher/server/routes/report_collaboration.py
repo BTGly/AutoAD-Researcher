@@ -3,6 +3,7 @@
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.reporting.discussion import load_messages, load_turns, respond_to_turn, start_turn
@@ -74,6 +75,18 @@ async def post_discussion(run_id: str, report_id: str, request: DiscussionReques
         item = start_turn(root, report_id=report_id, request_id=request.request_id, content=request.content, evidence_ids=request.evidence_ids)
         api_key, provider_url, model = _extract_api_headers(http_request)
         item = respond_to_turn(root, report_id=report_id, turn_id=item.turn_id, api_key=api_key, provider_url=provider_url, model=model)
+        if item.status == "pending":
+            return JSONResponse(status_code=202, content=item.model_dump(mode="json"))
+        if item.status == "failed":
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "report_discussion_failed",
+                    "message": item.error or "报告讨论失败，请重试。",
+                    "turn_id": item.turn_id,
+                    "status": item.status,
+                },
+            )
         return item.model_dump(mode="json")
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc

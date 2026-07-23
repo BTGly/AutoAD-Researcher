@@ -26,7 +26,8 @@ async function prepare(page: Page) {
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/digest`) return route.fulfill({ json: { report_id: report.report_id, facts_content_sha256: report.facts_content_sha256, research_objective: {}, engineering_status: 'READY', execution_status: 'COMPLETED', scientific_status: 'EVIDENCE_INSUFFICIENT', attempt_count: 1, failed_attempt_count: 0, non_comparable_attempt_count: 0, champion: {}, primary_metrics: [{ attempt_id: 'attempt_000001', metric: 'image_auroc', value: 0.91 }], stop_decision: {}, uncertainties: ['Scientific assessment is evidence-insufficient.'] } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/content`) return route.fulfill({ json: { content: '# Frozen report' } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/evidence`) return route.fulfill({ json: { entries: [] } });
-    if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion`) return route.fulfill({ json: { messages: [], turns: [] } });
+    if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion` && route.request().method() === 'GET') return route.fulfill({ json: { messages: [], turns: [] } });
+    if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/discussion` && route.request().method() === 'POST') return route.fulfill({ json: { turn_id: 'turn_failed', request_id: 'request_failed', report_id: report.report_id, snapshot_content_sha256: 'a'.repeat(64), user_message: '请解释这个失败', response: null, status: 'failed', evidence_ids: [], created_at: '2026-07-22T00:00:00Z', completed_at: '2026-07-22T00:00:01Z', error: '模型服务返回 HTTP 400。' } });
     if (path === `/api/runs/${run.run_id}/reports/${report.report_id}/proposals`) {
       if (route.request().method() === 'GET') return route.fulfill({ json: { proposals } });
       const body = route.request().postDataJSON() as { rationale: string };
@@ -86,4 +87,15 @@ test('updates review and isolates human proposals by selected report version', a
   await expect(page.getByRole('button', { name: '接受' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '需要更多证据' })).toBeDisabled();
   await expect(page.getByLabel('人工跟进 Proposal')).toBeDisabled();
+});
+
+test('keeps a failed discussion question and exposes the provider error', async ({ page }) => {
+  await prepare(page);
+  await page.getByRole('button', { name: '研究报告' }).click();
+  await expect(page.getByText('工程：READY', { exact: true })).toBeVisible();
+  const input = page.locator('input[aria-label="报告讨论"]');
+  await input.fill('请解释这个失败');
+  await page.getByRole('button', { name: '发送报告讨论' }).click();
+  await expect(page.getByRole('alert')).toContainText('模型服务返回 HTTP 400。');
+  await expect(input).toHaveValue('请解释这个失败');
 });
