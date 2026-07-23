@@ -69,6 +69,21 @@ def test_source_action_plan_keeps_every_unique_conversation_url_with_attachments
     ]
 
 
+def test_source_action_plan_extracts_github_repo_before_following_cjk_prose():
+    plan = plan_explicit_source_actions(
+        user_input=(
+            "执行仓库是：https://github.com/BTGly/autoad_micro_success_repo。"
+            "这个仓库才是执行仓库，论文只是参考材料。"
+        ),
+        attachments=None,
+    )
+
+    assert plan is not None
+    assert [(action.action_type, action.source_url) for action in plan.actions] == [
+        ("register_github_repo", "https://github.com/BTGly/autoad_micro_success_repo"),
+    ]
+
+
 def test_multiple_conversation_urls_are_registered_and_visible_to_decision_agent(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_multiple_urls"
     run_dir.mkdir()

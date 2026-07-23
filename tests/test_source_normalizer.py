@@ -78,3 +78,12 @@ def test_extract_source_candidates_keeps_first_explicit_material_reference():
     assert [candidate.source_kind for candidate in candidates] == ["webpage", "webpage"]
     assert candidates[0].normalized_ref == "https://arxiv.org/abs/2303.15140v2"
     assert candidates[1].normalized_ref == "https://github.com/owner/repo"
+
+
+def test_extract_source_candidates_stops_before_following_cjk_prose():
+    candidates = extract_source_candidates(
+        "执行仓库是：https://github.com/BTGly/autoad_micro_success_repo。这个仓库才是执行仓库。"
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].normalized_ref == "https://github.com/BTGly/autoad_micro_success_repo"
