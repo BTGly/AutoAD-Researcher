@@ -58,6 +58,23 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
 
 
+def test_discussion_prompt_requires_tools_for_direct_failure_evidence(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_failure_evidence", content="请列出失败 Attempt 的直接证据和下一步最小修复动作")
+    captured = {}
+
+    def fake_call(*args, **kwargs):
+        captured["system"] = args[2][0]["content"]
+        return {"reply": '{"answer":"证据不足。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":[]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
+
+    assert completed.status == "completed"
+    assert "first use a registered read-only Attempt or log tool" in captured["system"]
+    assert "Do not infer an error class" in captured["system"]
+
+
 def test_capacity_busy_keeps_pending_turn_for_same_request_retry(monkeypatch, tmp_path: Path):
     run_dir, report_id = _ready_report(tmp_path)
     turn = start_turn(run_dir, report_id=report_id, request_id="turn_capacity", content="请解释当前证据")

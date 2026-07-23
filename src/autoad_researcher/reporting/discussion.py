@@ -25,6 +25,12 @@ DISCUSSION_RESPONSE_CONTRACT = (
     "unsupported_claims. response_kind must be exactly one of explain, verify, compare, evidence, "
     "next_step, or insufficient_evidence. Do not use answer_type or any other key."
 )
+DISCUSSION_EVIDENCE_RULE = (
+    "For requests about direct failure evidence, stderr or stdout details, root cause, or a minimal repair, "
+    "first use a registered read-only Attempt or log tool such as get_outcome_card, search_log, or read_log_range. "
+    "Do not infer an error class from a task profile or generic failure pattern. If the tool result does not support "
+    "a claim, say that the evidence is insufficient."
+)
 RESPONSE_CAPACITY_ERROR = "报告讨论当前繁忙，请稍后重试。"
 
 
@@ -166,7 +172,7 @@ def _respond_with_slot(
     digest = digest_model.model_dump(mode="json")
     evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id, "artifact_ref": item.artifact_ref.model_dump(mode="json"), "field_path": item.field_path} for item in index.entries]
     messages = [
-        {"role": "system", "content": f"You answer only from frozen report context. {DISCUSSION_RESPONSE_CONTRACT} Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
+        {"role": "system", "content": f"You answer only from frozen report context. {DISCUSSION_RESPONSE_CONTRACT} {DISCUSSION_EVIDENCE_RULE} Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
         {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence}, ensure_ascii=False)},
         {"role": "assistant", "content": "I will use only this frozen report context and registered Evidence."},
         *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id, context_window=model_route.context_window if model_route is not None else 1_000_000),
