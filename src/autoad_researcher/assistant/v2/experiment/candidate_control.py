@@ -61,8 +61,11 @@ class CandidateControlService:
         session = self._sessions.load(run_dir, session_id)
         if session is None:
             raise FileNotFoundError("experiment session not found")
-        if session.status != "READY" or session.baseline_status != "completed":
-            raise ValueError("candidate launch requires a completed baseline Session")
+        if not (
+            (session.status == "READY_FOR_BASELINE" and session.baseline_status == "b_dev_completed")
+            or (session.status == "READY" and session.baseline_status == "completed")
+        ):
+            raise ValueError("candidate launch requires a completed baseline B_dev")
         if session.authorization.execution_mode == "plan_only":
             raise ValueError("plan_only Session may not launch a candidate")
         if not session.evaluation_contract_ref or not session.evaluation_contract_sha256:

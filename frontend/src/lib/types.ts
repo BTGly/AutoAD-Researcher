@@ -76,6 +76,7 @@ export interface ExperimentTaskDraft {
   status: 'pending_confirmation' | 'confirmed';
   execution_mode: 'plan_only' | 'approve_each_step' | 'agent_assisted_after_approval';
   input_task: PipelineInputTask;
+  primary_metric_candidates?: string[];
   evidence_refs: string[];
   summary_sha256: string;
   created_at: string;

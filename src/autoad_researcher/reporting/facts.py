@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.experiment.finalizer import OutcomeCard
 from autoad_researcher.experiment.scientific_assessment import ScientificAssessment
 from autoad_researcher.reporting.models import ReportSnapshot
-from autoad_researcher.reporting.snapshot import canonical_sha256, resolve_run_relative_file, sha256_file
+from autoad_researcher.reporting.snapshot import attempt_id_from_artifact, canonical_sha256, read_verified_snapshot_artifact
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
 REPORT_FACTS_SCHEMA_VERSION = 1
@@ -110,15 +109,7 @@ def _verified_snapshot_objects(run_dir: Path, snapshot: ReportSnapshot) -> list[
     for reference in snapshot.source_refs:
         if reference.artifact_type in frozen_types:
             continue
-        path = resolve_run_relative_file(run_dir, reference.locator)
-        if sha256_file(path) != reference.sha256:
-            raise ValueError("snapshot artifact SHA-256 no longer matches")
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("snapshot artifact is not readable JSON") from exc
-        if not isinstance(value, dict):
-            raise ValueError("snapshot JSON artifact must be an object")
+        value = read_verified_snapshot_artifact(run_dir, reference)
         result.append((reference, value))
     return result
 
@@ -130,7 +121,7 @@ def _one(raw: list[tuple[ArtifactReferenceV2, dict[str, Any]]], artifact_type: s
 def _attempt_facts(raw: list[tuple[ArtifactReferenceV2, dict[str, Any]]]) -> list[dict[str, Any]]:
     attempts: dict[str, dict[str, Any]] = {}
     for reference, value in raw:
-        attempt_id = next((part for part in reference.artifact_id.split(":") if part.startswith("attempt_")), None)
+        attempt_id = attempt_id_from_artifact(reference)
         if attempt_id is None:
             continue
         entry = attempts.setdefault(attempt_id, {"attempt_id": attempt_id})

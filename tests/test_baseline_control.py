@@ -241,21 +241,23 @@ def test_baseline_gpu_budget_requires_explicit_resources():
         BaselineContractInput.model_validate(payload)
 
 
-def test_baseline_control_queues_explicit_b_test_baseline_and_waits_for_both(tmp_path: Path):
+def test_baseline_control_requires_explicit_b_test_action_after_b_dev(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
     _declare_b_test_adapter(run_dir, session.session_id)
     started = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
-    assert started.b_test_started is not None
-    assert started.b_test_started.attempt.command_plan.command_id == "generic_python_b_test"
+    assert started.b_test_started is None
     for _ in range(100):
         _process_pending_jobs(run_dir)
         projected = ExperimentSessionStore().load(run_dir, session.session_id)
-        if projected is not None and projected.status == "READY":
+        if projected is not None and projected.baseline_status == "b_dev_completed":
             break
         time.sleep(0.02)
     projected = ExperimentSessionStore().load(run_dir, session.session_id)
-    assert projected is not None and projected.status == "READY"
+    assert projected is not None and projected.status == "READY_FOR_BASELINE" and projected.baseline_status == "b_dev_completed"
+    with pytest.raises(ValueError, match="held_out_confirmation_required"):
+        BaselineControlService().start_b_test(run_dir, session_id=session.session_id)
+    assert [item.job_type for item in ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)] == ["experiment_baseline"]
 
 
 def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tmp_path: Path):
@@ -266,7 +268,7 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
     for _ in range(100):
         _process_pending_jobs(run_dir)
         projected = ExperimentSessionStore().load(run_dir, session.session_id)
-        if projected is not None and projected.status == "READY":
+        if projected is not None and projected.baseline_status == "b_dev_completed":
             break
         time.sleep(0.02)
     tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
@@ -294,12 +296,28 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
         session_id=session.session_id,
         value=CandidateConfirmationInput(candidate_attempt_id=candidate_attempt_id, noise_threshold=0.01, idempotency_key="confirm:idea-1"),
     )
-    confirmation_id = confirmation.started.attempt.attempt_id
+    assert confirmation.started is None
+    assert confirmation.baseline_b_test_started is not None
+    assert confirmation.held_out_confirmation_id is not None
+    replay_before_held_out_finishes = CandidateConfirmationService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=CandidateConfirmationInput(candidate_attempt_id=candidate_attempt_id, noise_threshold=0.01, idempotency_key="confirm:idea-1"),
+    )
+    assert replay_before_held_out_finishes.started is None
+    assert replay_before_held_out_finishes.baseline_b_test_started is not None
+    assert replay_before_held_out_finishes.baseline_b_test_started.disposition == "reused"
+    assert [item.job_type for item in ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)].count("experiment_baseline_b_test") == 1
+    authorization_before_pair = json.loads((run_dir / "experiments" / "held_out_confirmations" / f"{confirmation.held_out_confirmation_id}.json").read_text(encoding="utf-8"))
+    assert authorization_before_pair["candidate_b_test_attempt_id"] is None
     for _ in range(100):
         _process_pending_jobs(run_dir)
         if (run_dir / "experiments" / "champions" / "candidates" / f"candidate_{int(candidate_attempt_id.rsplit('_', 1)[1]):06d}.json").is_file():
             break
         time.sleep(0.02)
+    authorization_path = run_dir / "experiments" / "held_out_confirmations" / f"{confirmation.held_out_confirmation_id}.json"
+    authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+    confirmation_id = str(authorization["candidate_b_test_attempt_id"])
     snapshot = CandidateRegistry().load_candidate(run_dir, f"candidate_{int(candidate_attempt_id.rsplit('_', 1)[1]):06d}")
     assert snapshot.attempt_id == candidate_attempt_id
     assert snapshot.b_test_passed

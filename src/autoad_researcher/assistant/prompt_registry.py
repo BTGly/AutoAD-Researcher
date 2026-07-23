@@ -327,7 +327,8 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 - 输出前在内部做 evidence audit：逐项删掉无法从当前上下文定位依据的具体事实；计划用“读取/验证/确认”表达未知项，不预填结论。不输出 audit 过程。
 - Repository Intelligence 路径只称候选。只有候选路径时说“下一步读取后确认”，不猜文件内容。
 - confirmed_facts 只写用户明确陈述，包含禁止项和负向约束；材料推断写 inferred_facts，并在 basis 标 source_id/artifact_path。
-- confirmed_task_parameters 只输出本轮新增或更正的用户参数值：baseline、dataset、compute_budget 是 string 或 null，primary_metrics、evaluation_constraints 是 string 数组或 null。不要输出 source 或 evidence；系统只会把通过冻结决策和当前用户消息验证的值写成正式溯源记录。没有新增或更正时全部保留 null，绝不从 confirmed_facts、材料或模型常识猜取。
+- confirmed_task_parameters 只输出本轮新增或更正的用户参数值：baseline、dataset、compute_budget 是 string 或 null，primary_metrics、evaluation_constraints 是 string 数组或 null。顶层的 primary_metric_candidates 只列出用户在本轮明确提出、但尚未确认的主指标候选；不要从材料、仓库或模型常识补候选。不要输出 source 或 evidence；系统只会把通过冻结决策和当前用户消息验证的值写成正式溯源记录。没有新增或更正时全部保留 null，绝不从 confirmed_facts、材料或模型常识猜取。
+- 真实执行前，primary metric 必须在讨论中由用户明确确认；缺少确认时保留 plan_only 草案可以，但不要把任务写成可执行确认。用户提出多个候选时，列入 primary_metric_candidates，并在 blocking_question 中请用户选择；不要替用户从论文、仓库或领域常识选定。
 - unresolved_conflicts 只写有依据的风险；summary 是整合本轮后的完整状态，保留有效事实并应用用户最新纠正。
 - 跨领域迁移先说明模态、学习信号和假设冲突；初步假设必须标为未验证，不能写成 inferred_facts。
 </evidence>
@@ -336,7 +337,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 - Propose first。回复简洁，按任务使用自然段、步骤、清单或表格；最多一个 blocking_question，回复中自然提出同一问题。
 - 不声称已保存、已更新、稍后通知或完成任何没有 artifact 支持的动作。
 - 只输出一个 JSON object，不要输出 mode、policy、source_action、task_action 或 target_spec：
-{"reply_to_user":"...","summary":{"goal":"...","confirmed_facts":["..."],"confirmed_task_parameters":{"baseline":"PatchCore","dataset":"MVTec AD bottle","compute_budget":null,"primary_metrics":["instance AUROC"],"evaluation_constraints":null},"inferred_facts":[{"statement":"...","basis":"..."}],"unresolved_conflicts":[{"statement":"...","basis":"..."}],"blocking_question":null}}
+{"reply_to_user":"...","summary":{"goal":"...","confirmed_facts":["..."],"confirmed_task_parameters":{"baseline":"PatchCore","dataset":"MVTec AD bottle","compute_budget":null,"primary_metrics":["instance AUROC"],"evaluation_constraints":null},"primary_metric_candidates":["image_auroc","pixel_auroc"],"inferred_facts":[{"statement":"...","basis":"..."}],"unresolved_conflicts":[{"statement":"...","basis":"..."}],"blocking_question":null}}
 </style_and_output>
 """
 

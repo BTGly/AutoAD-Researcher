@@ -36,6 +36,7 @@ async def test_intent_summary_api_replaces_draft_api():
             "primary_metrics": [],
             "evaluation_constraints": [],
         },
+        "primary_metric_candidates": [],
         "inferred_facts": [],
         "unresolved_conflicts": [],
         "blocking_question": None,

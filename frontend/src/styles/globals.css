@@ -222,6 +222,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   flex-shrink: 0;
 }
 .sidebar-tabs {
@@ -262,6 +263,16 @@ html, body, #root {
 }
 .sidebar-content {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-primary-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
   padding: 12px;
 }
@@ -604,7 +615,17 @@ input:focus, textarea:focus { border-color: var(--blue); }
 .config-actions { display: flex; gap: 8px; margin-top: 4px; }
 .config-actions .app-button { flex: 1; }
 
-.artifact-list { margin-top: 8px; }
+.artifact-list {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-height: 42%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin-top: 0;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+}
 .artifact-list-title { margin-bottom: 6px; color: var(--text-muted); font-size: 12px; }
 .artifact-item { margin-bottom: 4px; }
 .artifact-button { display: flex; align-items: center; gap: 5px; width: 100%; padding: 5px 8px; border: 0; background: transparent; color: var(--blue); text-align: left; font-size: 12px; }

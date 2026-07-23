@@ -18,6 +18,7 @@ from autoad_researcher.experiment.gpu import GpuAllocator, GpuUnavailableError
 from autoad_researcher.experiment.watchdog import RuntimeWatchdog
 from autoad_researcher.experiment.failure_classifier import FailureClassification, classify_or_load
 from autoad_researcher.experiment.finalizer import finalize_attempt
+from autoad_researcher.experiment.executor_adapters import ExecutorAdapter
 from autoad_researcher.experiment.retry_policy import RetryPolicy
 from autoad_researcher.experiment.health_diagnosis import HealthDiagnosisAgent
 from autoad_researcher.runner.models import ExperimentExecutionResult, OutputManifestEntry
@@ -195,13 +196,34 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
             for item in store.list_for_session(run_dir, session_id=attempt.session_id)
             if item.job_type in {"experiment_baseline", "experiment_baseline_b_test"}
         ]
-        if all(item.runtime_status == "COMPLETED" for item in baseline_attempts):
+        requires_b_test = (
+            attempt.job_type == "experiment_baseline"
+            and _baseline_adapter_has_b_test(run_dir, attempt)
+        )
+        b_test_started = any(item.job_type == "experiment_baseline_b_test" for item in baseline_attempts)
+        if all(item.runtime_status == "COMPLETED" for item in baseline_attempts) and (b_test_started or not requires_b_test):
             ExperimentSessionStore().update_baseline_state(
                 run_dir, session_id=attempt.session_id, status="READY", baseline_status="completed"
+            )
+        elif (
+            attempt.job_type == "experiment_baseline"
+            and final.runtime_status == "COMPLETED"
+            and requires_b_test
+            and not b_test_started
+        ):
+            ExperimentSessionStore().update_baseline_state(
+                run_dir, session_id=attempt.session_id, status="READY_FOR_BASELINE", baseline_status="b_dev_completed"
             )
         elif final.retry_exhausted:
             ExperimentSessionStore().update_baseline_state(
                 run_dir, session_id=attempt.session_id, status="FAILED", baseline_status="failed"
+            )
+        if attempt.job_type == "experiment_baseline_b_test" and final.runtime_status == "COMPLETED":
+            from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationService
+
+            CandidateConfirmationService().materialize_after_baseline_b_test(
+                run_dir,
+                session_id=attempt.session_id,
             )
     if attempt.job_type == "experiment_confirmatory" and final.runtime_status == "COMPLETED":
         from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationService
@@ -209,6 +231,20 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
         CandidateConfirmationService().finalize_if_ready(run_dir, confirmation_attempt_id=attempt.attempt_id)
     append_event(run_dir, "experiment.attempt.finalized", {"attempt_id": final.attempt_id, "runtime_status": final.runtime_status, "failure_code": final.failure_code})
     return AttemptObservation(terminal=True, succeeded=final.runtime_status == "COMPLETED", outputs=_outputs(run_dir, run_dir / "attempts" / attempt.attempt_id), error=result.failure_message)
+
+
+def _baseline_adapter_has_b_test(run_dir: Path, attempt) -> bool:
+    """Read the explicit adapter declaration from the frozen baseline workspace."""
+    try:
+        workspace = _resolve_run_relative_path(run_dir, attempt.command_plan.cwd)
+        inspected = ExecutorAdapter().inspect(workspace)
+    except (OSError, ValueError):
+        return False
+    return bool(
+        inspected.status == "supported"
+        and inspected.evidence is not None
+        and "b_test" in inspected.evidence.evaluation_commands
+    )
 
 
 def _load_attempt(run_dir: Path, job: dict[str, Any]):

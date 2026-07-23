@@ -182,7 +182,8 @@ class ExperimentAttemptService:
             raise ValueError("plan_only Session may not create experiment Attempts")
         if job_type in {"experiment_baseline", "experiment_baseline_b_test"} and session.status != "READY_FOR_BASELINE":
             raise ValueError("baseline Attempt requires Session READY_FOR_BASELINE")
-        if job_type not in {"experiment_baseline", "experiment_baseline_b_test"} and session.status not in {"READY", "BASELINE_RUNNING"}:
+        candidate_ready = session.status == "READY_FOR_BASELINE" and session.baseline_status == "b_dev_completed"
+        if job_type not in {"experiment_baseline", "experiment_baseline_b_test"} and session.status not in {"READY", "BASELINE_RUNNING"} and not candidate_ready:
             raise ValueError("experiment Attempt requires a Session ready after baseline")
         return session
 

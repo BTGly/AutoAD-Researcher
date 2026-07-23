@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from autoad_researcher.experiment.attempt import ExperimentAttempt
+from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.reporting.default_narrative import build_default_narrative
 from autoad_researcher.reporting.digest import build_report_digest
@@ -17,6 +19,7 @@ from autoad_researcher.reporting.renderer_markdown import render_markdown
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.snapshot import canonical_sha256, sha256_file
 from autoad_researcher.reporting.store import ReportStore
+from autoad_researcher.runner.models import ExperimentCommandPlan, ExperimentInputRefs
 from autoad_researcher.worker.main import _process_pending_jobs
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 from autoad_researcher.schemas.execution import ResourceUsageReport
@@ -31,6 +34,73 @@ def _session(run_dir: Path):
         task_hash="b" * 64,
         execution_mode="approve_each_step",
     )[0]
+
+
+def _attempt_with_text_artifacts(run_dir: Path, session_id: str, *, failed: bool) -> str:
+    attempt_dir = run_dir / "attempts" / "attempt_000001"
+    attempt_dir.mkdir(parents=True)
+    plan = ExperimentCommandPlan(
+        schema_version=1,
+        command_id="cmd_report_text",
+        program="python",
+        args=["run.py"],
+        cwd="attempts/attempt_000001",
+        environment={},
+        timeout_seconds=30,
+        network=False,
+        expected_outputs=["metrics.json"],
+    )
+    refs = ExperimentInputRefs(
+        repository_fingerprint="fixture",
+        environment_sha256="a" * 64,
+        dataset_manifest_sha256="b" * 64,
+        asset_manifest_sha256="c" * 64,
+        command_sha256="d" * 64,
+    )
+    attempt = ExperimentAttempt(
+        attempt_id="attempt_000000",
+        run_id=run_dir.name,
+        session_id=session_id,
+        idempotency_key=f"report-text:{failed}",
+        job_type="experiment_attempt",
+        attempt_purpose="exploration",
+        command_plan=plan,
+        input_refs=refs,
+        job_timeout_sec=30,
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+    )
+    created, _ = ExperimentAttemptStore().create_or_get(run_dir, attempt)
+    assert created.attempt_id == "attempt_000001"
+    execution = {
+        "schema_version": 1,
+        "run_id": run_dir.name,
+        "attempt": created.attempt_id,
+        "command_id": plan.command_id,
+        "command_sha256": "d" * 64,
+        "status": "execution_failed" if failed else "success",
+        "exit_code": 1 if failed else 0,
+        "timed_out": False,
+        "stdout_path": "stdout.log",
+        "stderr_path": "stderr.log",
+    }
+    if failed:
+        execution.update({"failure_code": "UNKNOWN_RUN_FAILURE", "failure_message": "traceback captured"})
+    else:
+        execution["output_manifest_path"] = "output_manifest.json"
+        (attempt_dir / "output_manifest.json").write_text("{}\n", encoding="utf-8")
+    (attempt_dir / "execution_result.json").write_text(json.dumps(execution), encoding="utf-8")
+    (attempt_dir / "stdout.log").write_text("metric=0.91\n", encoding="utf-8")
+    (attempt_dir / "stderr.log").write_text("Traceback (most recent call last):\n  RuntimeError: fixture\n" if failed else "", encoding="utf-8")
+    (attempt_dir / "final_patch.diff").write_text("diff --git a/model.py b/model.py\n", encoding="utf-8")
+    ExperimentAttemptStore().finish(
+        run_dir,
+        attempt_id=created.attempt_id,
+        runtime_status="FAILED" if failed else "COMPLETED",
+        failure_code="UNKNOWN_RUN_FAILURE" if failed else None,
+        execution_result_ref="execution_result.json",
+    )
+    return created.attempt_id
 
 
 def test_facts_stage_writes_immutable_facts_evidence_and_digest(tmp_path: Path):
@@ -60,6 +130,33 @@ def test_facts_stage_writes_immutable_facts_evidence_and_digest(tmp_path: Path):
         "report_digest",
     }
     assert ReportStore().load_state(run_dir, report_id).generation_status == "generating_narrative"
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success_stdout", "failure_stderr"])
+def test_text_attempt_artifacts_complete_report_generation(tmp_path: Path, failed: bool):
+    run_dir = tmp_path / ("run_reporting_text_failed" if failed else "run_reporting_text_success")
+    run_dir.mkdir()
+    session = _session(run_dir)
+    attempt_id = _attempt_with_text_artifacts(run_dir, session.session_id, failed=failed)
+    requested, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
+    report_id = requested["manifest"].report_id
+
+    for _ in range(3):
+        assert _process_pending_jobs(run_dir) == 1
+
+    state = ReportStore().load_state(run_dir, report_id)
+    facts = json.loads((run_dir / "reports" / report_id / "report_facts.json").read_text(encoding="utf-8"))
+    evidence = json.loads((run_dir / "reports" / report_id / "evidence_index.json").read_text(encoding="utf-8"))
+    attempt = next(item for item in facts["attempts"] if item["attempt_id"] == attempt_id)
+
+    assert state.generation_status == "content_ready"
+    assert attempt["runtime_status"] == ("FAILED" if failed else "COMPLETED")
+    assert any(item["evidence_kind"] == "attempt_stdout_log" and item["attempt_id"] == attempt_id for item in evidence["entries"])
+    assert any(item["evidence_kind"] == "attempt_stderr_log" and item["attempt_id"] == attempt_id for item in evidence["entries"])
+    assert any(item["evidence_kind"] == "patch_diff" and item["attempt_id"] == attempt_id for item in evidence["entries"])
+    if failed:
+        assert facts["failed_attempts"] == [attempt]
+        assert facts["primary_metrics"] == []
 
 
 def test_facts_stage_uses_frozen_control_plane_after_live_session_changes(tmp_path: Path):

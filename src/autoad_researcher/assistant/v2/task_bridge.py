@@ -90,6 +90,7 @@ class ExperimentTaskDraft(BaseModel):
     status: Literal["pending_confirmation", "confirmed"] = "pending_confirmation"
     execution_mode: ExecutionMode = "plan_only"
     input_task: InputTask
+    primary_metric_candidates: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     execution_repository_binding: ExecutionRepositoryBinding | None = None
     summary_sha256: str = Field(min_length=64, max_length=64)
@@ -430,6 +431,7 @@ def _build_and_write_pending_task(
         task_id=f"task_{summary_sha256[:16]}",
         run_id=run_id,
         input_task=input_task,
+        primary_metric_candidates=list(summary.primary_metric_candidates),
         evidence_refs=_evidence_refs(run_dir),
         summary_sha256=summary_sha256,
         created_at=datetime.now(timezone.utc).isoformat(),

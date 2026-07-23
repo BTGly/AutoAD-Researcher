@@ -25,6 +25,8 @@ _FROZEN_CONTROL_PLANE_TYPES = frozenset(
 )
 SNAPSHOT_POLICY_VERSION = "v1"
 SNAPSHOT_FREEZE_ATTEMPTS = 3
+TEXT_ARTIFACT_TYPES = frozenset({"attempt_stdout_log", "attempt_stderr_log", "patch_diff"})
+TEXT_ARTIFACT_PREVIEW_BYTES = 12_000
 
 
 def utc_now() -> str:
@@ -69,6 +71,39 @@ def resolve_run_relative_file(run_dir: Path, locator: str) -> Path:
     if not resolved.is_file():
         raise ValueError("artifact locator must resolve to a file")
     return resolved
+
+
+def read_verified_snapshot_artifact(run_dir: Path, reference: ArtifactReferenceV2) -> dict[str, Any]:
+    """Read one registered artifact using its declared type and SHA binding."""
+
+    path = resolve_run_relative_file(run_dir, reference.locator)
+    if sha256_file(path) != reference.sha256:
+        raise ValueError("snapshot artifact SHA-256 no longer matches")
+    if reference.artifact_type in TEXT_ARTIFACT_TYPES:
+        raw = path.read_bytes()
+        preview = raw[:TEXT_ARTIFACT_PREVIEW_BYTES].decode("utf-8", errors="replace")
+        return {
+            "registered_text_artifact": True,
+            "byte_length": len(raw),
+            "truncated": len(raw) > TEXT_ARTIFACT_PREVIEW_BYTES,
+            "text_preview": preview,
+        }
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("snapshot artifact is not readable JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("snapshot JSON artifact must be an object")
+    return value
+
+
+def attempt_id_from_artifact(reference: ArtifactReferenceV2) -> str | None:
+    """Extract the Attempt ID from the existing registered artifact ID layout."""
+
+    parts = reference.artifact_id.split(":")
+    if reference.artifact_type in TEXT_ARTIFACT_TYPES:
+        return parts[1] if len(parts) > 1 and parts[1].startswith("attempt_") else None
+    return next((part for part in parts if part.startswith("attempt_")), None)
 
 
 def build_report_snapshot(run_dir: Path, *, session_id: str) -> ReportSnapshot:

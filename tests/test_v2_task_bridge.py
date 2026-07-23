@@ -487,8 +487,6 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
     assert task["primary_metrics"] == ["instance AUROC"]
     assert task["constraints"] == [
         "用户不允许修改 evaluator",
-        "不允许修改 evaluator",
-        "B_test 不参与训练、选择或校准",
     ]
     assert not (run_dir / "input_task.yaml").exists()
     assert load_pipeline_jobs(run_dir) == []

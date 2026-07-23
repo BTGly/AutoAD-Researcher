@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, RefreshCw, Send } from 'lucide-react';
-import { ApiError, confirmReportProposal, createHumanProposal, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
+import { Download, ExternalLink, FilePlus2, RefreshCw, Send } from 'lucide-react';
+import { ApiError, confirmReportProposal, createHumanProposal, createReport, getExperimentProjection, getLatestContentReadyReport, getLatestCreatedReport, getReportContent, getReportDigest, getReportDiscussion, getReportState, listReportEvidence, listReportProposals, listReports, recordReportReview, rejectReportProposal, sendReportDiscussion } from '../lib/api';
 import type { DiscussionMessage, ReportDigest, ReportEvidence, ReportManifest, ReportProposal, ReportState } from '../lib/types';
 import { MarkdownContent } from './MarkdownContent';
 import { AppButton } from './ui/AppButton';
@@ -28,6 +28,8 @@ export function ReportPage({ runId, onBack }: Props) {
   const [proposalRationale, setProposalRationale] = useState('');
   const [reviewComment, setReviewComment] = useState('');
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [reportSessionId, setReportSessionId] = useState<string | null>(null);
+  const [reportSessionCandidates, setReportSessionCandidates] = useState<Array<{ session_id: string; status: string }>>([]);
   const discussionRetry = useRef<{ reportId: string; content: string; requestId: string } | null>(null);
   const load = useCallback(async () => {
     if (!runId) return;
@@ -99,10 +101,35 @@ export function ReportPage({ runId, onBack }: Props) {
   const proposeHuman = async () => { if (!selected || !readable || !proposalRationale.trim() || actionBusy) return; setActionBusy('proposal:create'); try { await createHumanProposal(runId, selected.report_id, proposalRationale.trim()); setProposalRationale(''); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 创建失败'); } finally { setActionBusy(null); } };
   const changeProposal = async (proposalId: string, action: 'confirm' | 'reject') => { if (!selected || actionBusy) return; setActionBusy(`proposal:${proposalId}:${action}`); try { if (action === 'confirm') await confirmReportProposal(runId, selected.report_id, proposalId); else await rejectReportProposal(runId, selected.report_id, proposalId); await refreshProposals(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Proposal 更新失败'); } finally { setActionBusy(null); } };
   const submitReview = async (decision: string) => { if (!selected || !readable || actionBusy) return; setActionBusy(`review:${decision}`); try { await recordReportReview(runId, selected.report_id, decision, reviewComment); setReviewComment(''); await load(); setSelectedRevision(value => value + 1); } catch (reason) { setError(reason instanceof Error ? reason.message : '审阅提交失败'); } finally { setActionBusy(null); } };
+  const requestReport = async () => {
+    if (actionBusy) return;
+    setActionBusy('report:create');
+    setError(null);
+    try {
+      const projection = await getExperimentProjection(runId, reportSessionId || undefined);
+      if (projection.selection_status === 'ambiguous') {
+        setReportSessionCandidates(projection.session_candidates.map(item => ({ session_id: item.session_id, status: item.status })));
+        setError('存在多个实验 Session，请先选择要生成报告的 Session。');
+        return;
+      }
+      if (!projection.session) {
+        setError('当前 run 没有可生成报告的实验 Session。');
+        return;
+      }
+      await createReport(runId, projection.session.session_id);
+      setReportSessionId(projection.session.session_id);
+      setReportSessionCandidates([]);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '报告生成请求失败');
+    } finally {
+      setActionBusy(null);
+    }
+  };
   return <main className="report-workspace" aria-busy={loading || Boolean(selectedId && !visibleState)}>
     <header className="report-toolbar">
       <div className="report-heading"><h1>实验报告</h1><p>固定版本、证据与交付制品</p></div>
-      <div className="report-toolbar-actions"><span className="report-toolbar-state" role="status" aria-live="polite">{loading ? '同步中' : selectedId && !visibleState ? '读取版本中' : '已同步'}</span><AppButton title="刷新报告" aria-label="刷新报告" onClick={() => void load()} disabled={loading}><RefreshCw size={15} aria-hidden="true" />刷新</AppButton><AppButton onClick={onBack}>返回对话</AppButton></div>
+      <div className="report-toolbar-actions"><span className="report-toolbar-state" role="status" aria-live="polite">{loading ? '同步中' : selectedId && !visibleState ? '读取版本中' : '已同步'}</span>{reportSessionCandidates.length > 0 && <select aria-label="报告 Session" value={reportSessionId || ''} onChange={event => setReportSessionId(event.target.value || null)}><option value="">选择 Session</option>{reportSessionCandidates.map(item => <option key={item.session_id} value={item.session_id}>{item.session_id} · {item.status}</option>)}</select>}<AppButton title="生成报告" aria-label="生成报告" onClick={() => void requestReport()} disabled={loading || actionBusy !== null || (reportSessionCandidates.length > 0 && !reportSessionId)} aria-busy={actionBusy === 'report:create'}><FilePlus2 size={15} aria-hidden="true" />生成报告</AppButton><AppButton title="刷新报告" aria-label="刷新报告" onClick={() => void load()} disabled={loading}><RefreshCw size={15} aria-hidden="true" />刷新</AppButton><AppButton onClick={onBack}>返回对话</AppButton></div>
     </header>
     {latest && selected && latest.version > selected.version && <div className="report-version-notice">较新版本 v{latest.version} 正在{latest.generation_status}，当前继续显示已选可读版本。</div>}
     {error && <div role="alert" style={{ color: 'var(--orange)', marginBottom: 12 }}>{error}</div>}

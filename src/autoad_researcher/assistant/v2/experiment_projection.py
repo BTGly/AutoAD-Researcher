@@ -561,11 +561,14 @@ def _actions_projection(
         session.status == "READY_FOR_BASELINE" and session.baseline_status == "not_started"
     )
     if not baseline_launch_available and (
-        session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available"
+        session.authorization.execution_mode != "approve_each_step"
+        or candidate_inventory.status != "available"
     ):
         return ExperimentActionsProjection()
     if session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available":
-        return ExperimentActionsProjection(baseline_launch_available=baseline_launch_available)
+        return ExperimentActionsProjection(
+            baseline_launch_available=baseline_launch_available,
+        )
     registered_attempts = {item.attempt_id for item in candidate_inventory.candidates}
     confirmations = [
         CandidateConfirmationAction(candidate_attempt_id=item.attempt_id)

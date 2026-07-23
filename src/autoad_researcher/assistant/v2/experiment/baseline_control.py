@@ -8,7 +8,9 @@ the Session's already-bound repository and observed environment artifacts.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -81,6 +83,73 @@ class BaselineContractInput(BaseModel):
         if self.max_gpu_seconds > 0 and self.required_device_count == 0:
             raise ValueError("GPU time budget requires an explicit device request")
         return self
+
+
+class HeldOutAuthorization(BaseModel):
+    """Durable approval binding one candidate to one held-out comparison."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    confirmation_id: str = Field(pattern=r"^heldout_[0-9a-f]{16}$")
+    session_id: str = Field(min_length=1)
+    candidate_attempt_id: str = Field(pattern=r"^attempt_[0-9]{6}$")
+    noise_threshold: float = Field(ge=0)
+    idempotency_key: str = Field(min_length=1)
+    evaluation_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_branch: str = Field(min_length=1)
+    source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    baseline_b_test_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
+    candidate_b_test_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
+    status: Literal["authorized", "paired", "completed"] = "authorized"
+    created_at: str = Field(min_length=1)
+
+
+HELD_OUT_AUTHORIZATIONS_DIR = "experiments/held_out_confirmations"
+
+
+def held_out_authorization_path(run_dir: Path, confirmation_id: str) -> Path:
+    if not confirmation_id.startswith("heldout_"):
+        raise ValueError("invalid held-out confirmation id")
+    return run_dir / HELD_OUT_AUTHORIZATIONS_DIR / f"{confirmation_id}.json"
+
+
+def load_held_out_authorization(run_dir: Path, confirmation_id: str) -> HeldOutAuthorization | None:
+    path = held_out_authorization_path(run_dir, confirmation_id)
+    if not path.is_file():
+        return None
+    return HeldOutAuthorization.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def list_held_out_authorizations(run_dir: Path) -> list[HeldOutAuthorization]:
+    directory = run_dir / HELD_OUT_AUTHORIZATIONS_DIR
+    if not directory.is_dir():
+        return []
+    return [
+        HeldOutAuthorization.model_validate_json(path.read_text(encoding="utf-8"))
+        for path in sorted(directory.glob("heldout_*.json"))
+    ]
+
+
+def save_held_out_authorization(run_dir: Path, value: HeldOutAuthorization) -> HeldOutAuthorization:
+    path = held_out_authorization_path(run_dir, value.confirmation_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        existing = HeldOutAuthorization.model_validate_json(path.read_text(encoding="utf-8"))
+        immutable = ("session_id", "candidate_attempt_id", "noise_threshold", "idempotency_key", "evaluation_contract_sha256", "source_branch", "source_commit", "created_at")
+        if any(getattr(existing, key) != getattr(value, key) for key in immutable):
+            raise ValueError("idempotency_conflict: held-out authorization differs")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(value.model_dump_json(indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return value
 
 
 class BaselineLaunchResult(BaseModel):
@@ -205,44 +274,120 @@ class BaselineControlService:
             protected_artifact_report_ref=protected_ref,
             protected_artifact_report_sha256=protected_sha,
         )
-        b_test_started = None
-        if "b_test" in adapter_result.evidence.evaluation_commands:
-            b_test_plan, b_test_refs = adapter.build_execution(
-                adapter_result,
-                ExecutorAdapterInputs(
-                    run_id=run_dir.name,
-                    worktree_ref=workspace_ref,
-                    repository_fingerprint=binding.repository_fingerprint,
-                    environment_sha256=snapshot.environment_sha256,
-                    dataset_manifest_sha256=dataset_sha,
-                    asset_manifest_sha256=asset_sha,
-                    python_executable=python_executable,
-                    timeout_seconds=contract_input.max_wall_seconds,
-                    evaluation_phase="b_test",
-                    split_ref=str(split_paths[1]),
-                ),
-            )
-            b_test_started = self._attempts.create_or_get_attempt(
-                run_dir,
-                session_id=session_id,
-                job_type="experiment_baseline_b_test",
-                idempotency_key=f"baseline-b-test:{session_id}:{frozen.sha256}",
-                command_plan=b_test_plan,
-                input_refs=b_test_refs,
-                job_timeout_sec=contract_input.max_wall_seconds,
-                required_device_count=contract_input.required_device_count,
-                required_vram_mb=contract_input.required_vram_mb,
-                evaluation_contract_ref=frozen.ref,
-                evaluation_contract_sha256=frozen.sha256,
-                protected_artifact_report_ref=protected_ref,
-                protected_artifact_report_sha256=protected_sha,
-            )
         self._sessions.update_baseline_state(run_dir, session_id=session_id, status="BASELINE_RUNNING", baseline_status="queued")
         return BaselineLaunchResult(
             started=started,
-            b_test_started=b_test_started,
             evaluation_contract_ref=frozen.ref,
             execution_inputs_ref=inputs_ref,
+        )
+
+    def start_b_test(
+        self,
+        run_dir: Path,
+        *,
+        session_id: str,
+        confirmation_id: str | None = None,
+    ) -> BaselineLaunchResult:
+        """Queue Baseline B_test only for a persisted Candidate approval."""
+        if confirmation_id is None:
+            raise ValueError("held_out_confirmation_required: Candidate approval must precede B_test")
+        authorization = load_held_out_authorization(run_dir, confirmation_id)
+        if authorization is None or authorization.session_id != session_id:
+            raise ValueError("held_out_confirmation_required: held-out authorization is missing")
+        if authorization.status not in {"authorized", "paired", "completed"}:
+            raise ValueError("held_out_confirmation_required: held-out authorization is invalid")
+        session = self._sessions.load(run_dir, session_id)
+        if session is None:
+            raise FileNotFoundError("experiment session not found")
+        if session.evaluation_contract_sha256 != authorization.evaluation_contract_sha256:
+            raise ValueError("held_out_confirmation_required: authorization contract differs from Session")
+        attempts = self._attempt_store.list_for_session(run_dir, session_id=session_id)
+        baseline = next((item for item in attempts if item.job_type == "experiment_baseline"), None)
+        if baseline is None:
+            raise ValueError("baseline B_test requires a completed B_dev Attempt")
+        existing = next((item for item in attempts if item.job_type == "experiment_baseline_b_test"), None)
+        if existing is not None:
+            if authorization.baseline_b_test_attempt_id not in {None, existing.attempt_id}:
+                raise ValueError("idempotency_conflict: held-out authorization points to another baseline B_test")
+            if session.evaluation_contract_ref is None:
+                raise ValueError("existing baseline B_test is missing its Session evaluation contract")
+            return BaselineLaunchResult(
+                started=ExperimentAttemptStartResult(
+                    attempt=baseline,
+                    pipeline_job=self._pipeline_job(run_dir, baseline.pipeline_job_id),
+                    disposition="reused",
+                ),
+                b_test_started=ExperimentAttemptStartResult(
+                    attempt=existing,
+                    pipeline_job=self._pipeline_job(run_dir, existing.pipeline_job_id),
+                    disposition="reused",
+                ),
+                evaluation_contract_ref=session.evaluation_contract_ref,
+                execution_inputs_ref=f"experiments/execution_inputs/{session_id}.json",
+            )
+        if session.status != "READY_FOR_BASELINE" or session.baseline_status != "b_dev_completed":
+            raise ValueError("baseline B_test requires Session READY_FOR_BASELINE after B_dev")
+        if baseline.runtime_status != "COMPLETED":
+            raise ValueError("baseline B_test requires a completed B_dev Attempt")
+        if not session.evaluation_contract_ref or not session.evaluation_contract_sha256:
+            raise ValueError("execution_contract_incomplete: Session evaluation contract is missing")
+
+        frozen = self._contracts.current(run_dir, session_id=session_id)
+        if frozen is None or frozen.ref != session.evaluation_contract_ref or frozen.sha256 != session.evaluation_contract_sha256:
+            raise ValueError("execution_contract_incomplete: Session evaluation contract changed")
+        contract = frozen.contract
+        split_path = resolve_split_artifact(run_dir, contract.b_test_ref)
+        workspace_path = _resolve_run_relative_path(run_dir, baseline.command_plan.cwd)
+        adapter_result = ExecutorAdapter().inspect(workspace_path)
+        if adapter_result.status != "supported" or adapter_result.evidence is None:
+            raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
+        if "b_test" not in adapter_result.evidence.evaluation_commands:
+            raise ValueError("adapter has no explicit b_test command for the frozen split")
+        plan, refs = ExecutorAdapter().build_execution(
+            adapter_result,
+            ExecutorAdapterInputs(
+                run_id=run_dir.name,
+                worktree_ref=baseline.command_plan.cwd,
+                repository_fingerprint=baseline.input_refs.repository_fingerprint,
+                environment_sha256=baseline.input_refs.environment_sha256,
+                dataset_manifest_sha256=baseline.input_refs.dataset_manifest_sha256,
+                asset_manifest_sha256=baseline.input_refs.asset_manifest_sha256,
+                python_executable=baseline.command_plan.program,
+                timeout_seconds=baseline.job_timeout_sec,
+                evaluation_phase="b_test",
+                split_ref=str(split_path),
+            ),
+        )
+        started = self._attempts.create_or_get_attempt(
+            run_dir,
+            session_id=session_id,
+            job_type="experiment_baseline_b_test",
+            idempotency_key=f"baseline-b-test:{session_id}:{frozen.sha256}",
+            command_plan=plan,
+            input_refs=refs,
+            job_timeout_sec=baseline.job_timeout_sec,
+            required_device_count=baseline.required_device_count,
+            required_vram_mb=baseline.required_vram_mb,
+            evaluation_contract_ref=frozen.ref,
+            evaluation_contract_sha256=frozen.sha256,
+            protected_artifact_report_ref=baseline.protected_artifact_report_ref,
+            protected_artifact_report_sha256=baseline.protected_artifact_report_sha256,
+        )
+        self._sessions.update_baseline_state(
+            run_dir,
+            session_id=session_id,
+            status="BASELINE_RUNNING",
+            baseline_status="queued",
+        )
+        return BaselineLaunchResult(
+            started=ExperimentAttemptStartResult(
+                attempt=baseline,
+                pipeline_job=self._pipeline_job(run_dir, baseline.pipeline_job_id),
+                disposition="reused",
+            ),
+            b_test_started=started,
+            evaluation_contract_ref=frozen.ref,
+            execution_inputs_ref=f"experiments/execution_inputs/{session_id}.json",
         )
 
     def _require_ready_session(self, run_dir: Path, session_id: str):
@@ -444,3 +589,13 @@ def resolve_split_artifact(run_dir: Path, ref: str) -> Path:
     if not path.is_relative_to(run_dir.resolve()) or not path.is_file():
         raise ValueError("execution_contract_incomplete: frozen split artifact is missing")
     return path
+
+
+def _resolve_run_relative_path(run_dir: Path, relative_path: str) -> Path:
+    path = PurePosixPath(relative_path)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("baseline workspace reference must stay within the run directory")
+    resolved = run_dir.joinpath(*path.parts).resolve()
+    if not resolved.is_relative_to(run_dir.resolve()) or not resolved.is_dir():
+        raise ValueError("baseline workspace reference is missing")
+    return resolved
