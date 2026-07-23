@@ -37,6 +37,7 @@ def _card(**updates) -> OutcomeCard:
 
 
 def _assessment(**updates) -> EffectiveScientificAssessment:
+    reproducibility_status = updates.pop("reproducibility_status", "not_checked")
     card = _card(**updates)
     return EffectiveScientificAssessment(
         attempt_id=card.attempt_id,
@@ -54,6 +55,7 @@ def _assessment(**updates) -> EffectiveScientificAssessment:
         scientific_effect=card.scientific_effect,
         primary_delta=card.primary_delta,
         guardrail_deltas=card.guardrail_deltas,
+        reproducibility_status=reproducibility_status,
         evidence_refs=[card.execution_result_ref],
     )
 
@@ -101,6 +103,16 @@ def test_decision_engine_applies_protocol_noise_and_guardrail_gates():
     assert engine.decide(assessment=_assessment(guardrail_deltas={"latency": -0.01}), phase="b_dev", noise_threshold=0.01).action == "no_promote"
     assert engine.decide(assessment=_assessment(), phase="b_dev", noise_threshold=0.01).action == "candidate"
     assert engine.decide(assessment=_assessment(), phase="b_test", noise_threshold=0.01).action == "ready_for_promotion"
+
+
+def test_decision_engine_requires_seed_or_noise_for_unstable_candidate():
+    result = DecisionEngine().decide(
+        assessment=_assessment(reproducibility_status="not_reproducible"),
+        phase="b_dev",
+        noise_threshold=0.01,
+    )
+    assert result.action == "confirm_seed"
+    assert "fix the seed" in result.reason
 
 
 def test_candidate_and_approval_are_immutable_by_identifier(tmp_path):

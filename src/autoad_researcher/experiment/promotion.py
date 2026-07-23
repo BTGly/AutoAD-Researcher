@@ -93,7 +93,23 @@ class DecisionEngine:
                 attempt_id=assessment.attempt_id,
                 evidence_refs=refs,
             )
-        if assessment.evaluation_status != "COMPARABLE" or assessment.scientific_effect is None:
+        if assessment.evaluation_status != "COMPARABLE":
+            return DecisionResult(
+                action="reject_result",
+                reason="result is not comparable under the frozen contract",
+                phase=phase,
+                attempt_id=assessment.attempt_id,
+                evidence_refs=refs,
+            )
+        if assessment.reproducibility_status == "not_reproducible":
+            return DecisionResult(
+                action="confirm_seed",
+                reason="candidate metrics are not reproducible; fix the seed or calibrate noise before promotion",
+                phase=phase,
+                attempt_id=assessment.attempt_id,
+                evidence_refs=refs,
+            )
+        if assessment.scientific_effect is None:
             return DecisionResult(
                 action="reject_result",
                 reason="result is not comparable under the frozen contract",

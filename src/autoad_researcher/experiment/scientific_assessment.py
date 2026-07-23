@@ -34,6 +34,9 @@ from autoad_researcher.experiment.validity import (
 )
 
 
+ReproducibilityStatus = Literal["not_checked", "reproducible", "not_reproducible"]
+
+
 class ScientificEvaluationInputs(BaseModel):
     """Frozen caller-supplied facts that cannot be recovered safely after a run."""
 
@@ -64,6 +67,8 @@ class ScientificAssessment(BaseModel):
     scientific_effect: Literal["IMPROVEMENT", "NO_EFFECT", "REGRESSION", "INCONCLUSIVE"] | None = None
     primary_delta: float | None = None
     guardrail_deltas: dict[str, float] = Field(default_factory=dict)
+    reproducibility_status: ReproducibilityStatus = "not_checked"
+    reproducibility_ref: str | None = None
 
 
 class AssessmentReconciliation(BaseModel):
@@ -104,7 +109,30 @@ class EffectiveScientificAssessment(BaseModel):
     scientific_effect: Literal["IMPROVEMENT", "NO_EFFECT", "REGRESSION", "INCONCLUSIVE"] | None = None
     primary_delta: float | None = None
     guardrail_deltas: dict[str, float] = Field(default_factory=dict)
+    reproducibility_status: ReproducibilityStatus = "not_checked"
+    reproducibility_ref: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)
+
+
+class ReproducibilityComparison(BaseModel):
+    """Metric deltas against one earlier execution of the same admitted patch."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt_id: str
+    metric_differences: dict[str, float] = Field(default_factory=dict)
+
+
+class ReproducibilityEvidence(BaseModel):
+    """Durable evidence used before an improvement can be treated as stable."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    status: ReproducibilityStatus
+    patch_sha256: str
+    comparisons: list[ReproducibilityComparison] = Field(default_factory=list)
+    reason: str | None = None
 
 
 class ScientificAssessmentInputsStore:
@@ -182,6 +210,18 @@ class ScientificAssessmentService:
             metrics_parsed=card.metrics_parsed,
             protocol_intact=card.protocol_intact,
         )
+        reproducibility = self._check_reproducibility(
+            run_dir,
+            attempt_id=attempt_id,
+            inputs=inputs,
+            contract=contract,
+        )
+        reproducibility_ref = None
+        if reproducibility.status == "not_reproducible":
+            effect, delta, guardrails = None, None, {}
+            reproducibility_ref = self._write_reproducibility(attempt_dir, reproducibility)
+        elif reproducibility.status == "reproducible":
+            reproducibility_ref = self._write_reproducibility(attempt_dir, reproducibility)
         assessment = ScientificAssessment(
             attempt_id=attempt_id,
             outcome_card_ref=str(card_path.relative_to(run_dir)),
@@ -196,6 +236,8 @@ class ScientificAssessmentService:
             scientific_effect=effect,
             primary_delta=delta,
             guardrail_deltas=guardrails,
+            reproducibility_status=reproducibility.status,
+            reproducibility_ref=reproducibility_ref,
         )
         assessment_path = attempt_dir / "scientific_assessment.json"
         if assessment_path.is_file():
@@ -251,6 +293,7 @@ class ScientificAssessmentService:
                 card.evaluation_contract_ref,
                 card.protected_artifact_validation_ref,
                 reconciliation.scientific_assessment_ref,
+                assessment.reproducibility_ref,
                 str((attempt_dir / "assessment_reconciliation.json").relative_to(run_dir)),
             ) if value
         ]
@@ -270,6 +313,8 @@ class ScientificAssessmentService:
             scientific_effect=assessment.scientific_effect,
             primary_delta=assessment.primary_delta,
             guardrail_deltas=assessment.guardrail_deltas,
+            reproducibility_status=assessment.reproducibility_status,
+            reproducibility_ref=assessment.reproducibility_ref,
             evidence_refs=refs,
         )
 
@@ -289,6 +334,98 @@ class ScientificAssessmentService:
                 "guardrail_deltas": assessment.guardrail_deltas,
             }
         )
+
+    def _check_reproducibility(
+        self,
+        run_dir: Path,
+        *,
+        attempt_id: str,
+        inputs: ScientificEvaluationInputs,
+        contract: EvaluationContract | None,
+    ) -> ReproducibilityEvidence:
+        """Compare repeated candidates without inferring hidden seeds.
+
+        A repeated check is scoped to the exact admitted patch and explicit
+        comparison identity. Any declared metric difference suppresses the
+        improvement claim; the operator must fix the seed or provide a
+        separately justified noise calibration before retrying promotion.
+        """
+        patch_path = run_dir / "attempts" / attempt_id / "final_patch.diff"
+        if contract is None or not patch_path.is_file():
+            return ReproducibilityEvidence(status="not_checked", patch_sha256="")
+        patch_sha256 = sha256_file(patch_path)
+        current_card = OutcomeCard.model_validate_json(
+            (run_dir / "attempts" / attempt_id / "outcome_card.json").read_text(encoding="utf-8")
+        )
+        current_metrics = current_card.metrics if isinstance(current_card.metrics, dict) else {}
+        comparisons: list[ReproducibilityComparison] = []
+        for previous_dir in sorted((run_dir / "attempts").glob("attempt_*")):
+            previous_id = previous_dir.name
+            if previous_id >= attempt_id or not (previous_dir / "candidate_request.json").is_file():
+                continue
+            previous_patch = previous_dir / "final_patch.diff"
+            previous_card_path = previous_dir / "outcome_card.json"
+            previous_inputs_path = previous_dir / "scientific_evaluation_inputs.json"
+            if not previous_patch.is_file() or not previous_card_path.is_file() or not previous_inputs_path.is_file():
+                continue
+            if sha256_file(previous_patch) != patch_sha256:
+                continue
+            try:
+                previous_inputs = ScientificEvaluationInputs.model_validate_json(previous_inputs_path.read_text(encoding="utf-8"))
+                previous_card = OutcomeCard.model_validate_json(previous_card_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if previous_inputs.candidate_identity != inputs.candidate_identity:
+                continue
+            if not previous_card.protocol_intact or not previous_card.metrics_parsed or not isinstance(previous_card.metrics, dict):
+                continue
+            differences: dict[str, float] = {}
+            complete = True
+            for metric in contract.metrics:
+                current_value = current_metrics.get(metric.name)
+                previous_value = previous_card.metrics.get(metric.name)
+                if (
+                    isinstance(current_value, bool)
+                    or not isinstance(current_value, (int, float))
+                    or not math.isfinite(float(current_value))
+                    or isinstance(previous_value, bool)
+                    or not isinstance(previous_value, (int, float))
+                    or not math.isfinite(float(previous_value))
+                ):
+                    complete = False
+                    break
+                differences[metric.name] = float(current_value) - float(previous_value)
+            if complete:
+                comparisons.append(ReproducibilityComparison(attempt_id=previous_id, metric_differences=differences))
+        if not comparisons:
+            return ReproducibilityEvidence(status="not_checked", patch_sha256=patch_sha256)
+        unstable = any(
+            difference != 0.0
+            for comparison in comparisons
+            for difference in comparison.metric_differences.values()
+        )
+        return ReproducibilityEvidence(
+            status="not_reproducible" if unstable else "reproducible",
+            patch_sha256=patch_sha256,
+            comparisons=comparisons,
+            reason=(
+                "same admitted patch and comparison identity produced different declared metrics; "
+                "fix the random seed or provide explicit noise calibration before claiming improvement"
+                if unstable
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _write_reproducibility(attempt_dir: Path, evidence: ReproducibilityEvidence) -> str:
+        path = attempt_dir / "reproducibility.json"
+        if path.is_file():
+            existing = ReproducibilityEvidence.model_validate_json(path.read_text(encoding="utf-8"))
+            if existing != evidence:
+                raise ValueError("reproducibility evidence changed for immutable inputs")
+        else:
+            _write_json_atomic(path, evidence.model_dump(mode="json"))
+        return str(path.relative_to(attempt_dir.parent.parent))
 
     @staticmethod
     def _implementation_evidence(run_dir: Path, attempt_dir: Path, card: OutcomeCard) -> ImplementationEvidence:
