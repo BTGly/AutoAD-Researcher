@@ -428,6 +428,25 @@ def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path:
     assert ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)[0].attempt_id == first.started.attempt.attempt_id
 
 
+def test_promotion_merge_does_not_require_repository_git_identity(tmp_path: Path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+    (repository / "model.py").write_text("value = 1\n", encoding="utf-8")
+    _git(repository, "add", "model.py")
+    _git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "baseline")
+    _git(repository, "switch", "-c", "candidate")
+    (repository / "model.py").write_text("value = 2\n", encoding="utf-8")
+    _git(repository, "add", "model.py")
+    _git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "candidate")
+    _git(repository, "switch", "--detach", "main")
+
+    merged = PromotionControlService._merge(repository, "candidate")
+
+    assert len(merged) == 40
+    assert (repository / "model.py").read_text(encoding="utf-8") == "value = 2\n"
+
+
 def test_baseline_control_rejects_unacquired_selected_source(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)

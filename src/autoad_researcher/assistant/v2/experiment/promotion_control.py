@@ -100,7 +100,19 @@ class PromotionControlService:
 
     @staticmethod
     def _merge(repository: Path, branch: str) -> str:
-        _git(repository, "merge", "--no-ff", branch, "-m", f"AutoAD promote {branch}")
+        _git(
+            repository,
+            "-c",
+            "user.name=AutoAD",
+            "-c",
+            "user.email=autoad@invalid",
+            "merge",
+            "--no-ff",
+            "--no-gpg-sign",
+            branch,
+            "-m",
+            f"AutoAD promote {branch}",
+        )
         return _git(repository, "rev-parse", "HEAD")
 
     @staticmethod
