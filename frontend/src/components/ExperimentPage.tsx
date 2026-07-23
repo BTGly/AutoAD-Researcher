@@ -306,7 +306,7 @@ function SessionOverview({ projection }: { projection: ExperimentProjection }) {
   return <section className="session-overview surface">
     <div className="session-overview-heading"><div className="session-goal">{goal}</div><StatusBadge tone={championTone(projection.champion_status)}>Champion：{champion}</StatusBadge></div>
     <div className="observatory-facts">
-      <Fact label="Session" value={<StatusBadge tone={statusTone(projection.session?.status || '')}>{sessionStatusLabel(projection.session?.status || '')}</StatusBadge>} />
+      <Fact label="Session" value={<StatusBadge tone={statusTone(projection.session?.status || '')}>{sessionStatusLabel(projection.session?.status || '', projection.session?.baseline_status || '')}</StatusBadge>} />
       <Fact label="环境" value={<StatusBadge tone={statusTone(projection.session?.environment_status || '')}>{environmentStatusLabel(projection.session?.environment_status || '')}</StatusBadge>} />
       <Fact label="基线状态" value={<StatusBadge tone={statusTone(projection.session?.baseline_status || '')}>{baselineStatusLabel(projection.session?.baseline_status || '')}</StatusBadge>} />
       <Fact label="Idea" value={String(projection.summary?.idea_count ?? 0)} />
@@ -332,7 +332,7 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) { ret
 function statusTone(value: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (['FAILED', 'failed', 'LOST', 'invalid', 'CANCELLED', 'control_plane_invalid'].includes(value)) return 'danger';
   if (['RUNNING', 'running', 'pending', 'queued', 'ENVIRONMENT_PENDING', 'ENVIRONMENT_RUNNING', 'BASELINE_RUNNING'].includes(value)) return 'warning';
-  if (['READY', 'ready', 'completed', 'COMPLETED', 'available', 'SUPPORTED'].includes(value)) return 'success';
+  if (['READY', 'ready', 'completed', 'COMPLETED', 'b_dev_completed', 'available', 'SUPPORTED'].includes(value)) return 'success';
   return 'neutral';
 }
 function championTone(value: ExperimentProjection['champion_status']): 'neutral' | 'success' | 'warning' | 'danger' {

@@ -291,6 +291,20 @@ test('uses the projection status vocabulary and preserves complete Session facts
   await expect(page.getByText('等待实验', { exact: true })).toBeVisible();
 });
 
+test('renders the explicit B_dev completion state instead of an unknown baseline status', async ({ page }) => {
+  const afterBDev = structuredClone(projection);
+  afterBDev.session.status = 'READY_FOR_BASELINE';
+  afterBDev.session.baseline_status = 'b_dev_completed';
+  afterBDev.summary.status = 'READY_FOR_BASELINE';
+  afterBDev.summary.baseline_status = 'b_dev_completed';
+  afterBDev.actions.baseline_launch_available = false;
+  await prepare(page, () => afterBDev);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('Session：B_dev 已完成')).toBeVisible();
+  await expect(page.getByText('基线状态：B_dev 已完成')).toBeVisible();
+  await expect(page.getByText('未知状态（原始值：b_dev_completed）')).toHaveCount(0);
+});
+
 test('filters the experiment list to the selected Idea relations', async ({ page }) => {
   const relationProjection = structuredClone(projection);
   relationProjection.attempts.push({ ...relationProjection.attempts[0], attempt_id: 'attempt_unrelated', related_idea_ids: ['idea_000000'] });
