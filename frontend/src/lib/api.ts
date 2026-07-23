@@ -12,6 +12,7 @@ import type {
   ReportProposal,
   TaskRun,
   BaselineContractInput,
+  CandidateProposal,
 } from './types';
 
 export class ApiError extends Error {
@@ -238,6 +239,48 @@ export async function startBaseline(
     body: JSON.stringify({ contract }),
   });
   if (!res.ok) throw await apiError(res, `Baseline launch error: ${res.status}`);
+  return res.json();
+}
+
+export async function generateCandidateProposal(
+  runId: string,
+  sessionId: string,
+  idempotencyKey: string,
+): Promise<{ proposal: CandidateProposal }> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-proposals`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ idempotency_key: idempotencyKey }),
+  });
+  if (!res.ok) throw await apiError(res, `Candidate proposal generation error: ${res.status}`);
+  return res.json();
+}
+
+export async function approveCandidateProposal(
+  runId: string,
+  sessionId: string,
+  proposalId: string,
+): Promise<{ proposal: CandidateProposal }> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-proposals/${encodeURIComponent(proposalId)}/approve`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ approved_by: 'user' }),
+  });
+  if (!res.ok) throw await apiError(res, `Candidate proposal approval error: ${res.status}`);
+  return res.json();
+}
+
+export async function rejectCandidateProposal(
+  runId: string,
+  sessionId: string,
+  proposalId: string,
+): Promise<{ proposal: CandidateProposal }> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-proposals/${encodeURIComponent(proposalId)}/reject`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ approved_by: 'user' }),
+  });
+  if (!res.ok) throw await apiError(res, `Candidate proposal rejection error: ${res.status}`);
   return res.json();
 }
 

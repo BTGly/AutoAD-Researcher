@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.assistant.v2.event_service import iter_events_reverse
+from autoad_researcher.assistant.v2.experiment.candidate_proposal import CandidateProposal, CandidateProposalStore
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.cognition import CognitiveCommit, CognitiveCommitStore
 from autoad_researcher.experiment.cognitive_budget import CognitiveUsageStore
@@ -188,12 +189,23 @@ class CandidatePromotionAction(BaseModel):
     candidate_id: str
 
 
+class CandidateProposalApprovalAction(BaseModel):
+    """A server-owned Proposal awaiting the existing user approval boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposal: CandidateProposal
+
+
 class ExperimentActionsProjection(BaseModel):
     """Restricted human actions derived from the durable projection only."""
 
     model_config = ConfigDict(extra="forbid")
 
     baseline_launch_available: bool = False
+    candidate_proposal_generation_available: bool = False
+    candidate_proposal_generation_in_progress: bool = False
+    candidate_proposal_approvals: list[CandidateProposalApprovalAction] = Field(default_factory=list)
     candidate_confirmations: list[CandidateConfirmationAction] = Field(default_factory=list)
     candidate_promotions: list[CandidatePromotionAction] = Field(default_factory=list)
 
@@ -278,6 +290,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
     related_ideas = _attempt_idea_index(tree)
     attempt_views = [_attempt_projection(run_dir, item, related_ideas.get(item.attempt_id, [])) for item in attempts]
     candidate_inventory = _candidate_inventory(run_dir, session_id=session.session_id)
+    proposals = _candidate_proposals(run_dir, session_id=session.session_id)
     champion_status, champion = _champion_projection(run_dir, session, candidate_inventory)
     candidates = [
         CandidateProjection(
@@ -289,7 +302,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
         )
         for item in candidate_inventory.candidates
     ]
-    actions = _actions_projection(session, attempt_views, candidate_inventory, champion)
+    actions = _actions_projection(session, attempt_views, candidate_inventory, champion, proposals)
     activity, truncated, scan_truncated = _activity(
         run_dir,
         session_id=session.session_id,
@@ -556,18 +569,42 @@ def _actions_projection(
     attempts: list[AttemptProjection],
     candidate_inventory: CandidateInventory,
     champion: ChampionProjection | None,
+    proposals: list[CandidateProposal],
 ) -> ExperimentActionsProjection:
     baseline_launch_available = (
         session.status == "READY_FOR_BASELINE" and session.baseline_status == "not_started"
     )
+    baseline_completed = (
+        (session.status == "READY_FOR_BASELINE" and session.baseline_status == "b_dev_completed")
+        or (session.status == "READY" and session.baseline_status == "completed")
+    )
+    proposal_pending = any(item.status in {"generating", "pending_review", "approved"} for item in proposals)
+    generation_available = (
+        baseline_completed
+        and session.authorization.execution_mode != "plan_only"
+        and not proposal_pending
+    )
+    proposal_approvals = [
+        CandidateProposalApprovalAction(proposal=item)
+        for item in proposals
+        if item.status in {"pending_review", "approved"}
+    ]
+    proposal_generation_in_progress = any(item.status == "generating" for item in proposals)
     if not baseline_launch_available and (
         session.authorization.execution_mode != "approve_each_step"
         or candidate_inventory.status != "available"
     ):
-        return ExperimentActionsProjection()
+        return ExperimentActionsProjection(
+            candidate_proposal_generation_available=generation_available,
+            candidate_proposal_generation_in_progress=proposal_generation_in_progress,
+            candidate_proposal_approvals=proposal_approvals,
+        )
     if session.authorization.execution_mode != "approve_each_step" or candidate_inventory.status != "available":
         return ExperimentActionsProjection(
             baseline_launch_available=baseline_launch_available,
+            candidate_proposal_generation_available=generation_available,
+            candidate_proposal_generation_in_progress=proposal_generation_in_progress,
+            candidate_proposal_approvals=proposal_approvals,
         )
     registered_attempts = {item.attempt_id for item in candidate_inventory.candidates}
     confirmations = [
@@ -594,9 +631,19 @@ def _actions_projection(
     ]
     return ExperimentActionsProjection(
         baseline_launch_available=baseline_launch_available,
+        candidate_proposal_generation_available=generation_available,
+        candidate_proposal_generation_in_progress=proposal_generation_in_progress,
+        candidate_proposal_approvals=proposal_approvals,
         candidate_confirmations=confirmations,
         candidate_promotions=promotions,
     )
+
+
+def _candidate_proposals(run_dir: Path, *, session_id: str) -> list[CandidateProposal]:
+    try:
+        return CandidateProposalStore().list_for_session(run_dir, session_id=session_id)
+    except (OSError, ValueError):
+        return []
 
 
 def _candidate_inventory(run_dir: Path, *, session_id: str) -> CandidateInventory:
@@ -745,6 +792,8 @@ def _activity_text(event_type: str, payload: dict[str, Any]) -> tuple[str | None
         "experiment.cognitive_commit.appended": ("认知提交已记录", "cognitive_commit"),
         "experiment.candidate.b_test_queued": ("B_test 已排队", "candidate"),
         "experiment.candidate.registered": ("Candidate 已登记", "candidate"),
+        "experiment.candidate_proposal.created": ("候选方案已生成", "candidate"),
+        "experiment.candidate_proposal.updated": ("候选方案状态已更新", "candidate"),
     }
     if event_type in mapping:
         title, kind = mapping[event_type]
