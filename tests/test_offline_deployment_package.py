@@ -62,5 +62,5 @@ def test_manual_offline_package_workflow_uses_existing_verified_package_script()
     assert "bash scripts/verify.sh" in workflow
     assert "scripts/package_offline_deployment.sh" in workflow
     assert "docker build" not in workflow
-    assert "actions/upload-artifact@v4" in workflow
+    assert "actions/upload-artifact@v6" in workflow
     assert "retention-days: 14" in workflow

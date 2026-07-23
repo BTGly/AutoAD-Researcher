@@ -19,6 +19,7 @@ from pydantic import (
     model_validator,
 )
 
+from autoad_researcher.assistant.model_routing import ModelRoute
 from autoad_researcher.assistant.prompt_selector import PromptSelector
 from autoad_researcher.assistant.model_routing import ModelRoute
 from autoad_researcher.assistant.v2.event_service import append_event
@@ -364,7 +365,7 @@ def _call_with_schema_repair(
         api_key,
         provider_url,
         messages,
-        model=model,
+        model=model_route.model_id if model_route is not None else model,
         timeout_s=30,
         priority="interactive",
         response_format_json=True,
@@ -385,7 +386,7 @@ def _call_with_schema_repair(
         api_key,
         provider_url,
         repair_messages(messages, raw_reply, failure),
-        model=model,
+        model=model_route.model_id if model_route is not None else model,
         timeout_s=30,
         priority="interactive",
         response_format_json=True,

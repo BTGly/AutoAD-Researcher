@@ -23,7 +23,6 @@ class InterventionContract(BaseModel):
     forbidden_paths: list[str] = Field(default_factory=list)
     allowed_parameters: list[str] | dict[str, Any] = Field(default_factory=list)
     evaluation_invariants: list[str] = Field(default_factory=list)
-    max_repairs: int = Field(default=3, ge=0)
     time_budget: int = Field(gt=0)
 
     @field_validator("target_modules", "allowed_paths", "forbidden_paths")

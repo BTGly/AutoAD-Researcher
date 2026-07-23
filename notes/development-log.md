@@ -9,6 +9,7 @@
 | 日期 | 文件 | 主要工作 |
 |---|---|---|
 | 2026-07-22 | [2026-07-22.md](2026-07-22.md) | UI-V2 侧栏 hover 交互恢复、研究对话/资料上传/任务操作错误反馈与请求契约回归 |
+| 2026-07-22 | [2026-07-22.md](2026-07-22.md) | DeepSeek 角色路由、原生 thinking/reasoning 运行时、独立请求超时、三分区模型配置，以及移除产品级 LLM 预算与自适应报告上下文 |
 | 2026-07-21 | [2026-07-21.md](2026-07-21.md) | 报告 Agent provenance、Discussion、Bundle，以及与 Experiment Observatory 主线的集成验证 |
 | 2026-07-20 | [2026-07-20.md](2026-07-20.md) | non-Git repository attestation round-trip、前端显式执行仓库绑定、主指标执行合同门禁、远程论文 URL best-effort 降级 |
 | 2026-07-19 | [2026-07-19.md](2026-07-19.md) | Plan 08B：V2 用户确认参数投影、本地 dataset 目录登记、确认恢复与执行模式边界 |

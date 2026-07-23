@@ -547,8 +547,10 @@ class TestGenerateTaskProfile:
 
     def test_valid_json_parsed(self, tmp_path, monkeypatch):
         import httpx
+        captured = {}
 
         def mock_post(*args, **kwargs):
+            captured.update(kwargs)
             resp = httpx.Response(200, json={
                 "choices": [{"message": {"content": '{"task_title": "降低 PatchCore 显存", "task_summary": "优化显存同时保持 AUROC。","extra_junk": "ignored"}'}}]
             })
@@ -564,6 +566,10 @@ class TestGenerateTaskProfile:
         )
         assert profile.source == "llm_first_user_instruction"
         assert profile.task_title == "降低 PatchCore 显存"
+        assert captured["json"]["model"] == "deepseek-v4-flash"
+        assert captured["json"]["thinking"] == {"type": "disabled"}
+        assert captured["json"]["response_format"] == {"type": "json_object"}
+        assert "max_tokens" not in captured["json"]
 
     def test_llm_sk_secret_rejected(self, tmp_path, monkeypatch):
         import httpx

@@ -192,6 +192,27 @@ def test_worker_dispatches_fixture_command_and_finalizes_attempt(tmp_path: Path)
     }
 
 
+def test_cpu_attempt_hides_inherited_cuda_devices(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_attempt_cpu_visibility"
+    session_id = _ready_session(run_dir)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7")
+    plan = _plan(command="import os\nfrom pathlib import Path\nPath('cuda.txt').write_text(os.environ.get('CUDA_VISIBLE_DEVICES', 'missing'))\nPath('metrics.json').write_text('{}')")
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline",
+        idempotency_key="baseline:cpu-visibility",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+        required_device_count=0,
+        required_vram_mb=0,
+    )
+    assert _process_pending_jobs(run_dir) == 1
+    _poll_until_terminal(run_dir, started.attempt.attempt_id)
+    assert (run_dir / "attempts" / started.attempt.attempt_id / "cuda.txt").read_text(encoding="utf-8") == ""
+
+
 def test_zero_exit_without_expected_output_is_not_scientifically_evaluable(tmp_path: Path):
     run_dir = tmp_path / "run_attempt_missing_output"
     session_id = _ready_session(run_dir)

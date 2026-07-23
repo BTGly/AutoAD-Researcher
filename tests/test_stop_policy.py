@@ -9,10 +9,6 @@ from autoad_researcher.experiment.stop_policy import StopInputs, StopPolicy
 def _inputs(**updates) -> StopInputs:
     values = {
         "session_id": "session_000001",
-        "compute_budget_remaining": 1,
-        "cognitive_calls_remaining": 1,
-        "cognitive_tokens_remaining": 1,
-        "wall_seconds_remaining": 1,
         "valid_frontier_count": 1,
         "consecutive_terminal_failures": 0,
     }
@@ -22,10 +18,9 @@ def _inputs(**updates) -> StopInputs:
 
 def test_stop_policy_uses_deterministic_precedence():
     policy = StopPolicy()
-    assert policy.evaluate(_inputs(user_cancelled=True, compute_budget_remaining=0)).reason == "user_cancelled"
+    assert policy.evaluate(_inputs(user_cancelled=True)).reason == "user_cancelled"
     assert policy.evaluate(_inputs(environment_unrecoverable=True)).reason == "environment_unrecoverable"
-    assert policy.evaluate(_inputs(cognitive_calls_remaining=0)).reason == "budget_exhausted"
-    assert policy.evaluate(_inputs(wall_seconds_remaining=0)).reason == "wall_time_exhausted"
+    assert not policy.evaluate(_inputs()).should_stop
     assert policy.evaluate(_inputs(valid_frontier_count=0)).reason == "no_valid_frontier"
     assert policy.evaluate(_inputs(consecutive_terminal_failures=3)).reason == "repeated_failure"
 

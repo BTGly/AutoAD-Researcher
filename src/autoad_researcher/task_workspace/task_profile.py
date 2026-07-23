@@ -17,6 +17,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from autoad_researcher.assistant.model_routing import normalize_model_id
+
 
 _TASK_TITLE_MAX_CHARS = 30
 _TASK_SUMMARY_MAX_CHARS = 200
@@ -338,7 +340,7 @@ def generate_task_profile_from_first_message(
     api_key: str,
     provider_base_url: str,
     first_user_message: str,
-    model: str = "deepseek-chat",
+    model: str = "deepseek-v4-flash",
     timeout_s: int = 15,
 ) -> TaskProfile:
     """Call LLM to generate a task profile from the first user message.
@@ -347,6 +349,11 @@ def generate_task_profile_from_first_message(
     returns a fallback profile instead of raising.
     """
     run_id = run_dir.name
+
+    try:
+        resolved_model = normalize_model_id(model, default="deepseek-v4-flash")
+    except ValueError:
+        return fallback_task_profile(run_id)
 
     import httpx
 
@@ -360,13 +367,14 @@ def generate_task_profile_from_first_message(
         resp = httpx.post(
             url,
             json={
-                "model": model,
+                "model": resolved_model,
                 "messages": [
                     {"role": "system", "content": _GENERATE_SYSTEM_PROMPT},
                     {"role": "user", "content": first_user_message},
                 ],
                 "temperature": 0.1,
-                "max_tokens": 256,
+                "thinking": {"type": "disabled"},
+                "response_format": {"type": "json_object"},
             },
             headers={
                 "Authorization": f"Bearer {api_key}",

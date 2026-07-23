@@ -26,8 +26,6 @@ class SkillDescriptor(BaseModel):
     effect_lifetime: Literal["attempt", "session"]
     requires_approval: bool = False
     affects_safety_constraints: bool = False
-    estimated_calls: int = Field(default=0, ge=0)
-    estimated_tokens: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _validate_directory_ref(self):
@@ -47,8 +45,6 @@ class StrategyContext(BaseModel):
     active_skill_ids: set[str] = Field(default_factory=set)
     approved_skill_ids: set[str] = Field(default_factory=set)
     repeated_skill_ids: set[str] = Field(default_factory=set)
-    remaining_calls: int = Field(ge=0)
-    remaining_tokens: int = Field(ge=0)
     allow_safety_affecting_skills: bool = False
 
 
@@ -103,10 +99,6 @@ class StrategySelector:
                 reasons.append("required approval is missing")
             if descriptor.affects_safety_constraints and not context.allow_safety_affecting_skills:
                 reasons.append("skill would affect frozen safety constraints")
-            if descriptor.estimated_calls > context.remaining_calls:
-                reasons.append("insufficient remaining model-call budget")
-            if descriptor.estimated_tokens > context.remaining_tokens:
-                reasons.append("insufficient remaining token budget")
             if alert.level == "none" and descriptor.skill_id not in requested_order:
                 reasons.append("no convergence signal requested this skill")
             rank = None if reasons else requested_order.get(descriptor.skill_id, len(requested_order))

@@ -79,4 +79,5 @@ def test_chat_headers_supply_explicit_role_model_routes():
 
     assert _extract_role_route(request, "research_dialogue").model_id == "deepseek-v4-pro"
     assert _extract_role_route(request, "report").model_id == "deepseek-v4-flash"
-    assert _extract_role_route(request, "experiment_agent").model_id == "deepseek-v4-pro"
+    experiment = _extract_role_route(request, "experiment_agent")
+    assert experiment.model_id == "deepseek-v4-pro" and experiment.thinking_type == "enabled"

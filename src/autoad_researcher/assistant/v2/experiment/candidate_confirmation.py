@@ -16,7 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.assistant.v2.event_service import append_event
-from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineControlService
+from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineControlService, resolve_split_artifact
 from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService, ExperimentAttemptStartResult
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
@@ -138,6 +138,7 @@ class CandidateConfirmationService:
             python_executable=python_executable,
             timeout_seconds=contract.resource_budget.max_wall_seconds,
             evaluation_phase="b_test",
+            split_ref=str(resolve_split_artifact(run_dir, contract.b_test_ref)),
         )
         plan, refs = adapter.build_execution(adapter_result, adapter_inputs)
         protected_ref = f"experiments/protected_artifacts/{session_id}.json"
@@ -152,6 +153,8 @@ class CandidateConfirmationService:
             command_plan=plan,
             input_refs=refs,
             job_timeout_sec=contract.resource_budget.max_wall_seconds,
+            required_device_count=contract.required_device_count,
+            required_vram_mb=contract.required_vram_mb,
             evaluation_contract_ref=session.evaluation_contract_ref,
             evaluation_contract_sha256=session.evaluation_contract_sha256,
             protected_artifact_report_ref=protected_ref,

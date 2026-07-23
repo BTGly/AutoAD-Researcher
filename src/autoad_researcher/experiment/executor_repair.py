@@ -9,7 +9,7 @@ class RepairRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repair_index: int = Field(ge=1)
     trigger: str = Field(min_length=1)
-    classification: Literal["syntax_error", "import_error", "shape_error", "parser_error", "smoke_failure", "bounded_oom_adjustment", "hard_policy_violation"]
+    classification: Literal["syntax_error", "import_error", "shape_error", "parser_error", "smoke_failure", "bounded_oom_adjustment", "hard_policy_violation", "no_progress"]
     patch_ref: str | None = None
     validation_result: str = Field(min_length=1)
 

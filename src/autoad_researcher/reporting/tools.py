@@ -135,8 +135,6 @@ def execute_tools(
     calls: list[ReportToolCall],
     snapshot_content_sha256_expected: str | None = None,
 ) -> list[dict[str, Any]]:
-    if len(calls) > MAX_TOOL_CALLS:
-        raise ValueError("report discussion requested too many typed tools")
     facts, evidence, digest, markdown = _context(
         run_dir,
         report_id,

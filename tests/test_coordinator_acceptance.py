@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from autoad_researcher.experiment.cognitive_budget import CognitiveBudget, CognitiveBudgetStore, new_usage
+from autoad_researcher.experiment.cognitive_budget import CognitiveUsageStore, new_usage
 from autoad_researcher.experiment.cognition import CognitiveCommitStore
 from autoad_researcher.experiment.coordinator import (
     CompactCycleService,
@@ -125,11 +125,10 @@ def test_pruning_large_transient_outputs_preserves_authority_and_recovery_decisi
 
 def test_cognitive_budget_records_compact_and_exploratory_ratio_without_context_log_growth(tmp_path: Path):
     session_id = _session(tmp_path)
-    budget = CognitiveBudget(max_calls=5, max_tokens=100, max_compact_cycles=4, max_exploratory_cycles=1, max_subagent_calls=1, max_wall_seconds=10)
-    store = CognitiveBudgetStore()
+    store = CognitiveUsageStore()
     for index in range(4):
-        assert store.append(tmp_path, session_id=session_id, budget=budget, usage=new_usage(cycle_id=f"compact_{index}", cycle_kind="compact", role="coordinator", input_tokens=5, output_tokens=5, wall_seconds=1)).allowed
-    assert store.append(tmp_path, session_id=session_id, budget=budget, usage=new_usage(cycle_id="explore_1", cycle_kind="exploratory", role="idea_explorer", input_tokens=10, output_tokens=10, wall_seconds=2)).allowed
+        assert store.append(tmp_path, session_id=session_id, usage=new_usage(cycle_id=f"compact_{index}", cycle_kind="compact", role="coordinator", input_tokens=5, output_tokens=5, wall_seconds=1)).recorded
+    assert store.append(tmp_path, session_id=session_id, usage=new_usage(cycle_id="explore_1", cycle_kind="exploratory", role="idea_explorer", input_tokens=10, output_tokens=10, wall_seconds=2)).recorded
     usage = store.load(tmp_path, session_id=session_id)
     assert len(usage) == 5
     assert sum(item.cycle_kind == "compact" for item in usage) == 4

@@ -770,6 +770,7 @@ def test_orchestrator_calls_decision_then_reply_without_shared_deadline(monkeypa
     def fake_call(*args, **kwargs):
         calls.append({
             "temperature": kwargs.get("temperature"),
+            "timeout_s": kwargs.get("timeout_s"),
         })
         return {"reply": json.dumps(replies.pop(0), ensure_ascii=False), "error": ""}
 
@@ -790,6 +791,7 @@ def test_orchestrator_calls_decision_then_reply_without_shared_deadline(monkeypa
     assert len(calls) == 2
     assert context_builds == 1
     assert all(item["temperature"] == 0.0 for item in calls)
+    assert all(item["timeout_s"] == 30 for item in calls)
     assert (tmp_path / "assistant" / "v2_dialogue_transitions.jsonl").is_file()
     assert result.dialogue_mode == "ask"
     assert result.intent_summary["goal"] == "复现指定实现并核对结果"

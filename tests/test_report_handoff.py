@@ -11,7 +11,6 @@ from autoad_researcher.assistant.v2.research_intent_summary import ResearchInten
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.experiment.executor_agent import ExecutorProposal
 from autoad_researcher.experiment.executor_contracts import InterventionContract
-from autoad_researcher.experiment.cognitive_budget import CognitiveBudget
 from autoad_researcher.experiment.cost_summary import CognitiveCostSummaryBuilder
 from autoad_researcher.experiment.evaluation_contract import (
     EvaluationContract,
@@ -66,18 +65,7 @@ def _ready_report(tmp_path: Path, *, with_budget: bool = False) -> tuple[Path, s
             evaluation_contract_sha256=frozen.sha256,
             evaluation_contract_revision=frozen.contract.revision,
         )
-        CognitiveCostSummaryBuilder().build_and_persist(
-            run_dir,
-            session_id=session.session_id,
-            budget=CognitiveBudget(
-                max_calls=3,
-                max_tokens=100,
-                max_compact_cycles=3,
-                max_exploratory_cycles=3,
-                max_subagent_calls=3,
-                max_wall_seconds=20,
-            ),
-        )
+        CognitiveCostSummaryBuilder().build_and_persist(run_dir, session_id=session.session_id)
     result, _ = ReportRequestService().request(run_dir, session_id=session.session_id)
     for _ in range(5):
         _process_pending_jobs(run_dir)
@@ -189,7 +177,7 @@ def test_refine_requires_reviewed_input_then_delegates_to_candidate_control(tmp_
         rationale="基于当前结果缩小干预范围",
         requested_changes=["仅调整 model.py 中的投影层"],
         refine_input=_refine_input(),
-        estimated_budget=ProposalBudgetEstimate(max_wall_seconds=30, max_gpu_seconds=20, cognitive_calls=1),
+        estimated_budget=ProposalBudgetEstimate(max_wall_seconds=30, max_gpu_seconds=20),
     )
     handed_off = confirm_proposal(run_dir, report_id=report_id, proposal_id=proposal.proposal_id)
     assert handed_off.handoff == {
@@ -210,12 +198,11 @@ def test_execution_proposal_budget_must_fit_frozen_contract(tmp_path: Path):
         rationale="受冻结资源上限约束的修改",
         requested_changes=["仅调整 model.py 中的投影层"],
         refine_input=_refine_input(),
-        estimated_budget=ProposalBudgetEstimate(max_wall_seconds=61, max_gpu_seconds=20, cognitive_calls=4),
+        estimated_budget=ProposalBudgetEstimate(max_wall_seconds=61, max_gpu_seconds=20),
     )
 
     assert proposal.status == "DRAFT"
     assert "proposal wall-time estimate exceeds the frozen EvaluationContract budget" in proposal.validation_errors
-    assert "proposal cognitive_calls exceeds the frozen cognitive budget" in proposal.validation_errors
 
 
 def test_pivot_creates_an_isolated_pending_task_with_report_lineage(tmp_path: Path):

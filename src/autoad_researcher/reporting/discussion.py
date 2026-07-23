@@ -150,7 +150,7 @@ def _respond_with_slot(
     api_key: str,
     provider_url: str,
     model: str,
-    budget: ReportDiscussionBudget,
+    budget: ReportDiscussionBudget = ReportDiscussionBudget(),
     model_route: ModelRoute | None = None,
 ) -> DiscussionTurn:
     _facts, index, digest_model, _markdown = load_verified_report_context(

@@ -116,6 +116,7 @@ def _configured_profile() -> dict[str, Any]:
         "model_route": route.snapshot(),
         "provider_base_url": provider_url.rstrip("/") if api_key and provider_url else "",
         "prompt_sha256": "runtime-legacy-profile",
+        "profile_hash": "runtime-legacy-profile",
     }
 
 

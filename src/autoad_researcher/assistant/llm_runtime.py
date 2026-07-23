@@ -472,19 +472,18 @@ def _consume_streaming_response(
             if isinstance(arguments, str):
                 current_function["arguments"] += arguments
         delta = _content_delta_from_stream_event(event)
-        if delta is None:
-            continue
-        if first_token_ms is None:
-            first_token_ms = _elapsed_ms(started)
-        chunks.append(delta)
-        on_delta(delta)
+        if delta:
+            if first_token_ms is None:
+                first_token_ms = _elapsed_ms(started)
+            chunks.append(delta)
+            on_delta(delta)
     return LLMCallResult(
         reply="".join(chunks).strip(),
+        reasoning="".join(reasoning_chunks),
         provider_request_id=request_id,
         http_status=200,
         ttfb_ms=ttfb_ms,
         first_token_ms=first_token_ms,
-        reasoning="".join(reasoning_chunks),
         finish_reason=finish_reason,
         usage=usage,
         tool_calls=[tool_calls[index] for index in sorted(tool_calls)] or None,
@@ -650,7 +649,13 @@ def _usage_from_body(body: dict[str, Any]) -> dict[str, int] | None:
     if not isinstance(raw, dict):
         return None
     usage: dict[str, int] = {}
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens",
+    ):
         value = raw.get(key)
         if isinstance(value, int):
             usage[key] = value

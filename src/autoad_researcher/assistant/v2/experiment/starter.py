@@ -52,6 +52,10 @@ class ExperimentStarter:
                 binding.model_dump(mode="json") if binding is not None else None
             ),
         })
+        selected_route = model_route or select_model_route(
+            "experiment_agent",
+            os.environ.get("AUTOAD_EXPERIMENT_MODEL", "").strip() or None,
+        )
         append_event(
             run_dir,
             "experiment.start_requested",

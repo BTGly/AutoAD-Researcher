@@ -52,7 +52,7 @@ class EvaluationResourceBudget(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_wall_seconds: int = Field(gt=0)
-    max_gpu_seconds: int = Field(gt=0)
+    max_gpu_seconds: int = Field(ge=0)
 
 
 class EvaluationSeedPolicy(BaseModel):
@@ -87,7 +87,7 @@ class EvaluationContract(BaseModel):
     split_identity: str = Field(min_length=1)
     b_dev_ref: str
     b_test_ref: str
-    category_set: list[str] = Field(min_length=1)
+    category_set: list[str] = Field(default_factory=list)
     metrics: list[EvaluationMetric] = Field(min_length=1)
     primary_metric: str = Field(min_length=1)
     guardrails: list[str] = Field(default_factory=list)
@@ -96,6 +96,8 @@ class EvaluationContract(BaseModel):
     seed_policy: EvaluationSeedPolicy | None = None
     checkpoint_selection: str = Field(min_length=1)
     resource_budget: EvaluationResourceBudget
+    required_device_count: int = Field(default=0, ge=0)
+    required_vram_mb: int = Field(default=0, ge=0)
     protected_paths: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")

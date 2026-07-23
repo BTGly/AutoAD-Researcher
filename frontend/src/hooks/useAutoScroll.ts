@@ -1,9 +1,9 @@
-import { useRef, useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
-export function useAutoScroll(deps: unknown[]) {
+export function useAutoScroll(trigger: unknown) {
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, deps);
+  }, [trigger]);
   return bottomRef;
 }

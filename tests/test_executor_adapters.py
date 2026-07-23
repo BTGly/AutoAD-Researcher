@@ -34,8 +34,8 @@ def test_b_test_requires_a_repository_declared_command(tmp_path: Path):
                 "allowed_paths": ["run.py"],
                 "protected_paths": ["evaluate.py"],
                 "evaluation_commands": {
-                    "b_dev": {"args": ["run.py", "--split", "dev"], "metrics_output": "metrics.json"},
-                    "b_test": {"args": ["run.py", "--split", "test"], "metrics_output": "metrics.json"},
+                    "b_dev": {"args": ["run.py", "--split-ref", ""], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
+                    "b_test": {"args": ["run.py", "--split-ref", ""], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
                 },
             }
         ),
@@ -53,7 +53,40 @@ def test_b_test_requires_a_repository_declared_command(tmp_path: Path):
             dataset_manifest_sha256="b" * 64,
             asset_manifest_sha256="c" * 64,
             evaluation_phase="b_test",
+            split_ref="/run/inputs/test.json",
         ),
     )
-    assert plan.args == ["run.py", "--split", "test"]
+    assert plan.args == ["run.py", "--split-ref", "/run/inputs/test.json"]
     assert plan.command_id == "generic_python_b_test"
+
+
+def test_baseline_split_binding_requires_an_explicit_manifest_slot(tmp_path: Path):
+    (tmp_path / "run.py").write_text("", encoding="utf-8")
+    (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
+    (tmp_path / "autoad_executor_adapter.json").write_text(
+        json.dumps({
+            "adapter_id": "generic_python",
+            "entrypoint": "run.py",
+            "smoke_argv": [sys.executable, "run.py"],
+            "metrics_output": "metrics.json",
+            "allowed_paths": ["run.py"],
+            "protected_paths": ["evaluate.py"],
+            "evaluation_commands": {"b_dev": {"args": ["run.py"], "metrics_output": "metrics.json"}},
+        }),
+        encoding="utf-8",
+    )
+    result = ExecutorAdapter().inspect(tmp_path)
+    with pytest.raises(ValueError, match="does not declare a split reference argument"):
+        ExecutorAdapter().build_execution(
+            result,
+            ExecutorAdapterInputs(
+                run_id="run_executor",
+                worktree_ref="executor_worktrees/attempt",
+                repository_fingerprint="fixture",
+                environment_sha256="a" * 64,
+                dataset_manifest_sha256="b" * 64,
+                asset_manifest_sha256="c" * 64,
+                evaluation_phase="b_dev",
+                split_ref="/run/inputs/dev.json",
+            ),
+        )

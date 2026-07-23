@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path, PurePosixPath
-from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
@@ -40,16 +39,19 @@ class BaselineContractInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     primary_metric: str = Field(min_length=1)
-    primary_metric_direction: Literal["maximize", "minimize"]
+    metrics: list[EvaluationMetric] = Field(min_length=1)
     dataset_identity: str = Field(min_length=1)
     split_identity: str = Field(min_length=1)
     b_dev_ref: str = Field(min_length=1)
     b_test_ref: str = Field(min_length=1)
-    category_set: list[str] = Field(min_length=1)
+    category_set: list[str] = Field(default_factory=list)
+    guardrails: list[str] = Field(default_factory=list)
     seeds: list[int] = Field(min_length=1)
     checkpoint_selection: str = Field(min_length=1)
     max_wall_seconds: int = Field(gt=0)
-    max_gpu_seconds: int = Field(gt=0)
+    max_gpu_seconds: int = Field(ge=0)
+    required_device_count: int = Field(default=0, ge=0)
+    required_vram_mb: int = Field(default=0, ge=0)
     dataset_source_ids: list[str] = Field(default_factory=list)
     asset_source_ids: list[str] = Field(default_factory=list)
 
@@ -60,6 +62,25 @@ class BaselineContractInput(BaseModel):
         if path.is_absolute() or any(part == ".." for part in path.parts):
             raise ValueError("contract references must be run-relative")
         return value
+
+    @model_validator(mode="after")
+    def _validate_metrics(self):
+        names = [metric.name for metric in self.metrics]
+        if len(names) != len(set(names)):
+            raise ValueError("baseline metrics must be unique")
+        if self.primary_metric not in names:
+            raise ValueError("primary_metric must name one of metrics")
+        if not set(self.guardrails).issubset(names):
+            raise ValueError("guardrails must name metrics")
+        if self.primary_metric in self.guardrails:
+            raise ValueError("primary_metric cannot also be a guardrail")
+        if self.required_device_count == 0 and self.required_vram_mb != 0:
+            raise ValueError("required_vram_mb requires a positive device request")
+        if self.max_gpu_seconds == 0 and self.required_device_count != 0:
+            raise ValueError("CPU-only baseline cannot request GPU devices")
+        if self.max_gpu_seconds > 0 and self.required_device_count == 0:
+            raise ValueError("GPU time budget requires an explicit device request")
+        return self
 
 
 class BaselineLaunchResult(BaseModel):
@@ -104,20 +125,27 @@ class BaselineControlService:
         binding = self._load_binding(run_dir, session)
         snapshot, python_executable = self._load_observed_environment(run_dir, session)
         task = self._load_input_task(run_dir, session)
-        if contract_input.primary_metric not in task.primary_metrics:
+        task_metric_names = set(task.primary_metrics)
+        contract_metric_names = {metric.name for metric in contract_input.metrics}
+        if contract_metric_names != task_metric_names:
+            raise ValueError("baseline metrics must exactly match the user-confirmed task metrics")
+        if contract_input.primary_metric not in task_metric_names:
             raise ValueError("baseline primary metric must be one of the user-confirmed task metrics")
-        self._require_input_files(run_dir, contract_input)
+        split_paths = self._require_input_files(run_dir, contract_input)
         selected_sources = self._freeze_selected_sources(
             run_dir,
             contract_input.dataset_source_ids + contract_input.asset_source_ids,
         )
 
+        adapter_protected_paths = self._adapter_protected_paths(run_dir, binding)
+        implementation_paths = [metric.implementation_ref for metric in contract_input.metrics]
+        workspace_protected_paths = list(dict.fromkeys([*adapter_protected_paths, *implementation_paths]))
         workspace_key = f"baseline-{session_id}"
         workspace = WorktreeManager(run_dir / "experiments" / "executor_worktrees").create(
             repository_path=run_dir / binding.repository_ref,
             attempt_id=workspace_key,
             base_commit="HEAD",
-            protected_paths=self._adapter_protected_paths(run_dir, binding),
+            protected_paths=workspace_protected_paths,
             environment_snapshot_ref=session.environment_snapshot_ref or "",
         )
         workspace_ref = str(Path(workspace.worktree_path).resolve().relative_to(run_dir.resolve()))
@@ -159,6 +187,7 @@ class BaselineControlService:
                 python_executable=python_executable,
                 timeout_seconds=contract_input.max_wall_seconds,
                 evaluation_phase="b_dev",
+                split_ref=str(split_paths[0]),
             ),
         )
         started = self._attempts.create_or_get_attempt(
@@ -169,6 +198,8 @@ class BaselineControlService:
             command_plan=plan,
             input_refs=refs,
             job_timeout_sec=contract_input.max_wall_seconds,
+            required_device_count=contract_input.required_device_count,
+            required_vram_mb=contract_input.required_vram_mb,
             evaluation_contract_ref=frozen.ref,
             evaluation_contract_sha256=frozen.sha256,
             protected_artifact_report_ref=protected_ref,
@@ -188,6 +219,7 @@ class BaselineControlService:
                     python_executable=python_executable,
                     timeout_seconds=contract_input.max_wall_seconds,
                     evaluation_phase="b_test",
+                    split_ref=str(split_paths[1]),
                 ),
             )
             b_test_started = self._attempts.create_or_get_attempt(
@@ -198,6 +230,8 @@ class BaselineControlService:
                 command_plan=b_test_plan,
                 input_refs=b_test_refs,
                 job_timeout_sec=contract_input.max_wall_seconds,
+                required_device_count=contract_input.required_device_count,
+                required_vram_mb=contract_input.required_vram_mb,
                 evaluation_contract_ref=frozen.ref,
                 evaluation_contract_sha256=frozen.sha256,
                 protected_artifact_report_ref=protected_ref,
@@ -277,11 +311,8 @@ class BaselineControlService:
         return protected
 
     @staticmethod
-    def _require_input_files(run_dir: Path, value: BaselineContractInput) -> None:
-        for ref in (value.b_dev_ref, value.b_test_ref):
-            path = run_dir.joinpath(*PurePosixPath(ref).parts).resolve()
-            if not path.is_relative_to(run_dir.resolve()) or not path.is_file():
-                raise ValueError("execution_contract_incomplete: frozen split artifact is missing")
+    def _require_input_files(run_dir: Path, value: BaselineContractInput) -> tuple[Path, Path]:
+        return resolve_split_artifact(run_dir, value.b_dev_ref), resolve_split_artifact(run_dir, value.b_test_ref)
 
     @staticmethod
     def _freeze_selected_sources(run_dir: Path, source_ids: list[str]) -> list[dict[str, str]]:
@@ -321,13 +352,23 @@ class BaselineControlService:
             b_dev_ref=value.b_dev_ref,
             b_test_ref=value.b_test_ref,
             category_set=value.category_set,
-            metrics=[EvaluationMetric(name=value.primary_metric, direction=value.primary_metric_direction, implementation_ref="metrics.json")],
+            metrics=value.metrics,
             primary_metric=value.primary_metric,
+            guardrails=value.guardrails,
             aggregation="mean",
             seeds=value.seeds,
             checkpoint_selection=value.checkpoint_selection,
             resource_budget=EvaluationResourceBudget(max_wall_seconds=value.max_wall_seconds, max_gpu_seconds=value.max_gpu_seconds),
-            protected_paths=[value.b_dev_ref, value.b_test_ref, *[f"{workspace_ref}/{path}" for path in protected_paths]],
+            required_device_count=value.required_device_count,
+            required_vram_mb=value.required_vram_mb,
+            protected_paths=list(dict.fromkeys([
+                value.b_dev_ref,
+                value.b_test_ref,
+                *[
+                    str(PurePosixPath(workspace_ref) / path)
+                    for path in [*protected_paths, *(metric.implementation_ref for metric in value.metrics)]
+                ],
+            ])),
         )
         if current is not None:
             if current.contract != contract:
@@ -396,3 +437,10 @@ class BaselineControlService:
             raise ValueError("idempotency_conflict: existing baseline request receipt is invalid") from exc
         if recorded != canonical_sha256(value):
             raise ValueError("idempotency_conflict: baseline request differs from the existing Attempt")
+
+
+def resolve_split_artifact(run_dir: Path, ref: str) -> Path:
+    path = run_dir.joinpath(*PurePosixPath(ref).parts).resolve()
+    if not path.is_relative_to(run_dir.resolve()) or not path.is_file():
+        raise ValueError("execution_contract_incomplete: frozen split artifact is missing")
+    return path

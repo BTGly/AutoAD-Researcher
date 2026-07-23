@@ -28,7 +28,7 @@ def fixture_repository(tmp_path: Path) -> Path:
 
 
 def _contract() -> InterventionContract:
-    return InterventionContract(idea_id="idea_000001", mechanism="parameter adjustment", hypothesis="h", target_modules=["train.py"], allowed_paths=["train.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["learning_rate"], evaluation_invariants=["fixed evaluator"], max_repairs=3, time_budget=60)
+    return InterventionContract(idea_id="idea_000001", mechanism="parameter adjustment", hypothesis="h", target_modules=["train.py"], allowed_paths=["train.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["learning_rate"], evaluation_invariants=["fixed evaluator"], time_budget=60)
 
 
 def _agent(fixture_repository: Path, tmp_path: Path, limits: ExecutorLimits):
@@ -37,7 +37,7 @@ def _agent(fixture_repository: Path, tmp_path: Path, limits: ExecutorLimits):
 
 
 def test_executor_applies_only_structured_edit_and_always_writes_summary(fixture_repository: Path, tmp_path: Path):
-    agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_steps=4, max_wall_seconds=30, max_model_calls=1))
+    agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_wall_seconds=30))
     summary = agent.run(lambda _tools: ExecutorProposal(edits=[SearchReplaceEdit(path="train.py", search="learning_rate = 0.1\n", replace="learning_rate = 0.2\n")], changed_symbols=["learning_rate"], possible_contract_deviation="entrypoint use was not independently established", confidence=.6))
     assert summary.status == "completed"
     saved = json.loads((tmp_path / "attempts" / "attempt_000001" / "executor_summary.json").read_text(encoding="utf-8"))
@@ -46,28 +46,33 @@ def test_executor_applies_only_structured_edit_and_always_writes_summary(fixture
 
 
 def test_executor_rejects_empty_edit_proposal(fixture_repository: Path, tmp_path: Path):
-    agent, _ = _agent(fixture_repository, tmp_path, ExecutorLimits(max_steps=4, max_wall_seconds=30, max_model_calls=1))
+    agent, _ = _agent(fixture_repository, tmp_path, ExecutorLimits(max_wall_seconds=30))
     summary = agent.run(lambda _tools: ExecutorProposal(edits=[], changed_symbols=[], confidence=.5))
     assert summary.status == "implementation_failed"
     assert summary.error == "proposal did not include edits"
 
 
-def test_executor_budget_and_command_allowlist_are_hard_bounds(fixture_repository: Path, tmp_path: Path):
-    agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_steps=1, max_wall_seconds=30, max_model_calls=0))
-    exhausted = agent.run(lambda _tools: pytest.fail("provider must not be called"))
-    assert exhausted.status == "budget_exhausted"
+def test_executor_has_no_model_call_budget_and_keeps_command_allowlist(fixture_repository: Path, tmp_path: Path):
+    agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_wall_seconds=30))
+    called = False
+    def proposal(_tools):
+        nonlocal called
+        called = True
+        return ExecutorProposal(edits=[SearchReplaceEdit(path="train.py", search="learning_rate = 0.1\n", replace="learning_rate = 0.2\n")], changed_symbols=["learning_rate"], confidence=.8)
+    assert agent.run(proposal).status == "completed"
+    assert called
     assert (tmp_path / "attempts" / "attempt_000001" / "executor_summary.json").is_file()
 
     from autoad_researcher.experiment.patch_protocol import SearchReplaceApplier
-    tools = ExecutorTools(worktree_path=Path(workspace.worktree_path), applier=SearchReplaceApplier(contract=_contract(), workspace=workspace), limits=ExecutorLimits(max_steps=2, max_wall_seconds=30, max_model_calls=1))
+    tools = ExecutorTools(worktree_path=Path(workspace.worktree_path), applier=SearchReplaceApplier(contract=_contract(), workspace=workspace), limits=ExecutorLimits(max_wall_seconds=30))
     with pytest.raises(PermissionError):
         tools.run_command(["git", "status"], timeout_seconds=1)
 
 
 def test_executor_allows_one_bounded_repair_after_initial_syntax_failure(fixture_repository: Path, tmp_path: Path):
-    contract = _contract().model_copy(update={"max_repairs": 1})
+    contract = _contract()
     workspace = WorktreeManager(tmp_path / "worktrees").create(repository_path=fixture_repository, attempt_id="attempt_000001", base_commit="HEAD", protected_paths=["evaluate.py"], environment_snapshot_ref="environment/snapshot.json")
-    agent = ExecutorAgent(contract=contract, workspace=workspace, artifact_dir=tmp_path / "attempts" / "attempt_000001", limits=ExecutorLimits(max_steps=4, max_wall_seconds=30, max_model_calls=2))
+    agent = ExecutorAgent(contract=contract, workspace=workspace, artifact_dir=tmp_path / "attempts" / "attempt_000001", limits=ExecutorLimits(max_wall_seconds=30))
     proposals = iter([
         ExecutorProposal(edits=[SearchReplaceEdit(path="train.py", search="learning_rate = 0.1\n", replace="def broken(:\n")], changed_symbols=[], confidence=.1),
         ExecutorProposal(edits=[SearchReplaceEdit(path="train.py", search="learning_rate = 0.1\n", replace="learning_rate = 0.2\n")], changed_symbols=["learning_rate"], confidence=.9),
@@ -79,7 +84,7 @@ def test_executor_allows_one_bounded_repair_after_initial_syntax_failure(fixture
 
 
 def test_repeated_hard_violation_stops_and_preserves_protected_file(fixture_repository: Path, tmp_path: Path):
-    agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_steps=4, max_wall_seconds=30, max_model_calls=4))
+    agent, workspace = _agent(fixture_repository, tmp_path, ExecutorLimits(max_wall_seconds=30))
     proposal = lambda _tools: ExecutorProposal(edits=[SearchReplaceEdit(path="evaluate.py", search="protected = True\n", replace="protected = False\n")], changed_symbols=["protected"], possible_contract_deviation="requested evaluation change is outside the frozen contract", confidence=.2)
     summary = agent.run(proposal)
     assert summary.status == "implementation_failed" and summary.model_calls == 2

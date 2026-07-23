@@ -1,4 +1,9 @@
-"""Role-based DeepSeek model selection for the assistant surfaces."""
+"""Role-based model selection for the AutoAD assistant surfaces.
+
+The route owns model capability defaults, while credentials and provider URLs
+remain outside the snapshot. Thinking is a role property: selecting the other
+DeepSeek model does not silently change the route's reasoning policy.
+"""
 
 from __future__ import annotations
 
@@ -34,6 +39,8 @@ class ModelRoute:
     routing_schema_version: str = ROUTING_SCHEMA_VERSION
 
     def snapshot(self) -> dict[str, object]:
+        """Return non-secret route provenance suitable for durable state."""
+
         return asdict(self)
 
 
@@ -49,6 +56,8 @@ def normalize_model_id(value: str | None, *, default: ModelID) -> ModelID:
 
 
 def select_model_route(role: ModelRole, requested_model: str | None = None) -> ModelRoute:
+    """Resolve one route without inferring thinking from the selected model."""
+
     default: ModelID = "deepseek-v4-pro" if role == "experiment_agent" else "deepseek-v4-flash"
     model_id = normalize_model_id(requested_model, default=default)
     thinking_type: ThinkingType = "enabled" if role == "experiment_agent" else "disabled"
