@@ -121,14 +121,15 @@ test('launches a Baseline from an environment-ready Session with an explicit con
   await page.getByLabel('B_test 文件引用').fill('inputs/test.json');
   await page.getByLabel('Checkpoint 选择').fill('best');
   await page.getByLabel('Seeds').fill('1');
-  await page.getByLabel('最大墙钟秒数').fill('30');
+  await expect(page.getByText('请依次填写：最大墙钟秒数、最大 GPU 秒数，单位均为秒。例如 CPU-only 任务填写 20000, 0；此时 GPU 数量和显存填 0 或留空。GPU 任务还需填写 GPU 数量和每个 GPU 所需显存 MB。', { exact: true })).toBeVisible();
+  await page.getByLabel('最大墙钟秒数').fill('20000');
   await page.getByLabel('最大 GPU 秒数').fill('0');
   await page.getByLabel('指标方向 image AUROC').selectOption('maximize');
   await page.getByLabel('指标角色 image AUROC').selectOption('primary');
   await page.getByLabel('指标实现引用 image AUROC').fill('metric.py');
   await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
   await expect.poll(() => requestBody).not.toBeNull();
-  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_gpu_seconds: 0, required_device_count: 0, required_vram_mb: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
+  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_wall_seconds: 20000, max_gpu_seconds: 0, required_device_count: 0, required_vram_mb: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
 });
 
 test('generates a reviewed Candidate Proposal before creating a Candidate Attempt', async ({ page }) => {
