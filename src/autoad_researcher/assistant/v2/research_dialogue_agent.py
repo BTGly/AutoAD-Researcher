@@ -77,6 +77,7 @@ TaskActionProposal = Literal[
 ]
 PolicyCategory = Literal[
     "none",
+    "unsupported_domain",
     "evaluation_leakage",
     "evaluation_manipulation",
     "evidence_falsification",

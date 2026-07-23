@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueDecision,
@@ -55,6 +57,40 @@ def test_gate_forces_reject_policy_and_removes_all_actions(tmp_path: Path):
     assert gated.source_action is None
     assert gated.task_action is None
     assert gated.target_spec is None
+
+
+@pytest.mark.parametrize(
+    "design_request",
+    ["蛋白质结构预测与设计", "建筑结构设计", "材料配比设计"],
+)
+def test_gate_blocks_unvalidated_real_world_design_scope(tmp_path: Path, design_request: str):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act",
+        action_scope="experiment",
+        policy_assessment=ResearchPolicyAssessment(
+            decision="reject",
+            category="unsupported_domain",
+            reason="该请求要求把未经过当前领域验证的物理设计结果作为可直接采用的结论。",
+            safe_alternative="可以整理公开材料并生成明确标注未验证领域的 plan_only 方案。",
+        ),
+        task_action="prepare_experiment_task",
+        target_spec=TargetSpec(
+            adapter_id="generic_python",
+            selectors={"task": design_request},
+        ),
+    ))
+
+    gated = DialogueGate.validate(
+        decision,
+        run_dir=tmp_path,
+        registered_sources=[],
+    )
+
+    assert gated.policy == "deny"
+    assert gated.policy_assessment.category == "unsupported_domain"
+    assert gated.task_action is None
+    assert gated.target_spec is None
+    assert gated.source_action is None
 
 
 def test_gate_checks_contract_state_for_act_request(tmp_path: Path):

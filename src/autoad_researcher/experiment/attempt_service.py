@@ -54,6 +54,7 @@ class ExperimentAttemptService:
         command_plan: ExperimentCommandPlan,
         input_refs: ExperimentInputRefs,
         job_timeout_sec: int,
+        attempt_purpose: AttemptPurpose | None = None,
         max_retries: int = 0,
         required_device_count: int = 0,
         required_vram_mb: int = 0,
@@ -65,7 +66,12 @@ class ExperimentAttemptService:
         protected_artifact_report_ref: str | None = None,
         protected_artifact_report_sha256: str | None = None,
     ) -> ExperimentAttemptStartResult:
-        session = self._require_executable_session(run_dir, session_id, job_type)
+        purpose = attempt_purpose or ATTEMPT_PURPOSE_BY_JOB_TYPE[job_type]
+        if purpose not in {ATTEMPT_PURPOSE_BY_JOB_TYPE[job_type], "repair"}:
+            raise ValueError("Attempt purpose does not match its Job type")
+        if purpose == "repair" and job_type != "experiment_baseline":
+            raise ValueError("repair Attempt must use the baseline Job type")
+        session = self._require_executable_session(run_dir, session_id, job_type, attempt_purpose=purpose)
         self._validate_session_evaluation_contract(
             session,
             evaluation_contract_ref=evaluation_contract_ref,
@@ -78,7 +84,7 @@ class ExperimentAttemptService:
             session_id=session.session_id,
             idempotency_key=idempotency_key,
             job_type=job_type,
-            attempt_purpose=ATTEMPT_PURPOSE_BY_JOB_TYPE[job_type],
+            attempt_purpose=purpose,
             command_plan=command_plan,
             input_refs=input_refs,
             job_timeout_sec=job_timeout_sec,
@@ -174,12 +180,23 @@ class ExperimentAttemptService:
             disposition="created" if created else "reused",
         )
 
-    def _require_executable_session(self, run_dir: Path, session_id: str, job_type: AttemptJobType):
+    def _require_executable_session(
+        self,
+        run_dir: Path,
+        session_id: str,
+        job_type: AttemptJobType,
+        *,
+        attempt_purpose: AttemptPurpose,
+    ):
         session = self._session_store.load(run_dir, session_id)
         if session is None:
             raise FileNotFoundError("experiment session not found")
         if session.authorization.execution_mode == "plan_only":
             raise ValueError("plan_only Session may not create experiment Attempts")
+        if attempt_purpose == "repair":
+            if session.status != "FAILED" or session.baseline_status != "failed":
+                raise ValueError("baseline repair requires a failed Session")
+            return session
         if job_type in {"experiment_baseline", "experiment_baseline_b_test"} and session.status != "READY_FOR_BASELINE":
             raise ValueError("baseline Attempt requires Session READY_FOR_BASELINE")
         candidate_ready = session.status == "READY_FOR_BASELINE" and session.baseline_status == "b_dev_completed"

@@ -201,7 +201,30 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
             and _baseline_adapter_has_b_test(run_dir, attempt)
         )
         b_test_started = any(item.job_type == "experiment_baseline_b_test" for item in baseline_attempts)
-        if all(item.runtime_status == "COMPLETED" for item in baseline_attempts) and (b_test_started or not requires_b_test):
+        if attempt.attempt_purpose == "repair":
+            if final.runtime_status == "COMPLETED":
+                if requires_b_test and not b_test_started:
+                    ExperimentSessionStore().update_baseline_state(
+                        run_dir,
+                        session_id=attempt.session_id,
+                        status="READY_FOR_BASELINE",
+                        baseline_status="b_dev_completed",
+                    )
+                elif not requires_b_test:
+                    ExperimentSessionStore().update_baseline_state(
+                        run_dir,
+                        session_id=attempt.session_id,
+                        status="READY",
+                        baseline_status="completed",
+                    )
+            elif final.retry_exhausted:
+                ExperimentSessionStore().update_baseline_state(
+                    run_dir,
+                    session_id=attempt.session_id,
+                    status="FAILED",
+                    baseline_status="failed",
+                )
+        elif all(item.runtime_status == "COMPLETED" for item in baseline_attempts) and (b_test_started or not requires_b_test):
             ExperimentSessionStore().update_baseline_state(
                 run_dir, session_id=attempt.session_id, status="READY", baseline_status="completed"
             )

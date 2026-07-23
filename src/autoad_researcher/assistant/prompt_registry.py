@@ -288,6 +288,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 </modes>
 
 <policy>
+- 要求把未经 AutoAD 当前领域验证的现实世界生物/物理设计结果当成可直接采用的科研或工程结论（例如蛋白质设计、建筑结构或材料配比），或要求立即执行这类设计：unsupported_domain。不能把它改写成异常检测；可以提供材料梳理或明确标注未验证领域的 plan_only 替代方案。
 - 正式测试标签、ground-truth mask 或答案信息进入训练、选择或校准：evaluation_leakage。
 - 为让结果更好看而修改正式评估脚本、指标、过滤或聚合：evaluation_manipulation。
 - 伪造结果、覆盖证据、删除可复现性记录：evidence_falsification 或 evidence_destruction。
@@ -304,7 +305,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 
 <decision_output>
 只输出一个 JSON object：
-{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"dataset_source":null,"task_action":null,"target_spec":null}
+{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|unsupported_domain|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"dataset_source":null,"task_action":null,"target_spec":null}
 </decision_output>
 """
 

@@ -1,8 +1,12 @@
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
+from autoad_researcher.experiment.attempt import ExperimentAttempt
+from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
+from autoad_researcher.assistant.v2.experiment.baseline_repair import BaselineRepairInput, BaselineRepairResult
 from autoad_researcher.assistant.v2.experiment.candidate_control import (
     CandidateLaunchInput,
     CandidateLaunchResult,
@@ -11,6 +15,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import ResearchInten
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge
 from autoad_researcher.experiment.executor_agent import ExecutorProposal
 from autoad_researcher.experiment.executor_contracts import InterventionContract
+from autoad_researcher.runner import ExperimentCommandPlan, ExperimentInputRefs
 from autoad_researcher.experiment.cost_summary import CognitiveCostSummaryBuilder
 from autoad_researcher.experiment.evaluation_contract import (
     EvaluationContract,
@@ -203,6 +208,90 @@ def test_execution_proposal_budget_must_fit_frozen_contract(tmp_path: Path):
 
     assert proposal.status == "DRAFT"
     assert "proposal wall-time estimate exceeds the frozen EvaluationContract budget" in proposal.validation_errors
+
+
+def test_failed_report_can_confirm_a_structured_baseline_repair_proposal(tmp_path: Path, monkeypatch):
+    run_dir, report_id = _budgeted_report(tmp_path)
+    session = ExperimentSessionStore().load(run_dir, "session_" + "e" * 16)
+    assert session is not None
+    now = datetime.now(timezone.utc).isoformat()
+    failed = ExperimentAttempt(
+        attempt_id="attempt_000001",
+        run_id=run_dir.name,
+        session_id=session.session_id,
+        idempotency_key="baseline:failed",
+        job_type="experiment_baseline",
+        attempt_purpose="baseline",
+        command_plan=ExperimentCommandPlan(
+            schema_version=1,
+            command_id="fixture",
+            program="python",
+            args=["run.py"],
+            cwd="experiments/executor_worktrees/fixture",
+            expected_outputs=["metrics.json"],
+            timeout_seconds=30,
+            network=False,
+        ),
+        input_refs=ExperimentInputRefs(
+            repository_fingerprint="repository",
+            environment_sha256="a" * 64,
+            dataset_manifest_sha256="b" * 64,
+            asset_manifest_sha256="c" * 64,
+            command_sha256="d" * 64,
+        ),
+        job_timeout_sec=30,
+        runtime_status="FAILED",
+        failure_code="RUN_COMMAND_FAILED",
+        retry_exhausted=True,
+        created_at=now,
+        updated_at=now,
+    )
+    ExperimentAttemptStore().create_or_get(run_dir, failed)
+    repair_input = BaselineRepairInput(
+        failed_attempt_id=failed.attempt_id,
+        intervention_contract=InterventionContract(
+            idea_id="repair_baseline",
+            mechanism="restore baseline execution",
+            hypothesis="the bounded model-only repair removes the recorded crash",
+            target_modules=["model.py"],
+            allowed_paths=["model.py"],
+            time_budget=30,
+        ),
+        approved_proposal=ExecutorProposal(confidence=0.9),
+        idempotency_key="caller-key",
+    )
+    captured = {}
+
+    def fake_start(self, root, *, session_id, value):
+        captured.update({"root": root, "session_id": session_id, "value": value})
+        return BaselineRepairResult(
+            status="queued",
+            attempt={"attempt_id": "attempt_000002"},
+            pipeline_job={"job_id": "job_000002"},
+        )
+
+    monkeypatch.setattr(
+        "autoad_researcher.reporting.review.BaselineRepairService.start",
+        fake_start,
+    )
+    proposal = create_proposal(
+        run_dir,
+        report_id=report_id,
+        proposal_type="RETRY_FAILED",
+        rationale="仅修复失败 baseline 的 model.py，保持评价合同不变",
+        target_attempt_id=failed.attempt_id,
+        repair_input=repair_input,
+        estimated_budget=ProposalBudgetEstimate(max_wall_seconds=30, max_gpu_seconds=20),
+    )
+    assert proposal.status == "READY_FOR_CONFIRMATION"
+    handed_off = confirm_proposal(run_dir, report_id=report_id, proposal_id=proposal.proposal_id)
+    assert handed_off.handoff == {
+        "kind": "baseline_repair",
+        "attempt_id": "attempt_000002",
+        "pipeline_job_id": "job_000002",
+    }
+    assert captured["session_id"] == proposal.source_session_id
+    assert captured["value"].idempotency_key == f"report-proposal:{proposal.proposal_id}"
 
 
 def test_pivot_creates_an_isolated_pending_task_with_report_lineage(tmp_path: Path):

@@ -302,7 +302,14 @@ class BaselineControlService:
         if session.evaluation_contract_sha256 != authorization.evaluation_contract_sha256:
             raise ValueError("held_out_confirmation_required: authorization contract differs from Session")
         attempts = self._attempt_store.list_for_session(run_dir, session_id=session_id)
-        baseline = next((item for item in attempts if item.job_type == "experiment_baseline"), None)
+        baseline = next(
+            (
+                item
+                for item in reversed(attempts)
+                if item.job_type == "experiment_baseline" and item.runtime_status == "COMPLETED"
+            ),
+            None,
+        )
         if baseline is None:
             raise ValueError("baseline B_test requires a completed B_dev Attempt")
         existing = next((item for item in attempts if item.job_type == "experiment_baseline_b_test"), None)
@@ -327,8 +334,6 @@ class BaselineControlService:
             )
         if session.status != "READY_FOR_BASELINE" or session.baseline_status != "b_dev_completed":
             raise ValueError("baseline B_test requires Session READY_FOR_BASELINE after B_dev")
-        if baseline.runtime_status != "COMPLETED":
-            raise ValueError("baseline B_test requires a completed B_dev Attempt")
         if not session.evaluation_contract_ref or not session.evaluation_contract_sha256:
             raise ValueError("execution_contract_incomplete: Session evaluation contract is missing")
 

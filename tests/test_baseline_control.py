@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineContractInput, BaselineControlService
+from autoad_researcher.assistant.v2.experiment.baseline_repair import BaselineRepairInput, BaselineRepairService
 from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateControlService, CandidateLaunchInput
 from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationInput, CandidateConfirmationService
 from autoad_researcher.assistant.v2.experiment.promotion_control import PromotionControlService, PromotionInput
@@ -165,6 +166,81 @@ def test_baseline_control_freezes_server_owned_attempt_and_projects_ready(tmp_pa
     assert attempt is not None and attempt.runtime_status == "COMPLETED"
     assert projected is not None and projected.status == "READY" and projected.baseline_status == "completed"
     assert json.loads((run_dir / "attempts" / attempt.attempt_id / "outcome_card.json").read_text())["metrics"] == {"score": 0.8}
+
+
+@pytest.mark.parametrize("with_b_test", [False, True])
+def test_failed_baseline_can_be_repaired_in_a_new_attempt_without_rewriting_failure(tmp_path: Path, with_b_test: bool):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    if with_b_test:
+        _declare_b_test_adapter(run_dir, session.session_id)
+    repository = run_dir / "repos" / "source_micro"
+    original = repository / "run.py"
+    original_text = original.read_text(encoding="utf-8")
+    failing_text = original_text.replace(
+        "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))",
+        "raise RuntimeError('intentional baseline failure')",
+    )
+    original.write_text(failing_text, encoding="utf-8")
+    _git(repository, "add", "run.py")
+    _git(repository, "commit", "-m", "fixture failure")
+
+    failed_start = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    failed_id = failed_start.started.attempt.attempt_id
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        failed = ExperimentAttemptStore().load(run_dir, failed_id)
+        if failed is not None and failed.runtime_status == "FAILED":
+            break
+        time.sleep(0.02)
+    failed = ExperimentAttemptStore().load(run_dir, failed_id)
+    projected = ExperimentSessionStore().load(run_dir, session.session_id)
+    assert failed is not None and failed.runtime_status == "FAILED"
+    assert projected is not None and projected.status == "FAILED" and projected.baseline_status == "failed"
+    failure_result = json.loads((run_dir / "attempts" / failed_id / "execution_result.json").read_text(encoding="utf-8"))
+
+    search = "raise RuntimeError('intentional baseline failure')"
+    replace = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))"
+    repair = BaselineRepairService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=BaselineRepairInput(
+            failed_attempt_id=failed_id,
+            intervention_contract=InterventionContract(
+                idea_id="repair_baseline_failure",
+                mechanism="restore the executable baseline path",
+                hypothesis="removing the observed runtime failure restores baseline evaluation",
+                target_modules=["run.py"],
+                allowed_paths=["run.py"],
+                forbidden_paths=["evaluate.py", "metric.py"],
+                time_budget=30,
+            ),
+            approved_proposal=ExecutorProposal(
+                edits=[SearchReplaceEdit(path="run.py", search=search, replace=replace)],
+                changed_symbols=["baseline_entrypoint"],
+                confidence=1,
+            ),
+            idempotency_key="baseline-repair:fixture",
+        ),
+    )
+    assert repair.status == "queued" and repair.attempt is not None
+    repair_id = str(repair.attempt["attempt_id"])
+    assert repair.attempt["attempt_purpose"] == "repair"
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        repaired = ExperimentAttemptStore().load(run_dir, repair_id)
+        if repaired is not None and repaired.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+
+    repaired = ExperimentAttemptStore().load(run_dir, repair_id)
+    projected = ExperimentSessionStore().load(run_dir, session.session_id)
+    failure_after = json.loads((run_dir / "attempts" / failed_id / "execution_result.json").read_text(encoding="utf-8"))
+    assert repaired is not None and repaired.runtime_status == "COMPLETED"
+    expected_state = ("READY_FOR_BASELINE", "b_dev_completed") if with_b_test else ("READY", "completed")
+    assert projected is not None and (projected.status, projected.baseline_status) == expected_state
+    assert failure_after == failure_result
+    assert (run_dir / "attempts" / repair_id / "repair_request.json").is_file()
 
 
 def test_baseline_control_refuses_metric_that_was_not_confirmed(tmp_path: Path):
