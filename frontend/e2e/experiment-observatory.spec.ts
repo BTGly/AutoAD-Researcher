@@ -155,6 +155,29 @@ test('keeps the Baseline form usable without horizontal overflow on mobile', asy
   await expect(launchButton).toBeInViewport();
 });
 
+test('keeps Baseline validation actionable at a 200 percent layout scale', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  await prepare(page, () => baselineProjection);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+
+  const dimensions = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 1);
+  const form = page.getByRole('form', { name: 'Baseline 启动表单' });
+  await form.scrollIntoViewIfNeeded();
+  await expect(form).toBeVisible();
+  await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
+  await expect(page.getByRole('alert')).toHaveText('数据集、split、checkpoint 选择和冻结文件引用均不能为空。');
+  await expect(page.getByLabel('Split 标识')).toBeFocused();
+  await expect(form).toHaveAttribute('aria-describedby', 'baseline-launch-error');
+});
+
 test('releases the Baseline form when the post-start projection refresh fails', async ({ page }) => {
   const baselineProjection = structuredClone(projection);
   baselineProjection.session.status = 'READY_FOR_BASELINE';
