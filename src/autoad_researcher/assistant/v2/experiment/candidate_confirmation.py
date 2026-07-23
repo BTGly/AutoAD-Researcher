@@ -35,6 +35,7 @@ from autoad_researcher.experiment.scientific_assessment import (
     ScientificAssessmentInputsStore,
     ScientificAssessmentService,
     ScientificEvaluationInputs,
+    load_declared_metric_values,
 )
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.experiment.validity import ComparisonIdentity
@@ -466,10 +467,7 @@ class CandidateConfirmationService:
 
     @staticmethod
     def _metrics(run_dir: Path, attempt_id: str) -> dict[str, float]:
-        raw = json.loads((run_dir / "attempts" / attempt_id / "outcome_card.json").read_text(encoding="utf-8")).get("metrics")
-        if not isinstance(raw, dict) or not all(isinstance(value, (int, float)) for value in raw.values()):
-            raise ValueError("execution_contract_incomplete: baseline metrics are unavailable")
-        return {str(key): float(value) for key, value in raw.items()}
+        return load_declared_metric_values(run_dir, attempt_id=attempt_id)
 
     @staticmethod
     def _link_path(run_dir: Path, attempt_id: str) -> Path:

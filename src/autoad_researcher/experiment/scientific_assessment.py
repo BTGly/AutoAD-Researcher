@@ -9,6 +9,7 @@ infers seed, split, checkpoint, or baseline metrics from paths or prose.
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -340,6 +341,24 @@ class ScientificAssessmentService:
             return EvaluationContract.model_validate_json(path.read_text(encoding="utf-8"))
         except Exception:
             return None
+
+
+def load_declared_metric_values(run_dir: Path, *, attempt_id: str) -> dict[str, float]:
+    """Read only the metric names declared by the Attempt's frozen contract."""
+    from autoad_researcher.experiment.finalizer import OutcomeCard
+
+    attempt_dir = run_dir / "attempts" / attempt_id
+    card = OutcomeCard.model_validate_json((attempt_dir / "outcome_card.json").read_text(encoding="utf-8"))
+    contract = ScientificAssessmentService._load_contract(run_dir, card)
+    if contract is None or not isinstance(card.metrics, dict):
+        raise ValueError("execution_contract_incomplete: baseline metrics are unavailable")
+    values: dict[str, float] = {}
+    for metric in contract.metrics:
+        value = card.metrics.get(metric.name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f"execution_contract_incomplete: declared metric {metric.name} is unavailable")
+        values[metric.name] = float(value)
+    return values
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:

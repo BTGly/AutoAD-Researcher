@@ -23,6 +23,7 @@ from autoad_researcher.experiment.idea_tree import IdeaTreeStore
 from autoad_researcher.experiment.scientific_assessment import (
     ScientificEvaluationInputs,
     ScientificExecutorHandoffService,
+    load_declared_metric_values,
 )
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.experiment.validity import ComparisonIdentity
@@ -197,11 +198,7 @@ class CandidateControlService:
 
 
 def _metrics(run_dir: Path, attempt_id: str) -> dict[str, float]:
-    from autoad_researcher.experiment.finalizer import OutcomeCard
-    card = OutcomeCard.model_validate_json((run_dir / "attempts" / attempt_id / "outcome_card.json").read_text(encoding="utf-8"))
-    if not card.metrics or not all(isinstance(value, (int, float)) for value in card.metrics.values()):
-        raise ValueError("execution_contract_incomplete: baseline metrics are unavailable")
-    return {key: float(value) for key, value in card.metrics.items()}
+    return load_declared_metric_values(run_dir, attempt_id=attempt_id)
 
 
 def _semantic_command_identity(adapter: ExecutorAdapter, repository: Path, inputs: ExecutorAdapterInputs) -> str:
