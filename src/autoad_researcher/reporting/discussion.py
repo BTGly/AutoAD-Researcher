@@ -20,6 +20,11 @@ from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.reporting.tools import MAX_TOOL_CALLS, ReportToolCall, execute_tools, load_verified_report_context, native_tool_definitions
 
 REPORT_REQUEST_TIMEOUT_SECONDS = 60
+DISCUSSION_RESPONSE_CONTRACT = (
+    "Return exactly one JSON object with exactly these keys: answer, response_kind, evidence_ids, "
+    "unsupported_claims. response_kind must be exactly one of explain, verify, compare, evidence, "
+    "next_step, or insufficient_evidence. Do not use answer_type or any other key."
+)
 RESPONSE_CAPACITY_ERROR = "报告讨论当前繁忙，请稍后重试。"
 
 
@@ -161,7 +166,7 @@ def _respond_with_slot(
     digest = digest_model.model_dump(mode="json")
     evidence = [{"evidence_id": item.evidence_id, "kind": item.evidence_kind, "summary": item.summary, "attempt_id": item.attempt_id, "idea_id": item.idea_id, "artifact_ref": item.artifact_ref.model_dump(mode="json"), "field_path": item.field_path} for item in index.entries]
     messages = [
-        {"role": "system", "content": "You answer only from frozen report context. Return DiscussionResponse JSON. Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
+        {"role": "system", "content": f"You answer only from frozen report context. {DISCUSSION_RESPONSE_CONTRACT} Use the registered read-only tools when the digest and evidence index are insufficient; after tool results, cite only registered evidence_ids. Never claim file access, execution, or unlisted evidence."},
         {"role": "user", "content": json.dumps({"report_id": report_id, "snapshot_sha256": turn.snapshot_content_sha256, "digest": digest, "evidence": evidence}, ensure_ascii=False)},
         {"role": "assistant", "content": "I will use only this frozen report context and registered Evidence."},
         *_recent_history(load_turns(run_dir, report_id=report_id), current_turn_id=turn.turn_id, context_window=model_route.context_window if model_route is not None else 1_000_000),
@@ -223,7 +228,31 @@ def _respond_with_slot(
             )
             if final.get("error"):
                 raise ValueError(str(final["error"]))
-            response = DiscussionResponse.model_validate_json(str(final.get("reply") or ""))
+            final_reply = str(final.get("reply") or "")
+            try:
+                response = DiscussionResponse.model_validate_json(final_reply)
+            except ValueError as exc:
+                repair = call_research_chat(
+                    api_key,
+                    provider_url,
+                    [
+                        *messages,
+                        assistant_message,
+                        *tool_messages,
+                        {"role": "assistant", "content": final_reply},
+                        {"role": "user", "content": _discussion_repair_prompt(str(exc))},
+                    ],
+                    model=model,
+                    timeout_s=budget.max_wall_time_seconds,
+                    priority="interactive",
+                    response_format_json=True,
+                    temperature=0.1,
+                    thinking_type=model_route.thinking_type if model_route is not None else None,
+                    reasoning_effort=model_route.reasoning_effort if model_route is not None else None,
+                )
+                if repair.get("error"):
+                    raise ValueError(str(repair["error"])) from exc
+                response = DiscussionResponse.model_validate_json(str(repair.get("reply") or ""))
         else:
             try:
                 response = DiscussionResponse.model_validate_json(reply)
@@ -257,9 +286,8 @@ def _respond_with_slot(
 
 def _discussion_repair_prompt(diagnostic: str) -> str:
     return (
-        "The previous response did not match DiscussionResponse JSON. Return only one valid JSON object with the keys "
-        "answer, response_kind, evidence_ids, and unsupported_claims. response_kind must be exactly one of explain, verify, "
-        "compare, evidence, next_step, or insufficient_evidence. Preserve the answer's meaning, cite only registered "
+        "The previous response did not match DiscussionResponse JSON. "
+        f"{DISCUSSION_RESPONSE_CONTRACT} Preserve the answer's meaning, cite only registered "
         "Evidence IDs, and use response_kind=insufficient_evidence when no supported factual answer is available. "
         f"Validation diagnostic: {diagnostic}"
     )

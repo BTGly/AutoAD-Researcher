@@ -154,6 +154,35 @@ def test_discussion_responder_uses_native_tool_call_pairing(monkeypatch, tmp_pat
     assert len(calls) == 2
 
 
+def test_discussion_repairs_native_tool_follow_up_schema(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_native_repair", content="请读取报告摘要")
+    calls = []
+
+    def fake_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return {
+                "reply": "",
+                "reasoning": "读取冻结摘要。",
+                "tool_calls": [{
+                    "id": "call_digest",
+                    "type": "function",
+                    "function": {"name": "get_report_digest", "arguments": "{}"},
+                }],
+                "error": "",
+            }
+        if len(calls) == 2:
+            return {"reply": '{"answer":"摘要已读取。","answer_type":"evidence","evidence_ids":[],"unsupported_claims":[]}', "error": ""}
+        assert "response_kind" in args[2][-1]["content"]
+        return {"reply": '{"answer":"摘要已读取。","response_kind":"evidence","evidence_ids":[],"unsupported_claims":[]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
+    assert completed.status == "completed"
+    assert len(calls) == 3
+
+
 def test_discussion_native_tool_loop_uses_real_broker_facade(monkeypatch, tmp_path: Path):
     run_dir, report_id = _ready_report(tmp_path)
     turn = start_turn(run_dir, report_id=report_id, request_id="turn_broker_tool", content="请读取报告摘要")
@@ -375,7 +404,7 @@ def test_discussion_rejects_invalid_second_native_tool_response(monkeypatch, tmp
     monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
     completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
     assert completed.status == "failed"
-    assert calls == 2
+    assert calls == 3
     assert "DiscussionResponse" in (completed.error or "")
 
 
