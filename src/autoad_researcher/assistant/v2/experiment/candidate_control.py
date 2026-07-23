@@ -136,6 +136,7 @@ class CandidateControlService:
             adapter_inputs=adapter_inputs,
             intervention_contract=value.intervention_contract,
             job_timeout_sec=contract.resource_budget.max_wall_seconds,
+            additional_protected_paths=[metric.implementation_ref for metric in contract.metrics],
             required_device_count=contract.required_device_count,
             required_vram_mb=contract.required_vram_mb,
             evaluation_contract_ref=session.evaluation_contract_ref,

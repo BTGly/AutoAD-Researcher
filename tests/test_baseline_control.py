@@ -437,6 +437,47 @@ def test_candidate_control_derives_execution_from_completed_baseline(tmp_path: P
     assert replay.status == "reused" and replay.attempt is not None and replay.attempt["attempt_id"] == started.attempt["attempt_id"]
 
 
+def test_candidate_control_rejects_metric_implementation_edits_before_attempt_creation(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    baseline = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        attempt = ExperimentAttemptStore().load(run_dir, baseline.started.attempt.attempt_id)
+        if attempt is not None and attempt.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+    tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
+    IdeaTreeStore().add_node(
+        run_dir, session_id=session.session_id, expected_revision=tree.revision, idempotency_key="idea-protected-metric",
+        parent_id="idea_000000", mechanism="metric change", hypothesis="change the metric implementation", observable="score",
+        grounding=[], expected_cost="low",
+    )
+    before = "def score(value):\n    return value\n"
+    result = CandidateControlService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=CandidateLaunchInput(
+            idempotency_key="candidate:protected-metric",
+            comparison_seed=1,
+            intervention_contract=InterventionContract(
+                idea_id="idea_000001", mechanism="metric change", hypothesis="change the metric implementation", target_modules=["metric.py"],
+                allowed_paths=["metric.py"], forbidden_paths=["evaluate.py"], allowed_parameters=["score"], time_budget=30,
+            ),
+            approved_proposal=ExecutorProposal(
+                edits=[SearchReplaceEdit(path="metric.py", search=before, replace="def score(value):\n    return value + 0.1\n")],
+                changed_symbols=["score"], confidence=1,
+            ),
+        ),
+    )
+    assert result.status == "blocked"
+    assert result.attempt is None
+    assert result.pipeline_job is None
+    assert result.blocker is not None and "REPAIR_REJECTED_HARD" in result.blocker
+    attempts = ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)
+    assert [item.job_type for item in attempts] == ["experiment_baseline"]
+
+
 def test_candidate_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)

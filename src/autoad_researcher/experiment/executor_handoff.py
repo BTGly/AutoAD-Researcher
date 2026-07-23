@@ -24,6 +24,7 @@ class ExecutorHandoffRequest(BaseModel):
     adapter_inputs: ExecutorAdapterInputs
     intervention_contract: InterventionContract
     job_timeout_sec: int = Field(gt=0)
+    additional_protected_paths: list[str] = Field(default_factory=list)
     required_device_count: int = Field(default=0, ge=0)
     required_vram_mb: int = Field(default=0, ge=0)
     evaluation_contract_ref: str
@@ -49,7 +50,8 @@ class ExecutorAttemptHandoffService:
         key = sha256(request.idempotency_key.encode()).hexdigest()[:16]
         workspace_ref = f"executor_worktrees/{key}"
         manager = WorktreeManager(run_dir / "executor_worktrees")
-        workspace = manager.create(repository_path=request.repository_path, attempt_id=key, base_commit=request.base_commit, protected_paths=adapter_result.evidence.protected_paths, environment_snapshot_ref=request.environment_snapshot_ref)
+        protected_paths = list(dict.fromkeys([*adapter_result.evidence.protected_paths, *request.additional_protected_paths]))
+        workspace = manager.create(repository_path=request.repository_path, attempt_id=key, base_commit=request.base_commit, protected_paths=protected_paths, environment_snapshot_ref=request.environment_snapshot_ref)
         staging = run_dir / "executor_staging" / key
         summary_path = staging / "executor_summary.json"
         admission_path = staging / "intervention_admission.json"
