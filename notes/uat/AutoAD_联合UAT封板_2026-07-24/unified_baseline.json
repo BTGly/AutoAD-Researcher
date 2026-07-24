@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "integration_branch": "integration/unified-closeout-ml-dl-uat-2026-07-24",
+  "integration_branch": "integration/final-candidate-advanced-uat-2026-07-24",
   "source_baseline_branch": "feat/production-candidate-entry",
   "source_baseline_commit": "4449f7f40fd195b61ef57b3bc5854187401a1122",
   "uat_packages": [

@@ -77,8 +77,12 @@ def scientific_effect(
         direction = next(metric.direction for metric in contract.metrics if metric.name == metric_name)
         raw = float(candidate) - float(baseline)
         return raw if direction == "maximize" else -raw
-    primary = delta(contract.primary_metric)
-    guardrails = {name: value for name in contract.guardrails if (value := delta(name)) is not None}
+    deltas = {metric.name: delta(metric.name) for metric in contract.metrics}
+    if any(value is None for value in deltas.values()):
+        return "INCONCLUSIVE", None, {}
+    primary = deltas[contract.primary_metric]
+    assert primary is not None
+    guardrails = {name: deltas[name] for name in contract.guardrails}
     if primary is None:
         return "INCONCLUSIVE", None, guardrails
     if primary > 0:

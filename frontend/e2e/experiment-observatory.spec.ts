@@ -175,6 +175,95 @@ test('generates a reviewed Candidate Proposal before creating a Candidate Attemp
   await expect(page.getByRole('button', { name: /attempt_candidate_000001/ })).toBeVisible();
 });
 
+test('moves focus to the first invalid Baseline field while retaining the error', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  await prepare(page, () => baselineProjection);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
+  await expect(page.getByRole('alert')).toHaveText('数据集、split、checkpoint 选择和冻结文件引用均不能为空。');
+  await expect(page.getByLabel('Split 标识')).toBeFocused();
+  await expect(page.getByRole('form', { name: 'Baseline 启动表单' })).toHaveAttribute('aria-describedby', 'baseline-launch-error');
+});
+
+test('keeps the Baseline form usable without horizontal overflow on mobile', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  await prepare(page, () => baselineProjection);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  const dimensions = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 1);
+  const launchButton = page.getByRole('button', { name: '冻结契约并启动 Baseline' });
+  await launchButton.scrollIntoViewIfNeeded();
+  await expect(launchButton).toBeInViewport();
+});
+
+test('keeps Baseline validation actionable at a 200 percent layout scale', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  await prepare(page, () => baselineProjection);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
+
+  const dimensions = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 1);
+  const form = page.getByRole('form', { name: 'Baseline 启动表单' });
+  await form.scrollIntoViewIfNeeded();
+  await expect(form).toBeVisible();
+  await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
+  await expect(page.getByRole('alert')).toHaveText('数据集、split、checkpoint 选择和冻结文件引用均不能为空。');
+  await expect(page.getByLabel('Split 标识')).toBeFocused();
+  await expect(form).toHaveAttribute('aria-describedby', 'baseline-launch-error');
+});
+
+test('releases the Baseline form when the post-start projection refresh fails', async ({ page }) => {
+  const baselineProjection = structuredClone(projection);
+  baselineProjection.session.status = 'READY_FOR_BASELINE';
+  baselineProjection.session.baseline_status = 'not_started';
+  baselineProjection.summary.status = 'READY_FOR_BASELINE';
+  baselineProjection.summary.baseline_status = 'not_started';
+  baselineProjection.actions.baseline_launch_available = true;
+  let baselineStarted = false;
+  await prepare(page, () => {
+    if (baselineStarted) throw new Error('fixture refresh failure');
+    return baselineProjection;
+  });
+  await page.route(`**/api/runs/${run.run_id}/sessions/${baselineProjection.session.session_id}/baseline`, async route => {
+    baselineStarted = true;
+    await route.fulfill({ json: { started: {}, evaluation_contract_ref: 'contract.json', execution_inputs_ref: 'inputs.json' } });
+  });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByLabel('Split 标识').fill('fixture-split');
+  await page.getByLabel('B_dev 文件引用').fill('inputs/dev.json');
+  await page.getByLabel('B_test 文件引用').fill('inputs/test.json');
+  await page.getByLabel('Checkpoint 选择').fill('best');
+  await page.getByLabel('Seeds').fill('1');
+  await page.getByLabel('最大墙钟秒数').fill('30');
+  await page.getByLabel('最大 GPU 秒数').fill('0');
+  await page.getByLabel('指标方向 image AUROC').selectOption('maximize');
+  await page.getByLabel('指标角色 image AUROC').selectOption('primary');
+  await page.getByLabel('指标实现引用 image AUROC').fill('metric.py');
+  await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
+  await expect(page.getByText('Baseline 已启动，但工作台刷新失败。当前契约已保留，请刷新后继续。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '冻结契约并启动 Baseline' })).toBeEnabled();
+  await expect(page.getByLabel('Split 标识')).toHaveValue('fixture-split');
+});
+
 test('keeps an additional confirmed metric as a recorded observation by default', async ({ page }) => {
   const baselineProjection = structuredClone(projection);
   baselineProjection.session.status = 'READY_FOR_BASELINE';
@@ -270,6 +359,8 @@ test('shows the durable scientific assessment reference in an Attempt detail', a
   await prepare(page, () => assessedProjection);
   await page.getByRole('button', { name: '实验工作台' }).click();
   await page.getByRole('button', { name: /attempt_000001/ }).click();
+  await expect(page.getByText('候选探索', { exact: true })).toBeVisible();
+  await expect(page.getByText('experiment_attempt', { exact: true })).toHaveCount(0);
   await expect(page.getByText('attempts/attempt_000001/scientific_assessment.json', { exact: true })).toBeVisible();
 });
 

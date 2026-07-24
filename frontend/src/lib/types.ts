@@ -178,7 +178,7 @@ export interface ReportEvidence {
   attempt_id: string | null;
   idea_id: string | null;
   summary: string;
-  artifact_ref: { locator: string; sha256: string; artifact_type: string };
+  artifact_ref: { locator: string; sha256: string; artifact_type: string; source_id?: string | null; size_bytes?: number | null };
 }
 
 export interface DiscussionMessage {
