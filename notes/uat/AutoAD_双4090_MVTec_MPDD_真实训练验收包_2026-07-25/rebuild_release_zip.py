@@ -12,21 +12,35 @@ import zipfile
 EXPECTED_SHA256 = "95a3b970b5f29d52026aba178e3cca9ae667159e8e520a650db22349cb239077"
 ZIP_NAME = "AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip"
 EXPECTED_BASE64_BYTES = 46_200
-EXPECTED_ZIP_BYTES = 34_650
+EXPECTED_ZIP_BYTES = 34_648
+EXPECTED_PARTS = [
+    "part00",
+    "part01",
+    "part02",
+    "part030",
+    "part031",
+    "part032",
+    "part033",
+    "part034",
+    "part035",
+    "part04",
+    "part05",
+    "part06",
+    "part07",
+]
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent
     parts_dir = root / "release_b64"
-    parts = sorted(parts_dir.glob("part[0-9][0-9]"))
-    expected_names = [f"part{i:02d}" for i in range(8)]
+    parts = sorted(path for path in parts_dir.iterdir() if path.is_file())
     actual_names = [part.name for part in parts]
-    if actual_names != expected_names:
+    if actual_names != EXPECTED_PARTS:
         raise RuntimeError(
-            f"release parts mismatch: expected {expected_names}, got {actual_names}"
+            f"release parts mismatch: expected {EXPECTED_PARTS}, got {actual_names}"
         )
 
-    encoded = b"".join(part.read_bytes().strip() for part in parts)
+    encoded = b"".join(part.read_bytes() for part in parts)
     if len(encoded) != EXPECTED_BASE64_BYTES:
         raise RuntimeError(
             f"Base64 payload length mismatch: {len(encoded)} != {EXPECTED_BASE64_BYTES}"
