@@ -178,7 +178,7 @@ export interface ReportEvidence {
   attempt_id: string | null;
   idea_id: string | null;
   summary: string;
-  artifact_ref: { locator: string; sha256: string; artifact_type: string };
+  artifact_ref: { locator: string; sha256: string; artifact_type: string; source_id?: string | null; size_bytes?: number | null };
 }
 
 export interface DiscussionMessage {
@@ -231,6 +231,8 @@ export interface TaskRun {
 
 export interface WSMessage {
   type: string;
+  event_id?: number;
+  created_at?: string;
   messageId?: string;
   message_id?: string;
   message?: string;

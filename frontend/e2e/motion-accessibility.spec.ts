@@ -144,3 +144,13 @@ test('keeps repeated Toast feedback interruptible and restores Modal focus', asy
   await expect(page.getByRole('dialog', { name: '配置 API Key' })).toBeHidden();
   await expect(config).toBeFocused();
 });
+
+test('keeps the enabled send button in the keyboard tab order', async ({ page }) => {
+  await prepare(page);
+  const input = page.getByPlaceholder('输入问题，或粘贴 URL…');
+  const send = page.getByRole('button', { name: '发送' });
+  await input.fill('检查本地资料');
+  await input.focus();
+  await page.keyboard.press('Tab');
+  await expect(send).toBeFocused();
+});

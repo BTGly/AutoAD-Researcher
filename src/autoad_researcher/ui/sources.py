@@ -45,6 +45,7 @@ SourceKind = Literal[
     "user_text",
     "local_repo",
     "dataset",
+    "local_path",
     "archive_bundle",
     "document",
 ]
@@ -67,9 +68,10 @@ ParseAttemptStatus = Literal[
 
 SOURCES_DIR = "sources"
 REGISTRY_FILE = "source_references.json"
-DEFAULT_LOCAL_SOURCE_ROOT = Path("/root/autodl-tmp/AI4S")
 LOCAL_SOURCE_ROOTS_ENV = "AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS"
 LEGACY_PARSE_ATTEMPT_ID = "legacy_active"
+LOCAL_PATH_MAX_ENTRIES = 200
+LOCAL_PATH_MAX_DEPTH = 2
 
 
 def _resolve_sources_dir(run_dir: Path) -> Path:
@@ -694,10 +696,9 @@ def _source_kind_for_name(name: str) -> SourceKind:
 def get_allowed_local_source_roots() -> list[Path]:
     """Return resolved roots allowed for server-local source intake."""
     raw = os.environ.get(LOCAL_SOURCE_ROOTS_ENV)
-    if raw:
-        roots = [Path(part).expanduser().resolve() for part in raw.split(":") if part.strip()]
-        return roots or [DEFAULT_LOCAL_SOURCE_ROOT.resolve()]
-    return [DEFAULT_LOCAL_SOURCE_ROOT.resolve()]
+    if not raw:
+        return []
+    return [Path(part).expanduser().resolve() for part in raw.split(os.pathsep) if part.strip()]
 
 
 def _is_under_allowed_local_source_root(path: Path, allowed_roots: list[Path]) -> bool:
@@ -708,6 +709,152 @@ def _is_under_allowed_local_source_root(path: Path, allowed_roots: list[Path]) -
             continue
         return True
     return False
+
+
+def is_allowed_local_source_path(source_path: str | Path) -> bool:
+    """Return whether a server-local path is inside an explicitly configured root."""
+    roots = get_allowed_local_source_roots()
+    if not roots:
+        return False
+    try:
+        path = Path(source_path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+    return _is_under_allowed_local_source_root(path, roots)
+
+
+def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
+    """Collect a bounded structural description of an allowed local path.
+
+    The result is evidence for a later execution decision, not an asserted
+    semantic label. It never reads file contents and never follows symlinks.
+    """
+    path = Path(source_path).expanduser().resolve()
+    if not is_allowed_local_source_path(path):
+        raise ValueError("该路径不在允许的资料目录内")
+    if not path.exists():
+        raise ValueError("该路径不存在")
+    if path.is_file():
+        try:
+            content_kind = _source_kind_for_name(path.name)
+        except ValueError:
+            content_kind = None
+        profile = _profile_for_name(path.name)
+        detected_kind = profile or "unknown"
+        return {
+            "path_kind": "file",
+            "detected_kind": detected_kind,
+            "profiles": [profile] if profile else [],
+            "content_kind": content_kind,
+            "evidence": [f"extension:{path.suffix.lower()}" if path.suffix else "file_without_extension"],
+            "confidence": 0.85 if profile else 0.2,
+            "entry_count": 1,
+            "sample_entries": [{"path": path.name, "kind": "file", "size_bytes": path.stat().st_size}],
+            "truncated": False,
+        }
+    if not path.is_dir():
+        raise ValueError("该路径不是可检查的文件或目录")
+
+    profiles: set[str] = set()
+    evidence: list[str] = []
+    samples: list[dict[str, Any]] = []
+    entry_count = 0
+    truncated = False
+    code_files = 0
+    data_files = 0
+    document_files = 0
+    archive_files = 0
+
+    def visit(directory: Path, depth: int) -> None:
+        nonlocal entry_count, truncated, code_files, data_files, document_files, archive_files
+        try:
+            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError:
+            evidence.append(f"unreadable:{directory.relative_to(path).as_posix() or '.'}")
+            return
+        for entry in entries:
+            if entry.name in {".git", ".hg", ".svn"} and entry.is_dir(follow_symlinks=False):
+                if entry.name == ".git":
+                    profiles.add("repository")
+                    evidence.append("marker:.git")
+                continue
+            entry_count += 1
+            relative = Path(entry.name) if directory == path else Path(directory.relative_to(path)) / entry.name
+            if len(samples) < LOCAL_PATH_MAX_ENTRIES:
+                kind = "directory" if entry.is_dir(follow_symlinks=False) else "file" if entry.is_file(follow_symlinks=False) else "other"
+                size = entry.stat(follow_symlinks=False).st_size if kind == "file" else None
+                samples.append({"path": relative.as_posix(), "kind": kind, "size_bytes": size})
+            else:
+                truncated = True
+            if entry.is_symlink():
+                evidence.append(f"symlink_skipped:{relative.as_posix()}")
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                if depth < LOCAL_PATH_MAX_DEPTH:
+                    visit(Path(entry.path), depth + 1)
+                continue
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            profile = _profile_for_name(entry.name)
+            if profile == "repository":
+                code_files += 1
+            elif profile == "dataset":
+                data_files += 1
+            elif profile == "document":
+                document_files += 1
+            elif profile == "archive":
+                archive_files += 1
+
+    visit(path, 0)
+    if code_files:
+        profiles.add("repository")
+        evidence.append(f"code_files:{code_files}")
+    if data_files:
+        profiles.add("dataset")
+        evidence.append(f"data_files:{data_files}")
+    if document_files:
+        profiles.add("document")
+        evidence.append(f"document_files:{document_files}")
+    if archive_files:
+        profiles.add("archive")
+        evidence.append(f"archive_files:{archive_files}")
+
+    ordered_profiles = [profile for profile in ("repository", "dataset", "document", "archive") if profile in profiles]
+    if not ordered_profiles:
+        detected_kind = "unknown"
+        confidence = 0.2
+    elif len(ordered_profiles) == 1:
+        detected_kind = ordered_profiles[0]
+        confidence = 0.95 if "marker:.git" in evidence else 0.75
+    elif "repository" in ordered_profiles:
+        detected_kind = "mixed"
+        confidence = 0.65
+    else:
+        detected_kind = "collection"
+        confidence = 0.6
+    return {
+        "path_kind": "directory",
+        "detected_kind": detected_kind,
+        "profiles": ordered_profiles,
+        "evidence": evidence[:32],
+        "confidence": confidence,
+        "entry_count": entry_count,
+        "sample_entries": samples,
+        "truncated": truncated,
+    }
+
+
+def _profile_for_name(name: str) -> str | None:
+    ext = Path(name).suffix.lower()
+    if ext in {".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".cpp", ".c", ".h", ".yaml", ".yml", ".toml"}:
+        return "repository"
+    if ext in {".csv", ".tsv", ".parquet", ".feather", ".npy", ".npz", ".pkl", ".pickle", ".jsonl"}:
+        return "dataset"
+    if ext in {".pdf", ".md", ".markdown", ".txt", ".doc", ".docx", ".html", ".htm"}:
+        return "document"
+    if ext in {".zip", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz", ".txz"}:
+        return "archive"
+    return None
 
 
 def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
@@ -753,7 +900,7 @@ def register_local_file_source(run_dir: Path, source_path: str | Path) -> dict[s
     it does not parse, download, clone, or execute anything.
     """
     src = Path(source_path).expanduser().resolve()
-    if not _is_under_allowed_local_source_root(src, get_allowed_local_source_roots()):
+    if not is_allowed_local_source_path(src):
         raise ValueError("该路径不在允许的资料目录内")
     if not src.is_file():
         raise ValueError("该路径不是可注册的资料文件")
@@ -777,11 +924,16 @@ def register_local_file_source(run_dir: Path, source_path: str | Path) -> dict[s
         stored_path=stored_path,
         status="uploaded_not_parsed",
         source_id=source_id,
+        original_reference=str(src),
+        metadata={"location_kind": "server_local_file"},
     )
     return {
         "source_id": source_id,
         "stored_path": stored_path,
         "kind": kind,
+        "status": "uploaded_not_parsed",
+        "original_reference": str(src),
+        "receipt_status": "created",
     }
 
 
@@ -793,7 +945,7 @@ def register_local_dataset_source(
 ) -> dict[str, Any]:
     """Register an allowed server-local dataset directory without copying it."""
     src = Path(source_path).expanduser().resolve()
-    if not _is_under_allowed_local_source_root(src, get_allowed_local_source_roots()):
+    if not is_allowed_local_source_path(src):
         raise ValueError("该路径不在允许的数据集目录内")
     if not src.is_dir():
         raise ValueError("该路径不是可注册的数据集目录")
@@ -811,7 +963,10 @@ def register_local_dataset_source(
             return {
                 "source_id": source["source_id"],
                 "kind": "dataset",
+                "user_label": source.get("user_label", label),
                 "status": source["status"],
+                "original_reference": reference,
+                "receipt_status": "already_registered",
             }
 
     source_id = _generate_source_id()
@@ -828,8 +983,167 @@ def register_local_dataset_source(
     return {
         "source_id": source_id,
         "kind": "dataset",
+        "user_label": label,
         "status": "user_provided_not_ingested",
+        "original_reference": reference,
+        "receipt_status": "created",
     }
+
+
+def register_local_repo_source(
+    run_dir: Path,
+    source_path: str | Path,
+    *,
+    user_label: str,
+) -> dict[str, Any]:
+    """Register an allowed server-local repository directory by reference."""
+    src = Path(source_path).expanduser().resolve()
+    if not is_allowed_local_source_path(src):
+        raise ValueError("该路径不在允许的本地仓库目录内")
+    if not src.is_dir():
+        raise ValueError("该路径不是可注册的本地仓库目录")
+    label = user_label.strip() or src.name
+    reference = str(src)
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("kind") != "local_repo" or source.get("original_reference") != reference:
+            continue
+        return {
+            "source_id": source["source_id"],
+            "kind": "local_repo",
+            "user_label": source.get("user_label", label),
+            "status": source.get("status", "user_provided_not_ingested"),
+            "original_reference": reference,
+            "receipt_status": "already_registered",
+        }
+
+    source_id = _generate_source_id()
+    append_source_ref(
+        run_dir,
+        kind="local_repo",
+        user_label=label,
+        stored_path=None,
+        status="user_provided_not_ingested",
+        source_id=source_id,
+        metadata={"location_kind": "server_local_directory"},
+        original_reference=reference,
+    )
+    return {
+        "source_id": source_id,
+        "kind": "local_repo",
+        "user_label": label,
+        "status": "user_provided_not_ingested",
+        "original_reference": reference,
+        "receipt_status": "created",
+    }
+
+
+def register_local_path_source(
+    run_dir: Path,
+    source_path: str | Path,
+    *,
+    user_label: str = "",
+    user_claimed_kind: str | None = None,
+    purpose: str | None = None,
+) -> dict[str, Any]:
+    """Inspect and register one local path without requiring a guessed type.
+
+    Pure repositories and supported files retain the existing execution kinds.
+    Mixed directories, collections, and unknown material remain ``local_path``
+    sources with a bounded manifest so later dialogue can choose a focus.
+    """
+    path = Path(source_path).expanduser().resolve()
+    inspection = inspect_local_path(path)
+    reference = str(path)
+    registry = load_source_registry(run_dir)
+    for source in registry["sources"]:
+        if source.get("original_reference") != reference:
+            continue
+        existing_inspection = (source.get("metadata") or {}).get("local_path_inspection", inspection)
+        return {
+            "source_id": source["source_id"],
+            "kind": source.get("kind", "local_path"),
+            "user_label": source.get("user_label", user_label or path.name),
+            "status": source.get("status", "user_provided_not_ingested"),
+            "stored_path": source.get("stored_path"),
+            "original_reference": reference,
+            "inspection": existing_inspection,
+            "receipt_status": "already_registered",
+        }
+
+    label = user_label.strip() or path.name
+    if inspection["path_kind"] == "file":
+        try:
+            source = register_local_file_source(run_dir, path)
+        except ValueError:
+            source_id = _generate_source_id()
+            append_source_ref(
+                run_dir,
+                kind="local_path",
+                user_label=label,
+                stored_path=None,
+                status="user_provided_not_ingested",
+                source_id=source_id,
+                metadata={"location_kind": "server_local_file"},
+                original_reference=reference,
+            )
+            source = {"source_id": source_id, "kind": "local_path", "status": "user_provided_not_ingested"}
+    elif inspection["detected_kind"] == "repository":
+        source = register_local_repo_source(run_dir, path, user_label=label)
+    elif inspection["detected_kind"] == "dataset":
+        source = register_local_dataset_source(run_dir, path, user_label=label)
+    else:
+        source_id = _generate_source_id()
+        append_source_ref(
+            run_dir,
+            kind="local_path",
+            user_label=label,
+            stored_path=None,
+            status="user_provided_not_ingested",
+            source_id=source_id,
+            metadata={"location_kind": "server_local_directory"},
+            original_reference=reference,
+        )
+        source = {"source_id": source_id, "kind": "local_path", "status": "user_provided_not_ingested"}
+
+    manifest_path = _write_local_path_manifest(run_dir, str(source["source_id"]), reference, inspection)
+    metadata_updates: dict[str, Any] = {
+        "local_path_inspection": inspection,
+        "manifest_path": manifest_path,
+    }
+    if user_claimed_kind:
+        metadata_updates["user_claimed_kind"] = user_claimed_kind
+    if purpose:
+        metadata_updates["purpose"] = purpose
+    set_source_metadata(
+        run_dir,
+        str(source["source_id"]),
+        metadata_updates,
+    )
+    source.update({
+        "user_label": source.get("user_label", label),
+        "original_reference": reference,
+        "inspection": inspection,
+        "manifest_path": manifest_path,
+        "receipt_status": source.get("receipt_status", "created"),
+    })
+    return source
+
+
+def _write_local_path_manifest(
+    run_dir: Path,
+    source_id: str,
+    source_path: str,
+    inspection: dict[str, Any],
+) -> str:
+    directory = _resolve_sources_dir(run_dir) / source_id
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest = directory / "local_path_manifest.json"
+    payload = {"schema_version": 1, "source_path": source_path, "inspection": inspection}
+    temporary = manifest.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(manifest)
+    return manifest.relative_to(run_dir).as_posix()
 
 
 # ── path safety ──

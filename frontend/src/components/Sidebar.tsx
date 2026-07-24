@@ -1,3 +1,4 @@
+import { RefreshCw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import type { SourceItem, JobItem, EvidenceItem, UnusableParsedSource, TabId, BasedStatement, IntentSummary } from '../lib/types';
 
@@ -10,6 +11,7 @@ interface Props {
   summaryAvailable: boolean;
   intentSummary?: IntentSummary | null;
   onDeleteSource?: (sourceId: string) => void;
+  onRetrySource?: (sourceId: string) => void;
   children?: React.ReactNode;
 }
 
@@ -18,7 +20,7 @@ interface DisplayMeta {
   tone: 'good' | 'warn' | 'bad' | 'info' | 'muted';
 }
 
-export function Sidebar({ sources, jobs, evidence, unusableParsedSources, evidenceCount, summaryAvailable, intentSummary, onDeleteSource, children }: Props) {
+export function Sidebar({ sources, jobs, evidence, unusableParsedSources, evidenceCount, summaryAvailable, intentSummary, onDeleteSource, onRetrySource, children }: Props) {
   const [tab, setTab] = useState<TabId>('sources');
 
   const tabs: { id: TabId; label: string; count: number }[] = [
@@ -44,7 +46,7 @@ export function Sidebar({ sources, jobs, evidence, unusableParsedSources, eviden
       </div>
       <div className="sidebar-content">
         <div className="sidebar-primary-content">
-          {tab === 'sources' && <SourcesList sources={sources} onDeleteSource={onDeleteSource} />}
+          {tab === 'sources' && <SourcesList sources={sources} onDeleteSource={onDeleteSource} onRetrySource={onRetrySource} />}
           {tab === 'jobs' && <JobsList jobs={jobs} />}
           {tab === 'evidence' && <EvidenceList evidence={evidence} unusableParsedSources={unusableParsedSources} />}
           {tab === 'summary' && <IntentSummaryPanel summary={intentSummary || null} />}
@@ -55,7 +57,7 @@ export function Sidebar({ sources, jobs, evidence, unusableParsedSources, eviden
   );
 }
 
-function SourcesList({ sources, onDeleteSource }: { sources: SourceItem[]; onDeleteSource?: (sourceId: string) => void }) {
+function SourcesList({ sources, onDeleteSource, onRetrySource }: { sources: SourceItem[]; onDeleteSource?: (sourceId: string) => void; onRetrySource?: (sourceId: string) => void }) {
   if (!sources.length) return <EmptyState title="暂无资料" detail="上传论文、粘贴链接或登记仓库后会出现在这里。" />;
   return (
     <div className="sidebar-stack">
@@ -67,15 +69,28 @@ function SourcesList({ sources, onDeleteSource }: { sources: SourceItem[]; onDel
           <div key={source.sourceId} className="sidebar-card">
             <div className="sidebar-card-head">
               <div className="sidebar-title">{source.label}</div>
-              {onDeleteSource && (
-                <button
-                  onClick={() => onDeleteSource(source.sourceId)}
-                  title="删除资料"
-                  className="sidebar-icon-button danger"
-                >
-                  ×
-                </button>
-              )}
+              <div className="sidebar-card-actions">
+                {source.status === 'failed' && onRetrySource && (
+                  <button
+                    onClick={() => onRetrySource(source.sourceId)}
+                    title="重试资料处理"
+                    aria-label="重试资料处理"
+                    className="sidebar-icon-button"
+                  >
+                    <RefreshCw size={14} aria-hidden="true" />
+                  </button>
+                )}
+                {onDeleteSource && (
+                  <button
+                    onClick={() => onDeleteSource(source.sourceId)}
+                    title="删除资料"
+                    aria-label="删除资料"
+                    className="sidebar-icon-button danger"
+                  >
+                    <Trash2 size={14} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
             </div>
             <div className="sidebar-badges">
               <Badge meta={kind} />
@@ -268,6 +283,8 @@ function sourceKindMeta(kind: string): DisplayMeta {
     paper_pdf: '论文 PDF',
     github_repo: '代码仓库',
     local_repo: '本地仓库包',
+    local_path: '本地资料路径',
+    dataset: '数据资料',
     archive_bundle: '资料包',
     document: '文档',
     markdown: 'Markdown',

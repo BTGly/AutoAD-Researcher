@@ -80,6 +80,33 @@ export async function sendChat(
   return res.json();
 }
 
+export async function recordConfigAudit(config: {
+  apiKey: string;
+  baseUrl: string;
+  dialogueModel: string;
+  reportModel: string;
+  experimentModel: string;
+}): Promise<void> {
+  let providerOrigin = '';
+  try {
+    providerOrigin = new URL(config.baseUrl).origin;
+  } catch {
+    providerOrigin = '';
+  }
+  await fetch('/api/config/audit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      dialogue_model: config.dialogueModel,
+      report_model: config.reportModel,
+      experiment_model: config.experimentModel,
+      provider_origin: providerOrigin,
+      has_api_key: Boolean(config.apiKey),
+      schema_version: 1,
+    }),
+  });
+}
+
 export async function confirmExperimentTask(
   runId: string,
   taskId: string,
@@ -188,6 +215,15 @@ export async function uploadSource(runId: string, file: File): Promise<any> {
 export async function deleteSource(runId: string, sourceId: string): Promise<any> {
   const res = await fetch(`/api/runs/${runId}/sources/${sourceId}`, { method: 'DELETE' });
   if (!res.ok) throw await apiError(res, `Delete source error: ${res.status}`);
+  return res.json();
+}
+
+export async function retrySource(runId: string, sourceId: string): Promise<any> {
+  const res = await fetch(`/api/runs/${runId}/sources/${sourceId}/retry`, {
+    method: 'POST',
+    headers: getHeaders(),
+  });
+  if (!res.ok) throw await apiError(res, `Retry source error: ${res.status}`);
   return res.json();
 }
 

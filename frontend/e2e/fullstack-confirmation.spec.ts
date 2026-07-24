@@ -52,18 +52,18 @@ test('persists report review and human handoff without creating experiment jobs'
   await openReportRun(page);
   await expect(page.getByTitle('下载 report_bundle.zip')).toBeVisible();
   await page.getByRole('button', { name: '接受' }).click();
-  await expect(page.getByText('审阅：accepted', { exact: true })).toBeVisible();
+  await expect(page.getByText('审阅：已接受', { exact: true })).toBeVisible();
 
   await openReportRun(page);
-  await expect(page.getByText('审阅：accepted', { exact: true })).toBeVisible();
+  await expect(page.getByText('审阅：已接受', { exact: true })).toBeVisible();
   await page.getByLabel('人工跟进 Proposal').fill('请人工复核下一步');
   await page.getByRole('button', { name: '创建人工 Proposal' }).click();
   await page.getByRole('button', { name: '确认转交' }).click();
-  await expect(page.getByText('REQUEST_HUMAN · HANDED_OFF', { exact: true })).toBeVisible();
+  await expect(page.getByText('请求人工判断 · 已转交人工', { exact: true })).toBeVisible();
 
   await openReportRun(page);
-  await expect(page.getByText('REQUEST_HUMAN · HANDED_OFF', { exact: true })).toBeVisible();
-  await expect(page.getByText('已转交：human_queue', { exact: true })).toBeVisible();
+  await expect(page.getByText('请求人工判断 · 已转交人工', { exact: true })).toBeVisible();
+  await expect(page.getByText('已转交：人工队列', { exact: true })).toBeVisible();
   expect(await readFile(jobsPath, 'utf8')).toBe(jobsBefore);
 });
 
@@ -75,5 +75,5 @@ async function openReportRun(page: Page) {
   await expect(page.getByText('当前任务：真实报告全栈验收', { exact: true })).toBeVisible();
   await history.click();
   await page.getByTitle('研究报告', { exact: true }).click();
-  await expect(page.getByText('生成：content_ready', { exact: true })).toBeVisible();
+  await expect(page.getByText('生成：内容可读', { exact: true })).toBeVisible();
 }

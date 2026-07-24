@@ -60,78 +60,6 @@ def test_b_test_requires_a_repository_declared_command(tmp_path: Path):
     assert plan.command_id == "generic_python_b_test"
 
 
-@pytest.mark.parametrize("phase", ["b_dev", "b_test"])
-def test_explicit_phase_command_can_bind_split_without_a_file_slot(tmp_path: Path, phase: str):
-    (tmp_path / "run.py").write_text("", encoding="utf-8")
-    (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
-    (tmp_path / "autoad_executor_adapter.json").write_text(
-        json.dumps({
-            "adapter_id": "generic_python",
-            "entrypoint": "run.py",
-            "smoke_argv": [sys.executable, "run.py"],
-            "metrics_output": "metrics.json",
-            "allowed_paths": ["run.py"],
-            "protected_paths": ["evaluate.py"],
-            "evaluation_commands": {
-                "b_dev": {"args": ["run.py", "--split", "b_dev"], "metrics_output": "metrics.json"},
-                "b_test": {"args": ["run.py", "--split", "b_test"], "metrics_output": "metrics.json"},
-            },
-        }),
-        encoding="utf-8",
-    )
-    result = ExecutorAdapter().inspect(tmp_path)
-    plan, _ = ExecutorAdapter().build_execution(
-        result,
-        ExecutorAdapterInputs(
-            run_id="run_executor",
-            worktree_ref="executor_worktrees/attempt",
-            repository_fingerprint="fixture",
-            environment_sha256="a" * 64,
-            dataset_manifest_sha256="b" * 64,
-            asset_manifest_sha256="c" * 64,
-            evaluation_phase=phase,
-            split_ref=f"/run/inputs/{phase}.json",
-        ),
-    )
-    assert plan.args == ["run.py", "--split", phase]
-
-
-@pytest.mark.parametrize("phase", ["b_dev", "b_test"])
-def test_indexed_phase_literal_is_not_replaced_by_split_path(tmp_path: Path, phase: str):
-    (tmp_path / "run.py").write_text("", encoding="utf-8")
-    (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
-    (tmp_path / "autoad_executor_adapter.json").write_text(
-        json.dumps({
-            "adapter_id": "generic_python",
-            "entrypoint": "run.py",
-            "smoke_argv": [sys.executable, "run.py"],
-            "metrics_output": "metrics.json",
-            "allowed_paths": ["run.py"],
-            "protected_paths": ["evaluate.py"],
-            "evaluation_commands": {
-                "b_dev": {"args": ["run.py", "--split", "b_dev"], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
-                "b_test": {"args": ["run.py", "--split", "b_test"], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
-            },
-        }),
-        encoding="utf-8",
-    )
-    result = ExecutorAdapter().inspect(tmp_path)
-    plan, _ = ExecutorAdapter().build_execution(
-        result,
-        ExecutorAdapterInputs(
-            run_id="run_executor",
-            worktree_ref="executor_worktrees/attempt",
-            repository_fingerprint="fixture",
-            environment_sha256="a" * 64,
-            dataset_manifest_sha256="b" * 64,
-            asset_manifest_sha256="c" * 64,
-            evaluation_phase=phase,
-            split_ref=f"/run/inputs/{phase}.json",
-        ),
-    )
-    assert plan.args == ["run.py", "--split", phase]
-
-
 def test_baseline_split_binding_requires_an_explicit_manifest_slot(tmp_path: Path):
     (tmp_path / "run.py").write_text("", encoding="utf-8")
     (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
@@ -148,7 +76,56 @@ def test_baseline_split_binding_requires_an_explicit_manifest_slot(tmp_path: Pat
         encoding="utf-8",
     )
     result = ExecutorAdapter().inspect(tmp_path)
-    with pytest.raises(ValueError, match="split reference argument or explicit phase identity"):
+    with pytest.raises(ValueError, match="does not declare a split reference argument"):
+        ExecutorAdapter().build_execution(
+            result,
+            ExecutorAdapterInputs(
+                run_id="run_executor",
+                worktree_ref="executor_worktrees/attempt",
+                repository_fingerprint="fixture",
+                environment_sha256="a" * 64,
+                dataset_manifest_sha256="b" * 64,
+                asset_manifest_sha256="c" * 64,
+                evaluation_phase="b_dev",
+                split_ref="/run/inputs/dev.json",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("args", "index", "message"),
+    [
+        (["run.py", "--split=", ""], 1, "explicit empty argv slot"),
+        (["run.py", "--split-file", "", "--other-split", ""], 2, "exactly one"),
+    ],
+)
+def test_split_binding_fails_closed_for_untyped_or_ambiguous_shapes(
+    tmp_path: Path, args: list[str], index: int, message: str
+):
+    (tmp_path / "run.py").write_text("", encoding="utf-8")
+    (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
+    (tmp_path / "autoad_executor_adapter.json").write_text(
+        json.dumps(
+            {
+                "adapter_id": "generic_python",
+                "entrypoint": "run.py",
+                "smoke_argv": [sys.executable, "run.py"],
+                "metrics_output": "metrics.json",
+                "allowed_paths": ["run.py"],
+                "protected_paths": ["evaluate.py"],
+                "evaluation_commands": {
+                    "b_dev": {
+                        "args": args,
+                        "metrics_output": "metrics.json",
+                        "split_ref_arg_index": index,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = ExecutorAdapter().inspect(tmp_path)
+    with pytest.raises(ValueError, match=message):
         ExecutorAdapter().build_execution(
             result,
             ExecutorAdapterInputs(

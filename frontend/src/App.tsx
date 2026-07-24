@@ -35,6 +35,7 @@ import {
   getSources,
   getTranscript,
   renameRun,
+  retrySource,
   sendChat,
   uploadSource,
 } from './lib/api';
@@ -81,6 +82,7 @@ function describeRequestError(reason: unknown, fallback: string): string {
 
 export default function App() {
   const { config, saveConfig, showConfig, openConfig, closeConfig } = useConfig();
+  const configTriggerRef = useRef<HTMLButtonElement>(null);
   const [runId, setRunId] = useState<string>('');
   const [tasks, setTasks] = useState<TaskRun[]>([]);
   const [taskStatus, setTaskStatus] = useState<string>('Ready');
@@ -482,6 +484,17 @@ export default function App() {
     addToast('资料已删除', 'success');
   }, [addToast, refreshSidebarForRun, runId]);
 
+  const handleRetrySource = useCallback(async (sourceId: string) => {
+    if (!runId) return;
+    try {
+      await retrySource(runId, sourceId);
+      await refreshSidebarForRun(runId);
+      addToast('资料重试任务已创建', 'success');
+    } catch (error) {
+      addToast(`资料重试失败：${describeRequestError(error, '无法重试资料')}`, 'error');
+    }
+  }, [addToast, refreshSidebarForRun, runId]);
+
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
     if (msg.type.startsWith('experiment.')) {
@@ -573,7 +586,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} />}
+      {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} returnFocusRef={configTriggerRef} />}
       {pendingExperimentTaskConfirmation && (
         <ExperimentTaskConfirmation
           task={pendingExperimentTaskConfirmation.task}
@@ -630,7 +643,7 @@ export default function App() {
         </div>
         <div className="app-toolbar-actions">
           <ThemeToggle />
-          <button className="toolbar-icon-button" onClick={openConfig} title="配置" aria-label="配置">
+          <button ref={configTriggerRef} className="toolbar-icon-button" onClick={openConfig} title="配置" aria-label="配置">
             <Settings size={17} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </div>
@@ -683,6 +696,7 @@ export default function App() {
               summaryAvailable={hasIntentSummary(intentSummary)}
               intentSummary={intentSummary}
               onDeleteSource={handleDeleteSource}
+              onRetrySource={handleRetrySource}
             >
               {artifacts.length > 0 && (
                 <div className="artifact-list">

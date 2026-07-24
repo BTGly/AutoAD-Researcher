@@ -13,10 +13,11 @@ from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
 from autoad_researcher.assistant.v2.dialogue_state import append_dialogue_transition
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import append_pipeline_job, load_pipeline_jobs
+from autoad_researcher.assistant.v2.material_inspection import inspect_registered_material
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueMode,
-    DatasetSourceInstruction,
     GatedDialogueDecision,
+    LocalPathSourceInstruction,
     ResearchDecisionAgent,
     ResearchReplyAgent,
     ResearchReplyResponse,
@@ -35,7 +36,10 @@ from autoad_researcher.assistant.v2.source_actions import (
 from autoad_researcher.assistant.v2.source_service import register_source_intake
 from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmationConflict
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
-from autoad_researcher.ui.sources import load_source_registry, register_local_dataset_source
+from autoad_researcher.ui.sources import (
+    load_source_registry,
+    register_local_path_source,
+)
 
 
 @dataclass
@@ -44,6 +48,7 @@ class OrchestratorResult:
     reply_kind: str = "answer"
     created_sources: list[dict[str, Any]] = field(default_factory=list)
     created_jobs: list[dict[str, Any]] = field(default_factory=list)
+    action_receipts: list[dict[str, Any]] = field(default_factory=list)
     evidence_used: list[dict[str, Any]] = field(default_factory=list)
     answerability: dict[str, Any] = field(default_factory=dict)
     intent_summary: dict[str, Any] = field(default_factory=dict)
@@ -84,6 +89,7 @@ class ResearchOrchestratorV2:
 
         created_sources: list[dict[str, Any]] = []
         created_jobs: list[dict[str, Any]] = []
+        action_receipts: list[dict[str, Any]] = []
         source_plan = plan_explicit_source_actions(
             user_input=user_input,
             attachments=attachments,
@@ -100,6 +106,7 @@ class ResearchOrchestratorV2:
         context["current_turn_material_actions"] = {
             "created_sources": created_sources,
             "created_jobs": created_jobs,
+            "action_receipts": action_receipts,
         }
         context["pending_plan_only_task_available"] = TaskBridge.pending_plan_only_task_available(run_dir)
         previous = load_research_intent_summary(run_dir)
@@ -120,23 +127,28 @@ class ResearchOrchestratorV2:
             run_dir=run_dir,
             registered_sources=registered_sources,
         )
-        dataset_source_registration_failed = False
-        if decision.dataset_source is not None:
-            try:
-                created_sources.append(
-                    register_local_dataset_source(
-                        run_dir,
-                        decision.dataset_source.source_path,
-                        user_label=decision.dataset_source.user_label,
-                    )
-                )
-            except ValueError as exc:
-                dataset_source_registration_failed = True
-                append_event(
-                    run_dir,
-                    "assistant.dataset_source.registration_failed",
-                    {"exception_type": type(exc).__name__},
-                )
+        local_source_registration_failed = False
+        local_source: dict[str, Any] | None = None
+        local_action = _local_source_instruction(decision)
+        if local_action is not None:
+            source_receipt, source, source_jobs = _register_local_source_action(
+                run_dir,
+                user_input=user_input,
+                instruction=local_action,
+            )
+            action_receipts.append(source_receipt)
+            local_source = source
+            if source is not None:
+                created_sources.append(source)
+            created_jobs.extend(source_jobs)
+            local_source_registration_failed = source_receipt["status"] in {"rejected", "failed"}
+            context["current_turn_material_actions"] = {
+                "created_sources": created_sources,
+                "created_jobs": created_jobs,
+                "action_receipts": action_receipts,
+            }
+            registered_sources = _registered_source_context(run_dir)
+            context["registered_sources"] = registered_sources
         if not candidate.is_valid:
             if not api_key:
                 failure_reply = "当前没有可用的对话模型连接，材料任务仍可在后台处理。"
@@ -150,6 +162,7 @@ class ResearchOrchestratorV2:
                 reply=failure_reply,
                 created_sources=created_sources,
                 created_jobs=created_jobs,
+                action_receipts=action_receipts,
                 evidence_used=context.get("usable_evidence", []),
                 answerability=context.get("answerability", {}),
                 intent_summary=(
@@ -164,6 +177,19 @@ class ResearchOrchestratorV2:
                 numeric_claim_allowed=decision.numeric_claim_allowed,
                 policy_assessment=decision.policy_assessment.model_dump(mode="json"),
             )
+
+        if local_source is not None and not local_source_registration_failed:
+            observations = inspect_registered_material(
+                run_dir,
+                source=local_source,
+                user_input=user_input,
+                api_key=api_key,
+                provider_url=provider_url,
+                model=model,
+                model_route=model_route,
+            )
+            if observations:
+                context["material_inspections"] = observations
 
         if DialogueGate.plan_only_confirmation_allowed(decision):
             try:
@@ -181,6 +207,7 @@ class ResearchOrchestratorV2:
                     reply=reply,
                     created_sources=created_sources,
                     created_jobs=created_jobs,
+                    action_receipts=action_receipts,
                     evidence_used=context.get("usable_evidence", []),
                     answerability=context.get("answerability", {}),
                     intent_summary=(previous or ResearchIntentSummary()).model_dump(mode="json"),
@@ -271,7 +298,7 @@ class ResearchOrchestratorV2:
                 decision,
                 reply_response.summary,
             )
-        ) and not dataset_source_registration_failed
+        ) and not local_source_registration_failed
         if reply_response.should_persist and task_draft_requested:
             try:
                 draft, task_preparation_disposition = TaskBridge.prepare_or_reuse_experiment_task(
@@ -308,7 +335,7 @@ class ResearchOrchestratorV2:
             reply_response,
             experiment_task=experiment_task,
             task_preparation_disposition=task_preparation_disposition,
-            dataset_source_registration_failed=dataset_source_registration_failed,
+            local_source_registration_failed=local_source_registration_failed,
         )
         if on_reply_delta is not None:
             on_reply_delta(reply)
@@ -316,6 +343,7 @@ class ResearchOrchestratorV2:
             reply=reply,
             created_sources=created_sources,
             created_jobs=created_jobs,
+            action_receipts=action_receipts,
             evidence_used=context.get("usable_evidence", []),
             answerability=context.get("answerability", {}),
             intent_summary=reply_response.summary.model_dump(mode="json"),
@@ -343,10 +371,10 @@ def _validated_dialogue_reply(
     *,
     experiment_task: dict[str, Any] | None = None,
     task_preparation_disposition: str | None = None,
-    dataset_source_registration_failed: bool = False,
+    local_source_registration_failed: bool = False,
 ) -> str:
-    if dataset_source_registration_failed:
-        return "本地数据集目录未能通过安全登记校验，因此尚未准备任务草案；请检查已配置的数据集目录后重试。"
+    if local_source_registration_failed:
+        return "本地资料未能通过安全登记校验，因此没有登记或准备任务草案；请确认部署已启用本地资料目录，并提供服务端实际存在的路径后重试。"
     assessment = decision.policy_assessment
     if decision.policy == "deny" or assessment.decision == "reject":
         if reply_response.should_persist:
@@ -388,7 +416,7 @@ def _policy_fallback(reason: str, safe_alternative: str) -> str:
     return f"{resolved_reason}\n\n可行替代：{resolved_alternative}"
 
 
-def _registered_source_context(run_dir: Path) -> list[dict[str, str]]:
+def _registered_source_context(run_dir: Path) -> list[dict[str, Any]]:
     return [
         {
             "source_id": str(source.get("source_id") or ""),
@@ -396,10 +424,108 @@ def _registered_source_context(run_dir: Path) -> list[dict[str, str]]:
             "label": str(source.get("user_label") or source.get("stored_path") or ""),
             "status": str(source.get("status") or ""),
             "stored_path": str(source.get("stored_path") or ""),
+            "original_reference": str(source.get("original_reference") or ""),
+            "inspection": (source.get("metadata") or {}).get("local_path_inspection", {}),
         }
         for source in _source_registry_sources(run_dir)
         if source.get("source_id")
     ]
+
+
+def _local_source_instruction(
+    decision: GatedDialogueDecision,
+) -> LocalPathSourceInstruction | None:
+    return decision.local_path_source
+
+
+def _register_local_source_action(
+    run_dir: Path,
+    *,
+    user_input: str,
+    instruction: LocalPathSourceInstruction,
+) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]]]:
+    path = instruction.source_path
+    if path not in user_input:
+        receipt = {
+            "kind": "local_path",
+            "status": "rejected",
+            "reason": "source_path_not_present_in_current_user_message",
+        }
+        append_event(run_dir, "assistant.local_source.registration_rejected", receipt)
+        return receipt, None, []
+    try:
+        source = register_local_path_source(
+            run_dir,
+            path,
+            user_claimed_kind=instruction.user_claimed_kind,
+            purpose=instruction.purpose,
+        )
+        jobs = _queue_local_path_jobs(run_dir, source)
+        receipt = {
+            "kind": source.get("kind", "local_path"),
+            "source_id": source.get("source_id", ""),
+            "status": "job_queued" if jobs else source.get("receipt_status", "created"),
+            "source_status": source.get("status", ""),
+            "job_ids": [job.get("job_id", "") for job in jobs],
+            "inspection": source.get("inspection", {}),
+        }
+        append_event(run_dir, "assistant.local_source.registration_succeeded", receipt)
+        return receipt, source, jobs
+    except (OSError, ValueError) as exc:
+        receipt = {
+            "kind": "local_path",
+            "status": "failed",
+            "reason": type(exc).__name__,
+        }
+        append_event(run_dir, "assistant.local_source.registration_failed", receipt)
+        return receipt, None, []
+
+
+def _queue_local_path_jobs(run_dir: Path, source: dict[str, Any]) -> list[dict[str, Any]]:
+    source_id = str(source.get("source_id") or "")
+    if not source_id or source.get("receipt_status") == "already_registered":
+        return []
+    jobs = load_pipeline_jobs(run_dir)
+    existing = [job for job in jobs if job.get("source_id") == source_id]
+    if existing:
+        return []
+    if source.get("kind") == "local_repo":
+        acquire = append_pipeline_job(
+            run_dir,
+            source_id=source_id,
+            job_type="local_repo_acquire",
+            evidence_role="repo_acquired",
+            payload={"source_role": "local_repo"},
+        )
+        summarize = append_pipeline_job(
+            run_dir,
+            source_id=source_id,
+            job_type="repo_summarize",
+            evidence_role="repo_acquired",
+            payload={"depends_on": acquire.get("job_id"), "source_role": "local_repo"},
+        )
+        return [acquire, summarize]
+
+    stored_path = str(source.get("stored_path") or "")
+    if not stored_path:
+        return []
+    kind = str(source.get("kind") or "")
+    job_type_by_kind = {
+        "paper_pdf": ("paper_parse_mineru", "parsed_paper_evidence"),
+        "document": ("document_markitdown", "parsed_document_evidence"),
+        "archive_bundle": ("archive_unpack_classify", "archive_manifest"),
+    }
+    spec = job_type_by_kind.get(kind)
+    if spec is None:
+        return []
+    job_type, evidence_role = spec
+    return [append_pipeline_job(
+        run_dir,
+        source_id=source_id,
+        job_type=job_type,
+        evidence_role=evidence_role,
+        payload={"stored_path": stored_path, "source_role": "local_file"},
+    )]
 
 
 def _validate_source_action(

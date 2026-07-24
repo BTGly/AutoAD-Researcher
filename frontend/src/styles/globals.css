@@ -303,6 +303,7 @@ html, body, #root {
   gap: 8px;
   margin-bottom: 6px;
 }
+.sidebar-card-actions { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .sidebar-title {
   min-width: 0;
   color: var(--text);

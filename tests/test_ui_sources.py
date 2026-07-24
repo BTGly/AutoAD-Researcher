@@ -196,7 +196,9 @@ class TestRegisterLocalDatasetSource:
         )
 
         registry = load_source_registry(run_dir)
-        assert first == second
+        assert first["source_id"] == second["source_id"]
+        assert first["receipt_status"] == "created"
+        assert second["receipt_status"] == "already_registered"
         assert first["kind"] == "dataset"
         assert len(registry["sources"]) == 1
         assert registry["sources"][0]["original_reference"] == str(dataset.resolve())
@@ -221,10 +223,10 @@ class TestRegisterLocalDatasetSource:
                 user_label="MVTec AD / bottle",
             )
 
-    def test_default_allowed_root_includes_ai4s(self, monkeypatch):
+    def test_no_default_allowed_root(self, monkeypatch):
         monkeypatch.delenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", raising=False)
         roots = get_allowed_local_source_roots()
-        assert Path("/root/autodl-tmp/AI4S").resolve() in roots
+        assert roots == []
 
     def test_rejects_allowlist_outside_path(self, tmp_path, monkeypatch):
         allowed = tmp_path / "allowed"

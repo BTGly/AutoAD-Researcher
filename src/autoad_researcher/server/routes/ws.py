@@ -25,7 +25,7 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
     for evt in load_events_since(run_dir, last_event_id):
         try:
             if not _is_transient_event(evt):
-                await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
+                await ws.send_json(_event_message(evt))
             last_event_id = evt["event_id"]
         except Exception:
             break
@@ -36,7 +36,7 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
         while True:
             try:
                 for evt in load_events_since(run_dir, last_event_id):
-                    await ws.send_json({"type": evt["type"], **(evt.get("payload", {}))})
+                    await ws.send_json(_event_message(evt))
                     last_event_id = evt["event_id"]
             except Exception:
                 break
@@ -61,3 +61,13 @@ async def websocket_endpoint(ws: WebSocket, run_id: str):
 def _is_transient_event(evt: dict) -> bool:
     event_type = str(evt.get("type") or "")
     return event_type.startswith(TRANSIENT_EVENT_PREFIXES)
+
+
+def _event_message(evt: dict) -> dict:
+    message = dict(evt.get("payload", {}) if isinstance(evt.get("payload"), dict) else {})
+    message.update({
+        "type": evt.get("type", ""),
+        "event_id": evt.get("event_id"),
+        "created_at": evt.get("created_at"),
+    })
+    return message
