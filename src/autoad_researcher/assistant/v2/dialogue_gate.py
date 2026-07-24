@@ -50,7 +50,9 @@ class DialogueGate:
             notes.append("legacy_act_request_mode_normalized")
 
         source_action = decision.source_action
-        local_path_source = decision.local_path_source
+        local_path_sources = list(decision.local_path_sources)
+        if not local_path_sources and decision.local_path_source is not None:
+            local_path_sources = [decision.local_path_source]
         task_action = (
             TaskInstruction(action=decision.task_action)
             if decision.task_action is not None
@@ -65,7 +67,7 @@ class DialogueGate:
         source_permission: dict[str, Any] | None = None
         if not actions_allowed:
             source_action = None
-            local_path_source = None
+            local_path_sources = []
             task_action = None
             target_spec = None
         else:
@@ -100,7 +102,7 @@ class DialogueGate:
                         source_action = None
                         notes.append("source_action_permission_denied")
             if source_action is not None:
-                local_path_source = None
+                local_path_sources = []
                 task_action = None
                 target_spec = None
             elif mode not in {"ask", "plan"}:
@@ -121,7 +123,7 @@ class DialogueGate:
         action_scope = "none"
         if source_action is not None:
             action_scope = "source"
-        elif local_path_source is not None:
+        elif local_path_sources:
             action_scope = "source"
         elif target_spec is not None:
             action_scope = "repository"
@@ -130,7 +132,7 @@ class DialogueGate:
         if decision.action_scope != action_scope:
             notes.append("action_scope_normalized")
 
-        if mode == "act" and source_action is None and local_path_source is None:
+        if mode == "act" and source_action is None and not local_path_sources:
             execution_gate = (
                 "blocked_dialogue_only"
                 if (run_dir / "input_task.yaml").is_file()
@@ -148,7 +150,8 @@ class DialogueGate:
             policy_assessment=policy,
             source_action=source_action,
             source_permission=source_permission,
-            local_path_source=local_path_source,
+            local_path_sources=local_path_sources,
+            local_path_source=local_path_sources[0] if local_path_sources else None,
             task_action=task_action,
             target_spec=target_spec,
             execution_gate=execution_gate,

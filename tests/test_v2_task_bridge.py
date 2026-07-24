@@ -28,6 +28,7 @@ from autoad_researcher.schemas.decisions import ConfirmedDecision
 from autoad_researcher.assistant.v2.task_bridge import (
     BRIDGE_DIR,
     PENDING_TASK_FILE,
+    TaskConfirmationConflict,
     TASK_REPORT_FILE,
     TaskBridge,
 )
@@ -72,6 +73,22 @@ def _mock_two_call(monkeypatch, decision: dict, reply: dict) -> None:
             "reply": json.dumps(next(replies), ensure_ascii=False),
             "error": "",
         },
+    )
+
+
+def _mock_material_inspection_call(monkeypatch, decision: dict, reply: dict) -> None:
+    replies = iter([decision, {"reply": "", "tool_calls": []}, reply])
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(next(replies), ensure_ascii=False), "error": "", "tool_calls": []},
+    )
+
+
+def _mock_material_calls(monkeypatch, replies: list[dict]) -> None:
+    pending = iter(replies)
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(next(pending), ensure_ascii=False), "error": "", "tool_calls": []},
     )
 
 
@@ -439,7 +456,7 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
     dataset_dir.mkdir()
     (dataset_dir / "train.csv").write_text("image,label\na,0\n", encoding="utf-8")
 
-    _mock_two_call(
+    _mock_material_inspection_call(
         monkeypatch,
         {
             "dialogue_mode": "plan",
@@ -499,7 +516,51 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
         "用户不允许修改 evaluator",
     ]
     assert not (run_dir / "input_task.yaml").exists()
-    assert load_pipeline_jobs(run_dir) == []
+    jobs = load_pipeline_jobs(run_dir)
+    assert [job["job_type"] for job in jobs] == ["dataset_manifest"]
+
+
+def test_orchestrator_keeps_partial_local_intake_and_blocks_task_confirmation(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
+    run_dir = tmp_path / "run_partial_local_intake"
+    run_dir.mkdir()
+    valid_path = tmp_path / "valid_dataset"
+    valid_path.mkdir()
+    (valid_path / "train.csv").write_text("image,label\na,0\n", encoding="utf-8")
+    missing_path = tmp_path / "missing_dataset"
+
+    _mock_material_calls(monkeypatch, [
+        {
+            "dialogue_mode": "plan",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "local_path_sources": [
+                {"source_path": str(valid_path), "purpose": "inspect"},
+                {"source_path": str(missing_path), "purpose": "inspect"},
+            ],
+        },
+        {"reply": "", "tool_calls": []},
+        {
+            "reply_to_user": "已理解研究目标。",
+            "summary": {"goal": "复现本地方法在本地数据上的实验", "confirmed_facts": [], "inferred_facts": [], "unresolved_conflicts": [], "blocking_question": None},
+        },
+    ])
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=f"检查 {valid_path} 和 {missing_path}，准备实验。",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.material_action_status == "partial_success"
+    assert len(result.created_sources) == 1
+    assert result.created_sources[0]["original_reference"] == str(valid_path.resolve())
+    assert [job["job_type"] for job in result.created_jobs] == ["dataset_manifest"]
+    assert result.experiment_task is not None
+    assert result.experiment_task["status"] == "blocked_by_materials"
+    assert str(missing_path) in result.reply
+    with pytest.raises(TaskConfirmationConflict, match="material intake"):
+        TaskBridge.confirm_pending_plan_only_task(run_dir)
 
 
 def test_orchestrator_plan_without_task_action_does_not_prepare_task(monkeypatch, tmp_path: Path):

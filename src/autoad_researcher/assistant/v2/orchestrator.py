@@ -49,6 +49,7 @@ class OrchestratorResult:
     created_sources: list[dict[str, Any]] = field(default_factory=list)
     created_jobs: list[dict[str, Any]] = field(default_factory=list)
     action_receipts: list[dict[str, Any]] = field(default_factory=list)
+    material_action_status: str = "none"
     evidence_used: list[dict[str, Any]] = field(default_factory=list)
     answerability: dict[str, Any] = field(default_factory=dict)
     intent_summary: dict[str, Any] = field(default_factory=dict)
@@ -127,25 +128,25 @@ class ResearchOrchestratorV2:
             run_dir=run_dir,
             registered_sources=registered_sources,
         )
-        local_source_registration_failed = False
-        local_source: dict[str, Any] | None = None
-        local_action = _local_source_instruction(decision)
-        if local_action is not None:
+        local_sources: list[dict[str, Any]] = []
+        local_actions = _local_source_instructions(decision)
+        for local_action in local_actions:
             source_receipt, source, source_jobs = _register_local_source_action(
                 run_dir,
                 user_input=user_input,
                 instruction=local_action,
             )
             action_receipts.append(source_receipt)
-            local_source = source
             if source is not None:
                 created_sources.append(source)
+                local_sources.append(source)
             created_jobs.extend(source_jobs)
-            local_source_registration_failed = source_receipt["status"] in {"rejected", "failed"}
+        if local_actions:
             context["current_turn_material_actions"] = {
                 "created_sources": created_sources,
                 "created_jobs": created_jobs,
                 "action_receipts": action_receipts,
+                "material_action_status": _material_action_status(action_receipts),
             }
             registered_sources = _registered_source_context(run_dir)
             context["registered_sources"] = registered_sources
@@ -156,6 +157,8 @@ class ResearchOrchestratorV2:
                 failure_reply = "当前没有配置对话模型，材料任务仍可在后台处理。"
             else:
                 failure_reply = "这轮意图判定失败了，请重试。"
+            if action_receipts:
+                failure_reply = _material_receipt_reply(action_receipts) + "\n\n" + failure_reply
             if on_reply_delta is not None:
                 on_reply_delta(failure_reply)
             return OrchestratorResult(
@@ -163,6 +166,7 @@ class ResearchOrchestratorV2:
                 created_sources=created_sources,
                 created_jobs=created_jobs,
                 action_receipts=action_receipts,
+                material_action_status=_material_action_status(action_receipts),
                 evidence_used=context.get("usable_evidence", []),
                 answerability=context.get("answerability", {}),
                 intent_summary=(
@@ -178,8 +182,9 @@ class ResearchOrchestratorV2:
                 policy_assessment=decision.policy_assessment.model_dump(mode="json"),
             )
 
-        if local_source is not None and not local_source_registration_failed:
-            observations = inspect_registered_material(
+        observations: list[dict[str, Any]] = []
+        for local_source in local_sources:
+            observations.extend(inspect_registered_material(
                 run_dir,
                 source=local_source,
                 user_input=user_input,
@@ -187,9 +192,9 @@ class ResearchOrchestratorV2:
                 provider_url=provider_url,
                 model=model,
                 model_route=model_route,
-            )
-            if observations:
-                context["material_inspections"] = observations
+            ))
+        if observations:
+            context["material_inspections"] = observations
 
         if DialogueGate.plan_only_confirmation_allowed(decision):
             try:
@@ -208,6 +213,7 @@ class ResearchOrchestratorV2:
                     created_sources=created_sources,
                     created_jobs=created_jobs,
                     action_receipts=action_receipts,
+                    material_action_status=_material_action_status(action_receipts),
                     evidence_used=context.get("usable_evidence", []),
                     answerability=context.get("answerability", {}),
                     intent_summary=(previous or ResearchIntentSummary()).model_dump(mode="json"),
@@ -239,6 +245,8 @@ class ResearchOrchestratorV2:
                 reply=reply,
                 created_sources=created_sources,
                 created_jobs=created_jobs,
+                action_receipts=action_receipts,
+                material_action_status=_material_action_status(action_receipts),
                 evidence_used=context.get("usable_evidence", []),
                 answerability=context.get("answerability", {}),
                 intent_summary=confirmed_summary.model_dump(mode="json"),
@@ -298,13 +306,21 @@ class ResearchOrchestratorV2:
                 decision,
                 reply_response.summary,
             )
-        ) and not local_source_registration_failed
+            or (
+                bool(local_actions)
+                and bool(reply_response.summary.goal.strip())
+                and reply_response.summary.blocking_question is None
+                and decision.conversation_transition != "cancel"
+            )
+        )
+        material_blockers = _material_blockers(action_receipts)
         if reply_response.should_persist and task_draft_requested:
             try:
                 draft, task_preparation_disposition = TaskBridge.prepare_or_reuse_experiment_task(
                     run_dir,
                     user_input=user_input,
                     transcript_tail=transcript_tail,
+                    material_blockers=material_blockers,
                 )
                 if draft is not None:
                     experiment_task = draft.model_dump(mode="json")
@@ -335,7 +351,7 @@ class ResearchOrchestratorV2:
             reply_response,
             experiment_task=experiment_task,
             task_preparation_disposition=task_preparation_disposition,
-            local_source_registration_failed=local_source_registration_failed,
+            action_receipts=action_receipts,
         )
         if on_reply_delta is not None:
             on_reply_delta(reply)
@@ -344,6 +360,7 @@ class ResearchOrchestratorV2:
             created_sources=created_sources,
             created_jobs=created_jobs,
             action_receipts=action_receipts,
+            material_action_status=_material_action_status(action_receipts),
             evidence_used=context.get("usable_evidence", []),
             answerability=context.get("answerability", {}),
             intent_summary=reply_response.summary.model_dump(mode="json"),
@@ -371,41 +388,85 @@ def _validated_dialogue_reply(
     *,
     experiment_task: dict[str, Any] | None = None,
     task_preparation_disposition: str | None = None,
-    local_source_registration_failed: bool = False,
+    action_receipts: list[dict[str, Any]] | None = None,
 ) -> str:
-    if local_source_registration_failed:
-        return "本地资料未能通过安全登记校验，因此没有登记或准备任务草案；请确认部署已启用本地资料目录，并提供服务端实际存在的路径后重试。"
+    material_status = _material_receipt_reply(action_receipts or [])
     assessment = decision.policy_assessment
     if decision.policy == "deny" or assessment.decision == "reject":
         if reply_response.should_persist:
             return reply_response.visible_reply()
         return _policy_fallback(assessment.reason, assessment.safe_alternative)
     if experiment_task is not None:
+        if experiment_task.get("status") == "blocked_by_materials":
+            return f"{material_status}\n\n研究任务草案已保存，但当前被资料状态阻塞；资料问题解决后才能确认或执行。"
         if reply_response.summary.blocking_question is not None:
-            return (
+            reply = (
                 "研究任务草案已准备。"
                 f"{reply_response.summary.blocking_question}"
                 "这不阻止 plan_only 草案；实际运行前仍需完成该前置条件。"
             )
+            return f"{material_status}\n\n{reply}" if material_status else reply
         if task_preparation_disposition == "reused":
-            return "已有待确认的研究任务草案。请在界面中检查内容、选择执行模式并确认。"
+            reply = "已有待确认的研究任务草案。请在界面中检查内容、选择执行模式并确认。"
+            return f"{material_status}\n\n{reply}" if material_status else reply
         if task_preparation_disposition == "replaced":
-            return "研究任务约束已更新，新的待确认草案已准备。请在界面中检查内容、选择执行模式并确认。"
-        return "研究任务草案已准备。请在界面中检查内容、选择执行模式并确认。"
+            reply = "研究任务约束已更新，新的待确认草案已准备。请在界面中检查内容、选择执行模式并确认。"
+            return f"{material_status}\n\n{reply}" if material_status else reply
+        reply = "研究任务草案已准备。请在界面中检查内容、选择执行模式并确认。"
+        return f"{material_status}\n\n{reply}" if material_status else reply
     if task_preparation_disposition == "prepare_failed":
-        return "研究任务草案暂时无法准备；系统已保留诊断记录，请检查当前任务状态后重试。"
+        reply = "研究任务草案暂时无法准备；系统已保留诊断记录，请检查当前任务状态后重试。"
+        return f"{material_status}\n\n{reply}" if material_status else reply
     if decision.dialogue_mode != "act" or decision.source_action is not None:
-        return reply_response.visible_reply()
+        reply = reply_response.visible_reply()
+        return f"{material_status}\n\n{reply}" if material_status else reply
     if decision.execution_gate == "blocked_missing_contract":
         return (
             "我不能开始修改代码或运行实验：当前没有已确认的 input_task.yaml，"
             "自然语言中的“刚才确认”不能替代真实确认记录。请先完成研究任务准备与确认。"
         )
-    return (
+    reply = (
         "当前对话不会替你选择或切换执行模式；自动执行与逐步确认不能同时生效。"
         "当前不会修改代码或运行实验，请在实验工作台确认唯一执行模式，"
         "随后由独立授权与 readiness gate 继续。"
     )
+    return f"{material_status}\n\n{reply}" if material_status else reply
+
+
+def _material_action_status(receipts: list[dict[str, Any]]) -> str:
+    if not receipts:
+        return "none"
+    succeeded = {"created", "already_registered", "job_queued"}
+    successes = sum(1 for receipt in receipts if receipt.get("status") in succeeded)
+    if successes == len(receipts):
+        return "all_succeeded"
+    if successes:
+        return "partial_success"
+    return "all_failed"
+
+
+def _material_blockers(receipts: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"{receipt.get('source_path') or '本地路径'}：{receipt.get('reason') or '登记失败'}"
+        for receipt in receipts
+        if receipt.get("status") in {"rejected", "failed"}
+    ]
+
+
+def _material_receipt_reply(receipts: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for receipt in receipts:
+        path = str(receipt.get("source_path") or "本地路径")
+        status = str(receipt.get("status") or "failed")
+        if status == "job_queued":
+            jobs = ", ".join(str(item) for item in receipt.get("job_ids") or [] if item)
+            suffix = f"，处理任务 {jobs} 已排队" if jobs else "，处理任务已排队"
+            lines.append(f"本地资料 {path} 已登记{suffix}。")
+        elif status in {"created", "already_registered"}:
+            lines.append(f"本地资料 {path} 已登记。")
+        else:
+            lines.append(f"本地资料 {path} 未登记：{receipt.get('reason') or '登记失败'}。")
+    return "\n".join(lines)
 
 
 def _policy_fallback(reason: str, safe_alternative: str) -> str:
@@ -432,10 +493,19 @@ def _registered_source_context(run_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _local_source_instructions(
+    decision: GatedDialogueDecision,
+) -> list[LocalPathSourceInstruction]:
+    if decision.local_path_sources:
+        return list(decision.local_path_sources)
+    return [decision.local_path_source] if decision.local_path_source is not None else []
+
+
 def _local_source_instruction(
     decision: GatedDialogueDecision,
 ) -> LocalPathSourceInstruction | None:
-    return decision.local_path_source
+    instructions = _local_source_instructions(decision)
+    return instructions[0] if instructions else None
 
 
 def _register_local_source_action(
@@ -448,6 +518,7 @@ def _register_local_source_action(
     if path not in user_input:
         receipt = {
             "kind": "local_path",
+            "source_path": path,
             "status": "rejected",
             "reason": "source_path_not_present_in_current_user_message",
         }
@@ -463,6 +534,7 @@ def _register_local_source_action(
         jobs = _queue_local_path_jobs(run_dir, source)
         receipt = {
             "kind": source.get("kind", "local_path"),
+            "source_path": path,
             "source_id": source.get("source_id", ""),
             "status": "job_queued" if jobs else source.get("receipt_status", "created"),
             "source_status": source.get("status", ""),
@@ -474,6 +546,7 @@ def _register_local_source_action(
     except (OSError, ValueError) as exc:
         receipt = {
             "kind": "local_path",
+            "source_path": path,
             "status": "failed",
             "reason": type(exc).__name__,
         }
@@ -506,10 +579,22 @@ def _queue_local_path_jobs(run_dir: Path, source: dict[str, Any]) -> list[dict[s
         )
         return [acquire, summarize]
 
+    kind = str(source.get("kind") or "")
+    if kind == "dataset":
+        return [append_pipeline_job(
+            run_dir,
+            source_id=source_id,
+            job_type="dataset_manifest",
+            evidence_role="dataset_manifest",
+            payload={
+                "original_reference": source.get("original_reference", ""),
+                "manifest_path": source.get("manifest_path", ""),
+                "source_role": "dataset",
+            },
+        )]
     stored_path = str(source.get("stored_path") or "")
     if not stored_path:
         return []
-    kind = str(source.get("kind") or "")
     job_type_by_kind = {
         "paper_pdf": ("paper_parse_mineru", "parsed_paper_evidence"),
         "document": ("document_markitdown", "parsed_document_evidence"),

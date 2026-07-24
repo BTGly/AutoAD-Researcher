@@ -25,6 +25,7 @@ class ChatResponse(BaseModel):
     source_action: SourceInstruction | None = None
     experiment_task: ExperimentTaskDraft | None = None
     action_receipts: list[dict[str, Any]] = Field(default_factory=list)
+    material_action_status: str = "none"
 
 
 class RunInfo(BaseModel):

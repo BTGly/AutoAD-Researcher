@@ -178,6 +178,8 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 success, outputs = _run_local_repo_unpack(run_dir, job)
             elif job_type == "local_repo_acquire":
                 success, outputs = _run_local_repo_acquire(run_dir, job)
+            elif job_type == "dataset_manifest":
+                success, outputs = _run_dataset_manifest(run_dir, job)
             elif job_type == "archive_unpack_classify":
                 success, outputs = _run_archive_unpack_classify(run_dir, job)
             elif job_type == "document_markitdown":
@@ -582,6 +584,59 @@ def _attest_local_repo(run_dir: Path, source_id: str, repo_dir: Path, *, parser_
         f"repo_acquisition/{source_id}/repository_attestation.json",
         f"repo_acquisition/{source_id}/evidence_index.jsonl",
     ]
+
+
+def _run_dataset_manifest(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Refresh a bounded structural manifest for a server-local dataset path."""
+    source_id = str(job.get("source_id", ""))
+    source = _find_source(run_dir, source_id)
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    reference = str((source or {}).get("original_reference") or payload.get("original_reference") or "")
+    if not reference:
+        _write_parse_error(run_dir, source_id, "dataset_manifest", "dataset path reference is missing")
+        return False, []
+    from autoad_researcher.ui.sources import (
+        inspect_local_path,
+        is_allowed_local_source_path,
+        set_source_metadata,
+    )
+
+    local_path = Path(reference).expanduser().resolve()
+    if not is_allowed_local_source_path(local_path):
+        _write_parse_error(run_dir, source_id, "dataset_manifest", "dataset path is not allowed")
+        return False, []
+    try:
+        inspection = inspect_local_path(local_path)
+        manifest = run_dir / "sources" / source_id / "dataset_manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        temporary = manifest.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_id": source_id,
+                    "source_path": str(local_path),
+                    "inspection": inspection,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(manifest)
+        set_source_metadata(
+            run_dir,
+            source_id,
+            {
+                "dataset_manifest_path": manifest.relative_to(run_dir).as_posix(),
+                "dataset_manifest_inspection": inspection,
+            },
+        )
+        return True, [manifest.relative_to(run_dir).as_posix()]
+    except (OSError, ValueError, KeyError) as exc:
+        _write_parse_error(run_dir, source_id, "dataset_manifest", str(exc))
+        return False, []
 
 
 def _run_archive_unpack_classify(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:

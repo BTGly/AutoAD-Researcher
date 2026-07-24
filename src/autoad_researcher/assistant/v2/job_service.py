@@ -23,6 +23,7 @@ JOB_TYPES = {
     "git_clone": "repo_acquired",
     "local_repo_unpack": "repo_acquired",
     "local_repo_acquire": "repo_acquired",
+    "dataset_manifest": "dataset_manifest",
     "archive_unpack_classify": "archive_manifest",
     "document_markitdown": "parsed_document_evidence",
     "paper_parse": "parsed_paper_evidence",

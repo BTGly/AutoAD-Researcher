@@ -59,6 +59,7 @@ TaskConfirmationConflictCode = Literal[
     "execution_repository_attestation_invalid",
     "execution_adapter_unsupported",
     "execution_contract_incomplete",
+    "materials_unresolved",
     "confirmation_invalid",
 ]
 
@@ -87,7 +88,7 @@ class ExperimentTaskDraft(BaseModel):
     schema_version: Literal[1] = 1
     task_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
-    status: Literal["pending_confirmation", "confirmed"] = "pending_confirmation"
+    status: Literal["pending_confirmation", "blocked_by_materials", "confirmed"] = "pending_confirmation"
     execution_mode: ExecutionMode = "plan_only"
     input_task: InputTask
     primary_metric_candidates: list[str] = Field(default_factory=list)
@@ -96,6 +97,7 @@ class ExperimentTaskDraft(BaseModel):
     summary_sha256: str = Field(min_length=64, max_length=64)
     created_at: str
     confirmed_at: str | None = None
+    material_blockers: list[str] = Field(default_factory=list)
 
 
 class ExperimentTaskSourceReport(BaseModel):
@@ -135,6 +137,7 @@ class TaskBridge:
         *,
         user_input: str,
         transcript_tail: list[dict[str, Any]] | None = None,
+        material_blockers: list[str] | None = None,
     ) -> ExperimentTaskDraft:
         with _confirm_lock(run_dir):
             if (run_dir / INPUT_TASK_FILE).is_file():
@@ -143,6 +146,7 @@ class TaskBridge:
                 run_dir,
                 user_input=user_input,
                 transcript_tail=transcript_tail,
+                material_blockers=material_blockers,
             )
 
     @classmethod
@@ -158,6 +162,7 @@ class TaskBridge:
         *,
         user_input: str,
         transcript_tail: list[dict[str, Any]] | None = None,
+        material_blockers: list[str] | None = None,
     ) -> tuple[ExperimentTaskDraft | None, TaskPreparationDisposition]:
         """Create, return, or safely refresh the one confirmable task draft."""
         with _confirm_lock(run_dir):
@@ -170,7 +175,10 @@ class TaskBridge:
                 pending = _load_pending_task(run_dir)
                 if pending.status == "confirmed":
                     return pending, "recovery_required"
-                if pending.summary_sha256 == _summary_sha256(summary):
+                if (
+                    pending.summary_sha256 == _summary_sha256(summary)
+                    and pending.material_blockers == _unique_texts(material_blockers or [])
+                ):
                     return pending, "reused"
                 return (
                     _build_and_write_pending_task(
@@ -178,6 +186,7 @@ class TaskBridge:
                         user_input=user_input,
                         transcript_tail=transcript_tail,
                         summary=summary,
+                        material_blockers=material_blockers,
                     ),
                     "replaced",
                 )
@@ -188,6 +197,7 @@ class TaskBridge:
                     user_input=user_input,
                     transcript_tail=transcript_tail,
                     summary=summary,
+                    material_blockers=material_blockers,
                 ),
                 "created",
             )
@@ -214,6 +224,11 @@ class TaskBridge:
                 raise TaskConfirmationConflict(
                     "task_mismatch",
                     "task_id does not match pending experiment task",
+                )
+            if draft.status == "blocked_by_materials":
+                raise TaskConfirmationConflict(
+                    "materials_unresolved",
+                    "material intake must succeed before confirming the experiment task",
                 )
 
             if draft.status == "pending_confirmation":
@@ -338,6 +353,7 @@ class TaskBridge:
                 user_input=draft.input_task.request,
                 transcript_tail=None,
                 summary=updated_summary,
+                material_blockers=draft.material_blockers,
             )
 
     @classmethod
@@ -405,6 +421,7 @@ def _build_and_write_pending_task(
     user_input: str,
     transcript_tail: list[dict[str, Any]] | None,
     summary: ResearchIntentSummary | None = None,
+    material_blockers: list[str] | None = None,
 ) -> ExperimentTaskDraft:
     run_id = _validate_run_dir(run_dir)
     summary = summary or _require_preparable_summary(run_dir)
@@ -427,6 +444,7 @@ def _build_and_write_pending_task(
         ),
     )
     summary_sha256 = _summary_sha256(summary)
+    normalized_blockers = _unique_texts(material_blockers or [])
     draft = ExperimentTaskDraft(
         task_id=f"task_{summary_sha256[:16]}",
         run_id=run_id,
@@ -435,6 +453,8 @@ def _build_and_write_pending_task(
         evidence_refs=_evidence_refs(run_dir),
         summary_sha256=summary_sha256,
         created_at=datetime.now(timezone.utc).isoformat(),
+        status="blocked_by_materials" if normalized_blockers else "pending_confirmation",
+        material_blockers=normalized_blockers,
     )
     _write_json_atomic(run_dir / BRIDGE_DIR / PENDING_TASK_FILE, draft.model_dump(mode="json"))
     return draft

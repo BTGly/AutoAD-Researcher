@@ -297,7 +297,8 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 
 <candidate_actions>
 - source_action 只针对 registered_sources 中逐字存在的唯一 source_id。用户明确要求删除时用 request_source_removal；用户明确要求对已登记的本地 PDF 重新解析时用 request_source_reparse。否定、讨论、来源不唯一或 source 未登记时为 null。
-- local_path_source 只在用户明确要求检查、登记、阅读或分析一个服务端本地路径时填写；source_path 必须逐字保留为当前用户消息中的原文子串，不能从普通文本、目录名、文件名或历史上下文猜测。user_claimed_kind 和 purpose 只是用户提示，不是事实分类，也可以为 null。服务端会先做有限、只读、symlink-safe 的结构检查，再根据检查证据映射已有执行策略；不要预先猜 dataset/repository/file，也不要因路径看起来像本地路径就自行生成它。否则为 null。
+- local_path_sources 只在用户明确要求检查、登记、阅读或分析服务端本地路径时填写；每个 source_path 必须逐字保留为当前用户消息中的原文子串，不能从普通文本、目录名、文件名或历史上下文猜测。用户一次提供多个路径时逐项填写，不能把多个路径压成一个来源。user_claimed_kind 和 purpose 只是用户提示，不是事实分类，也可以为 null。服务端会对每条路径分别做有限、只读、symlink-safe 的结构检查，再根据证据映射已有执行策略；不要在检查前猜 dataset/repository/file，也不要因路径看起来像本地路径就自行生成它。没有明确路径时填写空数组。
+- local_path_source 是旧版兼容字段；新回答使用 local_path_sources，通常将其置为 null。
 - task_action 在用户明确希望准备一份可由界面确认的实验任务草案时填 "prepare_experiment_task"。当 `pending_plan_only_task_available` 为 true、用户确认当前草案且没有修改任务内容时，填 "confirm_pending_plan_only_task"；它只确认已有的 plan_only 草案，不能选择仓库、启动 Job 或授权修改、训练、评估或使用 GPU。其余情况为 null。用户要求实际执行但还没有任务合同，也可以提出准备草案候选；是否执行任一候选由代码根据持久化状态、policy 和任务状态决定。
 - target_spec 只转换用户明确给出的受支持 workload 和完整 selectors；不得从 Adapter 目录反推任务或补值。
 - 这些都是候选，代码 Gate 会验证。policy=deny 时三个动作全为 null。request_source_reparse 可以伴随 act，但不等于代码修改或实验执行。
@@ -305,7 +306,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 
 <decision_output>
 只输出一个 JSON object：
-{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|unsupported_domain|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"local_path_source":null,"task_action":null,"target_spec":null}
+{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|unsupported_domain|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"local_path_sources":[],"local_path_source":null,"task_action":null,"target_spec":null}
 </decision_output>
 """
 

@@ -133,6 +133,8 @@ class DialogueDecision(BaseModel):
     numeric_claim_allowed: bool = True
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
+    local_path_sources: list[LocalPathSourceInstruction] = Field(default_factory=list, max_length=32)
+    # Kept for one-turn compatibility with older model payloads and clients.
     local_path_source: LocalPathSourceInstruction | None = None
     task_action: TaskActionProposal | None = None
     target_spec: TargetSpec | None = None
@@ -146,6 +148,18 @@ class DialogueDecision(BaseModel):
     def _align_legacy_policy_assessment(self) -> "DialogueDecision":
         if self.policy_assessment.decision == "reject":
             self.policy = "deny"
+        merged = list(self.local_path_sources)
+        if self.local_path_source is not None:
+            merged.insert(0, self.local_path_source)
+        unique: list[LocalPathSourceInstruction] = []
+        seen: set[str] = set()
+        for item in merged:
+            if item.source_path in seen:
+                continue
+            seen.add(item.source_path)
+            unique.append(item)
+        self.local_path_sources = unique
+        self.local_path_source = unique[0] if unique else None
         return self
 
 
@@ -164,6 +178,7 @@ class GatedDialogueDecision(BaseModel):
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
     source_permission: dict[str, Any] | None = None
+    local_path_sources: list[LocalPathSourceInstruction] = Field(default_factory=list, max_length=32)
     local_path_source: LocalPathSourceInstruction | None = None
     task_action: TaskInstruction | None = None
     target_spec: TargetSpec | None = None

@@ -71,7 +71,8 @@ REGISTRY_FILE = "source_references.json"
 LOCAL_SOURCE_ROOTS_ENV = "AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS"
 LEGACY_PARSE_ATTEMPT_ID = "legacy_active"
 LOCAL_PATH_MAX_ENTRIES = 200
-LOCAL_PATH_MAX_DEPTH = 2
+LOCAL_PATH_MAX_DEPTH = 4
+LOCAL_PATH_MAX_SCANNED_ENTRIES = 4000
 
 
 def _resolve_sources_dir(run_dir: Path) -> Path:
@@ -750,6 +751,7 @@ def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
             "confidence": 0.85 if profile else 0.2,
             "entry_count": 1,
             "sample_entries": [{"path": path.name, "kind": "file", "size_bytes": path.stat().st_size}],
+            "content_signals": {"file_count": 1, "directory_count": 0, "image_files": 0, "data_files": 0},
             "truncated": False,
         }
     if not path.is_dir():
@@ -764,15 +766,23 @@ def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
     data_files = 0
     document_files = 0
     archive_files = 0
+    image_files = 0
+    directory_count = 0
+    file_count = 0
+    extension_counts: dict[str, int] = {}
 
     def visit(directory: Path, depth: int) -> None:
         nonlocal entry_count, truncated, code_files, data_files, document_files, archive_files
+        nonlocal image_files, directory_count, file_count
         try:
             entries = sorted(os.scandir(directory), key=lambda item: item.name)
         except OSError:
             evidence.append(f"unreadable:{directory.relative_to(path).as_posix() or '.'}")
             return
         for entry in entries:
+            if entry_count >= LOCAL_PATH_MAX_SCANNED_ENTRIES:
+                truncated = True
+                return
             if entry.name in {".git", ".hg", ".svn"} and entry.is_dir(follow_symlinks=False):
                 if entry.name == ".git":
                     profiles.add("repository")
@@ -790,16 +800,23 @@ def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
                 evidence.append(f"symlink_skipped:{relative.as_posix()}")
                 continue
             if entry.is_dir(follow_symlinks=False):
+                directory_count += 1
                 if depth < LOCAL_PATH_MAX_DEPTH:
                     visit(Path(entry.path), depth + 1)
                 continue
             if not entry.is_file(follow_symlinks=False):
                 continue
+            file_count += 1
+            extension = Path(entry.name).suffix.lower()
+            if extension:
+                extension_counts[extension] = extension_counts.get(extension, 0) + 1
             profile = _profile_for_name(entry.name)
             if profile == "repository":
                 code_files += 1
             elif profile == "dataset":
                 data_files += 1
+                if extension in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}:
+                    image_files += 1
             elif profile == "document":
                 document_files += 1
             elif profile == "archive":
@@ -812,6 +829,8 @@ def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
     if data_files:
         profiles.add("dataset")
         evidence.append(f"data_files:{data_files}")
+    if image_files:
+        evidence.append(f"image_files:{image_files}")
     if document_files:
         profiles.add("document")
         evidence.append(f"document_files:{document_files}")
@@ -823,6 +842,9 @@ def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
     if not ordered_profiles:
         detected_kind = "unknown"
         confidence = 0.2
+    elif "dataset" in ordered_profiles and data_files >= 3 and "repository" not in ordered_profiles:
+        detected_kind = "dataset"
+        confidence = 0.8
     elif len(ordered_profiles) == 1:
         detected_kind = ordered_profiles[0]
         confidence = 0.95 if "marker:.git" in evidence else 0.75
@@ -840,6 +862,16 @@ def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
         "confidence": confidence,
         "entry_count": entry_count,
         "sample_entries": samples,
+        "content_signals": {
+            "file_count": file_count,
+            "directory_count": directory_count,
+            "code_files": code_files,
+            "data_files": data_files,
+            "image_files": image_files,
+            "document_files": document_files,
+            "archive_files": archive_files,
+            "extension_counts": dict(sorted(extension_counts.items())),
+        },
         "truncated": truncated,
     }
 
@@ -848,7 +880,7 @@ def _profile_for_name(name: str) -> str | None:
     ext = Path(name).suffix.lower()
     if ext in {".py", ".js", ".ts", ".tsx", ".java", ".go", ".rs", ".cpp", ".c", ".h", ".yaml", ".yml", ".toml"}:
         return "repository"
-    if ext in {".csv", ".tsv", ".parquet", ".feather", ".npy", ".npz", ".pkl", ".pickle", ".jsonl"}:
+    if ext in {".csv", ".tsv", ".parquet", ".feather", ".npy", ".npz", ".pkl", ".pickle", ".jsonl", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}:
         return "dataset"
     if ext in {".pdf", ".md", ".markdown", ".txt", ".doc", ".docx", ".html", ".htm"}:
         return "document"

@@ -47,6 +47,23 @@ def test_local_path_registers_manifest_without_guessing_unknown_file(tmp_path, m
     assert registry["sources"][0]["metadata"]["local_path_inspection"]["path_kind"] == "file"
 
 
+def test_nested_image_directory_uses_content_evidence_for_dataset_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
+    material = tmp_path / "images"
+    (material / "class_a" / "train").mkdir(parents=True)
+    for name in ("one.png", "two.png", "three.png"):
+        (material / "class_a" / "train" / name).write_bytes(b"image")
+    (material / "README.txt").write_text("image collection", encoding="utf-8")
+
+    inspection = inspect_local_path(material)
+    source = register_local_path_source(tmp_path / "run", material)
+
+    assert inspection["detected_kind"] == "dataset"
+    assert inspection["content_signals"]["image_files"] == 3
+    assert source["kind"] == "dataset"
+    assert source["inspection"]["profiles"] == ["dataset", "document"]
+
+
 def test_material_inspection_executes_only_scoped_read_tools(tmp_path, monkeypatch):
     root = tmp_path / "material"
     root.mkdir()

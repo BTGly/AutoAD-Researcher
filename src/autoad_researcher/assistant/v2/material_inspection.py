@@ -119,10 +119,10 @@ def _scope_for_source(run_dir: Path, source: dict[str, Any]) -> dict[str, Any] |
     source_id = str(source.get("source_id") or "")
     stored_path = str(source.get("stored_path") or "")
     original = str(source.get("original_reference") or "")
-    if kind == "local_repo" and stored_path:
-        root = (run_dir / stored_path).resolve()
+    if kind == "local_repo" and (stored_path or original):
+        root = (run_dir / stored_path).resolve() if stored_path else Path(original).expanduser().resolve()
         return {"root": root, "allowed_tools": {"filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat"}, "source_id": source_id}
-    if kind == "local_path" and original:
+    if kind in {"local_path", "dataset"} and original:
         root = Path(original).expanduser().resolve()
         return {"root": root, "allowed_tools": {"filesystem_list", "filesystem_stat"}, "source_id": source_id}
     if stored_path and kind in {"paper_pdf", "text", "markdown", "document", "archive_bundle"}:
