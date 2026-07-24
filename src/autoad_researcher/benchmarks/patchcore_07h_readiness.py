@@ -16,7 +16,7 @@ from autoad_researcher.benchmarks.config import compute_case_sha256
 from autoad_researcher.benchmarks.patchcore_07h_data import verify_07h_data
 from autoad_researcher.benchmarks.patchcore_attempt import WEIGHT_SHA256
 from autoad_researcher.benchmarks.patchcore_smoke import build_patchcore_smoke_command_plan
-from autoad_researcher.experiment.gpu import LEASES_FILE, ResourceLease
+from autoad_researcher.experiment.gpu import ResourceLease, resource_leases_path
 from autoad_researcher.schemas import InternalBenchmarkCase
 
 SMOKE_CASE_SHA256 = "faad414c83732280fd15bf78c5c05004989a1054ebeb65477334fe2353bf1a5b"
@@ -195,7 +195,7 @@ class PhysicalReadinessGate:
         return hashes
 
     def _check_runtime_safety(self, inputs: PhysicalReadinessInputs, blockers: list[str]) -> None:
-        leases_path = inputs.run_dir / LEASES_FILE
+        leases_path = resource_leases_path(inputs.run_dir)
         if leases_path.is_file():
             try:
                 leases = [ResourceLease.model_validate(item) for item in json.loads(leases_path.read_text(encoding="utf-8"))]

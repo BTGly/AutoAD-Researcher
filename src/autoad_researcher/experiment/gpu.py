@@ -37,6 +37,7 @@ class ResourceLease(BaseModel):
 
     schema_version: Literal[1] = 1
     lease_id: str = Field(pattern=r"^lease_[0-9]{6}$")
+    run_id: str = Field(min_length=1)
     attempt_id: str = Field(pattern=r"^attempt_[0-9]{6}$")
     worker_id: str = Field(min_length=1)
     device_ids: list[str] = Field(min_length=1)
@@ -62,11 +63,21 @@ GpuProbe = Callable[[], list[GpuDevice]]
 class GpuAllocator:
     """Allocate GPUs under one lock; never infer ownership from process lists."""
 
-    def __init__(self, *, probe: GpuProbe | None = None, lease_ttl_seconds: int = 60):
+    def __init__(
+        self,
+        *,
+        probe: GpuProbe | None = None,
+        lease_ttl_seconds: int = 60,
+        resource_root: Path | None = None,
+    ):
         if lease_ttl_seconds <= 0:
             raise ValueError("lease_ttl_seconds must be positive")
         self._probe = probe or probe_local_gpus
         self._lease_ttl_seconds = lease_ttl_seconds
+        self._resource_root = resource_root.resolve() if resource_root is not None else None
+
+    def _scope(self, run_dir: Path) -> Path:
+        return (self._resource_root or run_dir.resolve().parent).resolve()
 
     def allocate(
         self,
@@ -83,11 +94,17 @@ class GpuAllocator:
         if required_vram_mb < 0:
             raise ValueError("required_vram_mb must not be negative")
         current = _as_utc(now or datetime.now(timezone.utc))
-        with _leases_lock(run_dir):
-            leases = _load_leases_unlocked(run_dir)
+        resource_root = self._scope(run_dir)
+        run_id = run_dir.resolve().name
+        with _leases_lock(resource_root):
+            leases = _load_leases_unlocked(resource_root)
             leases, changed = _expire_leases(leases, current)
             existing = next(
-                (lease for lease in leases if lease.attempt_id == attempt_id and lease.status == "active"),
+                (
+                    lease
+                    for lease in leases
+                    if lease.run_id == run_id and lease.attempt_id == attempt_id and lease.status == "active"
+                ),
                 None,
             )
             if existing is not None:
@@ -98,7 +115,7 @@ class GpuAllocator:
                 ):
                     raise ValueError("Attempt already has a conflicting active ResourceLease")
                 if changed:
-                    _write_leases_unlocked(run_dir, leases)
+                    _write_leases_unlocked(resource_root, leases)
                 return existing
             observed = self._probe()
             occupied = {device_id for lease in leases if lease.status == "active" for device_id in lease.device_ids}
@@ -108,11 +125,12 @@ class GpuAllocator:
             ]
             if len(eligible) < required_device_count:
                 if changed:
-                    _write_leases_unlocked(run_dir, leases)
+                    _write_leases_unlocked(resource_root, leases)
                 raise GpuUnavailableError("TEMPORARY_GPU_UNAVAILABLE: no unleased GPU satisfies the request")
             device_ids = [device.device_id for device in eligible[:required_device_count]]
             lease = ResourceLease(
                 lease_id=_next_lease_id(leases),
+                run_id=run_id,
                 attempt_id=attempt_id,
                 worker_id=worker_id,
                 device_ids=device_ids,
@@ -123,17 +141,21 @@ class GpuAllocator:
                 expires_at=(current + timedelta(seconds=self._lease_ttl_seconds)).isoformat(),
             )
             leases.append(lease)
-            _write_leases_unlocked(run_dir, leases)
+            _write_leases_unlocked(resource_root, leases)
             return lease
 
     def heartbeat(self, run_dir: Path, *, lease_id: str, worker_id: str, now: datetime | None = None) -> ResourceLease:
         current = _as_utc(now or datetime.now(timezone.utc))
-        with _leases_lock(run_dir):
-            leases = _load_leases_unlocked(run_dir)
+        resource_root = self._scope(run_dir)
+        run_id = run_dir.resolve().name
+        with _leases_lock(resource_root):
+            leases = _load_leases_unlocked(resource_root)
             updated: ResourceLease | None = None
             for index, lease in enumerate(leases):
                 if lease.lease_id != lease_id:
                     continue
+                if lease.run_id != run_id:
+                    raise ValueError("ResourceLease belongs to a different run")
                 if lease.status != "active":
                     raise ValueError("only active ResourceLease may heartbeat")
                 if lease.worker_id != worker_id:
@@ -148,16 +170,20 @@ class GpuAllocator:
                 break
             if updated is None:
                 raise FileNotFoundError("ResourceLease not found")
-            _write_leases_unlocked(run_dir, leases)
+            _write_leases_unlocked(resource_root, leases)
             return updated
 
     def release(self, run_dir: Path, *, lease_id: str, worker_id: str) -> ResourceLease:
-        with _leases_lock(run_dir):
-            leases = _load_leases_unlocked(run_dir)
+        resource_root = self._scope(run_dir)
+        run_id = run_dir.resolve().name
+        with _leases_lock(resource_root):
+            leases = _load_leases_unlocked(resource_root)
             updated: ResourceLease | None = None
             for index, lease in enumerate(leases):
                 if lease.lease_id != lease_id:
                     continue
+                if lease.run_id != run_id:
+                    raise ValueError("ResourceLease belongs to a different run")
                 if lease.worker_id != worker_id:
                     raise ValueError("ResourceLease belongs to a different worker")
                 if lease.status == "released":
@@ -169,7 +195,7 @@ class GpuAllocator:
                 break
             if updated is None:
                 raise FileNotFoundError("ResourceLease not found")
-            _write_leases_unlocked(run_dir, leases)
+            _write_leases_unlocked(resource_root, leases)
             return updated
 
     def release_after_attempt_terminal(
@@ -186,28 +212,33 @@ class GpuAllocator:
         narrow recovery path intentionally checks the Attempt binding instead
         of granting an arbitrary worker a lease-release capability.
         """
-        with _leases_lock(run_dir):
-            leases = _load_leases_unlocked(run_dir)
+        resource_root = self._scope(run_dir)
+        run_id = run_dir.resolve().name
+        with _leases_lock(resource_root):
+            leases = _load_leases_unlocked(resource_root)
             for index, lease in enumerate(leases):
                 if lease.lease_id != lease_id:
                     continue
+                if lease.run_id != run_id:
+                    raise ValueError("ResourceLease belongs to a different run")
                 if lease.attempt_id != attempt_id:
                     raise ValueError("ResourceLease belongs to a different Attempt")
                 if lease.status in {"released", "expired"}:
                     return lease
                 updated = lease.model_copy(update={"status": "released"})
                 leases[index] = updated
-                _write_leases_unlocked(run_dir, leases)
+                _write_leases_unlocked(resource_root, leases)
                 return updated
             raise FileNotFoundError("ResourceLease not found")
 
     def reclaim_expired(self, run_dir: Path, *, now: datetime | None = None) -> list[ResourceLease]:
         current = _as_utc(now or datetime.now(timezone.utc))
-        with _leases_lock(run_dir):
-            leases = _load_leases_unlocked(run_dir)
+        resource_root = self._scope(run_dir)
+        with _leases_lock(resource_root):
+            leases = _load_leases_unlocked(resource_root)
             updated, changed = _expire_leases(leases, current)
             if changed:
-                _write_leases_unlocked(run_dir, updated)
+                _write_leases_unlocked(resource_root, updated)
             before = {lease.lease_id: lease.status for lease in leases}
             return [
                 lease for lease in updated
@@ -250,8 +281,14 @@ def probe_local_gpus() -> list[GpuDevice]:
     return devices
 
 
-def _load_leases_unlocked(run_dir: Path) -> list[ResourceLease]:
-    path = run_dir / LEASES_FILE
+def resource_leases_path(run_dir: Path, *, resource_root: Path | None = None) -> Path:
+    """Return the host-scoped lease ledger for a run directory."""
+    root = (resource_root or run_dir.resolve().parent).resolve()
+    return root / LEASES_FILE
+
+
+def _load_leases_unlocked(resource_root: Path) -> list[ResourceLease]:
+    path = resource_root / LEASES_FILE
     if not path.is_file():
         return []
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -260,8 +297,8 @@ def _load_leases_unlocked(run_dir: Path) -> list[ResourceLease]:
     return [ResourceLease.model_validate(item) for item in raw]
 
 
-def _write_leases_unlocked(run_dir: Path, leases: list[ResourceLease]) -> None:
-    path = run_dir / LEASES_FILE
+def _write_leases_unlocked(resource_root: Path, leases: list[ResourceLease]) -> None:
+    path = resource_root / LEASES_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     try:
@@ -277,8 +314,8 @@ def _write_leases_unlocked(run_dir: Path, leases: list[ResourceLease]) -> None:
 
 
 @contextmanager
-def _leases_lock(run_dir: Path, timeout: float = 5.0):
-    lock_path = run_dir / "experiments" / ".resource_leases.lock"
+def _leases_lock(resource_root: Path, timeout: float = 5.0):
+    lock_path = resource_root / "experiments" / ".resource_leases.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout
     fd = None
@@ -289,7 +326,7 @@ def _leases_lock(run_dir: Path, timeout: float = 5.0):
         except FileExistsError:
             time.sleep(0.05)
     if fd is None:
-        raise TimeoutError(f"Could not acquire ResourceLease lock for {run_dir} within {timeout}s")
+        raise TimeoutError(f"Could not acquire ResourceLease lock for {resource_root} within {timeout}s")
     try:
         yield
     finally:

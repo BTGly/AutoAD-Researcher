@@ -21,9 +21,14 @@ from autoad_researcher.experiment.finalizer import finalize_attempt
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter
 from autoad_researcher.experiment.retry_policy import RetryPolicy
 from autoad_researcher.experiment.health_diagnosis import HealthDiagnosisAgent
+from autoad_researcher.experiment.resource_telemetry import (
+    RESOURCE_REPORT_FILE,
+    GpuTelemetryCollector,
+)
 from autoad_researcher.runner.models import ExperimentExecutionResult, OutputManifestEntry
 
 _PROCESSES: dict[tuple[str, str], subprocess.Popen[str]] = {}
+_TELEMETRY: dict[tuple[str, str], GpuTelemetryCollector] = {}
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,7 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
         return _finalize_failure(run_dir, attempt, "RUN_ATTEMPT_ARTIFACT_EXISTS", "attempt artifact directory already exists")
     output_dir.mkdir(parents=True, exist_ok=True)
     lease = None
+    started_at = _utc_now()
     try:
         if attempt.required_device_count:
             lease = GpuAllocator().allocate(run_dir, attempt_id=attempt.attempt_id, worker_id=_worker_id(), required_device_count=attempt.required_device_count, required_vram_mb=attempt.required_vram_mb)
@@ -72,11 +78,21 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
     _write_json(output_dir / "process.json", {
         "pid": process.pid,
         "process_group_id": os.getpgid(process.pid),
-        "started_at": _utc_now(),
+        "started_at": started_at,
         "resource_lease_id": lease.lease_id if lease is not None else None,
         "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
         "command_id": attempt.command_plan.command_id,
     })
+    if lease is not None:
+        telemetry = GpuTelemetryCollector(
+            output_dir,
+            attempt_id=attempt.attempt_id,
+            attempt_purpose=attempt.attempt_purpose,
+            device_ids=lease.device_ids,
+            started_at=started_at,
+        )
+        telemetry.sample(process.pid)
+        _TELEMETRY[(str(run_dir.resolve()), attempt.attempt_id)] = telemetry
     _write_heartbeat(output_dir, attempt, "running")
     append_event(run_dir, "experiment.attempt.running", {"attempt_id": attempt.attempt_id, "pid": process.pid})
     return AttemptObservation(terminal=False)
@@ -87,6 +103,7 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
     if attempt.runtime_status not in {"STARTING", "RUNNING", "TERMINATING"}:
         return AttemptObservation(terminal=attempt.runtime_status in {"COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED", "LOST"}, succeeded=attempt.runtime_status == "COMPLETED")
     output_dir = run_dir / "attempts" / attempt.attempt_id
+    telemetry = _telemetry_for_attempt(run_dir, attempt, output_dir)
     if attempt.termination_requested_at and attempt.termination_reason:
         _begin_or_escalate_termination(run_dir, attempt, attempt.termination_reason)
     checkpoint = output_dir / attempt.checkpoint_watch_path if attempt.checkpoint_watch_path else None
@@ -113,6 +130,8 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
     if process is not None:
         code = process.poll()
         if code is None:
+            if telemetry is not None:
+                telemetry.sample(attempt.pid)
             if attempt.resource_lease_id:
                 GpuAllocator().heartbeat(run_dir, lease_id=attempt.resource_lease_id, worker_id=_worker_id())
             ExperimentAttemptStore().heartbeat(run_dir, attempt_id=attempt.attempt_id)
@@ -121,12 +140,17 @@ def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservatio
         _PROCESSES.pop((str(run_dir.resolve()), attempt.attempt_id), None)
         if attempt.termination_reason:
             status = "CANCELLED" if attempt.termination_reason == "USER_CANCELLED" else "TIMED_OUT" if attempt.termination_reason == "RUN_TIMEOUT" else "FAILED"
+            _finish_telemetry(run_dir, attempt, telemetry, status)
             return _finalize_failure(run_dir, attempt, attempt.termination_reason, "process terminated by runtime policy", runtime_status=status, exit_code=code, timed_out=status == "TIMED_OUT")
+        _finish_telemetry(run_dir, attempt, telemetry, "COMPLETED" if code == 0 else "FAILED")
         return _finalize_exit(run_dir, attempt, code)
     if _pid_alive(attempt.pid):
+        if telemetry is not None:
+            telemetry.sample(attempt.pid)
         ExperimentAttemptStore().heartbeat(run_dir, attempt_id=attempt.attempt_id)
         _write_heartbeat(output_dir, attempt, "running")
         return AttemptObservation(terminal=False)
+    _finish_telemetry(run_dir, attempt, telemetry, "LOST")
     return _finalize_failure(run_dir, attempt, "WORKER_LOST", "process exited after Worker restart", runtime_status="LOST")
 
 
@@ -138,10 +162,7 @@ def _finalize_exit(run_dir: Path, attempt, exit_code: int) -> AttemptObservation
     missing = [path for path in attempt.command_plan.expected_outputs if not (output_dir / path).is_file()]
     if missing:
         return _finalize_failure(run_dir, attempt, "RUN_EXPECTED_OUTPUT_MISSING", f"missing expected outputs: {missing}", exit_code=exit_code)
-    entries = [OutputManifestEntry(path=path, sha256=sha256_file(output_dir / path), size_bytes=(output_dir / path).stat().st_size) for path in attempt.command_plan.expected_outputs]
-    manifest_data = {"schema_version": 1, "outputs": [entry.model_dump(mode="json") for entry in entries]}
-    manifest_data["manifest_sha256"] = canonical_sha256(manifest_data)
-    _write_json(output_dir / "output_manifest.json", manifest_data)
+    _write_output_manifest(output_dir, attempt.command_plan.expected_outputs)
     result = ExperimentExecutionResult(schema_version=1, run_id=attempt.run_id, attempt=attempt.attempt_id, command_id=attempt.command_plan.command_id, command_sha256=attempt.input_refs.command_sha256, status="success", exit_code=0, timed_out=False, stdout_path="stdout.log", stderr_path="stderr.log", output_manifest_path="output_manifest.json")
     _write_json(output_dir / "execution_result.json", result.model_dump(mode="json", exclude_none=True))
     return _finalize(run_dir, attempt, result, "COMPLETED")
@@ -151,7 +172,11 @@ def _finalize_failure(run_dir: Path, attempt, code: str, message: str, *, runtim
     output_dir = run_dir / "attempts" / attempt.attempt_id
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "stdout.log").touch(exist_ok=True); (output_dir / "stderr.log").touch(exist_ok=True)
-    result = ExperimentExecutionResult(schema_version=1, run_id=attempt.run_id, attempt=attempt.attempt_id, command_id=attempt.command_plan.command_id, command_sha256=attempt.input_refs.command_sha256, status="execution_failed", exit_code=exit_code, timed_out=timed_out, stdout_path="stdout.log", stderr_path="stderr.log", failure_code=code, failure_message=message)
+    output_manifest_path = None
+    if (output_dir / RESOURCE_REPORT_FILE).is_file():
+        _write_output_manifest(output_dir, [])
+        output_manifest_path = "output_manifest.json"
+    result = ExperimentExecutionResult(schema_version=1, run_id=attempt.run_id, attempt=attempt.attempt_id, command_id=attempt.command_plan.command_id, command_sha256=attempt.input_refs.command_sha256, status="execution_failed", exit_code=exit_code, timed_out=timed_out, stdout_path="stdout.log", stderr_path="stderr.log", output_manifest_path=output_manifest_path, failure_code=code, failure_message=message)
     _write_json(output_dir / "execution_result.json", result.model_dump(mode="json", exclude_none=True))
     return _finalize(run_dir, attempt, result, runtime_status)
 
@@ -268,6 +293,71 @@ def _baseline_adapter_has_b_test(run_dir: Path, attempt) -> bool:
         and inspected.evidence is not None
         and "b_test" in inspected.evidence.evaluation_commands
     )
+
+
+def _telemetry_for_attempt(run_dir: Path, attempt, output_dir: Path) -> GpuTelemetryCollector | None:
+    key = (str(run_dir.resolve()), attempt.attempt_id)
+    existing = _TELEMETRY.get(key)
+    if existing is not None:
+        return existing
+    process_path = output_dir / "process.json"
+    if not attempt.resource_lease_id or not process_path.is_file():
+        return None
+    try:
+        process = json.loads(process_path.read_text(encoding="utf-8"))
+        raw_devices = process.get("cuda_visible_devices")
+        started_at = process.get("started_at")
+        if not isinstance(raw_devices, str) or not raw_devices or not isinstance(started_at, str):
+            return None
+        device_ids = [value.strip() for value in raw_devices.split(",")]
+        if not device_ids or any(not value.isdigit() for value in device_ids):
+            return None
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    collector = GpuTelemetryCollector(
+        output_dir,
+        attempt_id=attempt.attempt_id,
+        attempt_purpose=attempt.attempt_purpose,
+        device_ids=device_ids,
+        started_at=started_at,
+    )
+    _TELEMETRY[key] = collector
+    return collector
+
+
+def _finish_telemetry(
+    run_dir: Path,
+    attempt,
+    telemetry: GpuTelemetryCollector | None,
+    runtime_status: str,
+) -> None:
+    key = (str(run_dir.resolve()), attempt.attempt_id)
+    if telemetry is None:
+        telemetry = _TELEMETRY.get(key)
+    if telemetry is None:
+        return
+    telemetry.finish(runtime_status=runtime_status)
+    _TELEMETRY.pop(key, None)
+
+
+def _write_output_manifest(output_dir: Path, expected_outputs: list[str]) -> None:
+    paths: list[str] = []
+    for path in [*expected_outputs, RESOURCE_REPORT_FILE]:
+        if path == RESOURCE_REPORT_FILE and not (output_dir / path).is_file():
+            continue
+        if path not in paths:
+            paths.append(path)
+    entries = [
+        OutputManifestEntry(
+            path=path,
+            sha256=sha256_file(output_dir / path),
+            size_bytes=(output_dir / path).stat().st_size,
+        )
+        for path in paths
+    ]
+    manifest_data = {"schema_version": 1, "outputs": [entry.model_dump(mode="json") for entry in entries]}
+    manifest_data["manifest_sha256"] = canonical_sha256(manifest_data)
+    _write_json(output_dir / "output_manifest.json", manifest_data)
 
 
 def _load_attempt(run_dir: Path, job: dict[str, Any]):
