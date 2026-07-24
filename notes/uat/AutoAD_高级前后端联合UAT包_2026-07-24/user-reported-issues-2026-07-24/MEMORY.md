@@ -1,0 +1,7 @@
+- [ConfigModal 焦点返回 Bug](h2-focus-return-bug.md) — P1: 关闭弹窗后焦点回到输入框而非齿轮按钮
+- [配置无后端审计记录](h2-config-no-backend-log.md) — Observation: 配置仅存 localStorage 无后端日志
+- [发送按钮 Tab 无法聚焦](h2-send-button-tab-focus.md) — P2: 发送按钮有文字时 Tab 仍然跳过
+- [本地路径无法登记为资料](h2-local-path-registration.md) — P0: AI 说“已登记”但无实际 source 记录
+- [AI Agent 无文件读取工具](h2-ai-no-file-read-tools.md) — P0: Agent 纯对话，无法读本地文件
+- [跨标签页 WebSocket 不同步](h2-cross-tab-websocket-sync.md) — P1: 标签 B 不自动同步标签 A 的操作
+- [重试机制缺失](h2-no-source-retry.md) — P2: 失败来源无重试按钮
