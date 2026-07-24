@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 import pytest
@@ -13,6 +15,7 @@ def test_explicit_adapter_fixture_builds_existing_runner_contract(tmp_path: Path
     assert result.status == "supported" and result.evidence is not None
     plan, refs = ExecutorAdapter().build_execution(result, ExecutorAdapterInputs(run_id="run_executor", worktree_ref="executor_worktrees/attempt", repository_fingerprint="fixture", environment_sha256="a"*64, dataset_manifest_sha256="b"*64, asset_manifest_sha256="c"*64))
     assert plan.program == sys.executable and plan.expected_outputs == ["metrics.json"] and refs.command_sha256
+    assert plan.environment == {"PYTHONDONTWRITEBYTECODE": "1"}
 
 def test_adapter_does_not_guess_missing_or_invalid_evidence(tmp_path: Path):
     blocked = ExecutorAdapter().inspect(tmp_path)
@@ -34,8 +37,18 @@ def test_b_test_requires_a_repository_declared_command(tmp_path: Path):
                 "allowed_paths": ["run.py"],
                 "protected_paths": ["evaluate.py"],
                 "evaluation_commands": {
-                    "b_dev": {"args": ["run.py", "--split-ref", ""], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
-                    "b_test": {"args": ["run.py", "--split-ref", ""], "metrics_output": "metrics.json", "split_ref_arg_index": 2},
+                    "b_dev": {
+                        "args": ["run.py", "--split-ref", ""],
+                        "environment": {"CUSTOM_EXECUTOR_FLAG": "keep", "PYTHONDONTWRITEBYTECODE": "0"},
+                        "metrics_output": "metrics.json",
+                        "split_ref_arg_index": 2,
+                    },
+                    "b_test": {
+                        "args": ["run.py", "--split-ref", ""],
+                        "environment": {"CUSTOM_EXECUTOR_FLAG": "keep", "PYTHONDONTWRITEBYTECODE": "0"},
+                        "metrics_output": "metrics.json",
+                        "split_ref_arg_index": 2,
+                    },
                 },
             }
         ),
@@ -57,7 +70,67 @@ def test_b_test_requires_a_repository_declared_command(tmp_path: Path):
         ),
     )
     assert plan.args == ["run.py", "--split-ref", "/run/inputs/test.json"]
+    assert plan.environment == {"CUSTOM_EXECUTOR_FLAG": "keep", "PYTHONDONTWRITEBYTECODE": "1"}
     assert plan.command_id == "generic_python_b_test"
+
+
+def test_split_binding_produces_argv_accepted_by_argparse(tmp_path: Path):
+    (tmp_path / "runner.py").write_text(
+        "import argparse\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--phase', required=True)\n"
+        "parser.add_argument('--split-ref', required=True)\n"
+        "parser.add_argument('--metrics-output', required=True)\n"
+        "args = parser.parse_args()\n"
+        "assert args.phase == 'b_dev'\n"
+        "assert args.split_ref == '/run/inputs/dev.json'\n"
+        "assert args.metrics_output == 'metrics.json'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "evaluate.py").write_text("", encoding="utf-8")
+    (tmp_path / "autoad_executor_adapter.json").write_text(
+        json.dumps(
+            {
+                "adapter_id": "generic_python",
+                "entrypoint": "runner.py",
+                "smoke_argv": [sys.executable, "runner.py"],
+                "metrics_output": "metrics.json",
+                "allowed_paths": ["runner.py"],
+                "protected_paths": ["evaluate.py"],
+                "evaluation_commands": {
+                    "b_dev": {
+                        "args": ["runner.py", "--phase", "b_dev", "--split-ref", "", "--metrics-output", "metrics.json"],
+                        "metrics_output": "metrics.json",
+                        "split_ref_arg_index": 4,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = ExecutorAdapter().inspect(tmp_path)
+    plan, _ = ExecutorAdapter().build_execution(
+        result,
+        ExecutorAdapterInputs(
+            run_id="run_executor",
+            worktree_ref="executor_worktrees/attempt",
+            repository_fingerprint="fixture",
+            environment_sha256="a" * 64,
+            dataset_manifest_sha256="b" * 64,
+            asset_manifest_sha256="c" * 64,
+            evaluation_phase="b_dev",
+            split_ref="/run/inputs/dev.json",
+        ),
+    )
+    completed = subprocess.run(
+        [plan.program, *plan.args],
+        cwd=tmp_path,
+        env={**os.environ, **plan.environment},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_baseline_split_binding_requires_an_explicit_manifest_slot(tmp_path: Path):
@@ -96,6 +169,7 @@ def test_baseline_split_binding_requires_an_explicit_manifest_slot(tmp_path: Pat
     ("args", "index", "message"),
     [
         (["run.py", "--split=", ""], 1, "explicit empty argv slot"),
+        (["run.py", "--split-ref=", ""], 2, "equals-form arguments"),
         (["run.py", "--split-file", "", "--other-split", ""], 2, "exactly one"),
     ],
 )

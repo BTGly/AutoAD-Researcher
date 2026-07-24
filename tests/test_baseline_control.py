@@ -11,6 +11,7 @@ import pytest
 from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineContractInput, BaselineControlService
 from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateControlService, CandidateLaunchInput
 from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationInput, CandidateConfirmationService
+from autoad_researcher.assistant.v2.event_service import load_events_since
 from autoad_researcher.assistant.v2.experiment.promotion_control import PromotionControlService, PromotionInput
 from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryBinding
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
@@ -21,8 +22,9 @@ from autoad_researcher.environments.validation import ValidationContext
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.evaluation_contract import EvaluationMetric
 from autoad_researcher.experiment.executor_agent import ExecutorProposal
-from autoad_researcher.experiment.executor_contracts import InterventionContract
+from autoad_researcher.experiment.executor_contracts import InterventionContract, WorkspaceSpec
 from autoad_researcher.experiment.idea_tree import IdeaTreeStore
+from autoad_researcher.experiment.intervention_admission import InterventionAdmission
 from autoad_researcher.experiment.patch_protocol import SearchReplaceEdit
 from autoad_researcher.experiment.promotion import CandidateRegistry
 from autoad_researcher.experiment.scientific_assessment import ScientificAssessmentService
@@ -32,6 +34,47 @@ from autoad_researcher.worker.main import _process_pending_jobs
 
 def _git(path: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=path, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _admitted_workspace(tmp_path: Path) -> tuple[Path, Path, WorkspaceSpec]:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "run.py").write_text("value = 1\n", encoding="utf-8")
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    _git(root, "config", "user.name", "fixture")
+    _git(root, "add", "run.py")
+    _git(root, "commit", "-m", "baseline")
+    base_commit = _git(root, "rev-parse", "HEAD")
+    (root / "run.py").write_text("value = 2\n", encoding="utf-8")
+    final_patch = subprocess.run(
+        ["git", "diff", "--", "run.py"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout
+    run_dir = tmp_path / "run"
+    attempt_dir = run_dir / "attempts" / "attempt_000001"
+    attempt_dir.mkdir(parents=True)
+    patch_path = attempt_dir / "final_patch.diff"
+    patch_path.write_text(final_patch, encoding="utf-8")
+    admission = InterventionAdmission(
+        allowed=True,
+        code="ADMITTED",
+        detail="fixture admission",
+        changed_files=["run.py"],
+        patch_ref="final_patch.diff",
+        patch_sha256=sha256_file(patch_path),
+        command_sha256="a" * 64,
+    )
+    (attempt_dir / "intervention_admission.json").write_text(
+        admission.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    workspace = WorkspaceSpec(
+        base_commit=base_commit,
+        worktree_path=str(root),
+        branch="candidate",
+        protected_hashes={"run.py": sha256_file(root / "run.py")},
+        environment_snapshot_ref="environment/snapshot.json",
+    )
+    return run_dir, root, workspace
 
 
 def _ready_session(run_dir: Path):
@@ -289,6 +332,15 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
         if attempt is not None and attempt.runtime_status == "COMPLETED":
             break
         time.sleep(0.02)
+    workspace = Path(
+        json.loads(
+            (run_dir / "attempts" / candidate_attempt_id / "workspace.json").read_text(encoding="utf-8")
+        )["worktree_path"]
+    )
+    runtime_noise = workspace / "src" / "__pycache__" / "model.cpython-312.pyc"
+    runtime_noise.parent.mkdir(parents=True)
+    runtime_noise.write_bytes(b"independent H1 runtime noise")
+    runtime_noise_sha256 = sha256_file(runtime_noise)
     confirmation = CandidateConfirmationService().start(
         run_dir,
         session_id=session.session_id,
@@ -304,6 +356,23 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
     assert snapshot.attempt_id == candidate_attempt_id
     assert snapshot.b_test_passed
     assert snapshot.b_test_evidence_ref == f"attempts/{confirmation_id}/scientific_assessment.json"
+    assert not runtime_noise.exists()
+    noise_events = [
+        event
+        for event in load_events_since(run_dir)
+        if event["type"] == "experiment.candidate.runtime_noise_cleaned"
+    ]
+    assert len(noise_events) == 1
+    assert noise_events[0]["payload"]["candidate_attempt_id"] == candidate_attempt_id
+    assert noise_events[0]["payload"]["artifacts"] == [
+        {
+            "path": "src/__pycache__/model.cpython-312.pyc",
+            "category": "python_bytecode",
+            "sha256": runtime_noise_sha256,
+            "size_bytes": len(b"independent H1 runtime noise"),
+            "action": "removed",
+        }
+    ]
     replay = CandidateConfirmationService().start(
         run_dir,
         session_id=session.session_id,
@@ -316,6 +385,59 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
     assert CandidateRegistry().current_by_contract(run_dir)[snapshot.evaluation_contract_hash].candidate_id == snapshot.candidate_id
     source = run_dir / "repos" / "source_micro"
     assert "0.9" in (source / "run.py").read_text(encoding="utf-8")
+
+
+def test_candidate_commit_rejects_unadmitted_python_source(tmp_path: Path):
+    run_dir, root, workspace = _admitted_workspace(tmp_path)
+    unexpected = root / "unexpected.py"
+    unexpected.write_text("unexpected = True\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="outside admitted evidence"):
+        CandidateConfirmationService._commit_admitted_candidate(
+            run_dir, "attempt_000001", workspace
+        )
+
+    assert unexpected.is_file()
+    assert _git(root, "rev-parse", "HEAD") == workspace.base_commit
+
+
+def test_candidate_commit_rejects_staged_python_bytecode(tmp_path: Path):
+    run_dir, root, workspace = _admitted_workspace(tmp_path)
+    runtime_noise = root / "src" / "__pycache__" / "model.cpython-312.pyc"
+    runtime_noise.parent.mkdir(parents=True)
+    runtime_noise.write_bytes(b"actively submitted bytecode")
+    _git(root, "add", "--", "src/__pycache__/model.cpython-312.pyc")
+
+    with pytest.raises(ValueError, match="outside admitted evidence"):
+        CandidateConfirmationService._commit_admitted_candidate(
+            run_dir, "attempt_000001", workspace
+        )
+
+    assert runtime_noise.is_file()
+    assert _git(root, "rev-parse", "HEAD") == workspace.base_commit
+
+
+def test_candidate_commit_rejects_untracked_protected_python_bytecode(tmp_path: Path):
+    run_dir, root, workspace = _admitted_workspace(tmp_path)
+    runtime_noise = root / "src" / "__pycache__" / "protected.cpython-312.pyc"
+    runtime_noise.parent.mkdir(parents=True)
+    runtime_noise.write_bytes(b"protected bytecode")
+    workspace = workspace.model_copy(
+        update={
+            "protected_hashes": {
+                **workspace.protected_hashes,
+                "src/__pycache__/protected.cpython-312.pyc": "b" * 64,
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="runtime artifact is protected"):
+        CandidateConfirmationService._commit_admitted_candidate(
+            run_dir, "attempt_000001", workspace
+        )
+
+    assert runtime_noise.is_file()
+    assert _git(root, "rev-parse", "HEAD") == workspace.base_commit
 
 
 def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path: Path):

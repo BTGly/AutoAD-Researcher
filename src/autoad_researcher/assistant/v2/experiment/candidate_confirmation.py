@@ -9,9 +9,12 @@ the Worker has finalized that confirmation.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import PurePosixPath
+from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,6 +34,14 @@ from autoad_researcher.experiment.scientific_assessment import (
 )
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.experiment.validity import ComparisonIdentity
+
+
+_PYTHON_RUNTIME_SUFFIXES = {".pyc", ".pyo"}
+
+
+class _GitChange(NamedTuple):
+    status: str
+    path: str
 
 
 class CandidateConfirmationInput(BaseModel):
@@ -122,7 +133,13 @@ class CandidateConfirmationService:
         snapshot, python_executable = BaselineControlService._load_observed_environment(run_dir, session)
         contract = self._contract(run_dir, session)
         workspace = self._workspace(run_dir, candidate.attempt_id)
-        source_commit = self._commit_admitted_candidate(run_dir, candidate.attempt_id, workspace)
+        source_commit, runtime_noise = self._commit_admitted_candidate(run_dir, candidate.attempt_id, workspace)
+        if runtime_noise:
+            append_event(
+                run_dir,
+                "experiment.candidate.runtime_noise_cleaned",
+                {"candidate_attempt_id": candidate.attempt_id, "artifacts": runtime_noise},
+            )
         adapter = ExecutorAdapter()
         adapter_result = adapter.inspect(Path(workspace.worktree_path))
         if adapter_result.status != "supported" or adapter_result.evidence is None:
@@ -271,7 +288,9 @@ class CandidateConfirmationService:
         return workspace
 
     @staticmethod
-    def _commit_admitted_candidate(run_dir: Path, attempt_id: str, workspace: WorkspaceSpec) -> str:
+    def _commit_admitted_candidate(
+        run_dir: Path, attempt_id: str, workspace: WorkspaceSpec
+    ) -> tuple[str, list[dict[str, object]]]:
         attempt_dir = run_dir / "attempts" / attempt_id
         admission = InterventionAdmission.model_validate_json((attempt_dir / "intervention_admission.json").read_text(encoding="utf-8"))
         if not admission.allowed or not admission.changed_files or admission.patch_sha256 is None:
@@ -286,13 +305,20 @@ class CandidateConfirmationService:
         # serialization-only newline difference.
         if diff.rstrip("\n") != final_patch.read_text(encoding="utf-8").rstrip("\n"):
             raise ValueError("candidate worktree differs from admitted patch evidence")
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, check=True, capture_output=True, text=True).stdout.splitlines()
-        changed = {line[3:] for line in status if len(line) >= 4}
+        status = _git_status(root)
+        runtime_noise = _clean_untracked_python_runtime_noise(
+            root,
+            status,
+            admitted_paths=set(admission.changed_files),
+            protected_paths=set(workspace.protected_hashes),
+        )
+        changed = {change.path for change in _git_status(root)}
         if changed != set(admission.changed_files):
             raise ValueError("candidate worktree contains changes outside admitted evidence")
         subprocess.run(["git", "add", "--", *admission.changed_files], cwd=root, check=True, capture_output=True)
         subprocess.run(["git", "-c", "user.name=AutoAD", "-c", "user.email=autoad@invalid", "commit", "--no-gpg-sign", "-m", f"AutoAD candidate {attempt_id}"], cwd=root, check=True, capture_output=True)
-        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+        source_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+        return source_commit, runtime_noise
 
     @staticmethod
     def _candidate_seed(run_dir: Path, attempt_id: str) -> int:
@@ -334,3 +360,67 @@ class CandidateConfirmationService:
     @staticmethod
     def _raise(message: str):
         raise ValueError(message)
+
+
+def _git_status(root: Path) -> list[_GitChange]:
+    raw = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "-z"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    changes: list[_GitChange] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        if len(record) < 4:
+            raise ValueError("candidate worktree status is malformed")
+        try:
+            status = record[:2].decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ValueError("candidate worktree status contains an invalid status") from exc
+        if "R" in status or "C" in status:
+            raise ValueError("candidate worktree rename or copy changes are not admitted")
+        changes.append(_GitChange(status=status, path=os.fsdecode(record[3:])))
+    return changes
+
+
+def _clean_untracked_python_runtime_noise(
+    root: Path,
+    status: list[_GitChange],
+    *,
+    admitted_paths: set[str],
+    protected_paths: set[str],
+) -> list[dict[str, object]]:
+    root = root.resolve()
+    entries: list[dict[str, object]] = []
+    for change in status:
+        if change.status != "??" or not _is_python_runtime_noise(change.path):
+            continue
+        if change.path in admitted_paths:
+            raise ValueError("candidate runtime artifact is declared as admitted evidence")
+        if change.path in protected_paths:
+            raise ValueError("candidate runtime artifact is protected")
+        relative = PurePosixPath(change.path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("candidate runtime artifact path is outside the workspace")
+        path = root.joinpath(*relative.parts)
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):
+            raise ValueError("candidate runtime artifact must be a regular workspace file")
+        entries.append(
+            {
+                "path": change.path,
+                "category": "python_bytecode",
+                "sha256": sha256_file(path),
+                "size_bytes": path.stat().st_size,
+                "action": "removed",
+            }
+        )
+        path.unlink()
+        if path.exists() or path.is_symlink():
+            raise ValueError("candidate runtime artifact could not be removed")
+    return entries
+
+
+def _is_python_runtime_noise(path: str) -> bool:
+    return PurePosixPath(path).suffix in _PYTHON_RUNTIME_SUFFIXES

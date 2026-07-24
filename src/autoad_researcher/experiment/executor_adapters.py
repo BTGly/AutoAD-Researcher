@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.runner import ExperimentCommandPlan, ExperimentInputRefs, experiment_command_sha256
 
 _CONFIG = "autoad_executor_adapter.json"
+_PYTHON_RUNTIME_ENV = "PYTHONDONTWRITEBYTECODE"
 
 
 class ExecutorEvaluationCommand(BaseModel):
@@ -90,7 +91,7 @@ class ExecutorAdapter:
                 raise ValueError(
                     f"adapter has no explicit {inputs.evaluation_phase} command for the frozen split"
                 )
-            args, environment, metrics_output = [evidence.entrypoint], {}, evidence.metrics_output
+            args, environment, metrics_output = [evidence.entrypoint], _python_environment({}), evidence.metrics_output
         else:
             args = list(phase_command.args)
             if inputs.split_ref is not None:
@@ -105,12 +106,16 @@ class ExecutorAdapter:
                     raise ValueError(
                         "adapter split reference binding must target an explicit empty argv slot"
                     )
+                if index > 0 and args[index - 1].endswith("="):
+                    raise ValueError(
+                        "adapter split reference binding does not support equals-form arguments"
+                    )
                 if args.count("") != 1:
                     raise ValueError(
                         "adapter split reference binding requires exactly one explicit empty argv slot"
                     )
                 args[index] = inputs.split_ref
-            environment, metrics_output = phase_command.environment, phase_command.metrics_output
+            environment, metrics_output = _python_environment(phase_command.environment), phase_command.metrics_output
         plan = ExperimentCommandPlan(schema_version=1, command_id=f"{evidence.adapter_id}_{inputs.evaluation_phase}", program=inputs.python_executable, args=args, cwd=inputs.worktree_ref, environment=environment, timeout_seconds=inputs.timeout_seconds, network=False, expected_outputs=[metrics_output])
         refs = ExperimentInputRefs(repository_fingerprint=inputs.repository_fingerprint, environment_sha256=inputs.environment_sha256, dataset_manifest_sha256=inputs.dataset_manifest_sha256, asset_manifest_sha256=inputs.asset_manifest_sha256, command_sha256=experiment_command_sha256(plan))
         return plan, refs
@@ -119,3 +124,9 @@ def _safe_relative(value: str) -> None:
     path = PurePosixPath(value)
     if path.is_absolute() or any(part == ".." for part in path.parts) or not path.parts:
         raise ValueError("adapter paths must be repository-relative")
+
+
+def _python_environment(environment: dict[str, str]) -> dict[str, str]:
+    result = dict(environment)
+    result[_PYTHON_RUNTIME_ENV] = "1"
+    return result
