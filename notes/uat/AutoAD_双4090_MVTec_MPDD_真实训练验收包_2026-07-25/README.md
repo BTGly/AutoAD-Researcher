@@ -15,6 +15,40 @@
 
 这属于 **cross-dataset zero-shot anomaly detection + target-class holdout**，不是两个独立目标数据集的 cross-dataset 测试。FAPrompt 论文报告的 MPDD 全集 +3.1 pp 仅作为可行性先验，不能证明本次固定类别划分一定达到 +2 pp。
 
+## GitHub 克隆后的资料包重建
+
+仓库不再直接提交二进制 ZIP。此前 GitHub API 写入的 ZIP 被截断，因此已删除，改为 Git-safe Base64 分片和确定性重建程序。
+
+在仓库根目录执行：
+
+```bash
+cd 'notes/uat/AutoAD_双4090_MVTec_MPDD_真实训练验收包_2026-07-25'
+python3 rebuild_release_zip.py
+```
+
+程序只在以下检查全部通过后生成 ZIP：
+
+- `release_b64/part00` 至 `part07` 完整且顺序固定；
+- Base64 总长度为 `46,200` bytes；
+- 解码后 ZIP 大小为 `34,650` bytes；
+- SHA256 为 `95a3b970b5f29d52026aba178e3cca9ae667159e8e520a650db22349cb239077`；
+- ZIP central directory 可读；
+- 所有 ZIP 成员 CRC 校验通过。
+
+生成文件：
+
+```text
+AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip
+```
+
+随后可执行：
+
+```bash
+sha256sum -c AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip.sha256
+unzip -t AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip
+unzip AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip
+```
+
 ## 固定类别划分
 
 ```text
@@ -41,7 +75,7 @@ B_test:
 ## 执行顺序
 
 ```text
-0. 解压 AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip
+0. 运行 python3 rebuild_release_zip.py 并解压生成的 ZIP
 1. 复制 config.example.env 为 config.env，并填写真实绝对路径
 2. scripts/00_clone_and_pin.sh
 3. 准备 MVTec AD 与 MPDD 官方目录
@@ -78,7 +112,8 @@ B_test:
 ## 仓库内容
 
 - 可浏览的评价合同、类别划分、Agent 任务提示和真人执行清单；
-- 完整可执行资料包 ZIP；
-- ZIP SHA256 校验文件。
+- `release_b64/part00` 至 `part07`：正确 ZIP 的 Git-safe 编码分片；
+- `rebuild_release_zip.py`：重建、SHA256、central directory 与 CRC 校验；
+- `AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip.sha256`：预期校验值。
 
 仓库不包含 MVTec AD、MPDD 数据、论文 PDF、checkpoint 或训练结果。
