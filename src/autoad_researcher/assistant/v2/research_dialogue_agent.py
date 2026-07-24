@@ -77,6 +77,7 @@ TaskActionProposal = Literal[
 ]
 PolicyCategory = Literal[
     "none",
+    "unsupported_domain",
     "evaluation_leakage",
     "evaluation_manipulation",
     "evidence_falsification",
@@ -188,6 +189,76 @@ class RawTaskParameters(BaseModel):
         return values
 
 
+def _recover_explicit_task_parameters(user_input: str, raw: RawTaskParameters) -> RawTaskParameters:
+    """Keep model transport bounded to values explicitly present in this user turn."""
+    recovered = _parse_explicit_task_parameters(user_input)
+    return RawTaskParameters(
+        baseline=_trusted_scalar_from_user(raw.baseline, user_input) or recovered.baseline,
+        dataset=_trusted_scalar_from_user(raw.dataset, user_input) or recovered.dataset,
+        compute_budget=_trusted_scalar_from_user(raw.compute_budget, user_input) or recovered.compute_budget,
+        primary_metrics=_merge_explicit_list(raw.primary_metrics, recovered.primary_metrics, user_input),
+        evaluation_constraints=_merge_explicit_list(raw.evaluation_constraints, recovered.evaluation_constraints, user_input),
+    )
+
+
+def _parse_explicit_task_parameters(user_input: str) -> RawTaskParameters:
+    """Read only labelled values and complete constraint clauses, never repository text."""
+    scalar_patterns = {
+        "baseline": r"(?:baseline|基线)\s*(?:使用|为|是|采用|用|改成)\s*([^；;，,\n。]+)",
+        "dataset": r"(?:dataset|数据集)\s*(?:使用|为|是|采用|用|改成)\s*([^；;，,\n。]+)",
+    }
+    values: dict[str, str | None] = {}
+    for name, pattern in scalar_patterns.items():
+        match = re.search(pattern, user_input)
+        values[name] = match.group(1).strip() if match else None
+    metric_match = re.search(
+        r"(?:主指标|primary\s*metric(?:s)?)\s*(?:使用|为|是|采用|用|改成|设为|[:：])?\s*([A-Za-z][A-Za-z0-9_.-]*(?:\s+[A-Za-z][A-Za-z0-9_.-]*)*)\s*(?=[，,；;。\n]|$)",
+        user_input,
+    )
+    metric = metric_match.group(1).strip() if metric_match else None
+    resource_match = re.search(r"(?:^|[；;])\s*(CPU|GPU(?:\s+\d+)?)\s*(?=$|[；;，,。])", user_input)
+    resource = resource_match.group(1).strip() if resource_match else None
+    constraints = []
+    for clause in re.split(r"[；;\n。]", user_input):
+        value = clause.strip()
+        if (
+            ("最多" in value and "轮" in value)
+            or ("每一步执行前" in value and "确认" in value)
+            or "不能修改" in value
+            or "不允许修改" in value
+        ):
+            constraints.append(value)
+    return RawTaskParameters(
+        baseline=values["baseline"],
+        dataset=values["dataset"],
+        compute_budget=resource,
+        primary_metrics=[metric] if metric else None,
+        evaluation_constraints=constraints or None,
+    )
+
+
+def _trusted_scalar_from_user(value: str | None, user_input: str) -> str | None:
+    return value if value is not None and value in user_input else None
+
+
+def _trusted_dataset_source_label(
+    dataset_source: DatasetSourceInstruction | None,
+    user_input: str,
+) -> str | None:
+    """Trust a source label only when its exact local path is in this turn."""
+    if dataset_source is None or dataset_source.source_path not in user_input:
+        return None
+    return dataset_source.user_label
+
+
+def _merge_explicit_list(values: list[str] | None, recovered: list[str] | None, user_input: str) -> list[str] | None:
+    accepted = [value for value in (values or []) if value in user_input]
+    for value in recovered or []:
+        if value not in accepted:
+            accepted.append(value)
+    return accepted or None
+
+
 class ResearchReplySummaryDraft(BaseModel):
     """Model-facing summary shape; provenance is added by trusted code."""
 
@@ -196,6 +267,7 @@ class ResearchReplySummaryDraft(BaseModel):
     goal: str = ""
     confirmed_facts: list[str] = Field(default_factory=list)
     confirmed_task_parameters: RawTaskParameters = Field(default_factory=RawTaskParameters)
+    primary_metric_candidates: list[str] | None = None
     inferred_facts: list[BasedStatement] = Field(default_factory=list)
     unresolved_conflicts: list[BasedStatement] = Field(default_factory=list)
     blocking_question: str | None = None
@@ -574,11 +646,29 @@ def _materialize_reply_summary(
             previous_parameters=previous_parameters,
             user_input=user_input,
             frozen_decision=frozen_decision,
+            dataset_source=frozen_decision.dataset_source,
+        ),
+        primary_metric_candidates=_materialize_metric_candidates(
+            draft.primary_metric_candidates,
+            previous=(last_summary.primary_metric_candidates if last_summary is not None else []),
+            user_input=user_input,
         ),
         inferred_facts=draft.inferred_facts,
         unresolved_conflicts=draft.unresolved_conflicts,
         blocking_question=draft.blocking_question,
     )
+
+
+def _materialize_metric_candidates(
+    values: list[str] | None,
+    *,
+    previous: list[str],
+    user_input: str,
+) -> list[str]:
+    """Keep only candidate names the user actually mentioned in the turn."""
+    if values is None:
+        return previous
+    return list(dict.fromkeys(value.strip() for value in values if value.strip() and value.strip() in user_input))
 
 
 def _materialize_task_parameters(
@@ -587,43 +677,52 @@ def _materialize_task_parameters(
     previous_parameters: ConfirmedTaskParameters,
     user_input: str,
     frozen_decision: GatedDialogueDecision,
+    dataset_source: DatasetSourceInstruction | None,
 ) -> ConfirmedTaskParameters:
     """Merge flat current-turn updates with trusted persisted provenance."""
     if frozen_decision.policy != "allow" or frozen_decision.conversation_transition == "cancel":
         return previous_parameters
+    trusted_raw = _recover_explicit_task_parameters(user_input, raw)
     source = (
         "user_confirmed"
         if frozen_decision.conversation_transition == "confirm"
         else "user_provided"
     )
     evidence = f"当前用户消息：{user_input.strip()}"
+    trusted_dataset = trusted_raw.dataset or _trusted_dataset_source_label(dataset_source, user_input)
+    dataset_evidence = evidence
+    if trusted_raw.dataset is None and trusted_dataset is not None and dataset_source is not None:
+        dataset_evidence = (
+            f"当前用户消息明确提供路径：{dataset_source.source_path}；"
+            f"结构化数据源标签：{dataset_source.user_label}"
+        )
     return ConfirmedTaskParameters(
         baseline=_materialize_scalar_parameter(
-            raw.baseline,
+            trusted_raw.baseline,
             previous_parameters.baseline,
             source=source,
             evidence=evidence,
         ),
         dataset=_materialize_scalar_parameter(
-            raw.dataset,
+            trusted_dataset,
             previous_parameters.dataset,
             source=source,
-            evidence=evidence,
+            evidence=dataset_evidence,
         ),
         compute_budget=_materialize_scalar_parameter(
-            raw.compute_budget,
+            trusted_raw.compute_budget,
             previous_parameters.compute_budget,
             source=source,
             evidence=evidence,
         ),
         primary_metrics=_materialize_list_parameter(
-            raw.primary_metrics,
+            trusted_raw.primary_metrics,
             previous_parameters.primary_metrics,
             source=source,
             evidence=evidence,
         ),
         evaluation_constraints=_materialize_list_parameter(
-            raw.evaluation_constraints,
+            trusted_raw.evaluation_constraints,
             previous_parameters.evaluation_constraints,
             source=source,
             evidence=evidence,

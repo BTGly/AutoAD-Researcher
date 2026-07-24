@@ -131,6 +131,15 @@ def test_recipe_hash_covers_evidence_digest_bundle_and_pdf_versions(monkeypatch)
         }[attribute])
 
 
+def test_recipe_hash_covers_discussion_contract(monkeypatch):
+    import autoad_researcher.reporting.recipe as recipe
+
+    baseline = report_recipe_hash()
+    monkeypatch.setattr(recipe, "DISCUSSION_EVIDENCE_RULE", "changed discussion rule")
+
+    assert report_recipe_hash() != baseline
+
+
 def test_model_narrative_failure_persists_a_retryable_report_job(monkeypatch, tmp_path: Path):
     run_dir = tmp_path / "run_reporting_model_failure"
     run_dir.mkdir()

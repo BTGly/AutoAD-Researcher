@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,7 @@ from autoad_researcher.environments.snapshot import EnvironmentSnapshot
 from autoad_researcher.schemas.execution import ResourceUsageReport
 from autoad_researcher.reporting.facts import ExperimentReportFactsV1
 from autoad_researcher.reporting.models import ReportSnapshot
-from autoad_researcher.reporting.snapshot import resolve_run_relative_file, sha256_file
+from autoad_researcher.reporting.snapshot import read_verified_snapshot_artifact
 
 
 def enrich_facts(run_dir: Path, *, snapshot: ReportSnapshot, facts: ExperimentReportFactsV1) -> ExperimentReportFactsV1:
@@ -108,15 +107,7 @@ def _values_by_type(run_dir: Path, snapshot: ReportSnapshot) -> dict[str, list[d
     for reference in snapshot.source_refs:
         if reference.artifact_type in values:
             continue
-        path = resolve_run_relative_file(run_dir, reference.locator)
-        if sha256_file(path) != reference.sha256:
-            raise ValueError("snapshot artifact SHA-256 no longer matches")
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("snapshot artifact is not readable JSON") from exc
-        if not isinstance(raw, dict):
-            raise ValueError("snapshot JSON artifact must be an object")
+        raw = read_verified_snapshot_artifact(run_dir, reference)
         values.setdefault(reference.artifact_type, []).append(raw)
     return values
 

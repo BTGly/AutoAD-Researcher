@@ -43,12 +43,14 @@ export function Sidebar({ sources, jobs, evidence, unusableParsedSources, eviden
         ))}
       </div>
       <div className="sidebar-content">
-        {tab === 'sources' && <SourcesList sources={sources} onDeleteSource={onDeleteSource} />}
-        {tab === 'jobs' && <JobsList jobs={jobs} />}
-        {tab === 'evidence' && <EvidenceList evidence={evidence} unusableParsedSources={unusableParsedSources} />}
-        {tab === 'summary' && <IntentSummaryPanel summary={intentSummary || null} />}
+        <div className="sidebar-primary-content">
+          {tab === 'sources' && <SourcesList sources={sources} onDeleteSource={onDeleteSource} />}
+          {tab === 'jobs' && <JobsList jobs={jobs} />}
+          {tab === 'evidence' && <EvidenceList evidence={evidence} unusableParsedSources={unusableParsedSources} />}
+          {tab === 'summary' && <IntentSummaryPanel summary={intentSummary || null} />}
+        </div>
+        {children}
       </div>
-      {children}
     </aside>
   );
 }

@@ -13,24 +13,26 @@ interface Props {
   onClose: () => void;
 }
 
-const MODE_LABELS: Record<ExperimentTaskDraft['execution_mode'], string> = {
-  plan_only: '仅生成实验输入，不创建执行环境',
-  approve_each_step: '环境准备和后续每一步都需要确认',
-  agent_assisted_after_approval: '确认后允许 Agent 协助准备环境',
-};
+const MODE_OPTIONS: Array<{ value: ExperimentTaskDraft['execution_mode']; label: string; detail: string }> = [
+  { value: 'plan_only', label: '只生成方案', detail: '不准备环境，不运行实验' },
+  { value: 'approve_each_step', label: '逐步确认', detail: '每一步开始前确认' },
+  { value: 'agent_assisted_after_approval', label: '确认后协助', detail: '确认后由 Agent 准备环境' },
+];
 
 export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirmPrimaryMetrics, onClose }: Props) {
   const [executionMode, setExecutionMode] = useState<ExperimentTaskDraft['execution_mode']>('plan_only');
   const [executionRepositorySourceId, setExecutionRepositorySourceId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [primaryMetricsText, setPrimaryMetricsText] = useState(task.input_task.primary_metrics.join('\n'));
-  const executionModeRef = useRef<HTMLSelectElement>(null);
+  const [selectedPrimaryMetrics, setSelectedPrimaryMetrics] = useState<string[]>(task.input_task.primary_metrics);
+  const executionModeRef = useRef<HTMLButtonElement>(null);
   useDialogFocus(executionModeRef);
   const repositories = sources.filter(source => source.kind === 'github_repo' || source.kind === 'local_repo');
   const availableRepositories = repositories.filter(source => source.intakeStatus === 'ok');
   const requiresRepository = executionMode !== 'plan_only';
+  const executionContractReady = executionMode === 'plan_only' || task.input_task.primary_metrics.length > 0;
   const selectedRepository = availableRepositories.find(source => source.sourceId === executionRepositorySourceId);
+  const metricCandidates = task.primary_metric_candidates ?? [];
   const goal = task.input_task.user_idea || task.input_task.request;
 
   const submit = async () => {
@@ -46,12 +48,11 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
   };
 
   const savePrimaryMetrics = async () => {
-    const primaryMetrics = primaryMetricsText.split('\n').map(value => value.trim()).filter(Boolean);
-    if (!primaryMetrics.length) return;
+    if (!selectedPrimaryMetrics.length) return;
     setSubmitting(true);
     setError('');
     try {
-      await onConfirmPrimaryMetrics(primaryMetrics);
+      await onConfirmPrimaryMetrics(selectedPrimaryMetrics);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '主指标确认失败');
       setSubmitting(false);
@@ -66,32 +67,44 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
           目标：{goal}
         </div>
 
-        <label style={{ display: 'block', marginBottom: 16 }}>
-          <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 4 }}>执行模式</div>
-          <select ref={executionModeRef} value={executionMode} onChange={event => {
-            setExecutionMode(event.target.value as ExperimentTaskDraft['execution_mode']);
-            setExecutionRepositorySourceId('');
-          }}>
-            {Object.entries(MODE_LABELS).map(([mode, label]) => (
-              <option key={mode} value={mode}>{mode} — {label}</option>
+        <fieldset style={{ border: 0, padding: 0, margin: '0 0 16px' }}>
+          <legend style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>执行模式</legend>
+          <div role="radiogroup" aria-label="执行模式" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+            {MODE_OPTIONS.map(({ value, label, detail }, index) => (
+              <button
+                key={value}
+                ref={index === 0 ? executionModeRef : undefined}
+                type="button"
+                aria-pressed={executionMode === value}
+                onClick={() => {
+                  setExecutionMode(value);
+                  setExecutionRepositorySourceId('');
+                }}
+                style={{ textAlign: 'left', minHeight: 58, border: executionMode === value ? '1px solid var(--blue)' : '1px solid var(--border)', background: executionMode === value ? 'var(--bg-hover)' : 'transparent', color: 'var(--text)', borderRadius: 4, padding: '8px 9px' }}
+              >
+                <strong style={{ display: 'block', fontSize: '0.82em' }}>{label}</strong>
+                <span style={{ display: 'block', marginTop: 3, color: 'var(--text-muted)', fontSize: '0.72em' }}>{detail}</span>
+              </button>
             ))}
-          </select>
-        </label>
+          </div>
+        </fieldset>
 
         {task.input_task.primary_metrics.length === 0 ? (
           <div style={{ marginBottom: 16, padding: 10, border: '1px solid var(--orange)', borderRadius: 4 }}>
-            <div style={{ color: 'var(--orange)', fontSize: '0.84em', marginBottom: 6 }}>主指标未确认；可以保留 plan_only 草案，但不能确认执行。</div>
-            <textarea
-              value={primaryMetricsText}
-              onChange={event => setPrimaryMetricsText(event.target.value)}
-              placeholder="每行一个主指标，例如 image_auroc"
-              aria-label="主指标"
-              rows={3}
-              style={{ width: '100%', marginBottom: 8 }}
-            />
-            <button onClick={savePrimaryMetrics} disabled={submitting || !primaryMetricsText.trim()}>
-              确认主指标并刷新草案
-            </button>
+            <div style={{ color: 'var(--orange)', fontSize: '0.84em', marginBottom: 8 }}>主指标需要在讨论中确认。当前只能保留方案，不能确认执行。</div>
+            {metricCandidates.length > 0 ? (
+              <>
+                <div role="group" aria-label="主指标候选" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {metricCandidates.map(metric => {
+                    const selected = selectedPrimaryMetrics.includes(metric);
+                    return <button key={metric} type="button" aria-pressed={selected} onClick={() => setSelectedPrimaryMetrics(current => selected ? current.filter(item => item !== metric) : [...current, metric])} style={{ border: selected ? '1px solid var(--blue)' : '1px solid var(--border)', background: selected ? 'var(--bg-hover)' : 'transparent', color: 'var(--text)', borderRadius: 4, padding: '6px 9px' }}>{metric}</button>;
+                  })}
+                </div>
+                <button onClick={savePrimaryMetrics} disabled={submitting || !selectedPrimaryMetrics.length}>确认所选主指标并刷新草案</button>
+              </>
+            ) : (
+              <button type="button" onClick={onClose}>回到讨论确认主指标</button>
+            )}
           </div>
         ) : (
           <div style={{ marginBottom: 16, fontSize: '0.82em', color: 'var(--green)' }}>
@@ -101,7 +114,7 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
 
         {requiresRepository && (
           <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>执行仓库</div>
+            <div style={{ fontSize: '0.8em', color: 'var(--text-muted)', marginBottom: 6 }}>实验代码仓库</div>
             {availableRepositories.length > 0 ? (
               <>
                 <select
@@ -109,18 +122,17 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
                   onChange={event => setExecutionRepositorySourceId(event.target.value)}
                   aria-label="执行仓库"
                 >
-                  <option value="">请选择明确授权的执行仓库</option>
+                  <option value="">请选择本次实验使用的代码仓库</option>
                   {availableRepositories.map(source => (
                     <option key={source.sourceId} value={source.sourceId}>
-                      {source.label} / {source.kind} / {source.sourceId}
+                      {source.label}
                     </option>
                   ))}
                 </select>
                 {selectedRepository && (
                   <div style={{ marginTop: 8, padding: 8, border: '1px solid var(--blue)', borderRadius: 4, fontSize: '0.82em' }}>
-                    将执行：{selectedRepository.label}<br />
-                    source_id：{selectedRepository.sourceId}<br />
-                    类型：{selectedRepository.kind}；采集状态：{selectedRepository.intakeStatus}
+                    本次实验使用：{selectedRepository.label}<br />
+                    一个任务只绑定一个代码仓库；其他已登记来源仍可作为参考材料。
                   </div>
                 )}
               </>
@@ -142,7 +154,7 @@ export function ExperimentTaskConfirmation({ task, sources, onConfirm, onConfirm
           <button
             className="primary"
             onClick={submit}
-            disabled={submitting || (requiresRepository && !selectedRepository)}
+            disabled={submitting || !executionContractReady || (requiresRepository && !selectedRepository)}
             style={{ flex: 1 }}
           >
             {submitting ? '确认中…' : '确认任务'}

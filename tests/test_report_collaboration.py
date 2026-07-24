@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
-from autoad_researcher.reporting.discussion import DiscussionCapacityBusy, DiscussionResponse, DiscussionTurn, ReportDiscussionBudget, _recent_history, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
+from autoad_researcher.reporting.discussion import DiscussionCapacityBusy, DiscussionResponse, DiscussionTurn, ReportDiscussionBudget, _failed_attempt_facts, _recent_history, _registered_failure_log_context, _respond_with_slot, append_message, complete_turn, load_messages, load_turns, respond_to_turn, start_turn
 from autoad_researcher.reporting.review import create_proposal, record_review
 from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
@@ -56,6 +56,112 @@ def test_discussion_responder_uses_only_structured_output(monkeypatch, tmp_path:
     completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
     assert completed.status == "completed"
     assert completed.response is not None and completed.response.response_kind == "insufficient_evidence"
+
+
+def test_discussion_prompt_requires_tools_for_direct_failure_evidence(monkeypatch, tmp_path: Path):
+    run_dir, report_id = _ready_report(tmp_path)
+    turn = start_turn(run_dir, report_id=report_id, request_id="turn_failure_evidence", content="请列出失败 Attempt 的直接证据和下一步最小修复动作")
+    captured = {}
+
+    def fake_call(*args, **kwargs):
+        captured["system"] = args[2][0]["content"]
+        return {"reply": '{"answer":"证据不足。","response_kind":"insufficient_evidence","evidence_ids":[],"unsupported_claims":[]}', "error": ""}
+
+    monkeypatch.setattr("autoad_researcher.ui.chat_client.call_research_chat", fake_call)
+    completed = respond_to_turn(run_dir, report_id=report_id, turn_id=turn.turn_id, api_key="test", provider_url="https://example.test", model="test")
+
+    assert completed.status == "completed"
+    assert "first use a registered read-only Attempt or log tool" in captured["system"]
+    assert "Do not infer an error class" in captured["system"]
+    assert "report only that scope" in captured["system"]
+
+
+def test_discussion_prefetches_registered_stderr_for_failed_attempts(monkeypatch, tmp_path: Path):
+    captured = {}
+
+    def fake_execute(run_dir, *, report_id, calls, snapshot_content_sha256_expected):
+        captured["run_dir"] = run_dir
+        captured["report_id"] = report_id
+        captured["calls"] = calls
+        captured["snapshot"] = snapshot_content_sha256_expected
+        return [{"name": "read_log_range", "result": {"status": "available"}}]
+
+    monkeypatch.setattr("autoad_researcher.reporting.discussion.execute_tools", fake_execute)
+
+    class Facts:
+        attempts = [
+            {"attempt_id": "attempt_000001", "runtime_status": "FAILED"},
+            {"attempt_id": "attempt_000002", "runtime_status": "COMPLETED"},
+        ]
+
+    result = _registered_failure_log_context(
+        tmp_path,
+        report_id="report_failure_context",
+        facts=Facts(),
+        snapshot_content_sha256="a" * 64,
+    )
+
+    assert result == [{"name": "read_log_range", "result": {"status": "available"}}]
+    assert captured["report_id"] == "report_failure_context"
+    assert captured["snapshot"] == "a" * 64
+    assert len(captured["calls"]) == 1
+    assert captured["calls"][0].name == "read_log_range"
+    assert captured["calls"][0].arguments == {"attempt_id": "attempt_000001", "stream": "stderr"}
+
+
+def test_discussion_failure_context_preserves_distinct_failure_fields():
+    class Facts:
+        attempts = [
+            {
+                "attempt_id": "attempt_000001",
+                "attempt_purpose": "baseline",
+                "runtime_status": "FAILED",
+                "outcome": {
+                    "attempt_category": "run_failed",
+                    "execution_status": "CRASHED",
+                    "evaluation_status": "NON_COMPARABLE",
+                    "metrics_parsed": False,
+                },
+                "execution_result": {
+                    "exit_code": 1,
+                    "failure_code": "RUN_COMMAND_FAILED",
+                    "failure_message": "experiment command exited with code 1",
+                    "timed_out": False,
+                },
+                "failure_classification": {
+                    "attempt_category": "run_failed",
+                    "failure_code": "UNKNOWN_RUN_FAILURE",
+                    "matched_detector": "unknown_run_failure",
+                    "retryable": False,
+                },
+            }
+        ]
+
+    result = _failed_attempt_facts(Facts())
+
+    assert result == [{
+        "attempt_id": "attempt_000001",
+        "attempt_purpose": "baseline",
+        "runtime_status": "FAILED",
+        "outcome": {
+            "attempt_category": "run_failed",
+            "execution_status": "CRASHED",
+            "evaluation_status": "NON_COMPARABLE",
+            "metrics_parsed": False,
+        },
+        "execution_result": {
+            "exit_code": 1,
+            "failure_code": "RUN_COMMAND_FAILED",
+            "failure_message": "experiment command exited with code 1",
+            "timed_out": False,
+        },
+        "failure_classification": {
+            "attempt_category": "run_failed",
+            "failure_code": "UNKNOWN_RUN_FAILURE",
+            "matched_detector": "unknown_run_failure",
+            "retryable": False,
+        },
+    }]
 
 
 def test_capacity_busy_keeps_pending_turn_for_same_request_retry(monkeypatch, tmp_path: Path):

@@ -16,8 +16,15 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from autoad_researcher.assistant.v2.event_service import append_event
-from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineControlService, resolve_split_artifact
-from autoad_researcher.benchmarks.hashing import sha256_file
+from autoad_researcher.assistant.v2.experiment.baseline_control import (
+    BaselineControlService,
+    HeldOutAuthorization,
+    load_held_out_authorization,
+    list_held_out_authorizations,
+    resolve_split_artifact,
+    save_held_out_authorization,
+)
+from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService, ExperimentAttemptStartResult
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
@@ -28,6 +35,7 @@ from autoad_researcher.experiment.scientific_assessment import (
     ScientificAssessmentInputsStore,
     ScientificAssessmentService,
     ScientificEvaluationInputs,
+    load_declared_metric_values,
 )
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.experiment.validity import ComparisonIdentity
@@ -58,7 +66,9 @@ class CandidateConfirmationLink(BaseModel):
 class CandidateConfirmationResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    started: ExperimentAttemptStartResult
+    started: ExperimentAttemptStartResult | None = None
+    held_out_confirmation_id: str | None = None
+    baseline_b_test_started: ExperimentAttemptStartResult | None = None
     candidate_snapshot_ref: str | None = None
 
 
@@ -83,8 +93,13 @@ class CandidateConfirmationService:
         session = self._sessions.load(run_dir, session_id)
         if session is None:
             raise FileNotFoundError("experiment session not found")
-        if session.status != "READY" or session.baseline_status != "completed":
-            raise ValueError("candidate confirmation requires a completed baseline Session")
+        authorization = self._find_authorization(run_dir, session, value)
+        if not (
+            (session.status == "READY_FOR_BASELINE" and session.baseline_status == "b_dev_completed")
+            or (session.status == "READY" and session.baseline_status == "completed")
+            or authorization is not None
+        ):
+            raise ValueError("candidate confirmation requires a completed B_dev baseline")
         candidate = self._required_attempt(run_dir, value.candidate_attempt_id, session_id, "experiment_attempt")
         if candidate.runtime_status != "COMPLETED":
             raise ValueError("candidate confirmation requires a completed candidate Attempt")
@@ -117,17 +132,108 @@ class CandidateConfirmationService:
         decision = DecisionEngine().decide(assessment=b_dev, phase="b_dev", noise_threshold=value.noise_threshold)
         if decision.action != "candidate":
             raise ValueError(f"candidate confirmation is not eligible: {decision.action}")
+        if authorization is None:
+            workspace, source_commit = self._freeze_candidate(run_dir, session, candidate.attempt_id)
+            authorization = self._new_authorization(
+                run_dir,
+                session=session,
+                value=value,
+                source_branch=workspace.branch,
+                source_commit=source_commit,
+            )
+            save_held_out_authorization(run_dir, authorization)
+
         b_test_baseline = self._baseline_b_test(run_dir, session_id)
+        if b_test_baseline is None:
+            baseline_result = BaselineControlService().start_b_test(
+                run_dir,
+                session_id=session_id,
+                confirmation_id=authorization.confirmation_id,
+            )
+            baseline_started = baseline_result.b_test_started
+            if baseline_started is None:
+                raise ValueError("held-out authorization did not create a baseline B_test")
+            authorization = authorization.model_copy(update={"baseline_b_test_attempt_id": baseline_started.attempt.attempt_id})
+            save_held_out_authorization(run_dir, authorization)
+            append_event(run_dir, "experiment.held_out.authorized", {"confirmation_id": authorization.confirmation_id, "candidate_attempt_id": candidate.attempt_id, "baseline_b_test_attempt_id": baseline_started.attempt.attempt_id})
+            return CandidateConfirmationResult(
+                held_out_confirmation_id=authorization.confirmation_id,
+                baseline_b_test_started=baseline_started,
+            )
+
+        if authorization.baseline_b_test_attempt_id not in {None, b_test_baseline.attempt_id}:
+            raise ValueError("idempotency_conflict: held-out authorization points to another baseline B_test")
+        authorization = authorization.model_copy(update={"baseline_b_test_attempt_id": b_test_baseline.attempt_id})
+        save_held_out_authorization(run_dir, authorization)
+        return self._materialize_candidate_b_test(
+            run_dir,
+            session=session,
+            candidate=candidate,
+            authorization=authorization,
+            baseline_b_test=b_test_baseline,
+        )
+
+    def materialize_after_baseline_b_test(self, run_dir: Path, *, session_id: str) -> None:
+        """Recover the paired Candidate B_test after Baseline B_test completes."""
+        session = self._sessions.load(run_dir, session_id)
+        if session is None:
+            return
+        for authorization in list_held_out_authorizations(run_dir):
+            if authorization.session_id != session_id or authorization.candidate_b_test_attempt_id is not None:
+                continue
+            if authorization.baseline_b_test_attempt_id is None:
+                continue
+            baseline = self._attempt_store.load(run_dir, authorization.baseline_b_test_attempt_id)
+            if baseline is None or baseline.runtime_status != "COMPLETED":
+                continue
+            candidate = self._required_attempt(run_dir, authorization.candidate_attempt_id, session_id, "experiment_attempt")
+            result = self._materialize_candidate_b_test(
+                run_dir,
+                session=session,
+                candidate=candidate,
+                authorization=authorization,
+                baseline_b_test=baseline,
+            )
+            if result.started is None:
+                continue
+
+    def _materialize_candidate_b_test(
+        self,
+        run_dir: Path,
+        *,
+        session,
+        candidate,
+        authorization: HeldOutAuthorization,
+        baseline_b_test,
+    ) -> CandidateConfirmationResult:
+        if authorization.evaluation_contract_sha256 != session.evaluation_contract_sha256:
+            raise ValueError("held-out authorization contract differs from Session")
+        if authorization.candidate_b_test_attempt_id is not None:
+            existing = self._attempt_store.load(run_dir, authorization.candidate_b_test_attempt_id)
+            if existing is None:
+                raise FileNotFoundError("authorized Candidate B_test Attempt is missing")
+            started = ExperimentAttemptStartResult(
+                attempt=existing,
+                pipeline_job=self._pipeline_job(run_dir, existing.pipeline_job_id),
+                disposition="reused",
+            )
+            return CandidateConfirmationResult(
+                started=started,
+                held_out_confirmation_id=authorization.confirmation_id,
+                candidate_snapshot_ref=self.finalize_if_ready(run_dir, confirmation_attempt_id=existing.attempt_id),
+            )
+
         binding = BaselineControlService._load_binding(run_dir, session)
         snapshot, python_executable = BaselineControlService._load_observed_environment(run_dir, session)
         contract = self._contract(run_dir, session)
         workspace = self._workspace(run_dir, candidate.attempt_id)
-        source_commit = self._commit_admitted_candidate(run_dir, candidate.attempt_id, workspace)
         adapter = ExecutorAdapter()
         adapter_result = adapter.inspect(Path(workspace.worktree_path))
         if adapter_result.status != "supported" or adapter_result.evidence is None:
             raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
-        inputs_payload = json.loads((run_dir / "experiments" / "execution_inputs" / f"{session_id}.json").read_text(encoding="utf-8"))
+        if "b_test" not in adapter_result.evidence.evaluation_commands:
+            raise ValueError("adapter has no explicit b_test command for the frozen split")
+        inputs_payload = json.loads((run_dir / "experiments" / "execution_inputs" / f"{session.session_id}.json").read_text(encoding="utf-8"))
         adapter_inputs = ExecutorAdapterInputs(
             run_id=run_dir.name,
             worktree_ref=str(Path(workspace.worktree_path).resolve().relative_to(run_dir.resolve())),
@@ -141,15 +247,15 @@ class CandidateConfirmationService:
             split_ref=str(resolve_split_artifact(run_dir, contract.b_test_ref)),
         )
         plan, refs = adapter.build_execution(adapter_result, adapter_inputs)
-        protected_ref = f"experiments/protected_artifacts/{session_id}.json"
+        protected_ref = f"experiments/protected_artifacts/{session.session_id}.json"
         protected_path = run_dir / protected_ref
         if not protected_path.is_file():
             raise ValueError("execution_contract_incomplete: baseline protected artifact report is missing")
         started = self._attempts.create_or_get_attempt(
             run_dir,
-            session_id=session_id,
+            session_id=session.session_id,
             job_type="experiment_confirmatory",
-            idempotency_key=value.idempotency_key,
+            idempotency_key=authorization.idempotency_key,
             command_plan=plan,
             input_refs=refs,
             job_timeout_sec=contract.resource_budget.max_wall_seconds,
@@ -174,7 +280,7 @@ class CandidateConfirmationService:
         self._assessment_inputs.save(
             run_dir / "attempts" / confirmation_id,
             ScientificEvaluationInputs(
-                baseline_metrics=self._metrics(run_dir, b_test_baseline.attempt_id),
+                baseline_metrics=self._metrics(run_dir, baseline_b_test.attempt_id),
                 candidate_identity=identity,
                 baseline_identity=identity,
             ),
@@ -184,13 +290,66 @@ class CandidateConfirmationService:
             confirmation_id,
             CandidateConfirmationLink(
                 candidate_attempt_id=candidate.attempt_id,
-                noise_threshold=value.noise_threshold,
-                source_branch=workspace.branch,
-                source_commit=source_commit,
+                noise_threshold=authorization.noise_threshold,
+                source_branch=authorization.source_branch,
+                source_commit=authorization.source_commit,
             ),
         )
-        append_event(run_dir, "experiment.candidate.b_test_queued", {"candidate_attempt_id": candidate.attempt_id, "confirmation_attempt_id": confirmation_id})
-        return CandidateConfirmationResult(started=started, candidate_snapshot_ref=self.finalize_if_ready(run_dir, confirmation_attempt_id=confirmation_id))
+        updated_authorization = authorization.model_copy(update={"candidate_b_test_attempt_id": confirmation_id, "status": "paired"})
+        save_held_out_authorization(run_dir, updated_authorization)
+        append_event(run_dir, "experiment.candidate.b_test_queued", {"candidate_attempt_id": candidate.attempt_id, "confirmation_attempt_id": confirmation_id, "held_out_confirmation_id": authorization.confirmation_id})
+        return CandidateConfirmationResult(
+            started=started,
+            held_out_confirmation_id=authorization.confirmation_id,
+            candidate_snapshot_ref=self.finalize_if_ready(run_dir, confirmation_attempt_id=confirmation_id),
+        )
+
+    def _freeze_candidate(self, run_dir: Path, session, candidate_attempt_id: str) -> tuple[WorkspaceSpec, str]:
+        workspace = self._workspace(run_dir, candidate_attempt_id)
+        source_commit = self._commit_admitted_candidate(run_dir, candidate_attempt_id, workspace)
+        adapter_result = ExecutorAdapter().inspect(Path(workspace.worktree_path))
+        if adapter_result.status != "supported" or adapter_result.evidence is None:
+            raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
+        if "b_test" not in adapter_result.evidence.evaluation_commands:
+            raise ValueError("adapter has no explicit b_test command for the frozen split")
+        return workspace, source_commit
+
+    @staticmethod
+    def _new_authorization(
+        run_dir: Path,
+        *,
+        session,
+        value: CandidateConfirmationInput,
+        source_branch: str,
+        source_commit: str,
+    ) -> HeldOutAuthorization:
+        payload = {
+            "session_id": session.session_id,
+            "candidate_attempt_id": value.candidate_attempt_id,
+            "noise_threshold": value.noise_threshold,
+            "idempotency_key": value.idempotency_key,
+            "evaluation_contract_sha256": session.evaluation_contract_sha256,
+            "source_branch": source_branch,
+            "source_commit": source_commit,
+        }
+        return HeldOutAuthorization(
+            confirmation_id=f"heldout_{canonical_sha256(payload)[:16]}",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            **payload,
+        )
+
+    @staticmethod
+    def _find_authorization(run_dir: Path, session, value: CandidateConfirmationInput) -> HeldOutAuthorization | None:
+        matches = [
+            item for item in list_held_out_authorizations(run_dir)
+            if item.session_id == session.session_id and item.candidate_attempt_id == value.candidate_attempt_id
+        ]
+        if not matches:
+            return None
+        authorization = matches[0]
+        if authorization.noise_threshold != value.noise_threshold or authorization.idempotency_key != value.idempotency_key:
+            raise ValueError("idempotency_conflict: held-out authorization differs")
+        return authorization
 
     def finalize_if_ready(self, run_dir: Path, *, confirmation_attempt_id: str) -> str | None:
         confirmation = self._attempt_store.load(run_dir, confirmation_attempt_id)
@@ -241,7 +400,14 @@ class CandidateConfirmationService:
         return ref
 
     def _baseline_b_test(self, run_dir: Path, session_id: str):
-        return next((item for item in self._attempt_store.list_for_session(run_dir, session_id=session_id) if item.job_type == "experiment_baseline_b_test" and item.runtime_status == "COMPLETED"), None) or self._raise("candidate confirmation requires a completed B_test baseline")
+        return next(
+            (
+                item
+                for item in self._attempt_store.list_for_session(run_dir, session_id=session_id)
+                if item.job_type == "experiment_baseline_b_test" and item.runtime_status == "COMPLETED"
+            ),
+            None,
+        )
 
     @staticmethod
     def _required_attempt(run_dir: Path, attempt_id: str, session_id: str, job_type: str):
@@ -301,10 +467,7 @@ class CandidateConfirmationService:
 
     @staticmethod
     def _metrics(run_dir: Path, attempt_id: str) -> dict[str, float]:
-        raw = json.loads((run_dir / "attempts" / attempt_id / "outcome_card.json").read_text(encoding="utf-8")).get("metrics")
-        if not isinstance(raw, dict) or not all(isinstance(value, (int, float)) for value in raw.values()):
-            raise ValueError("execution_contract_incomplete: baseline metrics are unavailable")
-        return {str(key): float(value) for key, value in raw.items()}
+        return load_declared_metric_values(run_dir, attempt_id=attempt_id)
 
     @staticmethod
     def _link_path(run_dir: Path, attempt_id: str) -> Path:

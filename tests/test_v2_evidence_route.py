@@ -484,6 +484,7 @@ async def test_intent_summary_route_returns_empty_summary_for_missing_run(tmp_pa
             "primary_metrics": [],
             "evaluation_constraints": [],
         },
+        "primary_metric_candidates": [],
         "inferred_facts": [],
         "unresolved_conflicts": [],
         "blocking_question": None,

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.assistant.v2.experiment.baseline_control import BaselineContractInput, BaselineControlService
+from autoad_researcher.assistant.v2.experiment.baseline_repair import BaselineRepairInput, BaselineRepairService
 from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateControlService, CandidateLaunchInput
 from autoad_researcher.assistant.v2.experiment.candidate_confirmation import CandidateConfirmationInput, CandidateConfirmationService
 from autoad_researcher.assistant.v2.experiment.promotion_control import PromotionControlService, PromotionInput
@@ -167,6 +168,81 @@ def test_baseline_control_freezes_server_owned_attempt_and_projects_ready(tmp_pa
     assert json.loads((run_dir / "attempts" / attempt.attempt_id / "outcome_card.json").read_text())["metrics"] == {"score": 0.8}
 
 
+@pytest.mark.parametrize("with_b_test", [False, True])
+def test_failed_baseline_can_be_repaired_in_a_new_attempt_without_rewriting_failure(tmp_path: Path, with_b_test: bool):
+    run_dir = tmp_path / "run"
+    session = _ready_session(run_dir)
+    if with_b_test:
+        _declare_b_test_adapter(run_dir, session.session_id)
+    repository = run_dir / "repos" / "source_micro"
+    original = repository / "run.py"
+    original_text = original.read_text(encoding="utf-8")
+    failing_text = original_text.replace(
+        "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))",
+        "raise RuntimeError('intentional baseline failure')",
+    )
+    original.write_text(failing_text, encoding="utf-8")
+    _git(repository, "add", "run.py")
+    _git(repository, "commit", "-m", "fixture failure")
+
+    failed_start = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
+    failed_id = failed_start.started.attempt.attempt_id
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        failed = ExperimentAttemptStore().load(run_dir, failed_id)
+        if failed is not None and failed.runtime_status == "FAILED":
+            break
+        time.sleep(0.02)
+    failed = ExperimentAttemptStore().load(run_dir, failed_id)
+    projected = ExperimentSessionStore().load(run_dir, session.session_id)
+    assert failed is not None and failed.runtime_status == "FAILED"
+    assert projected is not None and projected.status == "FAILED" and projected.baseline_status == "failed"
+    failure_result = json.loads((run_dir / "attempts" / failed_id / "execution_result.json").read_text(encoding="utf-8"))
+
+    search = "raise RuntimeError('intentional baseline failure')"
+    replace = "Path(os.environ['AUTOAD_ATTEMPT_DIR']).joinpath('metrics.json').write_text(json.dumps({'score': score(0.8)}))"
+    repair = BaselineRepairService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=BaselineRepairInput(
+            failed_attempt_id=failed_id,
+            intervention_contract=InterventionContract(
+                idea_id="repair_baseline_failure",
+                mechanism="restore the executable baseline path",
+                hypothesis="removing the observed runtime failure restores baseline evaluation",
+                target_modules=["run.py"],
+                allowed_paths=["run.py"],
+                forbidden_paths=["evaluate.py", "metric.py"],
+                time_budget=30,
+            ),
+            approved_proposal=ExecutorProposal(
+                edits=[SearchReplaceEdit(path="run.py", search=search, replace=replace)],
+                changed_symbols=["baseline_entrypoint"],
+                confidence=1,
+            ),
+            idempotency_key="baseline-repair:fixture",
+        ),
+    )
+    assert repair.status == "queued" and repair.attempt is not None
+    repair_id = str(repair.attempt["attempt_id"])
+    assert repair.attempt["attempt_purpose"] == "repair"
+    for _ in range(100):
+        _process_pending_jobs(run_dir)
+        repaired = ExperimentAttemptStore().load(run_dir, repair_id)
+        if repaired is not None and repaired.runtime_status == "COMPLETED":
+            break
+        time.sleep(0.02)
+
+    repaired = ExperimentAttemptStore().load(run_dir, repair_id)
+    projected = ExperimentSessionStore().load(run_dir, session.session_id)
+    failure_after = json.loads((run_dir / "attempts" / failed_id / "execution_result.json").read_text(encoding="utf-8"))
+    assert repaired is not None and repaired.runtime_status == "COMPLETED"
+    expected_state = ("READY_FOR_BASELINE", "b_dev_completed") if with_b_test else ("READY", "completed")
+    assert projected is not None and (projected.status, projected.baseline_status) == expected_state
+    assert failure_after == failure_result
+    assert (run_dir / "attempts" / repair_id / "repair_request.json").is_file()
+
+
 def test_baseline_control_refuses_metric_that_was_not_confirmed(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
@@ -241,21 +317,23 @@ def test_baseline_gpu_budget_requires_explicit_resources():
         BaselineContractInput.model_validate(payload)
 
 
-def test_baseline_control_queues_explicit_b_test_baseline_and_waits_for_both(tmp_path: Path):
+def test_baseline_control_requires_explicit_b_test_action_after_b_dev(tmp_path: Path):
     run_dir = tmp_path / "run"
     session = _ready_session(run_dir)
     _declare_b_test_adapter(run_dir, session.session_id)
     started = BaselineControlService().start(run_dir, session_id=session.session_id, contract_input=_contract())
-    assert started.b_test_started is not None
-    assert started.b_test_started.attempt.command_plan.command_id == "generic_python_b_test"
+    assert started.b_test_started is None
     for _ in range(100):
         _process_pending_jobs(run_dir)
         projected = ExperimentSessionStore().load(run_dir, session.session_id)
-        if projected is not None and projected.status == "READY":
+        if projected is not None and projected.baseline_status == "b_dev_completed":
             break
         time.sleep(0.02)
     projected = ExperimentSessionStore().load(run_dir, session.session_id)
-    assert projected is not None and projected.status == "READY"
+    assert projected is not None and projected.status == "READY_FOR_BASELINE" and projected.baseline_status == "b_dev_completed"
+    with pytest.raises(ValueError, match="held_out_confirmation_required"):
+        BaselineControlService().start_b_test(run_dir, session_id=session.session_id)
+    assert [item.job_type for item in ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)] == ["experiment_baseline"]
 
 
 def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tmp_path: Path):
@@ -266,7 +344,7 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
     for _ in range(100):
         _process_pending_jobs(run_dir)
         projected = ExperimentSessionStore().load(run_dir, session.session_id)
-        if projected is not None and projected.status == "READY":
+        if projected is not None and projected.baseline_status == "b_dev_completed":
             break
         time.sleep(0.02)
     tree, _ = IdeaTreeStore().create_or_get(run_dir, session_id=session.session_id)
@@ -294,12 +372,28 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
         session_id=session.session_id,
         value=CandidateConfirmationInput(candidate_attempt_id=candidate_attempt_id, noise_threshold=0.01, idempotency_key="confirm:idea-1"),
     )
-    confirmation_id = confirmation.started.attempt.attempt_id
+    assert confirmation.started is None
+    assert confirmation.baseline_b_test_started is not None
+    assert confirmation.held_out_confirmation_id is not None
+    replay_before_held_out_finishes = CandidateConfirmationService().start(
+        run_dir,
+        session_id=session.session_id,
+        value=CandidateConfirmationInput(candidate_attempt_id=candidate_attempt_id, noise_threshold=0.01, idempotency_key="confirm:idea-1"),
+    )
+    assert replay_before_held_out_finishes.started is None
+    assert replay_before_held_out_finishes.baseline_b_test_started is not None
+    assert replay_before_held_out_finishes.baseline_b_test_started.disposition == "reused"
+    assert [item.job_type for item in ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)].count("experiment_baseline_b_test") == 1
+    authorization_before_pair = json.loads((run_dir / "experiments" / "held_out_confirmations" / f"{confirmation.held_out_confirmation_id}.json").read_text(encoding="utf-8"))
+    assert authorization_before_pair["candidate_b_test_attempt_id"] is None
     for _ in range(100):
         _process_pending_jobs(run_dir)
         if (run_dir / "experiments" / "champions" / "candidates" / f"candidate_{int(candidate_attempt_id.rsplit('_', 1)[1]):06d}.json").is_file():
             break
         time.sleep(0.02)
+    authorization_path = run_dir / "experiments" / "held_out_confirmations" / f"{confirmation.held_out_confirmation_id}.json"
+    authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+    confirmation_id = str(authorization["candidate_b_test_attempt_id"])
     snapshot = CandidateRegistry().load_candidate(run_dir, f"candidate_{int(candidate_attempt_id.rsplit('_', 1)[1]):06d}")
     assert snapshot.attempt_id == candidate_attempt_id
     assert snapshot.b_test_passed
@@ -332,6 +426,25 @@ def test_baseline_control_rejects_conflicting_replay_without_a_new_job(tmp_path:
 
     assert len(load_pipeline_jobs(run_dir)) == 1
     assert ExperimentAttemptStore().list_for_session(run_dir, session_id=session.session_id)[0].attempt_id == first.started.attempt.attempt_id
+
+
+def test_promotion_merge_does_not_require_repository_git_identity(tmp_path: Path):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-b", "main")
+    (repository / "model.py").write_text("value = 1\n", encoding="utf-8")
+    _git(repository, "add", "model.py")
+    _git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "baseline")
+    _git(repository, "switch", "-c", "candidate")
+    (repository / "model.py").write_text("value = 2\n", encoding="utf-8")
+    _git(repository, "add", "model.py")
+    _git(repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "candidate")
+    _git(repository, "switch", "--detach", "main")
+
+    merged = PromotionControlService._merge(repository, "candidate")
+
+    assert len(merged) == 40
+    assert (repository / "model.py").read_text(encoding="utf-8") == "value = 2\n"
 
 
 def test_baseline_control_rejects_unacquired_selected_source(tmp_path: Path):

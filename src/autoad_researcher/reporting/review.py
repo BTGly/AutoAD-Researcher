@@ -19,6 +19,7 @@ from autoad_researcher.assistant.v2.experiment.candidate_control import (
     CandidateControlService,
     CandidateLaunchInput,
 )
+from autoad_researcher.assistant.v2.experiment.baseline_repair import BaselineRepairInput, BaselineRepairService
 from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     save_research_intent_summary,
@@ -93,6 +94,7 @@ class FollowUpProposal(BaseModel):
     candidate_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
     noise_threshold: float | None = Field(default=None, ge=0)
     refine_input: CandidateLaunchInput | None = None
+    repair_input: BaselineRepairInput | None = None
     pivot_context: PivotTaskContext | None = None
     validation_errors: list[str] = Field(default_factory=list)
     status: ProposalStatus = "DRAFT"
@@ -118,6 +120,7 @@ def create_proposal(
     candidate_attempt_id: str | None = None,
     noise_threshold: float | None = None,
     refine_input: CandidateLaunchInput | None = None,
+    repair_input: BaselineRepairInput | None = None,
     pivot_context: PivotTaskContext | None = None,
 ) -> FollowUpProposal:
     manifest = ReportStore().load_manifest(run_dir, report_id)
@@ -132,6 +135,7 @@ def create_proposal(
         risk_level=risk_level, target_attempt_id=target_attempt_id,
         candidate_attempt_id=candidate_attempt_id, noise_threshold=noise_threshold,
         refine_input=refine_input, pivot_context=pivot_context,
+        repair_input=repair_input,
         created_at=_utc_now(),
     )
     errors = validate_proposal(run_dir, draft)
@@ -176,6 +180,8 @@ def validate_proposal(run_dir: Path, proposal: FollowUpProposal) -> list[str]:
             errors.append("RETRY_FAILED must bind an Attempt in the source Session")
         elif attempt.runtime_status not in {"FAILED", "TIMED_OUT", "LOST"}:
             errors.append("RETRY_FAILED requires a failed terminal Attempt")
+        if proposal.repair_input is not None and proposal.repair_input.failed_attempt_id != proposal.target_attempt_id:
+            errors.append("baseline repair input must target the Proposal target_attempt_id")
     elif proposal.proposal_type == "ADD_CONFIRMATION":
         if proposal.candidate_attempt_id is None or proposal.noise_threshold is None:
             errors.append("ADD_CONFIRMATION requires candidate_attempt_id and noise_threshold")
@@ -269,6 +275,21 @@ def _handoff(run_dir: Path, proposal: FollowUpProposal) -> FollowUpProposal:
     if proposal.proposal_type == "REQUEST_HUMAN":
         return proposal.model_copy(update={"status": "HANDED_OFF", "handoff": {"kind": "human_queue", "proposal_id": proposal.proposal_id}})
     if proposal.proposal_type == "RETRY_FAILED":
+        if proposal.repair_input is not None:
+            result = BaselineRepairService().start(
+                run_dir,
+                session_id=proposal.source_session_id,
+                value=proposal.repair_input.model_copy(
+                    update={"idempotency_key": f"report-proposal:{proposal.proposal_id}"}
+                ),
+            )
+            if result.status not in {"queued", "reused"} or result.attempt is None or result.pipeline_job is None:
+                raise ValueError(result.blocker or "RETRY_FAILED baseline repair could not create an Attempt")
+            return proposal.model_copy(update={"status": "HANDED_OFF", "handoff": {
+                "kind": "baseline_repair",
+                "attempt_id": str(result.attempt["attempt_id"]),
+                "pipeline_job_id": str(result.pipeline_job["job_id"]),
+            }})
         started = ExperimentAttemptService().create_retry(run_dir, attempt_id=proposal.target_attempt_id or "")
         return proposal.model_copy(update={"status": "HANDED_OFF", "handoff": {"kind": "retry", "attempt_id": started.attempt.attempt_id, "pipeline_job_id": str(started.pipeline_job["job_id"])}})
     if proposal.proposal_type == "ADD_CONFIRMATION":

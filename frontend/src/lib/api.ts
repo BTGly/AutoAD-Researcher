@@ -12,6 +12,7 @@ import type {
   ReportProposal,
   TaskRun,
   BaselineContractInput,
+  CandidateProposal,
 } from './types';
 
 export class ApiError extends Error {
@@ -241,6 +242,48 @@ export async function startBaseline(
   return res.json();
 }
 
+export async function generateCandidateProposal(
+  runId: string,
+  sessionId: string,
+  idempotencyKey: string,
+): Promise<{ proposal: CandidateProposal }> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-proposals`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ idempotency_key: idempotencyKey }),
+  });
+  if (!res.ok) throw await apiError(res, `Candidate proposal generation error: ${res.status}`);
+  return res.json();
+}
+
+export async function approveCandidateProposal(
+  runId: string,
+  sessionId: string,
+  proposalId: string,
+): Promise<{ proposal: CandidateProposal }> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-proposals/${encodeURIComponent(proposalId)}/approve`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ approved_by: 'user' }),
+  });
+  if (!res.ok) throw await apiError(res, `Candidate proposal approval error: ${res.status}`);
+  return res.json();
+}
+
+export async function rejectCandidateProposal(
+  runId: string,
+  sessionId: string,
+  proposalId: string,
+): Promise<{ proposal: CandidateProposal }> {
+  const res = await fetch(`/api/runs/${runId}/sessions/${sessionId}/candidate-proposals/${encodeURIComponent(proposalId)}/reject`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ approved_by: 'user' }),
+  });
+  if (!res.ok) throw await apiError(res, `Candidate proposal rejection error: ${res.status}`);
+  return res.json();
+}
+
 export async function confirmCandidate(
   runId: string,
   sessionId: string,
@@ -286,6 +329,7 @@ export async function getLatestVersionedReport(runId: string): Promise<{ content
 }
 
 export async function listReports(runId: string): Promise<ReportManifest[]> { const res = await fetch(`/api/runs/${runId}/reports`); if (!res.ok) throw await apiError(res, 'Report list unavailable'); return (await res.json()).reports; }
+export async function createReport(runId: string, sessionId: string): Promise<ReportManifest> { const res = await fetch(`/api/runs/${runId}/reports`, { method: 'POST', headers: getHeaders(), body: JSON.stringify({ session_id: sessionId }) }); if (!res.ok) throw await apiError(res, 'Report generation request failed'); return (await res.json()).manifest; }
 export async function getLatestCreatedReport(runId: string): Promise<ReportManifest | null> { const res = await fetch(`/api/runs/${runId}/reports/latest-created`); if (res.status === 404) return null; if (!res.ok) throw await apiError(res, 'Latest report unavailable'); return res.json(); }
 export async function getLatestContentReadyReport(runId: string): Promise<ReportManifest | null> { const res = await fetch(`/api/runs/${runId}/reports/latest-content-ready`); if (res.status === 404) return null; if (!res.ok) throw await apiError(res, 'Readable report unavailable'); return res.json(); }
 export async function getReportState(runId: string, reportId: string): Promise<ReportState> { const res = await fetch(`/api/runs/${runId}/reports/${reportId}/state`); if (!res.ok) throw await apiError(res, 'Report state unavailable'); return res.json(); }

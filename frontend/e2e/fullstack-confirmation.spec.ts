@@ -16,7 +16,7 @@ test('persists an explicitly selected execution repository through the real API'
 
   await page.goto('/');
   await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
-  await page.getByLabel('执行模式').selectOption('approve_each_step');
+  await page.getByRole('button', { name: '逐步确认' }).click();
   await page.getByLabel('执行仓库').selectOption('repo_micro');
   await page.getByRole('button', { name: '确认任务' }).click();
   await expect(page.getByText('实验任务已确认（created）')).toBeVisible();

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { ExperimentProjection } from '../src/lib/types';
+import type { CandidateProposal, ExperimentProjection } from '../src/lib/types';
 
 const run = { run_id: 'run_observatory', created_at: null, updated_at: null, sources_count: 0, task_title: '观测任务', task_summary: '', task_source: 'manual', task_profile_warning: null, archived_at: null };
 const projection = {
@@ -22,6 +22,14 @@ const projection = {
   activity_scan_truncated: false,
   developer_refs: { run_id: run.run_id, session_id: 'session_aaaaaaaaaaaaaaaa', event_ids: [1], artifact_paths: [], pipeline_job_ids: [], event_log_path: 'events/events.jsonl' },
 } satisfies ExperimentProjection;
+
+const candidateProposal: CandidateProposal = {
+  proposal_id: 'proposal_0123456789abcdef', run_id: run.run_id, session_id: 'session_aaaaaaaaaaaaaaaa', idempotency_key: 'ui-proposal:session_aaaaaaaaaaaaaaaa', status: 'pending_review', idea_node_id: 'idea_000001', idea_tree_revision: 1,
+  evaluation_contract_ref: 'experiments/evaluation_contracts/session_aaaaaaaaaaaaaaaa/evaluation_contract_000001.json', evaluation_contract_sha256: 'b'.repeat(64),
+  idea: { mechanism: '局部特征重加权', hypothesis: '局部重加权可改善集中缺陷的 image AUROC', observable: 'image AUROC', research_axis: '局部残差', minimal_intervention: '只修改 model.py 的评分归约', falsification: 'B_dev 未超过冻结噪声阈值', expected_cost: 'low', relationship_to_previous_ideas: '基线后的第一个候选', grounding: ['baseline outcome'] },
+  candidate: { intervention_contract: { idea_id: 'idea_000001', mechanism: '局部特征重加权', hypothesis: '局部重加权可改善集中缺陷的 image AUROC', target_modules: ['model.py'], allowed_paths: ['model.py'], forbidden_paths: ['evaluate.py', 'metric.py'], allowed_parameters: ['peak_window'], evaluation_invariants: ['fixed evaluator and split'], time_budget: 30 }, approved_proposal: { edits: [{ path: 'model.py', search: 'return mean(residuals)', replace: 'return max(residuals)' }], changed_symbols: ['score'], possible_contract_deviation: null, confidence: 0.8 }, comparison_seed: 1, idempotency_key: 'candidate:proposal_0123456789abcdef' },
+  content_sha256: 'c'.repeat(64), created_at: '2026-07-20T00:00:00Z', updated_at: '2026-07-20T00:00:00Z', decided_by: null, attempt_id: null,
+};
 
 async function prepare(page: Page, getProjection: (sessionId?: string) => object = () => projection, withWebSocket = false, delayedRefreshMs = 0) {
   let projectionRequests = 0;
@@ -113,14 +121,58 @@ test('launches a Baseline from an environment-ready Session with an explicit con
   await page.getByLabel('B_test 文件引用').fill('inputs/test.json');
   await page.getByLabel('Checkpoint 选择').fill('best');
   await page.getByLabel('Seeds').fill('1');
-  await page.getByLabel('最大墙钟秒数').fill('30');
+  await expect(page.getByText('请依次填写：最大墙钟秒数、最大 GPU 秒数，单位均为秒。例如 CPU-only 任务填写 20000, 0；此时 GPU 数量和显存填 0 或留空。GPU 任务还需填写 GPU 数量和每个 GPU 所需显存 MB。', { exact: true })).toBeVisible();
+  await page.getByLabel('最大墙钟秒数').fill('20000');
   await page.getByLabel('最大 GPU 秒数').fill('0');
   await page.getByLabel('指标方向 image AUROC').selectOption('maximize');
   await page.getByLabel('指标角色 image AUROC').selectOption('primary');
   await page.getByLabel('指标实现引用 image AUROC').fill('metric.py');
   await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
   await expect.poll(() => requestBody).not.toBeNull();
-  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_gpu_seconds: 0, required_device_count: 0, required_vram_mb: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
+  expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_wall_seconds: 20000, max_gpu_seconds: 0, required_device_count: 0, required_vram_mb: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
+});
+
+test('generates a reviewed Candidate Proposal before creating a Candidate Attempt', async ({ page }) => {
+  const proposalProjection = structuredClone(projection);
+  proposalProjection.actions = { baseline_launch_available: false, candidate_proposal_generation_available: true, candidate_proposal_approvals: [], candidate_confirmations: [], candidate_promotions: [] };
+  proposalProjection.attempts = [];
+  proposalProjection.candidates = [];
+  proposalProjection.summary.idea_count = 1;
+  let generated = false;
+  let generationBody: Record<string, unknown> | null = null;
+  let approvalBody: Record<string, unknown> | null = null;
+  await prepare(page, () => {
+    const value = structuredClone(proposalProjection);
+    if (generated) {
+      value.actions.candidate_proposal_generation_available = false;
+      value.actions.candidate_proposal_approvals = [{ proposal: candidateProposal }];
+      value.summary.idea_count = 2;
+    }
+    if (approvalBody) {
+      value.actions.candidate_proposal_approvals = [];
+      value.attempts = [{ ...projection.attempts[0], attempt_id: 'attempt_candidate_000001', job_type: 'experiment_attempt', related_idea_ids: ['idea_000001'] }];
+      value.summary.idea_count = 2;
+    }
+    return value;
+  });
+  await page.route(`**/api/runs/${run.run_id}/sessions/${candidateProposal.session_id}/candidate-proposals`, async route => {
+    generationBody = route.request().postDataJSON() as Record<string, unknown>;
+    generated = true;
+    await route.fulfill({ json: { status: 'created', proposal: candidateProposal } });
+  });
+  await page.route(`**/api/runs/${run.run_id}/sessions/${candidateProposal.session_id}/candidate-proposals/${candidateProposal.proposal_id}/approve`, async route => {
+    approvalBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: { status: 'started', proposal: { ...candidateProposal, status: 'started', attempt_id: 'attempt_candidate_000001' }, candidate: { status: 'queued', attempt: { attempt_id: 'attempt_candidate_000001' } } } });
+  });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByRole('button', { name: '生成候选方案' }).click();
+  await expect(page.getByText('局部重加权可改善集中缺陷的 image AUROC', { exact: true })).toBeVisible();
+  await expect(page.getByText('attempt_candidate_000001', { exact: true })).not.toBeVisible();
+  expect(generationBody?.idempotency_key).toMatch(new RegExp(`^ui-proposal:${candidateProposal.session_id}:`));
+  await page.getByRole('button', { name: '批准候选' }).click();
+  await expect.poll(() => approvalBody).not.toBeNull();
+  expect(approvalBody).toEqual({ approved_by: 'user' });
+  await expect(page.getByRole('button', { name: /attempt_candidate_000001/ })).toBeVisible();
 });
 
 test('keeps an additional confirmed metric as a recorded observation by default', async ({ page }) => {
@@ -238,6 +290,20 @@ test('uses the projection status vocabulary and preserves complete Session facts
   await expect(page.getByText('异常 Attempt：attempt_000001（运行状态丢失）')).toBeVisible();
   await page.getByRole('button', { name: '局部特征重加权' }).click();
   await expect(page.getByText('等待实验', { exact: true })).toBeVisible();
+});
+
+test('renders the explicit B_dev completion state instead of an unknown baseline status', async ({ page }) => {
+  const afterBDev = structuredClone(projection);
+  afterBDev.session.status = 'READY_FOR_BASELINE';
+  afterBDev.session.baseline_status = 'b_dev_completed';
+  afterBDev.summary.status = 'READY_FOR_BASELINE';
+  afterBDev.summary.baseline_status = 'b_dev_completed';
+  afterBDev.actions.baseline_launch_available = false;
+  await prepare(page, () => afterBDev);
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByText('Session：B_dev 已完成')).toBeVisible();
+  await expect(page.getByText('基线状态：B_dev 已完成')).toBeVisible();
+  await expect(page.getByText('未知状态（原始值：b_dev_completed）')).toHaveCount(0);
 });
 
 test('filters the experiment list to the selected Idea relations', async ({ page }) => {

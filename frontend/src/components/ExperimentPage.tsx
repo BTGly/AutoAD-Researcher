@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { Check, RefreshCw, Sparkles, X } from 'lucide-react';
 import { ActivityFeed } from './ActivityFeed';
 import { DetailDrawer, type ExperimentDetailSelection } from './DetailDrawer';
 import { IdeaTree } from './IdeaTree';
 import { AppButton } from './ui/AppButton';
 import { EmptyState } from './ui/EmptyState';
 import { StatusBadge } from './ui/StatusBadge';
-import { ApiError, confirmCandidate, getExperimentProjection, promoteCandidate, startBaseline } from '../lib/api';
+import { ApiError, approveCandidateProposal, confirmCandidate, generateCandidateProposal, getExperimentProjection, promoteCandidate, rejectCandidateProposal, startBaseline } from '../lib/api';
 import { attemptStatusLabel, baselineStatusLabel, environmentStatusLabel, sessionStatusLabel } from '../lib/experimentLabels';
-import type { BaselineContractInput, BaselineMetricInput, ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, ExperimentProjection } from '../lib/types';
+import type { BaselineContractInput, BaselineMetricInput, CandidateProposal, ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, ExperimentProjection } from '../lib/types';
 
 interface Props {
   runId: string;
@@ -151,18 +151,44 @@ function ExperimentActions({ runId, projection, onChanged }: { runId: string; pr
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const baselineAvailable = projection.actions.baseline_launch_available === true;
-  if (projection.session?.execution_mode !== 'approve_each_step' && !baselineAvailable) return null;
+  const proposalGenerationAvailable = projection.actions.candidate_proposal_generation_available === true;
+  const proposalGenerationInProgress = projection.actions.candidate_proposal_generation_in_progress === true;
+  const proposalApprovals = projection.actions.candidate_proposal_approvals || [];
   const confirmations = projection.actions.candidate_confirmations;
   const promotions = projection.actions.candidate_promotions;
+  const sessionId = projection.session?.session_id;
+  const actionCount = confirmations.length + promotions.length + proposalApprovals.length + (proposalGenerationAvailable ? 1 : 0);
+  const proposalActionCount = proposalApprovals.length + (proposalGenerationAvailable ? 1 : 0);
+  if (projection.session?.execution_mode !== 'approve_each_step' && !baselineAvailable && !actionCount && !proposalGenerationInProgress) return null;
   const reportError = (reason: unknown) => setError(reason instanceof ApiError ? reason.message : '操作未完成，请保留当前证据后重试。');
   return <section className="experiment-actions surface" aria-label="实验确认动作">
-    <div className="experiment-actions-header"><div><h2>需要确认的实验动作</h2><p>动作由服务端投影决定，浏览器不会接受任意命令。</p></div><StatusBadge tone={confirmations.length || promotions.length ? 'warning' : 'success'}>{confirmations.length || promotions.length ? '待确认' : '已同步'}</StatusBadge></div>
+    <div className="experiment-actions-header"><div><h2>需要确认的实验动作</h2><p>动作由服务端投影决定，浏览器不会接受任意命令。</p></div><StatusBadge tone={actionCount || proposalGenerationInProgress ? 'warning' : 'success'}>{proposalActionCount || proposalGenerationInProgress ? '待处理' : actionCount ? '待确认' : '已同步'}</StatusBadge></div>
     {error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 8 }}>{error}</div>}
     {baselineAvailable && <BaselineLaunchForm runId={runId} projection={projection} onChanged={onChanged} />}
-    {confirmations.map(confirmation => <div className="experiment-action-item" key={confirmation.candidate_attempt_id}><div className="experiment-action-copy">候选 {confirmation.candidate_attempt_id} 已记录 B_dev 比较结果。提交阈值后，服务端会重新验证是否可进行 B_test。</div><div className="experiment-action-form"><label>噪声阈值 <input aria-label={`噪声阈值 ${confirmation.candidate_attempt_id}`} value={noise} onChange={event => setNoise(event.target.value)} inputMode="decimal" /></label><AppButton variant="primary" disabled={busy !== null || !Number.isFinite(Number(noise)) || Number(noise) < 0} aria-busy={busy === `confirm:${confirmation.candidate_attempt_id}`} onClick={async () => { setBusy(`confirm:${confirmation.candidate_attempt_id}`); setError(null); try { await confirmCandidate(runId, projection.session!.session_id, confirmation.candidate_attempt_id, Number(noise)); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>确认 B_test 评估</AppButton></div></div>)}
+    {proposalGenerationAvailable && sessionId && <div className="experiment-action-item" data-testid="candidate-proposal-generation"><div className="experiment-action-copy"><b>Baseline 已完成</b><p>基于当前结果生成一个最小候选方案，生成后再由你审核。</p></div><div className="experiment-action-form"><AppButton variant="primary" disabled={busy !== null} aria-busy={busy === 'proposal:generate'} onClick={async () => { setBusy('proposal:generate'); setError(null); try { await generateCandidateProposal(runId, sessionId, `ui-proposal:${sessionId}:${globalThis.crypto.randomUUID()}`); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}><Sparkles size={15} aria-hidden="true" />生成候选方案</AppButton></div></div>}
+    {proposalGenerationInProgress && <div className="experiment-actions-empty" role="status">候选方案生成中，完成后会出现在这里。</div>}
+    {proposalApprovals.map(item => <CandidateProposalApproval key={item.proposal.proposal_id} runId={runId} sessionId={sessionId || ''} proposal={item.proposal} busy={busy} setBusy={setBusy} onChanged={onChanged} onError={reportError} />)}
+    {confirmations.map(confirmation => <div className="experiment-action-item" key={confirmation.candidate_attempt_id}><div className="experiment-action-copy">候选 {confirmation.candidate_attempt_id} 已记录 B_dev 比较结果。确认后，服务端先完成 Baseline held-out B_test，再排队候选 B_test。</div><div className="experiment-action-form"><label>噪声阈值 <input aria-label={`噪声阈值 ${confirmation.candidate_attempt_id}`} value={noise} onChange={event => setNoise(event.target.value)} inputMode="decimal" /></label><AppButton variant="primary" disabled={busy !== null || !Number.isFinite(Number(noise)) || Number(noise) < 0} aria-busy={busy === `confirm:${confirmation.candidate_attempt_id}`} onClick={async () => { setBusy(`confirm:${confirmation.candidate_attempt_id}`); setError(null); try { await confirmCandidate(runId, projection.session!.session_id, confirmation.candidate_attempt_id, Number(noise)); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>确认 B_test 评估</AppButton></div></div>)}
     {promotions.map(promotable => <div className="experiment-action-item" key={promotable.candidate_id}><div className="experiment-action-copy">候选 {promotable.candidate_id} 已具备服务端投影的推广事实。推广会合并到 run-owned 主 checkout，并记录 Champion journal。</div><div className="experiment-action-form"><label>批准人 <input aria-label={`批准人 ${promotable.candidate_id}`} value={approvedBy} onChange={event => setApprovedBy(event.target.value)} /></label><AppButton variant="primary" disabled={busy !== null || !approvedBy.trim()} aria-busy={busy === `promote:${promotable.candidate_id}`} onClick={async () => { setBusy(`promote:${promotable.candidate_id}`); setError(null); try { await promoteCandidate(runId, promotable.candidate_id, approvedBy.trim()); onChanged(); } catch (reason) { reportError(reason); } finally { setBusy(null); } }}>批准并推广 Champion</AppButton></div></div>)}
-    {!baselineAvailable && !confirmations.length && !promotions.length && <div className="experiment-actions-empty">当前没有需要人工确认的 B_test 或 Champion 推广动作。</div>}
+    {!baselineAvailable && !proposalGenerationAvailable && !proposalGenerationInProgress && !proposalApprovals.length && !confirmations.length && !promotions.length && <div className="experiment-actions-empty">当前没有需要人工确认的 B_test 或 Champion 推广动作。</div>}
   </section>;
+}
+
+function CandidateProposalApproval({ runId, sessionId, proposal, busy, setBusy, onChanged, onError }: { runId: string; sessionId: string; proposal: CandidateProposal; busy: string | null; setBusy: (value: string | null) => void; onChanged: () => void; onError: (reason: unknown) => void }) {
+  const actionKey = `proposal:${proposal.proposal_id}`;
+  return <div className="experiment-action-item" data-testid={`candidate-proposal-${proposal.proposal_id}`}>
+    <div className="experiment-action-copy">
+      <b>{proposal.idea.mechanism}</b>
+      <p>{proposal.idea.hypothesis}</p>
+      <p>验证：{proposal.idea.falsification}</p>
+      <p>修改：{proposal.candidate.intervention_contract.allowed_paths.join('、')} · {proposal.candidate.approved_proposal.changed_symbols.join('、') || '受限实现'}</p>
+      <details><summary>查看受限变更</summary><div style={{ marginTop: 8 }}>{proposal.candidate.approved_proposal.edits.map((edit, index) => <pre key={`${edit.path}:${index}`} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: '6px 0 0', fontSize: '0.8em' }}>{`${edit.path}\n- ${edit.search}\n+ ${edit.replace}`}</pre>)}</div></details>
+    </div>
+    <div className="experiment-action-form">
+      <AppButton variant="primary" disabled={busy !== null} aria-busy={busy === `${actionKey}:approve`} onClick={async () => { setBusy(`${actionKey}:approve`); try { await approveCandidateProposal(runId, sessionId, proposal.proposal_id); onChanged(); } catch (reason) { onError(reason); } finally { setBusy(null); } }}><Check size={15} aria-hidden="true" />批准候选</AppButton>
+      <AppButton disabled={busy !== null} aria-busy={busy === `${actionKey}:reject`} onClick={async () => { setBusy(`${actionKey}:reject`); try { await rejectCandidateProposal(runId, sessionId, proposal.proposal_id); onChanged(); } catch (reason) { onError(reason); } finally { setBusy(null); } }}><X size={15} aria-hidden="true" />拒绝</AppButton>
+    </div>
+  </div>;
 }
 
 type MetricDraft = {
@@ -261,6 +287,7 @@ function BaselineLaunchForm({ runId, projection, onChanged }: { runId: string; p
       <label>所需 GPU 数量<input aria-label="所需 GPU 数量" inputMode="numeric" placeholder="CPU 填 0 或留空" value={requiredDeviceCount} onChange={event => setRequiredDeviceCount(event.target.value)} /></label>
       <label>每个 GPU 所需显存 MB<input aria-label="每个 GPU 所需显存 MB" inputMode="numeric" placeholder="CPU 填 0 或留空" value={requiredVramMb} onChange={event => setRequiredVramMb(event.target.value)} /></label>
     </div>
+    <p id="baseline-resource-budget-help" style={{ margin: '8px 0 0', color: 'var(--text-muted)', fontSize: '0.8em' }}>请依次填写：最大墙钟秒数、最大 GPU 秒数，单位均为秒。例如 CPU-only 任务填写 20000, 0；此时 GPU 数量和显存填 0 或留空。GPU 任务还需填写 GPU 数量和每个 GPU 所需显存 MB。</p>
     <label style={{ display: 'block', marginTop: 8 }}>类别集合（可为空）<textarea aria-label="类别集合" rows={2} placeholder="每行一个类别" value={categoryText} onChange={event => setCategoryText(event.target.value)} /></label>
     <div style={{ marginTop: 10 }}><b style={{ fontSize: '0.85em' }}>已确认指标</b>{metrics.map((metric, index) => <div key={metric.name} style={{ display: 'grid', gridTemplateColumns: 'minmax(110px, .8fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(150px, 1.4fr)', gap: 6, marginTop: 6, alignItems: 'center' }}><input aria-label={`指标名称 ${metric.name}`} value={metric.name} readOnly /><select aria-label={`指标方向 ${metric.name}`} value={metric.direction} onChange={event => updateMetric(index, { direction: event.target.value as MetricDraft['direction'] })}><option value="">方向</option><option value="maximize">maximize</option><option value="minimize">minimize</option></select><select aria-label={`指标角色 ${metric.name}`} value={metric.role} onChange={event => updateMetric(index, { role: event.target.value as MetricDraft['role'] })}><option value="">仅记录</option><option value="primary">primary</option><option value="guardrail">guardrail</option></select><input aria-label={`指标实现引用 ${metric.name}`} placeholder="worktree-relative implementation path" value={metric.implementation_ref} onChange={event => updateMetric(index, { implementation_ref: event.target.value })} /></div>)}</div>
     {error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 8 }}>{error}</div>}
@@ -280,7 +307,7 @@ function SessionOverview({ projection }: { projection: ExperimentProjection }) {
   return <section className="session-overview surface">
     <div className="session-overview-heading"><div className="session-goal">{goal}</div><StatusBadge tone={championTone(projection.champion_status)}>Champion：{champion}</StatusBadge></div>
     <div className="observatory-facts">
-      <Fact label="Session" value={<StatusBadge tone={statusTone(projection.session?.status || '')}>{sessionStatusLabel(projection.session?.status || '')}</StatusBadge>} />
+      <Fact label="Session" value={<StatusBadge tone={statusTone(projection.session?.status || '')}>{sessionStatusLabel(projection.session?.status || '', projection.session?.baseline_status || '')}</StatusBadge>} />
       <Fact label="环境" value={<StatusBadge tone={statusTone(projection.session?.environment_status || '')}>{environmentStatusLabel(projection.session?.environment_status || '')}</StatusBadge>} />
       <Fact label="基线状态" value={<StatusBadge tone={statusTone(projection.session?.baseline_status || '')}>{baselineStatusLabel(projection.session?.baseline_status || '')}</StatusBadge>} />
       <Fact label="Idea" value={String(projection.summary?.idea_count ?? 0)} />
@@ -306,7 +333,7 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) { ret
 function statusTone(value: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (['FAILED', 'failed', 'LOST', 'invalid', 'CANCELLED', 'control_plane_invalid'].includes(value)) return 'danger';
   if (['RUNNING', 'running', 'pending', 'queued', 'ENVIRONMENT_PENDING', 'ENVIRONMENT_RUNNING', 'BASELINE_RUNNING'].includes(value)) return 'warning';
-  if (['READY', 'ready', 'completed', 'COMPLETED', 'available', 'SUPPORTED'].includes(value)) return 'success';
+  if (['READY', 'ready', 'completed', 'COMPLETED', 'b_dev_completed', 'available', 'SUPPORTED'].includes(value)) return 'success';
   return 'neutral';
 }
 function championTone(value: ExperimentProjection['champion_status']): 'neutral' | 'success' | 'warning' | 'danger' {

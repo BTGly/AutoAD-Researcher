@@ -7,6 +7,7 @@ from typing import Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService, ExperimentAttemptStartResult
+from autoad_researcher.experiment.attempt import AttemptPurpose
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
 from autoad_researcher.experiment.executor_agent import ExecutorAgent, ExecutorLimits, ExecutorProposal, ExecutorSummary
 from autoad_researcher.experiment.executor_contracts import InterventionContract, WorkspaceSpec
@@ -17,6 +18,7 @@ class ExecutorHandoffRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session_id: str
     job_type: Literal["experiment_baseline", "experiment_baseline_b_test", "experiment_attempt", "experiment_confirmatory"]
+    attempt_purpose: AttemptPurpose | None = None
     idempotency_key: str
     repository_path: Path
     base_commit: str
@@ -65,7 +67,7 @@ class ExecutorAttemptHandoffService:
         admission = self._admission.admit(contract=request.intervention_contract, workspace=workspace, summary=summary, artifact_dir=staging, command_plan=plan)
         if not admission.allowed:
             return ExecutorHandoffResult(status="blocked", blocker=f"{admission.code}: {admission.detail}", workspace=workspace)
-        started = self._attempts.create_or_get_attempt(run_dir, session_id=request.session_id, job_type=request.job_type, idempotency_key=request.idempotency_key, command_plan=plan, input_refs=refs, job_timeout_sec=request.job_timeout_sec, required_device_count=request.required_device_count, required_vram_mb=request.required_vram_mb, evaluation_contract_ref=request.evaluation_contract_ref, evaluation_contract_sha256=request.evaluation_contract_sha256, protected_artifact_report_ref=request.protected_artifact_report_ref, protected_artifact_report_sha256=request.protected_artifact_report_sha256)
+        started = self._attempts.create_or_get_attempt(run_dir, session_id=request.session_id, job_type=request.job_type, attempt_purpose=request.attempt_purpose, idempotency_key=request.idempotency_key, command_plan=plan, input_refs=refs, job_timeout_sec=request.job_timeout_sec, required_device_count=request.required_device_count, required_vram_mb=request.required_vram_mb, evaluation_contract_ref=request.evaluation_contract_ref, evaluation_contract_sha256=request.evaluation_contract_sha256, protected_artifact_report_ref=request.protected_artifact_report_ref, protected_artifact_report_sha256=request.protected_artifact_report_sha256)
         artifact_dir = run_dir / "attempts" / started.attempt.attempt_id; artifact_dir.mkdir(parents=True, exist_ok=True)
         (artifact_dir / "intervention_contract.json").write_text(request.intervention_contract.model_dump_json(indent=2) + "\n", encoding="utf-8")
         (artifact_dir / "workspace.json").write_text(workspace.model_dump_json(indent=2) + "\n", encoding="utf-8")

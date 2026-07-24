@@ -23,6 +23,7 @@ from autoad_researcher.experiment.idea_tree import IdeaTreeStore
 from autoad_researcher.experiment.scientific_assessment import (
     ScientificEvaluationInputs,
     ScientificExecutorHandoffService,
+    load_declared_metric_values,
 )
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.experiment.validity import ComparisonIdentity
@@ -61,8 +62,11 @@ class CandidateControlService:
         session = self._sessions.load(run_dir, session_id)
         if session is None:
             raise FileNotFoundError("experiment session not found")
-        if session.status != "READY" or session.baseline_status != "completed":
-            raise ValueError("candidate launch requires a completed baseline Session")
+        if not (
+            (session.status == "READY_FOR_BASELINE" and session.baseline_status == "b_dev_completed")
+            or (session.status == "READY" and session.baseline_status == "completed")
+        ):
+            raise ValueError("candidate launch requires a completed baseline B_dev")
         if session.authorization.execution_mode == "plan_only":
             raise ValueError("plan_only Session may not launch a candidate")
         if not session.evaluation_contract_ref or not session.evaluation_contract_sha256:
@@ -194,11 +198,7 @@ class CandidateControlService:
 
 
 def _metrics(run_dir: Path, attempt_id: str) -> dict[str, float]:
-    from autoad_researcher.experiment.finalizer import OutcomeCard
-    card = OutcomeCard.model_validate_json((run_dir / "attempts" / attempt_id / "outcome_card.json").read_text(encoding="utf-8"))
-    if not card.metrics or not all(isinstance(value, (int, float)) for value in card.metrics.values()):
-        raise ValueError("execution_contract_incomplete: baseline metrics are unavailable")
-    return {key: float(value) for key, value in card.metrics.items()}
+    return load_declared_metric_values(run_dir, attempt_id=attempt_id)
 
 
 def _semantic_command_identity(adapter: ExecutorAdapter, repository: Path, inputs: ExecutorAdapterInputs) -> str:

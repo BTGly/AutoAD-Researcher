@@ -19,6 +19,7 @@ from autoad_researcher.reporting.review import (
     reject_proposal,
 )
 from autoad_researcher.assistant.v2.experiment.candidate_control import CandidateLaunchInput
+from autoad_researcher.assistant.v2.experiment.baseline_repair import BaselineRepairInput
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
 
@@ -46,6 +47,7 @@ class ProposalRequest(BaseModel):
     candidate_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
     noise_threshold: float | None = Field(default=None, ge=0)
     refine_input: CandidateLaunchInput | None = None
+    repair_input: BaselineRepairInput | None = None
     pivot_context: PivotTaskContext | None = None
 
 

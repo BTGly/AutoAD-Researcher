@@ -105,6 +105,7 @@ def test_summary_round_trip_uses_exact_schema(tmp_path: Path):
         "goal",
         "confirmed_facts",
         "confirmed_task_parameters",
+        "primary_metric_candidates",
         "inferred_facts",
         "unresolved_conflicts",
         "blocking_question",
@@ -369,6 +370,63 @@ def test_reply_agent_materializes_flat_parameters_with_current_turn_provenance(m
     assert parameters.dataset is not None
     assert parameters.primary_metrics[0].source == "user_confirmed"
     assert parameters.evaluation_constraints[0].evidence.startswith("当前用户消息：")
+
+
+def test_reply_agent_recovers_explicit_uat_parameters_when_model_omits_them(monkeypatch):
+    reply = _reply_payload()
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(reply, ensure_ascii=False), "error": ""},
+    )
+
+    response = ResearchReplyAgent.respond(
+        user_input=(
+            "补充任务条件：baseline 使用执行仓库当前 main；dataset 使用仓库内置 synthetic_local_spike_v1；"
+            "主指标 image_auroc，maximize；CPU；最多两轮；每一步执行前都让我确认。"
+            "evaluation.py、run.py 和 data/ 不能修改。"
+        ),
+        evidence_state={},
+        frozen_decision=GatedDialogueDecision(
+            dialogue_mode="plan",
+            policy_assessment=ResearchPolicyAssessment.model_validate(_allow_policy()),
+        ),
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    parameters = response.summary.confirmed_task_parameters
+    assert parameters.baseline is not None and parameters.baseline.value == "执行仓库当前 main"
+    assert parameters.dataset is not None and parameters.dataset.value == "仓库内置 synthetic_local_spike_v1"
+    assert parameters.compute_budget is not None and parameters.compute_budget.value == "CPU"
+    assert [item.value for item in parameters.primary_metrics] == ["image_auroc"]
+    assert [item.value for item in parameters.evaluation_constraints] == [
+        "最多两轮",
+        "每一步执行前都让我确认",
+        "evaluation.py、run.py 和 data/ 不能修改",
+    ]
+
+
+def test_reply_agent_does_not_trust_model_parameter_absent_from_user_turn(monkeypatch):
+    reply = _reply_payload()
+    reply["summary"]["confirmed_task_parameters"] = {"baseline": "PatchCore"}
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {"reply": json.dumps(reply, ensure_ascii=False), "error": ""},
+    )
+
+    response = ResearchReplyAgent.respond(
+        user_input="请继续阅读材料并指出当前缺口。",
+        evidence_state={"usable_evidence": [{"raw": {"baseline": "PatchCore"}}]},
+        frozen_decision=_gated_decision("plan"),
+        last_summary=None,
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="reply-model",
+    )
+
+    assert response.summary.confirmed_task_parameters.baseline is None
 
 
 def test_reply_agent_preserves_prior_provenance_and_materializes_only_correction(monkeypatch):

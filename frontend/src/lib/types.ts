@@ -76,6 +76,7 @@ export interface ExperimentTaskDraft {
   status: 'pending_confirmation' | 'confirmed';
   execution_mode: 'plan_only' | 'approve_each_step' | 'agent_assisted_after_approval';
   input_task: PipelineInputTask;
+  primary_metric_candidates?: string[];
   evidence_refs: string[];
   summary_sha256: string;
   created_at: string;
@@ -357,6 +358,9 @@ export interface ExperimentProjection {
   candidate_inventory_status: 'available' | 'invalid';
   actions: {
     baseline_launch_available?: boolean;
+    candidate_proposal_generation_available?: boolean;
+    candidate_proposal_generation_in_progress?: boolean;
+    candidate_proposal_approvals?: Array<{ proposal: CandidateProposal }>;
     candidate_confirmations: Array<{ candidate_attempt_id: string }>;
     candidate_promotions: Array<{ candidate_id: string }>;
   };
@@ -378,6 +382,55 @@ export interface ExperimentProjection {
   developer_refs: {
     run_id: string; session_id: string; event_ids: number[]; artifact_paths: string[]; pipeline_job_ids: string[]; event_log_path: string;
   } | null;
+}
+
+export interface CandidateProposal {
+  proposal_id: string;
+  run_id: string;
+  session_id: string;
+  idempotency_key: string;
+  status: 'generating' | 'pending_review' | 'approved' | 'rejected' | 'started';
+  idea_node_id: string;
+  idea_tree_revision: number;
+  evaluation_contract_ref: string;
+  evaluation_contract_sha256: string;
+  idea: {
+    mechanism: string;
+    hypothesis: string;
+    observable: string;
+    research_axis: string;
+    minimal_intervention: string;
+    falsification: string;
+    expected_cost: string;
+    relationship_to_previous_ideas: string;
+    grounding: string[];
+  };
+  candidate: {
+    intervention_contract: {
+      idea_id: string;
+      mechanism: string;
+      hypothesis: string;
+      target_modules: string[];
+      allowed_paths: string[];
+      forbidden_paths: string[];
+      allowed_parameters: string[] | Record<string, unknown>;
+      evaluation_invariants: string[];
+      time_budget: number;
+    };
+    approved_proposal: {
+      edits: Array<{ path: string; search: string; replace: string }>;
+      changed_symbols: string[];
+      possible_contract_deviation?: string | null;
+      confidence: number;
+    };
+    comparison_seed: number;
+    idempotency_key: string;
+  };
+  content_sha256: string;
+  created_at: string;
+  updated_at: string;
+  decided_by?: string | null;
+  attempt_id?: string | null;
 }
 
 export type TabId = 'sources' | 'jobs' | 'evidence' | 'summary';

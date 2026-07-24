@@ -43,6 +43,7 @@ class ResearchIntentSummary(BaseModel):
     goal: str = ""
     confirmed_facts: list[str] = Field(default_factory=list)
     confirmed_task_parameters: ConfirmedTaskParameters = Field(default_factory=ConfirmedTaskParameters)
+    primary_metric_candidates: list[str] = Field(default_factory=list)
     inferred_facts: list[BasedStatement] = Field(default_factory=list)
     unresolved_conflicts: list[BasedStatement] = Field(default_factory=list)
     blocking_question: str | None = None

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from autoad_researcher.reporting.snapshot import canonical_sha256, resolve_run_relative_file, sha256_file
+from autoad_researcher.reporting.snapshot import attempt_id_from_artifact, canonical_sha256, read_verified_snapshot_artifact, resolve_run_relative_file, sha256_file
 from autoad_researcher.reporting.models import ReportSnapshot
 from autoad_researcher.schemas.artifacts import ArtifactReferenceV2
 
@@ -67,9 +66,6 @@ def build_evidence_index(
                 }
             )
         else:
-            resolved = resolve_run_relative_file(run_dir, reference.locator)
-            if sha256_file(resolved) != reference.sha256:
-                raise ValueError("snapshot artifact SHA-256 no longer matches")
             evidence_reference = reference
         value = _snapshot_value(run_dir, snapshot, reference)
         for field_path in ("$", *_leaf_paths(value)):
@@ -212,8 +208,7 @@ def _id_part(artifact_id: str, prefix: str) -> str | None:
 
 
 def _attempt_id(reference: ArtifactReferenceV2) -> str | None:
-    parts = reference.artifact_id.split(":")
-    return next((part for part in parts if part.startswith("attempt_")), None)
+    return attempt_id_from_artifact(reference)
 
 
 def _idea_id(reference: ArtifactReferenceV2) -> str | None:
@@ -228,16 +223,7 @@ def _snapshot_value(run_dir, snapshot: ReportSnapshot, reference: ArtifactRefere
             (item for item in frozen if _object_id(item) in reference.artifact_id),
             {},
         )
-    path = resolve_run_relative_file(run_dir, reference.locator)
-    if reference.artifact_type.endswith("_log") or reference.artifact_type == "patch_diff":
-        return {"registered_text_artifact": True}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("snapshot artifact is not readable JSON") from exc
-    if not isinstance(value, dict):
-        raise ValueError("snapshot JSON artifact must be an object")
-    return value
+    return read_verified_snapshot_artifact(run_dir, reference)
 
 
 def _object_id(value: dict[str, Any]) -> str:
