@@ -16,8 +16,6 @@ class ExecutorEvaluationCommand(BaseModel):
     A held-out evaluation must not be reconstructed from a path or prose.  The
     adapter manifest therefore carries the exact argv/environment it supports
     for that phase, just as the normal adapter contract carries its entrypoint.
-    A command may bind the phase by a literal phase argument instead of
-    accepting a run-local split-file path.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -97,15 +95,21 @@ class ExecutorAdapter:
             args = list(phase_command.args)
             if inputs.split_ref is not None:
                 index = phase_command.split_ref_arg_index
-                if index is not None:
-                    if index >= len(args):
-                        raise ValueError("adapter split reference argument index is outside the declared command")
-                    if args[index] != inputs.evaluation_phase:
-                        args[index] = inputs.split_ref
-                elif inputs.evaluation_phase not in args:
+                if index is None:
                     raise ValueError(
-                        f"adapter {inputs.evaluation_phase} command must declare a split reference argument or explicit phase identity"
+                        f"adapter {inputs.evaluation_phase} command does not declare a split reference argument"
                     )
+                if index >= len(args):
+                    raise ValueError("adapter split reference argument index is outside the declared command")
+                if args[index] != "":
+                    raise ValueError(
+                        "adapter split reference binding must target an explicit empty argv slot"
+                    )
+                if args.count("") != 1:
+                    raise ValueError(
+                        "adapter split reference binding requires exactly one explicit empty argv slot"
+                    )
+                args[index] = inputs.split_ref
             environment, metrics_output = phase_command.environment, phase_command.metrics_output
         plan = ExperimentCommandPlan(schema_version=1, command_id=f"{evidence.adapter_id}_{inputs.evaluation_phase}", program=inputs.python_executable, args=args, cwd=inputs.worktree_ref, environment=environment, timeout_seconds=inputs.timeout_seconds, network=False, expected_outputs=[metrics_output])
         refs = ExperimentInputRefs(repository_fingerprint=inputs.repository_fingerprint, environment_sha256=inputs.environment_sha256, dataset_manifest_sha256=inputs.dataset_manifest_sha256, asset_manifest_sha256=inputs.asset_manifest_sha256, command_sha256=experiment_command_sha256(plan))

@@ -3,13 +3,15 @@ import { useEffect, type RefObject } from 'react';
 interface DialogOptions {
   dialogRef?: RefObject<HTMLElement | null>;
   onClose?: () => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function useDialogFocus<T extends HTMLElement>(initialFocusRef: RefObject<T | null>, { dialogRef, onClose }: DialogOptions = {}) {
+export function useDialogFocus<T extends HTMLElement>(initialFocusRef: RefObject<T | null>, { dialogRef, onClose, returnFocusRef }: DialogOptions = {}) {
   useEffect(() => {
-    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const returnFocus = returnFocusRef?.current
+      || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const focusTimer = window.setTimeout(() => initialFocusRef.current?.focus(), 0);
 
     return () => {
@@ -18,7 +20,7 @@ export function useDialogFocus<T extends HTMLElement>(initialFocusRef: RefObject
         window.requestAnimationFrame(() => returnFocus.focus());
       }
     };
-  }, [initialFocusRef]);
+  }, [initialFocusRef, returnFocusRef]);
 
   useEffect(() => {
     const dialog = dialogRef?.current;

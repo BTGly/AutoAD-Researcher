@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { recordConfigAudit } from '../lib/api';
 
 const KEY = 'autoad_config';
 
@@ -62,6 +63,7 @@ export function useConfig() {
     localStorage.setItem(KEY, JSON.stringify(c));
     setConfig(c);
     setShowConfig(false);
+    void recordConfigAudit(c).catch(() => undefined);
   }, []);
 
   const openConfig = useCallback(() => setShowConfig(true), []);

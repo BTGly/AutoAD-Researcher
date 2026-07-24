@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent, type RefObject } from 'react';
 import { KeyRound, Save, X } from 'lucide-react';
 import { MODEL_OPTIONS } from '../hooks/useConfig';
 import type { AppConfig, ModelId } from '../hooks/useConfig';
@@ -9,9 +9,10 @@ interface Props {
   config: AppConfig;
   onSave: (config: AppConfig) => void;
   onClose: () => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
-export function ConfigModal({ config, onSave, onClose }: Props) {
+export function ConfigModal({ config, onSave, onClose, returnFocusRef }: Props) {
   const [key, setKey] = useState(config.apiKey);
   const [url, setUrl] = useState(config.baseUrl);
   const [dialogueModel, setDialogueModel] = useState<ModelId>(config.dialogueModel);
@@ -19,7 +20,7 @@ export function ConfigModal({ config, onSave, onClose }: Props) {
   const [experimentModel, setExperimentModel] = useState<ModelId>(config.experimentModel);
   const keyRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  useDialogFocus(keyRef, { dialogRef, onClose });
+  useDialogFocus(keyRef, { dialogRef, onClose, returnFocusRef });
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

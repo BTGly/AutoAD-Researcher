@@ -116,20 +116,31 @@ async def chat_send(req: ChatRequest, request: Request):
 
     # Broadcast created_sources and created_jobs
     for src in result.created_sources:
-        await manager.broadcast(req.run_id, {
-            "type": "source.created",
+        event = append_event(run_dir, "source.created", {
             "source_id": src.get("source_id", ""),
             "kind": src.get("kind", ""),
+            "stored_path": src.get("stored_path", ""),
+            "status": src.get("status", ""),
+        })
+        await manager.broadcast(req.run_id, {
+            "type": "source.created",
+            "event_id": event.get("event_id"),
+            "created_at": event.get("created_at"),
+            "source_id": src.get("source_id", ""),
+            "kind": src.get("kind", ""),
+            "stored_path": src.get("stored_path", ""),
         })
 
     for job in result.created_jobs:
-        append_event(run_dir, "job.queued", {
+        event = append_event(run_dir, "job.queued", {
             "job_id": job.get("job_id", ""),
             "job_type": job.get("job_type", ""),
             "source_id": job.get("source_id", ""),
         })
         await manager.broadcast(req.run_id, {
             "type": "job.queued",
+            "event_id": event.get("event_id"),
+            "created_at": event.get("created_at"),
             "job_id": job.get("job_id", ""),
             "job_type": job.get("job_type", ""),
         })
@@ -146,6 +157,7 @@ async def chat_send(req: ChatRequest, request: Request):
         reply_kind=result.reply_kind,
         source_action=result.source_action,
         experiment_task=result.experiment_task,
+        action_receipts=result.action_receipts,
     )
 
 

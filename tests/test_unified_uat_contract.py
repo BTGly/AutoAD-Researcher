@@ -18,7 +18,7 @@ from autoad_researcher.experiment.validity import ImplementationEvidence, scient
 
 
 SOURCE_BASELINE = "4449f7f40fd195b61ef57b3bc5854187401a1122"
-INTEGRATION_BRANCH = "integration/unified-closeout-ml-dl-uat-2026-07-24"
+INTEGRATION_BRANCH = "integration/final-candidate-advanced-uat-2026-07-24"
 
 
 def _contract(metric_name: str, direction: str) -> EvaluationContract:

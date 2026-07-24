@@ -28,8 +28,8 @@ def validate_relative_path(value: str) -> str:
     path = PurePosixPath(value)
     if path.is_absolute():
         raise ValueError(f"absolute path forbidden: {value!r}")
-    if value in {"", "."}:
-        raise ValueError("path must not be empty or '.'")
+    if value == "":
+        raise ValueError("path must not be empty")
     if any(part == ".." for part in path.parts):
         raise ValueError(f"parent traversal forbidden: {value!r}")
     return value

@@ -51,6 +51,7 @@ REPORT_JOB_TYPES = frozenset(
         "report_render_pdf",
     }
 )
+SOURCE_RETRYABLE_JOB_TYPES = frozenset(JOB_TYPES) - REPORT_JOB_TYPES
 
 
 def _jobs_path(run_dir: Path) -> Path:
@@ -350,6 +351,53 @@ def requeue_failed_report_job(run_dir: Path, job_id: str) -> dict[str, Any]:
             _write_jobs_unlocked(run_dir, jobs)
             return dict(job)
     raise FileNotFoundError("pipeline Job not found")
+
+
+def retry_failed_source_jobs(run_dir: Path, source_id: str) -> list[dict[str, Any]]:
+    """Create a new queued generation for the failed material pipeline.
+
+    Failed Jobs remain immutable history. Only source-material Jobs are
+    retried, and dependencies are rewired to the new generation when the
+    failed predecessor is part of the same source chain.
+    """
+    with _jobs_lock(run_dir):
+        jobs = _load_jobs_unlocked(run_dir)
+        source_jobs = [
+            job for job in jobs
+            if job.get("source_id") == source_id
+            and job.get("job_type") in SOURCE_RETRYABLE_JOB_TYPES
+        ]
+        failed = [job for job in source_jobs if job.get("status") == "failed"]
+        if not failed:
+            raise ValueError("没有可重试的失败资料任务")
+        if any(job.get("status") in {"queued", "running"} for job in source_jobs):
+            raise ValueError("该资料仍有活动任务，不能重复重试")
+        generation = max((int(job.get("retry_generation", 0)) for job in source_jobs), default=0) + 1
+        working = list(jobs)
+        replacement_ids: dict[str, str] = {}
+        for old in failed:
+            payload = dict(old.get("payload") or {})
+            old_dependency = payload.get("depends_on")
+            if old_dependency in replacement_ids:
+                payload["depends_on"] = replacement_ids[old_dependency]
+            payload["retry_of"] = old.get("job_id")
+            payload["retry_generation"] = generation
+            replacement = _new_pipeline_job(
+                working,
+                source_id=source_id,
+                job_type=str(old.get("job_type") or ""),
+                evidence_role=str(old.get("evidence_role") or ""),
+                payload=payload,
+                idempotency_key=None,
+                report_id=old.get("report_id"),
+            )
+            replacement["retry_of"] = old.get("job_id")
+            replacement["retry_generation"] = generation
+            replacement["retry_count"] = int(old.get("retry_count", 0)) + 1
+            working.append(replacement)
+            replacement_ids[str(old.get("job_id"))] = str(replacement.get("job_id"))
+        _write_jobs_unlocked(run_dir, working)
+        return [job for job in working if job.get("retry_generation") == generation and job.get("source_id") == source_id]
 
 
 def requeue_stale_running_jobs(

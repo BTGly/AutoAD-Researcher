@@ -50,7 +50,7 @@ class DialogueGate:
             notes.append("legacy_act_request_mode_normalized")
 
         source_action = decision.source_action
-        dataset_source = decision.dataset_source
+        local_path_source = decision.local_path_source
         task_action = (
             TaskInstruction(action=decision.task_action)
             if decision.task_action is not None
@@ -65,7 +65,7 @@ class DialogueGate:
         source_permission: dict[str, Any] | None = None
         if not actions_allowed:
             source_action = None
-            dataset_source = None
+            local_path_source = None
             task_action = None
             target_spec = None
         else:
@@ -100,7 +100,7 @@ class DialogueGate:
                         source_action = None
                         notes.append("source_action_permission_denied")
             if source_action is not None:
-                dataset_source = None
+                local_path_source = None
                 task_action = None
                 target_spec = None
             elif mode not in {"ask", "plan"}:
@@ -121,6 +121,8 @@ class DialogueGate:
         action_scope = "none"
         if source_action is not None:
             action_scope = "source"
+        elif local_path_source is not None:
+            action_scope = "source"
         elif target_spec is not None:
             action_scope = "repository"
         elif task_action is not None:
@@ -128,7 +130,7 @@ class DialogueGate:
         if decision.action_scope != action_scope:
             notes.append("action_scope_normalized")
 
-        if mode == "act" and source_action is None:
+        if mode == "act" and source_action is None and local_path_source is None:
             execution_gate = (
                 "blocked_dialogue_only"
                 if (run_dir / "input_task.yaml").is_file()
@@ -146,7 +148,7 @@ class DialogueGate:
             policy_assessment=policy,
             source_action=source_action,
             source_permission=source_permission,
-            dataset_source=dataset_source,
+            local_path_source=local_path_source,
             task_action=task_action,
             target_spec=target_spec,
             execution_gate=execution_gate,

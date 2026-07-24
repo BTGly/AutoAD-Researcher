@@ -24,6 +24,7 @@ class ChatResponse(BaseModel):
     reply_kind: str = "answer"
     source_action: SourceInstruction | None = None
     experiment_task: ExperimentTaskDraft | None = None
+    action_receipts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RunInfo(BaseModel):

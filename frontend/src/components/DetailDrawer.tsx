@@ -1,5 +1,5 @@
 import type { ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode } from '../lib/types';
-import { attemptPurposeLabel, attemptStatusLabel, costLabel, evaluationStatusLabel, executionStatusLabel, ideaStatusLabel, scientificEffectLabel } from '../lib/experimentLabels';
+import { attemptCategoryLabel, attemptJobTypeLabel, attemptPurposeLabel, attemptStatusLabel, authorityLabel, costLabel, evaluationStatusLabel, eventTypeLabel, executionStatusLabel, ideaStatusLabel, scientificEffectLabel } from '../lib/experimentLabels';
 
 type Selection = { kind: 'idea'; value: ExperimentIdeaNode } | { kind: 'attempt'; value: ExperimentAttempt } | { kind: 'activity'; value: ExperimentActivity } | null;
 
@@ -31,7 +31,7 @@ function AttemptDetail({ item, onDiscuss }: { item: ExperimentAttempt; onDiscuss
   return <div style={{ display: 'grid', gap: 12 }}>
     <h3 style={{ margin: 0 }}>实验 {item.attempt_id}</h3>
     <section><b>执行事实</b>
-      <Field label="运行状态" value={attemptStatusLabel(item.runtime_status)} /><Field label="用途" value={attemptPurposeLabel(item.attempt_purpose)} /><Field label="任务类型" value={item.job_type} />
+      <Field label="运行状态" value={attemptStatusLabel(item.runtime_status)} /><Field label="用途" value={attemptPurposeLabel(item.attempt_purpose)} /><Field label="任务类型" value={attemptJobTypeLabel(item.job_type)} />
       <Field label="命令" value={item.command_plan_summary} /><Field label="重试" value={retryDetail(item)} /><Field label="失败码" value={item.failure_code} />
       <Field label="资源请求" value={`${item.required_device_count} 个设备；${item.required_vram_mb} MB 显存`} /><Field label="资源租约" value={item.resource_lease_id} /><Field label="最近心跳" value={item.heartbeat_at} />
       <Field label="OutcomeCard" value={outcomeDetail(outcome)} /><Field label="指标已解析" value={bool(outcome?.metrics_parsed)} />
@@ -53,7 +53,7 @@ function retryDetail(item: ExperimentAttempt): string {
 function outcomeDetail(value: Record<string, unknown> | null): string {
   if (!value) return '尚未产生';
   const execution = typeof value.execution_status === 'string' ? `执行：${executionStatusLabel(value.execution_status)}` : null;
-  const category = typeof value.attempt_category === 'string' ? `类别：${value.attempt_category}` : null;
+  const category = typeof value.attempt_category === 'string' ? `类别：${attemptCategoryLabel(value.attempt_category)}` : null;
   const protocol = typeof value.protocol_intact === 'boolean' ? `协议完整：${bool(value.protocol_intact)}` : null;
   return [execution, category, protocol].filter(Boolean).join('；') || '已记录执行结果';
 }
@@ -61,8 +61,8 @@ function outcomeDetail(value: Record<string, unknown> | null): string {
 function reconciliationDetail(value: Record<string, unknown> | null): string {
   if (!value) return '暂无';
   const status = typeof value.effective_evaluation_status === 'string' ? `有效比较状态：${evaluationStatusLabel(value.effective_evaluation_status)}` : null;
-  const execution = typeof value.execution_protocol_authority === 'string' ? `执行事实权威：${value.execution_protocol_authority}` : null;
-  const science = typeof value.scientific_comparison_authority === 'string' ? `科学比较权威：${value.scientific_comparison_authority}` : null;
+  const execution = typeof value.execution_protocol_authority === 'string' ? `执行事实权威：${authorityLabel(value.execution_protocol_authority)}` : null;
+  const science = typeof value.scientific_comparison_authority === 'string' ? `科学比较权威：${authorityLabel(value.scientific_comparison_authority)}` : null;
   return [status, execution, science].filter(Boolean).join('；') || '已记录评价链路';
 }
 
@@ -83,7 +83,7 @@ function scientificAssessmentDetail(item: ExperimentAttempt): { status: string; 
 }
 
 function ActivityDetail({ item, onDiscuss }: { item: ExperimentActivity; onDiscuss: (text: string) => void }) {
-  return <div style={{ display: 'grid', gap: 10 }}><h3 style={{ margin: 0 }}>{item.title}</h3><Field label="摘要" value={item.summary} /><Field label="时间" value={item.created_at} /><Field label="事件类型" value={item.event_type} /><Field label="关联 Idea" value={item.related_idea_id} /><Field label="关联实验" value={item.related_attempt_id} /><Field label="关联认知提交" value={item.related_commit_id} /><Field label="证据引用" value={join(item.evidence_refs)} /><button onClick={() => onDiscuss(`请讨论实验动态 ${item.event_id}：${item.title}`)}>在研究助手中讨论</button></div>;
+  return <div style={{ display: 'grid', gap: 10 }}><h3 style={{ margin: 0 }}>{item.title}</h3><Field label="摘要" value={item.summary} /><Field label="时间" value={item.created_at} /><Field label="事件类型" value={eventTypeLabel(item.event_type)} /><Field label="关联 Idea" value={item.related_idea_id} /><Field label="关联实验" value={item.related_attempt_id} /><Field label="关联认知提交" value={item.related_commit_id} /><Field label="证据引用" value={join(item.evidence_refs)} /><button onClick={() => onDiscuss(`请讨论实验动态 ${item.event_id}：${item.title}`)}>在研究助手中讨论</button></div>;
 }
 
 function bool(value: unknown): string { return value === true ? '是' : value === false ? '否' : '未记录'; }
