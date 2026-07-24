@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "integration_branch": "integration/unified-closeout-ml-dl-uat-2026-07-24",
+  "source_baseline_branch": "feat/production-candidate-entry",
+  "source_baseline_commit": "4449f7f40fd195b61ef57b3bc5854187401a1122",
+  "uat_packages": [
+    "AutoAD_UAT_收尾验收包_2026-07-23",
+    "AutoAD_ML_DL_跨任务UAT扩展包_2026-07-23"
+  ],
+  "integration_contract": {
+    "scientific_state_authority": "EvaluationContract + OutcomeCard + ScientificAssessment + DecisionEngine",
+    "execution_resource_authority": "Attempt + Worker + host-scoped ResourceLease + resource telemetry",
+    "promotion_rule": "Only reproducible B_dev improvement plus independent B_test and valid approval may promote",
+    "no_effect_rule": "NO_EFFECT never creates CandidateSnapshot or Champion",
+    "runtime_only_rule": {
+      "result": "PASS when execution completed and runtime evidence is valid",
+      "runtime_status": "COMPLETED",
+      "formal_readiness_status": "blocked until an auditable frozen Git source is available"
+    }
+  },
+  "required_gates": [
+    "bash scripts/verify.sh",
+    "frontend npm run lint",
+    "frontend npm run build",
+    "frontend npm run test:e2e",
+    "frontend npm run test:e2e:fullstack",
+    "official ML/DL fixture oracle",
+    "fresh closeout UAT A/B/C/D replay",
+    "fresh ML/DL classification/regression/clustering and failure-injection replay",
+    "GPU leases active=0 after all terminal Attempts"
+  ],
+  "status": "integration_candidate"
+}
