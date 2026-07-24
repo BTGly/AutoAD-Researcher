@@ -10,6 +10,7 @@ interface Props {
 
 export function useWebSocket({ runId, onMessage, enabled = true }: Props) {
   const wsRef = useRef<WebSocket | null>(null);
+  const lastEventIdRef = useRef(0);
   const onMessageRef = useRef(onMessage);
   onMessageRef.current = onMessage;
 
@@ -21,6 +22,10 @@ export function useWebSocket({ runId, onMessage, enabled = true }: Props) {
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data) as WSMessage;
+          if (typeof msg.event_id === 'number') {
+            if (msg.event_id <= lastEventIdRef.current) return;
+            lastEventIdRef.current = msg.event_id;
+          }
           onMessageRef.current(msg);
         } catch {}
       };
@@ -31,6 +36,7 @@ export function useWebSocket({ runId, onMessage, enabled = true }: Props) {
   }, [runId, enabled]);
 
   useEffect(() => {
+    lastEventIdRef.current = 0;
     connect();
     const interval = setInterval(() => {
       if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {

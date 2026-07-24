@@ -517,11 +517,21 @@ def _run_local_repo_unpack(run_dir: Path, job: dict[str, Any]) -> tuple[bool, li
 def _run_local_repo_acquire(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = str(job.get("source_id", ""))
     source = _find_source(run_dir, source_id)
-    stored_path = str((job.get("payload") if isinstance(job.get("payload"), dict) else {}).get("stored_path") or "")
-    if not stored_path and source:
-        stored_path = str(source.get("stored_path") or "")
-    local_path = run_dir / stored_path
-    if not stored_path or not local_path.is_dir():
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    original_reference = str((source or {}).get("original_reference") or payload.get("original_reference") or "")
+    stored_path = str(payload.get("stored_path") or "")
+    if original_reference:
+        from autoad_researcher.ui.sources import is_allowed_local_source_path
+
+        local_path = Path(original_reference).expanduser().resolve()
+        if not is_allowed_local_source_path(local_path):
+            _write_parse_error(run_dir, source_id, "local_repo_acquire", "local repository path is not allowed")
+            return False, []
+    else:
+        if not stored_path and source:
+            stored_path = str(source.get("stored_path") or "")
+        local_path = (run_dir / stored_path).resolve()
+    if not local_path.is_dir():
         _write_parse_error(run_dir, source_id, "local_repo_acquire", "local repository directory not found")
         return False, []
 
@@ -562,6 +572,7 @@ def _attest_local_repo(run_dir: Path, source_id: str, repo_dir: Path, *, parser_
         run_dir,
         source_id,
         status="parsed",
+        stored_path=f"repos/{source_id}",
         intake_status="ok",
         clear_intake_error=True,
     )

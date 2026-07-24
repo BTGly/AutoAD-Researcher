@@ -47,13 +47,14 @@ class SourceInstruction(BaseModel):
     reason: str = ""
 
 
-class DatasetSourceInstruction(BaseModel):
-    """An explicit server-local dataset directory supplied by the user."""
+class LocalPathSourceInstruction(BaseModel):
+    """A server-local path to inspect; content type is determined afterwards."""
 
     model_config = ConfigDict(extra="forbid")
 
     source_path: str = Field(min_length=1)
-    user_label: str = Field(min_length=1)
+    user_claimed_kind: str | None = Field(default=None, min_length=1)
+    purpose: str | None = Field(default=None, min_length=1)
 
 
 class TargetSpec(BaseModel):
@@ -132,7 +133,7 @@ class DialogueDecision(BaseModel):
     numeric_claim_allowed: bool = True
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
-    dataset_source: DatasetSourceInstruction | None = None
+    local_path_source: LocalPathSourceInstruction | None = None
     task_action: TaskActionProposal | None = None
     target_spec: TargetSpec | None = None
     _is_valid: bool = PrivateAttr(default=False)
@@ -163,7 +164,7 @@ class GatedDialogueDecision(BaseModel):
     policy_assessment: ResearchPolicyAssessment
     source_action: SourceInstruction | None = None
     source_permission: dict[str, Any] | None = None
-    dataset_source: DatasetSourceInstruction | None = None
+    local_path_source: LocalPathSourceInstruction | None = None
     task_action: TaskInstruction | None = None
     target_spec: TargetSpec | None = None
     execution_gate: ExecutionGate = "not_requested"
@@ -239,16 +240,6 @@ def _parse_explicit_task_parameters(user_input: str) -> RawTaskParameters:
 
 def _trusted_scalar_from_user(value: str | None, user_input: str) -> str | None:
     return value if value is not None and value in user_input else None
-
-
-def _trusted_dataset_source_label(
-    dataset_source: DatasetSourceInstruction | None,
-    user_input: str,
-) -> str | None:
-    """Trust a source label only when its exact local path is in this turn."""
-    if dataset_source is None or dataset_source.source_path not in user_input:
-        return None
-    return dataset_source.user_label
 
 
 def _merge_explicit_list(values: list[str] | None, recovered: list[str] | None, user_input: str) -> list[str] | None:
@@ -646,7 +637,6 @@ def _materialize_reply_summary(
             previous_parameters=previous_parameters,
             user_input=user_input,
             frozen_decision=frozen_decision,
-            dataset_source=frozen_decision.dataset_source,
         ),
         primary_metric_candidates=_materialize_metric_candidates(
             draft.primary_metric_candidates,
@@ -677,7 +667,6 @@ def _materialize_task_parameters(
     previous_parameters: ConfirmedTaskParameters,
     user_input: str,
     frozen_decision: GatedDialogueDecision,
-    dataset_source: DatasetSourceInstruction | None,
 ) -> ConfirmedTaskParameters:
     """Merge flat current-turn updates with trusted persisted provenance."""
     if frozen_decision.policy != "allow" or frozen_decision.conversation_transition == "cancel":
@@ -689,13 +678,8 @@ def _materialize_task_parameters(
         else "user_provided"
     )
     evidence = f"当前用户消息：{user_input.strip()}"
-    trusted_dataset = trusted_raw.dataset or _trusted_dataset_source_label(dataset_source, user_input)
+    trusted_dataset = trusted_raw.dataset
     dataset_evidence = evidence
-    if trusted_raw.dataset is None and trusted_dataset is not None and dataset_source is not None:
-        dataset_evidence = (
-            f"当前用户消息明确提供路径：{dataset_source.source_path}；"
-            f"结构化数据源标签：{dataset_source.user_label}"
-        )
     return ConfirmedTaskParameters(
         baseline=_materialize_scalar_parameter(
             trusted_raw.baseline,
@@ -887,6 +871,7 @@ def _compact_evidence_state(state: dict[str, Any]) -> dict[str, Any]:
         "answerability": state.get("answerability") or {},
         "current_turn_material_actions": state.get("current_turn_material_actions") or {},
         "registered_sources": state.get("registered_sources") or [],
+        "material_inspections": state.get("material_inspections") or [],
         "dialogue_state": state.get("dialogue_state") or {},
     }
 

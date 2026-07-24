@@ -6,10 +6,15 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.evidence_service import append_artifact_evidence
-from autoad_researcher.assistant.v2.job_service import append_pipeline_job
+from autoad_researcher.assistant.v2.job_service import append_pipeline_job, retry_failed_source_jobs
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
-from autoad_researcher.ui.sources import remove_source, save_uploaded_file
+from autoad_researcher.ui.sources import (
+    load_source_registry,
+    remove_source,
+    save_uploaded_file,
+    update_source_intake_result,
+)
 
 router = APIRouter(prefix="/api/runs", tags=["sources"])
 
@@ -154,6 +159,44 @@ async def delete_source(run_id: str, source_id: str):
     append_event(run_dir, "source.deleted", {"source_id": source_id})
     append_event(run_dir, "evidence.updated", {"source_id": source_id})
     return {"source_id": source_id, "deleted": True, "removed_evidence": removed["removed_evidence"]}
+
+
+@router.post("/{run_id}/sources/{source_id}/retry")
+async def retry_source(run_id: str, source_id: str):
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
+    source = next(
+        (item for item in load_source_registry(run_dir).get("sources", []) if item.get("source_id") == source_id),
+        None,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="source not found")
+    try:
+        jobs = retry_failed_source_jobs(run_dir, source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    status = "uploaded_not_parsed" if source.get("stored_path") else "user_provided_not_ingested"
+    update_source_intake_result(
+        run_dir,
+        source_id,
+        status=status,
+        intake_status="pending",
+        clear_intake_error=True,
+        error_message="",
+    )
+    payload = {
+        "source_id": source_id,
+        "job_ids": [job.get("job_id", "") for job in jobs],
+        "retry_generation": jobs[0].get("retry_generation") if jobs else None,
+    }
+    append_event(run_dir, "source.retry_queued", payload)
+    for job in jobs:
+        append_event(run_dir, "job.queued", {
+            "job_id": job.get("job_id", ""),
+            "job_type": job.get("job_type", ""),
+            "source_id": source_id,
+        })
+    return {"source_id": source_id, "jobs": jobs, "status": status}
 
 
 def _uploaded_text_preview(path: Path, limit: int = 1200) -> str:

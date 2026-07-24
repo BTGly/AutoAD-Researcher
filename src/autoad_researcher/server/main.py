@@ -49,9 +49,10 @@ async def health():
     return {"status": "ok"}
 
 
-from autoad_researcher.server.routes import artifacts, chat, evidence, experiment_attempts, experiment_config, experiment_projection, intent_summary, jobs, report_collaboration, report_route, reports, runs, sources, ws
+from autoad_researcher.server.routes import artifacts, chat, config_audit, evidence, experiment_attempts, experiment_config, experiment_projection, intent_summary, jobs, report_collaboration, report_route, reports, runs, sources, ws
 
 app.include_router(chat.router)
+app.include_router(config_audit.router)
 app.include_router(runs.router)
 app.include_router(sources.router)
 app.include_router(intent_summary.router)

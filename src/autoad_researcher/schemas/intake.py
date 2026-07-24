@@ -24,6 +24,7 @@ SourceKind = Literal[
     "method_idea",
     "experiment_history",
     "other",
+    "local_path",
 ]
 
 

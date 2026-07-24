@@ -34,7 +34,7 @@ export function ChatInput({ value, onChange, onSend, disabled }: Props) {
         disabled={disabled}
         className="chat-composer-input"
       />
-      <AppButton variant="primary" onClick={send} disabled={disabled || !value.trim()}>
+      <AppButton variant="primary" onClick={send} tabIndex={value.trim() ? 0 : -1} disabled={disabled || !value.trim()}>
         发送
       </AppButton>
     </div>

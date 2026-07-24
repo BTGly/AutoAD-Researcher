@@ -28,6 +28,7 @@ class FilesystemRequest(BaseModel):
     skill_sha: str | None = None
     active_source_id: str | None = Field(default=None, pattern=IdentifierPattern)
     tool_context: ToolContext | None = None
+    max_entries: int = Field(default=200, gt=0, le=500)
 
     @field_validator("workspace_label", "path")
     @classmethod
@@ -42,6 +43,8 @@ class FilesystemReadRequest(FilesystemRequest):
 class FilesystemSearchRequest(FilesystemRequest):
     pattern: str = Field(min_length=1)
     max_matches: int = Field(default=100, gt=0)
+    max_files: int = Field(default=200, gt=0, le=500)
+    max_bytes_per_file: int = Field(default=65536, gt=0, le=262144)
 
 
 class FilesystemEntry(BaseModel):
@@ -77,6 +80,7 @@ class FilesystemToolResult(BaseModel):
     text: str | None = None
     stat: FilesystemStat | None = None
     matches: list[FilesystemSearchMatch] = Field(default_factory=list)
+    truncated: bool = False
 
 
 def filesystem_tool_spec(name: str) -> ToolSpec:
@@ -102,8 +106,14 @@ def filesystem_list(request: FilesystemRequest, *, permission_engine: Permission
     target = _resolve_workspace_path(request.workspace_root, request.path)
     if not target.exists():
         return FilesystemToolResult(status="not_found", permission=permission)
-    entries = [_entry(path, request.workspace_root.resolve()) for path in sorted(target.iterdir())]
-    return FilesystemToolResult(status="success", permission=permission, entries=entries)
+    entries = sorted(target.iterdir())
+    truncated = len(entries) > request.max_entries
+    return FilesystemToolResult(
+        status="success",
+        permission=permission,
+        entries=[_entry(path, request.workspace_root.resolve()) for path in entries[:request.max_entries]],
+        truncated=truncated,
+    )
 
 
 def filesystem_read(request: FilesystemReadRequest, *, permission_engine: PermissionEngine) -> FilesystemToolResult:
@@ -114,11 +124,13 @@ def filesystem_read(request: FilesystemReadRequest, *, permission_engine: Permis
     target = _resolve_workspace_path(request.workspace_root, request.path)
     if not target.is_file():
         return FilesystemToolResult(status="not_found", permission=permission)
+    size = target.stat().st_size
     data = target.read_bytes()[: request.max_bytes]
     return FilesystemToolResult(
         status="success",
         permission=permission,
         text=data.decode("utf-8", errors="replace"),
+        truncated=size > request.max_bytes,
     )
 
 
@@ -143,11 +155,17 @@ def filesystem_search(request: FilesystemSearchRequest, *, permission_engine: Pe
         return FilesystemToolResult(status="not_found", permission=permission)
 
     files = [target] if target.is_file() else sorted(path for path in target.rglob("*") if path.is_file())
+    truncated = len(files) > request.max_files
+    files = files[:request.max_files]
     matches: list[FilesystemSearchMatch] = []
     root = request.workspace_root.resolve()
     for file_path in files:
         _reject_symlink_components(root, file_path)
-        for line_number, line in enumerate(file_path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        data = file_path.read_bytes()[: request.max_bytes_per_file]
+        if b"\x00" in data:
+            truncated = True
+            continue
+        for line_number, line in enumerate(data.decode("utf-8", errors="replace").splitlines(), 1):
             if request.pattern in line:
                 matches.append(
                     FilesystemSearchMatch(
@@ -157,8 +175,8 @@ def filesystem_search(request: FilesystemSearchRequest, *, permission_engine: Pe
                     )
                 )
                 if len(matches) >= request.max_matches:
-                    return FilesystemToolResult(status="success", permission=permission, matches=matches)
-    return FilesystemToolResult(status="success", permission=permission, matches=matches)
+                    return FilesystemToolResult(status="success", permission=permission, matches=matches, truncated=True)
+    return FilesystemToolResult(status="success", permission=permission, matches=matches, truncated=truncated)
 
 
 def _permission(name: str, request: FilesystemRequest, engine: PermissionEngine) -> PermissionDecisionRecord:

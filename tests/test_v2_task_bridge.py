@@ -437,15 +437,17 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
     run_dir.mkdir()
     dataset_dir = tmp_path / "mvtec"
     dataset_dir.mkdir()
+    (dataset_dir / "train.csv").write_text("image,label\na,0\n", encoding="utf-8")
 
     _mock_two_call(
         monkeypatch,
         {
             "dialogue_mode": "plan",
             "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
-            "dataset_source": {
+            "local_path_source": {
                 "source_path": str(dataset_dir),
-                "user_label": "MVTec AD / bottle",
+                "user_claimed_kind": "dataset",
+                "purpose": "prepare experiment",
             },
             "task_action": "prepare_experiment_task",
         },
@@ -474,7 +476,7 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
     result = ResearchOrchestratorV2.handle(
         run_dir,
         user_input=(
-            f"数据集目录是 {dataset_dir}，使用 MVTec AD bottle、PatchCore、"
+            f"数据集目录是 {dataset_dir}，dataset 使用 MVTec AD / bottle、PatchCore、"
             "instance AUROC 和 GPU 0，请准备实验。"
         ),
         api_key="sk-test",
@@ -483,11 +485,11 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
     )
 
     assert result.experiment_task is not None
-    assert result.created_sources == [{
-        "source_id": result.experiment_task["input_task"]["source_ids"][0],
-        "kind": "dataset",
-        "status": "user_provided_not_ingested",
-    }]
+    assert len(result.created_sources) == 1
+    assert result.created_sources[0]["source_id"] == result.experiment_task["input_task"]["source_ids"][0]
+    assert result.created_sources[0]["kind"] == "dataset"
+    assert result.created_sources[0]["status"] == "user_provided_not_ingested"
+    assert result.created_sources[0]["inspection"]["detected_kind"] == "dataset"
     task = result.experiment_task["input_task"]
     assert task["baseline"] == "PatchCore"
     assert task["dataset"] == "MVTec AD / bottle"
