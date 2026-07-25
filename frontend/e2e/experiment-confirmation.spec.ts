@@ -40,7 +40,9 @@ async function prepare(page: Page, options: { confirmStatus?: number; task?: typ
   });
   await page.goto('/');
   await page.getByPlaceholder('输入问题，或粘贴 URL…').fill('请生成实验草案');
-  await page.getByRole('button', { name: '发送' }).click();
+  const send = page.getByRole('button', { name: '发送' });
+  await expect(send).toBeEnabled();
+  await send.click();
   await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
   await expect(page).toHaveScreenshot(options.screenshotName ?? 'experiment-confirmation.png', { fullPage: true, animations: 'disabled' });
 }
