@@ -10,6 +10,7 @@ from autoad_researcher.assistant.v2.evidence_service import append_artifact_evid
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.orchestrator import (
     ResearchOrchestratorV2,
+    _queue_local_path_jobs,
     _validated_dialogue_reply,
 )
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
@@ -550,6 +551,32 @@ def test_orchestrator_does_not_duplicate_explicit_and_model_local_path_actions(
     assert len(result.action_receipts) == 1
     assert result.action_receipts[0]["status"] == "created"
     assert (run_dir / "sources" / "source_references.json").is_file()
+
+
+def test_local_repo_job_graph_reconciles_a_missing_successor_without_duplicates(tmp_path: Path):
+    run_dir = tmp_path / "run_local_repo_reconcile"
+    run_dir.mkdir()
+    source = {"source_id": "src_repo", "kind": "local_repo"}
+
+    from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
+
+    acquire, created = create_or_get_pipeline_job(
+        run_dir,
+        source_id="src_repo",
+        job_type="local_repo_acquire",
+        idempotency_key="local-source:src_repo:local_repo_acquire",
+        evidence_role="repo_acquired",
+        payload={"source_role": "local_repo"},
+    )
+    assert created is True
+
+    created_jobs = _queue_local_path_jobs(run_dir, source)
+    assert [job["job_type"] for job in created_jobs] == ["repo_summarize"]
+    assert created_jobs[0]["payload"]["depends_on"] == acquire["job_id"]
+    assert _queue_local_path_jobs(run_dir, source) == []
+    assert [job["job_type"] for job in load_pipeline_jobs(run_dir)] == [
+        "local_repo_acquire", "repo_summarize",
+    ]
 
 
 def test_orchestrator_does_not_turn_research_goal_into_execution_gate(monkeypatch, tmp_path: Path):

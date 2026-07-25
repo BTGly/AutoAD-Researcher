@@ -111,14 +111,14 @@ def _process_pending_jobs(run_dir: Path) -> int:
             continue
         if observation.succeeded:
             completed_job = complete_pipeline_job(run_dir, running_job["job_id"], outputs=observation.outputs or [])
-            append_event(run_dir, "job.completed", {"job_id": running_job["job_id"], "outputs": observation.outputs or []})
             if completed_job is not None:
                 _notify_terminal_job(run_dir, completed_job, succeeded=True)
+            append_event(run_dir, "job.completed", {"job_id": running_job["job_id"], "outputs": observation.outputs or []})
         else:
             failed_job = fail_pipeline_job(run_dir, running_job["job_id"], error=observation.error or "experiment attempt failed")
-            append_event(run_dir, "job.failed", {"job_id": running_job["job_id"], "error": observation.error or "experiment attempt failed"})
             if failed_job is not None:
                 _notify_terminal_job(run_dir, failed_job, succeeded=False, error=observation.error or "experiment attempt failed")
+            append_event(run_dir, "job.failed", {"job_id": running_job["job_id"], "error": observation.error or "experiment attempt failed"})
         processed += 1
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -156,9 +156,9 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 error = f"dependency failed: {job.get('payload', {}).get('depends_on')}"
                 _project_job_failure(run_dir, job, error)
                 failed_job = fail_pipeline_job(run_dir, job_id, error=error)
-                append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error})
                 if failed_job is not None:
                     _notify_terminal_job(run_dir, failed_job, succeeded=False, error=error)
+                append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error}"})
                 processed += 1
             continue
@@ -252,16 +252,16 @@ def _process_pending_jobs(run_dir: Path) -> int:
             else:
                 _project_job_failure(run_dir, job, f"unknown job_type: {job_type}")
                 failed_job = fail_pipeline_job(run_dir, job_id, error=f"unknown job_type: {job_type}")
-                append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
                 if failed_job is not None:
                     _notify_terminal_job(run_dir, failed_job, succeeded=False, error=f"unknown job_type: {job_type}")
+                append_event(run_dir, "job.failed", {"job_id": job_id, "error": f"unknown job_type: {job_type}"})
                 continue
 
             if success:
                 completed_job = complete_pipeline_job(run_dir, job_id, outputs=outputs)
-                append_event(run_dir, "job.completed", {"job_id": job_id, "outputs": outputs})
                 if completed_job is not None:
                     _notify_terminal_job(run_dir, completed_job, succeeded=True)
+                append_event(run_dir, "job.completed", {"job_id": job_id, "outputs": outputs})
                 if outputs:
                     append_event(run_dir, "artifact.created", {"job_id": job_id, "paths": outputs})
                     append_event(run_dir, "evidence.updated", {"job_id": job_id})
@@ -270,9 +270,9 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 error_msg = _best_job_error(run_dir, job)
                 _project_job_failure(run_dir, job, error_msg)
                 failed_job = fail_pipeline_job(run_dir, job_id, error=error_msg)
-                append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error_msg})
                 if failed_job is not None:
                     _notify_terminal_job(run_dir, failed_job, succeeded=False, error=error_msg)
+                append_event(run_dir, "job.failed", {"job_id": job_id, "job_type": job_type, "source_id": job.get("source_id", ""), "error": error_msg})
                 append_event(run_dir, "toast.error", {"message": f"{job_type} 失败：{error_msg}"})
         except Exception as exc:
             error_msg = str(exc)[:500]
@@ -281,9 +281,9 @@ def _process_pending_jobs(run_dir: Path) -> int:
                 ReportStore().set_format_status(run_dir, report_id=job["report_id"], format_name="bundle", status="failed")
             _project_job_failure(run_dir, job, error_msg)
             failed_job = fail_pipeline_job(run_dir, job_id, error=error_msg)
-            append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})
             if failed_job is not None:
                 _notify_terminal_job(run_dir, failed_job, succeeded=False, error=error_msg)
+            append_event(run_dir, "job.failed", {"job_id": job_id, "error": error_msg})
             append_event(run_dir, "toast.error", {"message": f"{job_type} 失败"})
         processed += 1
 

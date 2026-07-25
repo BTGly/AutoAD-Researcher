@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 TRANSCRIPT_RELATIVE_PATH = Path("chat") / "transcript.jsonl"
+MESSAGE_KINDS = frozenset({"chat_reply", "task_update", "task_result", "task_failure"})
 
 
 def append_message(
@@ -34,6 +35,8 @@ def append_message(
         raise ValueError("conversation role must be user or assistant")
     if not content.strip():
         raise ValueError("conversation content must not be empty")
+    if message_kind not in MESSAGE_KINDS:
+        raise ValueError("unsupported conversation message kind")
     with _transcript_lock(run_dir):
         entries = _load_unlocked(run_dir)
         if notification_key:
@@ -98,24 +101,16 @@ def _load_unlocked(run_dir: Path) -> list[dict[str, Any]]:
 
 
 @contextmanager
-def _transcript_lock(run_dir: Path, *, timeout: float = 5.0):
+def _transcript_lock(run_dir: Path):
+    """Serialize append/read operations without leaving a stale crash lock.
+
+    ``flock`` is released by the kernel when a chat request or worker exits, so
+    a worker restart cannot permanently block the transcript after a crash.
+    """
+
     path = run_dir / "chat" / ".transcript.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout
-    fd: int | None = None
-    while time.monotonic() < deadline:
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            break
-        except FileExistsError:
-            time.sleep(0.01)
-    if fd is None:
-        raise TimeoutError("conversation transcript lock timeout")
-    try:
+    with path.open("a+", encoding="utf-8") as handle:
+        flock(handle.fileno(), LOCK_EX)
         yield
-    finally:
-        os.close(fd)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        flock(handle.fileno(), LOCK_UN)

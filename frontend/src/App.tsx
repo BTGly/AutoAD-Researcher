@@ -170,6 +170,9 @@ export default function App() {
     setComposerText('');
     setRunId(nextRunId);
     setTaskStatus('Ready');
+    // Do not render the previous run while its durable transcript is loading.
+    // A WebSocket task result can arrive during this request and is merged below.
+    setMessages([]);
     setSources([]);
     setPendingExperimentTaskConfirmation(null);
     setJobs([]);
@@ -180,7 +183,7 @@ export default function App() {
     setToasts([]);
     const transcript = await getTranscript(nextRunId).catch(() => []);
     if (currentRunIdRef.current !== nextRunId) return;
-    setMessages(transcript.map(entry => ({
+    const transcriptMessages: Message[] = transcript.map(entry => ({
       id: entry.message_id || generateId(),
       role: entry.role === 'user' ? 'user' : 'assistant',
       content: entry.content,
@@ -191,7 +194,8 @@ export default function App() {
       artifactPaths: entry.artifact_paths || [],
       evidenceIds: entry.evidence_ids || [],
       error: entry.error || undefined,
-    })));
+    }));
+    setMessages(current => mergeTranscriptMessages(transcriptMessages, current));
     await refreshSidebarForRun(nextRunId);
     const pendingTask = await getPendingExperimentTask(nextRunId).catch(() => null);
     if (currentRunIdRef.current === nextRunId) {
@@ -757,6 +761,18 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function mergeTranscriptMessages(transcript: Message[], live: Message[]): Message[] {
+  const merged = [...transcript];
+  const known = new Set(transcript.map(message => message.id));
+  for (const message of live) {
+    if (!known.has(message.id)) {
+      merged.push(message);
+      known.add(message.id);
+    }
+  }
+  return merged;
 }
 
 function normalizeEvidence(item: any): EvidenceItem {

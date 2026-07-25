@@ -172,17 +172,25 @@ class ResearchOrchestratorV2:
             if path_key in seen_turn_paths:
                 continue
             seen_turn_paths.add(path_key)
-            source_receipt, context_ref = _attach_local_context_action(
+            context_receipt, context_ref = _attach_local_context_action(
                 run_dir,
                 user_input=user_input,
                 path=local_action.source_path,
                 user_label=local_action.user_claimed_kind or "",
                 user_hint=local_action.purpose or "",
             )
-            action_receipts.append(source_receipt)
             if context_ref is not None:
                 local_contexts.append(context_ref)
+                source_receipt, source, jobs = _register_attached_local_source(
+                    run_dir, path=local_action.source_path, context_ref=context_ref
+                )
+                action_receipts.append(source_receipt)
+                if source is not None and source_receipt.get("status") != "already_registered":
+                    created_sources.append(source)
+                created_jobs.extend(jobs)
                 local_sources.append(_inspection_source_for_context(context_ref))
+            else:
+                action_receipts.append(context_receipt)
         if local_actions:
             context["current_turn_material_actions"] = {
                 "created_sources": created_sources,
@@ -518,9 +526,17 @@ def _material_receipt_reply(receipts: list[dict[str, Any]]) -> str:
         elif status == "job_queued":
             jobs = ", ".join(str(item) for item in receipt.get("job_ids") or [] if item)
             suffix = f"，处理任务 {jobs} 已排队" if jobs else "，处理任务已排队"
-            lines.append(f"本地资料 {path} 已登记{suffix}。")
+            source_id = str(receipt.get("source_id") or "")
+            source_status = str(receipt.get("source_status") or "")
+            identity = f"（资料 {source_id}，状态 {source_status}）" if source_id and source_status else ""
+            lines.append(f"本地资料 {path} 已登记{identity}{suffix}。")
         elif status in {"created", "already_registered"}:
-            lines.append(f"本地资料 {path} 已登记。")
+            source_id = str(receipt.get("source_id") or "")
+            identity = f"（资料 {source_id}）" if source_id else ""
+            if receipt.get("kind") == "local_path":
+                lines.append(f"本地资料 {path} 已登记{identity}，资料角色待确认，未创建不匹配的处理任务。")
+            else:
+                lines.append(f"本地资料 {path} 已登记{identity}。")
         else:
             lines.append(f"本地资料 {path} 未登记：{receipt.get('reason') or '登记失败'}。")
     return "\n".join(lines)
@@ -670,10 +686,6 @@ def _queue_local_path_jobs(run_dir: Path, source: dict[str, Any]) -> list[dict[s
     source_id = str(source.get("source_id") or "")
     if not source_id:
         return []
-    jobs = load_pipeline_jobs(run_dir)
-    existing = [job for job in jobs if job.get("source_id") == source_id]
-    if existing:
-        return []
     if source.get("kind") == "local_repo":
         acquire, acquire_created = create_or_get_pipeline_job(
             run_dir,
@@ -720,13 +732,15 @@ def _queue_local_path_jobs(run_dir: Path, source: dict[str, Any]) -> list[dict[s
     if spec is None:
         return []
     job_type, evidence_role = spec
-    return [append_pipeline_job(
+    job, created = create_or_get_pipeline_job(
         run_dir,
         source_id=source_id,
         job_type=job_type,
+        idempotency_key=f"local-source:{source_id}:{job_type}",
         evidence_role=evidence_role,
         payload={"stored_path": stored_path, "source_role": "local_file"},
-    )]
+    )
+    return [job] if created else []
 
 
 def _validate_source_action(
