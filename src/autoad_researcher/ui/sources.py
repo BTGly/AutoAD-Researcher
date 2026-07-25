@@ -712,9 +712,16 @@ def _is_under_allowed_local_source_root(path: Path, allowed_roots: list[Path]) -
     return False
 
 
-def is_allowed_local_source_path(source_path: str | Path) -> bool:
+def is_allowed_local_source_path(
+    source_path: str | Path,
+    *,
+    additional_roots: list[Path] | None = None,
+) -> bool:
     """Return whether a server-local path is inside an explicitly configured root."""
-    roots = get_allowed_local_source_roots()
+    roots = [
+        *get_allowed_local_source_roots(),
+        *(Path(root).expanduser().resolve() for root in (additional_roots or [])),
+    ]
     if not roots:
         return False
     try:
@@ -724,14 +731,18 @@ def is_allowed_local_source_path(source_path: str | Path) -> bool:
     return _is_under_allowed_local_source_root(path, roots)
 
 
-def inspect_local_path(source_path: str | Path) -> dict[str, Any]:
+def inspect_local_path(
+    source_path: str | Path,
+    *,
+    additional_allowed_roots: list[Path] | None = None,
+) -> dict[str, Any]:
     """Collect a bounded structural description of an allowed local path.
 
     The result is evidence for a later execution decision, not an asserted
     semantic label. It never reads file contents and never follows symlinks.
     """
     path = Path(source_path).expanduser().resolve()
-    if not is_allowed_local_source_path(path):
+    if not is_allowed_local_source_path(path, additional_roots=additional_allowed_roots):
         raise ValueError("该路径不在允许的资料目录内")
     if not path.exists():
         raise ValueError("该路径不存在")
@@ -924,7 +935,9 @@ def save_uploaded_file(run_dir: Path, uploaded_file: Any) -> dict[str, Any]:
     }
 
 
-def register_local_file_source(run_dir: Path, source_path: str | Path) -> dict[str, Any]:
+def register_local_file_source(
+    run_dir: Path, source_path: str | Path, *, additional_allowed_roots: list[Path] | None = None
+) -> dict[str, Any]:
     """Copy an existing server-local source file into runs/{run_id}/sources/.
 
     This is for remote-server workflows where the PDF already exists on disk
@@ -932,7 +945,7 @@ def register_local_file_source(run_dir: Path, source_path: str | Path) -> dict[s
     it does not parse, download, clone, or execute anything.
     """
     src = Path(source_path).expanduser().resolve()
-    if not is_allowed_local_source_path(src):
+    if not is_allowed_local_source_path(src, additional_roots=additional_allowed_roots):
         raise ValueError("该路径不在允许的资料目录内")
     if not src.is_file():
         raise ValueError("该路径不是可注册的资料文件")
@@ -974,10 +987,11 @@ def register_local_dataset_source(
     source_path: str | Path,
     *,
     user_label: str,
+    additional_allowed_roots: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Register an allowed server-local dataset directory without copying it."""
     src = Path(source_path).expanduser().resolve()
-    if not is_allowed_local_source_path(src):
+    if not is_allowed_local_source_path(src, additional_roots=additional_allowed_roots):
         raise ValueError("该路径不在允许的数据集目录内")
     if not src.is_dir():
         raise ValueError("该路径不是可注册的数据集目录")
@@ -1027,10 +1041,11 @@ def register_local_repo_source(
     source_path: str | Path,
     *,
     user_label: str,
+    additional_allowed_roots: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Register an allowed server-local repository directory by reference."""
     src = Path(source_path).expanduser().resolve()
-    if not is_allowed_local_source_path(src):
+    if not is_allowed_local_source_path(src, additional_roots=additional_allowed_roots):
         raise ValueError("该路径不在允许的本地仓库目录内")
     if not src.is_dir():
         raise ValueError("该路径不是可注册的本地仓库目录")
@@ -1077,6 +1092,7 @@ def register_local_path_source(
     user_label: str = "",
     user_claimed_kind: str | None = None,
     purpose: str | None = None,
+    additional_allowed_roots: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Inspect and register one local path without requiring a guessed type.
 
@@ -1085,7 +1101,7 @@ def register_local_path_source(
     sources with a bounded manifest so later dialogue can choose a focus.
     """
     path = Path(source_path).expanduser().resolve()
-    inspection = inspect_local_path(path)
+    inspection = inspect_local_path(path, additional_allowed_roots=additional_allowed_roots)
     reference = str(path)
     registry = load_source_registry(run_dir)
     for source in registry["sources"]:
@@ -1106,7 +1122,9 @@ def register_local_path_source(
     label = user_label.strip() or path.name
     if inspection["path_kind"] == "file":
         try:
-            source = register_local_file_source(run_dir, path)
+            source = register_local_file_source(
+                run_dir, path, additional_allowed_roots=additional_allowed_roots
+            )
         except ValueError:
             source_id = _generate_source_id()
             append_source_ref(
@@ -1121,9 +1139,13 @@ def register_local_path_source(
             )
             source = {"source_id": source_id, "kind": "local_path", "status": "user_provided_not_ingested"}
     elif inspection["detected_kind"] == "repository":
-        source = register_local_repo_source(run_dir, path, user_label=label)
+        source = register_local_repo_source(
+            run_dir, path, user_label=label, additional_allowed_roots=additional_allowed_roots
+        )
     elif inspection["detected_kind"] == "dataset":
-        source = register_local_dataset_source(run_dir, path, user_label=label)
+        source = register_local_dataset_source(
+            run_dir, path, user_label=label, additional_allowed_roots=additional_allowed_roots
+        )
     else:
         source_id = _generate_source_id()
         append_source_ref(

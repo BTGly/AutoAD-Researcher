@@ -39,6 +39,7 @@ def _allow_policy() -> dict[str, str]:
 def _decision_payload(mode: str = "ask") -> dict:
     return {
         "dialogue_mode": mode,
+        "current_turn_intent": "unspecified",
         "policy_assessment": _allow_policy(),
         "source_action": None,
         "task_action": None,

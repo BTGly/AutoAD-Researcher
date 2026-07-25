@@ -90,6 +90,15 @@ ExecutionGate = Literal[
     "blocked_missing_contract",
     "blocked_dialogue_only",
 ]
+CurrentTurnIntent = Literal[
+    "answer_current_turn",
+    "explore_or_discuss",
+    "prepare_experiment",
+    "confirm_task",
+    "execute_experiment",
+    "material_action",
+    "unspecified",
+]
 
 
 class ResearchPolicyAssessment(BaseModel):
@@ -125,6 +134,7 @@ class DialogueDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dialogue_mode: DialogueMode
+    current_turn_intent: CurrentTurnIntent = "unspecified"
     action_scope: ActionScope = "none"
     policy: DialoguePolicy = "allow"
     evidence_status: EvidenceStatus = "unavailable"
@@ -169,6 +179,7 @@ class GatedDialogueDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dialogue_mode: DialogueMode
+    current_turn_intent: CurrentTurnIntent = "unspecified"
     action_scope: ActionScope = "none"
     policy: DialoguePolicy = "allow"
     evidence_status: EvidenceStatus = "unavailable"
@@ -885,6 +896,7 @@ def _compact_evidence_state(state: dict[str, Any]) -> dict[str, Any]:
         "failed_jobs": state.get("failed_jobs") or [],
         "answerability": state.get("answerability") or {},
         "current_turn_material_actions": state.get("current_turn_material_actions") or {},
+        "session_contexts": state.get("session_contexts") or [],
         "registered_sources": state.get("registered_sources") or [],
         "material_inspections": state.get("material_inspections") or [],
         "dialogue_state": state.get("dialogue_state") or {},

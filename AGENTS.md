@@ -6,12 +6,12 @@ rule.
 
 ## Mandatory Workflow
 
-Every meaningful change must follow this exact cycle:
+Every meaningful change that is ready for handoff or push must follow this exact cycle:
 
 1. Read the relevant source, tests, config, docs, and logs before editing.
 2. Make the smallest scoped change that solves the current task.
 3. Update the daily log under `notes/YYYY-MM-DD.md` before verification.
-4. Run `bash scripts/verify.sh`.
+4. Run `bash scripts/verify.sh` as the final gate.
 5. If verification passes, run `bash scripts/verify_and_push.sh "<message>"`.
 6. Confirm `git status --short --branch`, latest `git log --oneline -3`, and
    GitHub Actions verify status.
@@ -26,7 +26,7 @@ Do not start the next development step until the current one is pushed.
 
 ## Verification Rules
 
-- Always use `bash scripts/verify.sh`; do not substitute partial tests.
+- During iteration, prefer focused tests or checks; use `bash scripts/verify.sh` as the final gate before handoff or push.
 - The gate checks: structure, schemas, retained-service imports, CLI, benchmark
   config/preflight/environment lock, pytest, and log index integrity.
 - Dev dependencies via `uv sync --extra dev` (or use the gate which handles this).

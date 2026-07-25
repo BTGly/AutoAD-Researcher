@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,13 +10,17 @@ from autoad_researcher.assistant.model_routing import ModelRole, ModelRoute, sel
 from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.server.models import ChatRequest, ChatResponse
 from autoad_researcher.assistant.v2.event_service import append_event
+from autoad_researcher.assistant.v2.conversation_store import (
+    TRANSCRIPT_RELATIVE_PATH,
+    append_message,
+    load_message_tail_for_llm,
+)
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
 from autoad_researcher.server.ws_manager import manager
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
-TRANSCRIPT_RELATIVE_PATH = Path("chat") / "transcript.jsonl"
 CONFIG_PATH = Path.home() / ".autoad" / "config.json"
 DEFAULT_PROVIDER = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -80,7 +83,9 @@ async def chat_send(req: ChatRequest, request: Request):
     route = _extract_role_route(request, "research_dialogue")
     append_event(run_dir, "assistant.model_route.selected", route.snapshot())
     stored_transcript_tail = _load_transcript_tail(run_dir)
-    transcript_tail = req.transcript_tail or stored_transcript_tail
+    # The durable transcript includes worker notifications; browser state is
+    # intentionally not authoritative when a background task finishes mid-chat.
+    transcript_tail = stored_transcript_tail
     message_id = _resolve_message_id(req.request_id)
     loop = asyncio.get_running_loop()
 
@@ -163,39 +168,15 @@ async def chat_send(req: ChatRequest, request: Request):
 
 
 def _load_transcript_tail(run_dir: Path, limit: int = 12) -> list[dict[str, Any]]:
-    path = run_dir / TRANSCRIPT_RELATIVE_PATH
-    if not path.is_file():
-        return []
-    entries: list[dict[str, Any]] = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    for line in lines[-limit:]:
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        role = payload.get("role")
-        content = payload.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str):
-            entries.append({"role": role, "content": content})
-    return entries
+    return load_message_tail_for_llm(run_dir, limit=limit)
 
 
 def _append_transcript(run_dir: Path, role: str, content: str) -> None:
-    path = run_dir / TRANSCRIPT_RELATIVE_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "role": role,
-        "content": content,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    append_message(run_dir, role=role, content=content)
 
 
 def _resolve_message_id(request_id: str | None) -> str:
     if request_id:
         return request_id
+    from datetime import datetime, timezone
     return f"assistant_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"

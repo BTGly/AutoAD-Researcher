@@ -14,6 +14,8 @@ from autoad_researcher.assistant.v2.evidence_service import (
 )
 from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
 from autoad_researcher.assistant.v2.dialogue_state import build_dialogue_state_projection
+from autoad_researcher.assistant.v2.conversation_store import load_messages
+from autoad_researcher.ui.session_context import load_session_context
 
 FORBIDDEN_ACTIONS = [
     "patch_apply",
@@ -47,6 +49,18 @@ def build_llm_context(
         _job_context(j)
         for j in jobs
         if j.get("status") == "failed"
+    ]
+    task_messages = [
+        {
+            "message_kind": item.get("message_kind"),
+            "content": item.get("content", ""),
+            "job_id": item.get("job_id"),
+            "source_id": item.get("source_id"),
+            "artifact_paths": item.get("artifact_paths", []),
+            "error": item.get("error"),
+        }
+        for item in load_messages(run_dir, limit=24)
+        if item.get("message_kind") in {"task_update", "task_result", "task_failure"}
     ]
 
     answer_entry_types = {
@@ -102,10 +116,12 @@ def build_llm_context(
             if e.get("evidence_type") == "paper_reading_summary"
         ],
         "candidate_sources": [c.get("query", "") for c in candidates],
+        "session_contexts": load_session_context(run_dir),
         "unparsed_sources": [s.get("source_id", "") for s in unparsed],
         "unusable_parsed_sources": unusable_parsed,
         "pending_jobs": pending_jobs,
         "failed_jobs": failed_jobs,
+        "recent_task_messages": task_messages,
         "dialogue_state": build_dialogue_state_projection(run_dir).model_dump(mode="json"),
         "answerability": {
             "can_answer": can_answer,

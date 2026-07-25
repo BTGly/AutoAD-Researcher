@@ -115,6 +115,37 @@ def test_gate_checks_contract_state_for_act_request(tmp_path: Path):
     assert present.execution_gate == "blocked_dialogue_only"
 
 
+def test_gate_prioritizes_current_turn_intent_over_stale_execution_mode(tmp_path: Path):
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act",
+        current_turn_intent="answer_current_turn",
+        action_scope="experiment",
+        task_action="prepare_experiment_task",
+        policy_assessment=_allow_policy(),
+    ))
+
+    gated = DialogueGate.validate(decision, run_dir=tmp_path, registered_sources=[])
+
+    assert gated.dialogue_mode == "ask"
+    assert gated.current_turn_intent == "answer_current_turn"
+    assert gated.task_action is None
+    assert gated.execution_gate == "not_requested"
+
+
+def test_gate_treats_research_goal_as_non_execution_without_keywords():
+    decision = _valid(DialogueDecision(
+        dialogue_mode="act",
+        current_turn_intent="explore_or_discuss",
+        action_scope="experiment",
+        policy_assessment=_allow_policy(),
+    ))
+
+    gated = DialogueGate.validate(decision, run_dir=Path("/tmp"), registered_sources=[])
+
+    assert gated.dialogue_mode == "plan"
+    assert gated.execution_gate == "not_requested"
+
+
 def test_gate_validates_source_id_and_adapter_selectors(tmp_path: Path):
     decision = _valid(DialogueDecision(
         dialogue_mode="plan",

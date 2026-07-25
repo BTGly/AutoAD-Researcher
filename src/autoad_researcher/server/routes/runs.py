@@ -18,7 +18,7 @@ from autoad_researcher.assistant.v2.task_bridge import (
 )
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
-from autoad_researcher.server.routes.chat import TRANSCRIPT_RELATIVE_PATH
+from autoad_researcher.assistant.v2.conversation_store import load_messages
 from autoad_researcher.task_workspace.task_profile import (
     archive_task,
     build_run_id_from_optional_name,
@@ -64,6 +64,13 @@ class TranscriptItem(BaseModel):
     role: str
     content: str
     created_at: str | None = None
+    message_id: str | None = None
+    message_kind: str | None = None
+    job_id: str | None = None
+    source_id: str | None = None
+    artifact_paths: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    error: str | None = None
 
 
 class ConfirmExperimentTaskRequest(BaseModel):
@@ -144,17 +151,8 @@ async def delete_run(run_id: str):
 @router.get("/{run_id}/transcript", response_model=list[TranscriptItem])
 async def get_run_transcript(run_id: str):
     run_dir = _existing_run_dir(run_id)
-    path = run_dir / TRANSCRIPT_RELATIVE_PATH
-    if not path.is_file():
-        return []
     entries: list[TranscriptItem] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for payload in load_messages(run_dir):
         role = payload.get("role")
         content = payload.get("content")
         if role in {"user", "assistant"} and isinstance(content, str):
@@ -162,6 +160,13 @@ async def get_run_transcript(run_id: str):
                 role=role,
                 content=content,
                 created_at=_optional_str(payload.get("created_at") or payload.get("timestamp")),
+                message_id=_optional_str(payload.get("message_id")),
+                message_kind=_optional_str(payload.get("message_kind")),
+                job_id=_optional_str(payload.get("job_id")),
+                source_id=_optional_str(payload.get("source_id")),
+                artifact_paths=[str(item) for item in payload.get("artifact_paths", []) if isinstance(item, str)],
+                evidence_ids=[str(item) for item in payload.get("evidence_ids", []) if isinstance(item, str)],
+                error=_optional_str(payload.get("error")),
             ))
     return entries
 

@@ -181,10 +181,16 @@ export default function App() {
     const transcript = await getTranscript(nextRunId).catch(() => []);
     if (currentRunIdRef.current !== nextRunId) return;
     setMessages(transcript.map(entry => ({
-      id: generateId(),
+      id: entry.message_id || generateId(),
       role: entry.role === 'user' ? 'user' : 'assistant',
       content: entry.content,
       timestamp: entry.created_at ? new Date(entry.created_at).getTime() : Date.now(),
+      kind: entry.message_kind || undefined,
+      jobId: entry.job_id || undefined,
+      sourceId: entry.source_id || undefined,
+      artifactPaths: entry.artifact_paths || [],
+      evidenceIds: entry.evidence_ids || [],
+      error: entry.error || undefined,
     })));
     await refreshSidebarForRun(nextRunId);
     const pendingTask = await getPendingExperimentTask(nextRunId).catch(() => null);
@@ -497,6 +503,26 @@ export default function App() {
 
   // ── WebSocket: real-time event handling ──
   const onWsMessage = useCallback((msg: WSMessage) => {
+    const conversationMessageId = msg.message_id;
+    if (msg.type === 'conversation.message.created' && msg.content && conversationMessageId) {
+      setMessages(prev => {
+        if (prev.some(item => item.id === conversationMessageId)) return prev;
+        return [...prev, {
+          id: conversationMessageId,
+          role: 'assistant',
+          content: msg.content || '',
+          timestamp: msg.created_at ? new Date(msg.created_at).getTime() : Date.now(),
+          kind: msg.message_kind,
+          jobId: msg.job_id || msg.jobId,
+          sourceId: msg.source_id || msg.sourceId,
+          artifactPaths: msg.artifact_paths || [],
+          evidenceIds: msg.evidence_ids || [],
+          error: msg.error,
+        }];
+      });
+      refreshSidebar();
+      return;
+    }
     if (msg.type.startsWith('experiment.')) {
       setExperimentRefreshTick(value => value + 1);
       return;

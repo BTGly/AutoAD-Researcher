@@ -31,6 +31,7 @@ class DialogueGate:
         registered_sources: list[dict[str, Any]],
     ) -> GatedDialogueDecision:
         mode = decision.dialogue_mode
+        current_turn_intent = decision.current_turn_intent
         policy = decision.policy_assessment
         notes: list[str] = []
         decision_consistent = True
@@ -71,6 +72,36 @@ class DialogueGate:
             task_action = None
             target_spec = None
         else:
+            if current_turn_intent == "answer_current_turn":
+                source_action = None
+                task_action = None
+                target_spec = None
+                if mode in {"act", "act_request"}:
+                    mode = "ask"
+                    notes.append("current_turn_answer_overrode_execution_mode")
+            elif current_turn_intent == "explore_or_discuss":
+                source_action = None
+                task_action = None
+                target_spec = None
+                if mode in {"act", "act_request"}:
+                    mode = "plan"
+                    notes.append("current_turn_exploration_overrode_execution_mode")
+            elif current_turn_intent in {"prepare_experiment", "confirm_task"}:
+                if mode in {"act", "act_request"}:
+                    mode = "plan"
+                    notes.append("current_turn_preparation_overrode_execution_mode")
+            elif current_turn_intent == "execute_experiment":
+                has_concrete_execution_scope = decision.action_scope in {
+                    "repository",
+                    "code",
+                    "experiment",
+                    "system",
+                }
+                if not has_concrete_execution_scope and not any(
+                    item is not None for item in (source_action, task_action, target_spec)
+                ):
+                    mode = "plan"
+                    notes.append("execute_intent_without_concrete_scope_downgraded")
             source_by_id = {
                 str(item.get("source_id") or ""): item
                 for item in registered_sources
@@ -141,6 +172,7 @@ class DialogueGate:
 
         return GatedDialogueDecision(
             dialogue_mode=mode,
+            current_turn_intent=current_turn_intent,
             action_scope=action_scope,
             policy=action_policy,
             evidence_status=decision.evidence_status,
@@ -168,6 +200,7 @@ class DialogueGate:
             decision.policy == "allow"
             and decision.task_action is not None
             and decision.task_action.action == "prepare_experiment_task"
+            and decision.current_turn_intent in {"prepare_experiment", "unspecified"}
             and decision.source_action is None
             and bool(summary.goal.strip())
             and decision.conversation_transition != "cancel"
@@ -180,6 +213,7 @@ class DialogueGate:
             decision.policy == "allow"
             and decision.task_action is not None
             and decision.task_action.action == "confirm_pending_plan_only_task"
+            and decision.current_turn_intent in {"confirm_task", "unspecified"}
             and decision.source_action is None
             and decision.conversation_transition == "confirm"
         )
@@ -194,6 +228,7 @@ class DialogueGate:
             decision.dialogue_mode == "act"
             and decision.execution_gate == "blocked_missing_contract"
             and decision.policy == "allow"
+            and decision.current_turn_intent in {"execute_experiment", "unspecified"}
             and decision.source_action is None
             and bool(summary.goal.strip())
             and summary.blocking_question is None

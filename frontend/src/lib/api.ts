@@ -191,7 +191,20 @@ export async function deleteRun(runId: string): Promise<{ run_id: string; delete
   return res.json();
 }
 
-export async function getTranscript(runId: string): Promise<Array<{ role: string; content: string; created_at: string | null }>> {
+export interface TranscriptEntry {
+  role: string;
+  content: string;
+  created_at: string | null;
+  message_id?: string | null;
+  message_kind?: 'chat_reply' | 'task_update' | 'task_result' | 'task_failure' | null;
+  job_id?: string | null;
+  source_id?: string | null;
+  artifact_paths?: string[];
+  evidence_ids?: string[];
+  error?: string | null;
+}
+
+export async function getTranscript(runId: string): Promise<TranscriptEntry[]> {
   const res = await fetch(`/api/runs/${runId}/transcript`);
   if (!res.ok) return [];
   return res.json();

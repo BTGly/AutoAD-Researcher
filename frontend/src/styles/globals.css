@@ -813,6 +813,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .message-user .msg-role, .message-user .msg-content { width: min(78%, 620px); }
 .message-user .msg-content { padding: 10px 13px; border: 1px solid var(--separator); border-radius: 10px 10px 3px 10px; background: var(--surface-secondary); }
 .message-assistant .msg-content { color: var(--text); }
+.message-task { margin-left: 0; border-left: 3px solid var(--accent); padding-left: 12px; }
+.message-task.task_failure { border-left-color: var(--danger, #b42318); }
+.task-message-meta, .task-message-artifacts { color: var(--text-secondary); font-size: 12px; margin: 5px 0; overflow-wrap: anywhere; }
 .chat-inspector {
   margin: 0;
   border: 1px solid var(--glass-rim);

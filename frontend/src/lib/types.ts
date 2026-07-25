@@ -12,6 +12,12 @@ export interface Message {
   content: string;
   toolLines?: ToolLine[];
   timestamp: number;
+  kind?: 'chat_reply' | 'task_update' | 'task_result' | 'task_failure';
+  jobId?: string;
+  sourceId?: string;
+  artifactPaths?: string[];
+  evidenceIds?: string[];
+  error?: string;
 }
 
 export interface QueuedChatMessage {
@@ -251,6 +257,9 @@ export interface WSMessage {
   stored_path?: string;
   storedPath?: string;
   paths?: string[];
+  artifact_paths?: string[];
+  evidence_ids?: string[];
+  message_kind?: 'chat_reply' | 'task_update' | 'task_result' | 'task_failure';
   toast?: boolean;
   delay?: number;
 }

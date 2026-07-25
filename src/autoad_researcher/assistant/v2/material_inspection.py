@@ -115,6 +115,20 @@ def inspect_registered_material(
 
 
 def _scope_for_source(run_dir: Path, source: dict[str, Any]) -> dict[str, Any] | None:
+    if source.get("context_only") and source.get("original_reference"):
+        root = Path(str(source["original_reference"])).expanduser().resolve()
+        if root.is_file():
+            return {
+                "root": root.parent,
+                "allowed_tools": {"filesystem_read", "filesystem_stat"},
+                "source_id": str(source.get("source_id") or ""),
+                "file_name": root.name,
+            }
+        return {
+            "root": root,
+            "allowed_tools": {"filesystem_list", "filesystem_read", "filesystem_search", "filesystem_stat"},
+            "source_id": str(source.get("source_id") or ""),
+        }
     kind = str(source.get("kind") or "")
     source_id = str(source.get("source_id") or "")
     stored_path = str(source.get("stored_path") or "")

@@ -14,6 +14,8 @@ from autoad_researcher.server.routes.chat import (
     _load_transcript_tail,
     _resolve_message_id,
 )
+from autoad_researcher.assistant.v2.conversation_store import append_message
+from autoad_researcher.server.routes.runs import get_run_transcript
 
 
 def test_v2_chat_transcript_tail_round_trips_recent_messages(tmp_path: Path):
@@ -81,3 +83,22 @@ def test_chat_headers_supply_explicit_role_model_routes():
     assert _extract_role_route(request, "report").model_id == "deepseek-v4-flash"
     experiment = _extract_role_route(request, "experiment_agent")
     assert experiment.model_id == "deepseek-v4-pro" and experiment.thinking_type == "enabled"
+
+
+@pytest.mark.asyncio
+async def test_transcript_route_keeps_task_message_metadata(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_chat"
+    run_dir.mkdir()
+    monkeypatch.setattr("autoad_researcher.server.routes.runs.RUNS_ROOT", tmp_path)
+    append_message(
+        run_dir, role="assistant", content="**数据集清单生成已完成**",
+        message_kind="task_result", notification_key="task-result:job_000001",
+        job_id="job_000001", source_id="src_dataset",
+        artifact_paths=["sources/src_dataset/dataset_manifest.json"],
+    )
+
+    transcript = await get_run_transcript("run_chat")
+
+    assert transcript[0].message_kind == "task_result"
+    assert transcript[0].job_id == "job_000001"
+    assert transcript[0].artifact_paths == ["sources/src_dataset/dataset_manifest.json"]

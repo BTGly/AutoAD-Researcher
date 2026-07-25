@@ -502,11 +502,10 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
     )
 
     assert result.experiment_task is not None
-    assert len(result.created_sources) == 1
-    assert result.created_sources[0]["source_id"] == result.experiment_task["input_task"]["source_ids"][0]
-    assert result.created_sources[0]["kind"] == "dataset"
-    assert result.created_sources[0]["status"] == "user_provided_not_ingested"
-    assert result.created_sources[0]["inspection"]["detected_kind"] == "dataset"
+    assert [source["kind"] for source in result.created_sources] == ["dataset"]
+    assert result.action_receipts[0]["status"] == "job_queued"
+    assert result.action_receipts[0]["job_ids"]
+    assert (run_dir / "sources" / "source_references.json").is_file()
     task = result.experiment_task["input_task"]
     assert task["baseline"] == "PatchCore"
     assert task["dataset"] == "MVTec AD / bottle"
@@ -516,8 +515,104 @@ def test_orchestrator_registers_explicit_local_dataset_then_prepares_task(
         "用户不允许修改 evaluator",
     ]
     assert not (run_dir / "input_task.yaml").exists()
-    jobs = load_pipeline_jobs(run_dir)
-    assert [job["job_type"] for job in jobs] == ["dataset_manifest"]
+    assert [job["job_type"] for job in load_pipeline_jobs(run_dir)] == ["dataset_manifest"]
+
+
+def test_orchestrator_does_not_duplicate_explicit_and_model_local_path_actions(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", str(tmp_path))
+    run_dir = tmp_path / "run_duplicate_local_path"
+    run_dir.mkdir()
+    material = tmp_path / "material"
+    material.mkdir()
+    (material / "README.md").write_text("material", encoding="utf-8")
+    _mock_material_inspection_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "ask",
+            "current_turn_intent": "material_action",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "local_path_source": {"source_path": str(material), "purpose": "inspect"},
+        },
+        {"reply_to_user": "已收到资料。", "summary": {"goal": "检查资料", "confirmed_facts": [], "inferred_facts": [], "unresolved_conflicts": [], "blocking_question": None}},
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=f"检查 {material}",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert len(result.action_receipts) == 1
+    assert result.action_receipts[0]["status"] == "created"
+    assert (run_dir / "sources" / "source_references.json").is_file()
+
+
+def test_orchestrator_does_not_turn_research_goal_into_execution_gate(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_research_goal"
+    run_dir.mkdir()
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "act",
+            "current_turn_intent": "explore_or_discuss",
+            "action_scope": "experiment",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+        },
+        {
+            "reply_to_user": "异常检测实验可以先从读取仓库入口和数据集结构开始。",
+            "summary": {"goal": "异常检测实验", "confirmed_facts": [], "inferred_facts": [], "unresolved_conflicts": [], "blocking_question": None},
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="我要做异常检测实验",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.dialogue_mode == "plan"
+    assert result.experiment_task is None
+    assert "input_task.yaml" not in result.reply
+    assert "异常检测实验" in result.reply
+
+
+def test_orchestrator_answers_current_turn_without_stale_execution_gate(monkeypatch, tmp_path: Path):
+    run_dir = tmp_path / "run_current_question"
+    run_dir.mkdir()
+    save_research_intent_summary(run_dir, ResearchIntentSummary(goal="异常检测实验"))
+    _mock_two_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "act",
+            "current_turn_intent": "answer_current_turn",
+            "action_scope": "experiment",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+        },
+        {
+            "reply_to_user": "上一轮失败是因为路径所属的 workspace 没有被当前服务授权。",
+            "summary": {"goal": "异常检测实验", "confirmed_facts": [], "inferred_facts": [], "unresolved_conflicts": [], "blocking_question": None},
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="刚才为什么失败",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.dialogue_mode == "ask"
+    assert result.experiment_task is None
+    assert "上一轮失败是因为" in result.reply
+    assert "input_task.yaml" not in result.reply
 
 
 def test_orchestrator_keeps_partial_local_intake_and_blocks_task_confirmation(monkeypatch, tmp_path: Path):
@@ -553,9 +648,9 @@ def test_orchestrator_keeps_partial_local_intake_and_blocks_task_confirmation(mo
     )
 
     assert result.material_action_status == "partial_success"
-    assert len(result.created_sources) == 1
-    assert result.created_sources[0]["original_reference"] == str(valid_path.resolve())
-    assert [job["job_type"] for job in result.created_jobs] == ["dataset_manifest"]
+    assert [source["kind"] for source in result.created_sources] == ["dataset"]
+    assert result.action_receipts[0]["status"] == "job_queued"
+    assert [job["job_type"] for job in load_pipeline_jobs(run_dir)] == ["dataset_manifest"]
     assert result.experiment_task is not None
     assert result.experiment_task["status"] == "blocked_by_materials"
     assert str(missing_path) in result.reply

@@ -12,9 +12,16 @@ export function UserMessage({ msg }: { msg: Message }) {
 }
 
 export function AssistantMessage({ msg }: { msg: Message }) {
+  const taskMessage = msg.kind && msg.kind !== 'chat_reply';
   return (
-    <article className="message message-assistant">
+    <article className={`message message-assistant ${taskMessage ? `message-task ${msg.kind}` : ''}`}>
       <div className="msg-role assistant">AutoAD Researcher</div>
+      {taskMessage && (
+        <div className="task-message-meta">
+          {msg.kind === 'task_failure' ? '后台任务失败' : '后台任务更新'}
+          {msg.jobId ? ` · ${msg.jobId}` : ''}
+        </div>
+      )}
       {msg.toolLines?.map(tl => (
         <ToolLineComponent key={tl.id} tool={tl} />
       ))}
@@ -23,6 +30,9 @@ export function AssistantMessage({ msg }: { msg: Message }) {
           {msg.content}
         </MarkdownContent>
       )}
+      {taskMessage && msg.artifactPaths?.length ? (
+        <div className="task-message-artifacts">产物：{msg.artifactPaths.join(' · ')}</div>
+      ) : null}
     </article>
   );
 }

@@ -30,6 +30,7 @@ class DialogueTransitionRecord(BaseModel):
     schema_version: Literal[1] = 1
     created_at: str
     dialogue_mode: str
+    current_turn_intent: str = "unspecified"
     action_scope: str
     policy: str
     evidence_status: str
@@ -91,6 +92,7 @@ def append_dialogue_transition(
     record = DialogueTransitionRecord(
         created_at=datetime.now(timezone.utc).isoformat(),
         dialogue_mode=decision.dialogue_mode,
+        current_turn_intent=decision.current_turn_intent,
         action_scope=decision.action_scope,
         policy=decision.policy,
         evidence_status=decision.evidence_status,

@@ -287,6 +287,18 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 - 用户在连续对话中补充“不改评估、mask、方法”等计划约束时，仍是 plan，不退回 ask。
 </modes>
 
+<current_turn_intent>
+先判断当前用户消息想得到什么，再参考上一轮摘要。上一轮摘要只能提供背景，不能替当前消息决定动作。
+- answer_current_turn：当前消息主要是在问身份、状态、原因、失败解释或纠正上一条回复；回答当前消息，不继续执行上一轮未完成动作。
+- explore_or_discuss：当前消息是在表达研究方向、讨论方案或要求理解材料，但没有明确要求准备任务草案或立即执行。
+- prepare_experiment：当前消息明确要求整理、设计或准备实验任务/计划，但尚未要求立即修改代码或运行。
+- confirm_task：当前消息明确确认已有待确认任务草案。
+- execute_experiment：当前消息明确要求现在修改代码、训练、评估或运行实验。
+- material_action：当前消息明确要求读取、检查、搜索或分析给出的本地资料；这不等于正式采用或执行实验。
+- unspecified：只有在当前消息确实无法判断时使用；不要用它把历史摘要升级为当前执行请求。
+current_turn_intent 必须与 dialogue_mode 和候选动作一致。单纯陈述“我要做某领域实验”通常是 explore_or_discuss 或 prepare_experiment，不是 execute_experiment。
+</current_turn_intent>
+
 <policy>
 - 要求把未经 AutoAD 当前领域验证的现实世界生物/物理设计结果当成可直接采用的科研或工程结论（例如蛋白质设计、建筑结构或材料配比），或要求立即执行这类设计：unsupported_domain。不能把它改写成异常检测；可以提供材料梳理或明确标注未验证领域的 plan_only 替代方案。
 - 正式测试标签、ground-truth mask 或答案信息进入训练、选择或校准：evaluation_leakage。
@@ -306,7 +318,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 
 <decision_output>
 只输出一个 JSON object：
-{"dialogue_mode":"ask|plan|act","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|unsupported_domain|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"local_path_sources":[],"local_path_source":null,"task_action":null,"target_spec":null}
+{"dialogue_mode":"ask|plan|act","current_turn_intent":"answer_current_turn|explore_or_discuss|prepare_experiment|confirm_task|execute_experiment|material_action|unspecified","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|unsupported_domain|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"local_path_sources":[],"local_path_source":null,"task_action":null,"target_spec":null}
 </decision_output>
 """
 
@@ -317,6 +329,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 </identity>
 
 <response>
+- 当 current_turn_intent 为 answer_current_turn 或 explore_or_discuss 时，优先处理当前消息；不要把上一轮的阻塞状态、待确认任务或执行请求当作本轮请求。
 - ask：先回答或确认已知状态，再只问一个真正阻塞的领域相关问题。能从材料发现的信息不反问用户；已有仓库和 Repository Intelligence 候选时，接受“你自己看”的委托，说明会按候选读取确认，不让用户选 entrypoint/config。
 - plan：必须交付有用的高层步骤；材料为空也给出“登记解析 → 提取约束 → 对齐协议 → 待确认方案”骨架，不能只索要材料。
 - act_request：若冻结 source_action 是 request_source_reparse，按其冻结 permission 说明已排队或仍待确认的资料操作，并明确这不等于代码修改、训练或实验运行；其他 act_request 严格依据 execution_gate 解释为什么当前不能执行，不承诺修改、训练或运行。
