@@ -43,6 +43,9 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
     attempt, job_id = _load_attempt(run_dir, job)
     store = ExperimentAttemptStore()
     attempt = store.mark_starting(run_dir, attempt_id=attempt.attempt_id, pipeline_job_id=job_id)
+    authorization_error = _held_out_authorization_error(run_dir, attempt)
+    if authorization_error is not None:
+        return _finalize_failure(run_dir, attempt, "HELD_OUT_AUTHORIZATION_INVALID", authorization_error)
     output_dir = run_dir / "attempts" / attempt.attempt_id
     if (output_dir / "process.json").exists() or (output_dir / "execution_result.json").exists():
         return _finalize_failure(run_dir, attempt, "RUN_ATTEMPT_ARTIFACT_EXISTS", "attempt artifact directory already exists")
@@ -50,9 +53,44 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
     lease = None
     started_at = _utc_now()
     try:
+        if attempt.required_device_count > 1 and attempt.gpu_topology_kind not in {"ddp_multi_gpu", "model_parallel"}:
+            return _finalize_failure(
+                run_dir,
+                attempt,
+                "GPU_TOPOLOGY_UNKNOWN",
+                "multi-GPU Attempt requires explicit ddp_multi_gpu or model_parallel evidence",
+            )
         if attempt.required_device_count:
             lease = GpuAllocator().allocate(run_dir, attempt_id=attempt.attempt_id, worker_id=_worker_id(), required_device_count=attempt.required_device_count, required_vram_mb=attempt.required_vram_mb)
             attempt = store.bind_resource_lease(run_dir, attempt_id=attempt.attempt_id, lease_id=lease.lease_id)
+            topology_ref = f"attempts/{attempt.attempt_id}/gpu_topology.json"
+            launch_method = _launch_method(attempt.command_plan.program, attempt.command_plan.args)
+            topology_kind = attempt.gpu_topology_kind or ("single_gpu" if len(lease.device_ids) == 1 else "unknown")
+            execution_mode = attempt.gpu_execution_mode or ("independent_attempts_sequential" if len(lease.device_ids) == 1 else "paused_unknown")
+            rank_mapping = attempt.gpu_rank_mapping or {str(rank): [device_id] for rank, device_id in enumerate(lease.device_ids)}
+            attempt = store.bind_gpu_allocation(
+                run_dir,
+                attempt_id=attempt.attempt_id,
+                device_ids=lease.device_ids,
+                gpu_uuids=lease.gpu_uuids,
+                world_size=len(lease.device_ids),
+                launch_method=launch_method,
+                topology_ref=topology_ref,
+                topology_kind=topology_kind,
+                execution_mode=execution_mode,
+                rank_mapping=rank_mapping,
+            )
+            _write_json(output_dir / "gpu_topology.json", {
+                "schema_version": 1,
+                "topology_kind": topology_kind,
+                "execution_mode": execution_mode,
+                "device_ids": lease.device_ids,
+                "gpu_uuids": lease.gpu_uuids,
+                "world_size": len(lease.device_ids),
+                "rank_mapping": rank_mapping,
+                "launch_method": launch_method,
+                "cuda_visible_devices": lease.cuda_visible_devices,
+            })
         env = os.environ.copy()
         env.update(attempt.command_plan.environment)
         env["AUTOAD_ATTEMPT_DIR"] = str(output_dir.resolve())
@@ -82,6 +120,13 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
         "resource_lease_id": lease.lease_id if lease is not None else None,
         "cuda_visible_devices": env.get("CUDA_VISIBLE_DEVICES"),
         "command_id": attempt.command_plan.command_id,
+        "topology_kind": attempt.gpu_topology_kind,
+        "execution_mode": attempt.gpu_execution_mode,
+        "device_ids": attempt.gpu_device_ids,
+        "gpu_uuids": attempt.gpu_uuids,
+        "world_size": attempt.gpu_world_size,
+        "rank_mapping": attempt.gpu_rank_mapping,
+        "launch_method": attempt.gpu_launch_method,
     })
     if lease is not None:
         telemetry = GpuTelemetryCollector(
@@ -89,6 +134,12 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
             attempt_id=attempt.attempt_id,
             attempt_purpose=attempt.attempt_purpose,
             device_ids=lease.device_ids,
+            gpu_uuids=lease.gpu_uuids,
+            world_size=attempt.gpu_world_size,
+            launch_method=attempt.gpu_launch_method,
+            topology_kind=attempt.gpu_topology_kind,
+            execution_mode=attempt.gpu_execution_mode,
+            rank_mapping=attempt.gpu_rank_mapping,
             started_at=started_at,
         )
         telemetry.sample(process.pid)
@@ -96,6 +147,33 @@ def start_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
     _write_heartbeat(output_dir, attempt, "running")
     append_event(run_dir, "experiment.attempt.running", {"attempt_id": attempt.attempt_id, "pid": process.pid})
     return AttemptObservation(terminal=False)
+
+
+def _held_out_authorization_error(run_dir: Path, attempt) -> str | None:
+    """Recheck durable approval before a worker spawns any held-out process."""
+
+    is_held_out = attempt.job_type == "experiment_baseline_b_test" or attempt.experiment_role == "b_test"
+    if not is_held_out:
+        return None
+    if attempt.held_out_confirmation_id is None:
+        return "B_test Attempt is missing held-out authorization"
+    from autoad_researcher.assistant.v2.experiment.baseline_control import load_held_out_authorization
+
+    authorization = load_held_out_authorization(run_dir, attempt.held_out_confirmation_id)
+    if authorization is None or authorization.session_id != attempt.session_id:
+        return "held-out authorization is missing or belongs to another Session"
+    if authorization.status not in {"authorized", "paired", "completed"}:
+        return "held-out authorization is not executable"
+    if authorization.evaluation_contract_sha256 != attempt.evaluation_contract_sha256:
+        return "held-out authorization contract differs from Attempt"
+    expected_attempt_id = (
+        authorization.baseline_b_test_attempt_id
+        if attempt.job_type == "experiment_baseline_b_test"
+        else authorization.candidate_b_test_attempt_id
+    )
+    if expected_attempt_id != attempt.attempt_id:
+        return "held-out authorization is not bound to this Attempt"
+    return None
 
 
 def observe_attempt_job(run_dir: Path, job: dict[str, Any]) -> AttemptObservation:
@@ -195,7 +273,15 @@ def _finalize(run_dir: Path, attempt, result: ExperimentExecutionResult, runtime
         ScientificAssessmentService().assess(run_dir, attempt_id=attempt.attempt_id)
     if RetryPolicy().should_retry(final, classification):
         from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
-        ExperimentAttemptService().create_retry(run_dir, attempt_id=final.attempt_id)
+
+        try:
+            ExperimentAttemptService().create_retry(run_dir, attempt_id=final.attempt_id)
+        except ValueError as exc:
+            append_event(
+                run_dir,
+                "experiment.attempt.retry_blocked",
+                {"attempt_id": final.attempt_id, "reason": str(exc)},
+            )
     elif classification is not None:
         events = _health_event_names(run_dir / "attempts" / attempt.attempt_id / "health_events.jsonl")
         diagnosis = HealthDiagnosisAgent().diagnose(
@@ -312,6 +398,17 @@ def _telemetry_for_attempt(run_dir: Path, attempt, output_dir: Path) -> GpuTelem
         device_ids = [value.strip() for value in raw_devices.split(",")]
         if not device_ids or any(not value.isdigit() for value in device_ids):
             return None
+        raw_uuids = process.get("gpu_uuids")
+        raw_rank_mapping = process.get("rank_mapping")
+        gpu_uuids = {
+            str(key): value if isinstance(value, str) or value is None else None
+            for key, value in raw_uuids.items()
+        } if isinstance(raw_uuids, dict) else {}
+        rank_mapping = {
+            str(key): value
+            for key, value in raw_rank_mapping.items()
+            if isinstance(value, list) and all(isinstance(item, str) for item in value)
+        } if isinstance(raw_rank_mapping, dict) else {}
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
     collector = GpuTelemetryCollector(
@@ -319,6 +416,12 @@ def _telemetry_for_attempt(run_dir: Path, attempt, output_dir: Path) -> GpuTelem
         attempt_id=attempt.attempt_id,
         attempt_purpose=attempt.attempt_purpose,
         device_ids=device_ids,
+        gpu_uuids=gpu_uuids,
+        world_size=process.get("world_size") if isinstance(process.get("world_size"), int) else None,
+        launch_method=process.get("launch_method") if isinstance(process.get("launch_method"), str) else None,
+        topology_kind=process.get("topology_kind") if isinstance(process.get("topology_kind"), str) else None,
+        execution_mode=process.get("execution_mode") if isinstance(process.get("execution_mode"), str) else None,
+        rank_mapping=rank_mapping,
         started_at=started_at,
     )
     _TELEMETRY[key] = collector
@@ -424,6 +527,9 @@ def _required_string(mapping: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value: raise ValueError(f"experiment Attempt Job requires {key}")
     return value
 def _worker_id() -> str: return f"worker-{os.uname().nodename}-{os.getpid()}"
+def _launch_method(program: str, args: list[str]) -> str:
+    values = [Path(program).name, *args]
+    return "distributed_launcher" if any(value in {"torchrun", "torch.distributed.run", "deepspeed"} for value in values) else "direct_process"
 def _utc_now() -> str: return datetime.now(timezone.utc).isoformat()
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

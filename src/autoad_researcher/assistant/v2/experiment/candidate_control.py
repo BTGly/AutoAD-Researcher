@@ -99,7 +99,7 @@ class CandidateControlService:
             raise ValueError("candidate intervention must match its IdeaTree node")
 
         baseline = next((item for item in self._attempts.list_for_session(run_dir, session_id=session_id)
-                         if item.job_type == "experiment_baseline" and item.runtime_status == "COMPLETED"), None)
+                         if item.job_type == "experiment_baseline" and item.runtime_status == "COMPLETED" and item.experiment_role in {"b1", "legacy"}), None)
         if baseline is None:
             raise ValueError("candidate launch requires a completed baseline Attempt")
         baseline_metrics = _metrics(run_dir, baseline.attempt_id)
@@ -135,6 +135,8 @@ class CandidateControlService:
         request = ExecutorHandoffRequest(
             session_id=session_id,
             job_type="experiment_attempt",
+            experiment_role="candidate_c",
+            paired_attempt_id=baseline.attempt_id,
             idempotency_key=value.idempotency_key,
             repository_path=run_dir / binding.repository_ref,
             base_commit="HEAD",

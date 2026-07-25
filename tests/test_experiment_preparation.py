@@ -20,6 +20,7 @@ from autoad_researcher.experiment.preparation_coordinator import (
     ExperimentPreparationCoordinator,
     PreparationInvestigationRequest,
 )
+from autoad_researcher.experiment.executor_adapters import ExecutorAdapterDraft, STANDARD_PREFLIGHT_CHECKS
 from autoad_researcher.server.routes import experiment_config as experiment_config_route
 
 
@@ -206,6 +207,38 @@ def test_coordinator_reuses_repository_intelligence_and_keeps_missing_asset_scop
     assert result.repository_artifact_refs["repo_baseline"]
 
 
+def test_coordinator_validates_an_agent_adapter_draft_and_freezes_hashes(tmp_path: Path):
+    repository = tmp_path / "baseline"
+    repository.mkdir()
+    for name in ["train.py", "evaluate.py", "dataset.py", "checkpoint.py", "metrics.py"]:
+        (repository / name).write_text("print('ok')\n", encoding="utf-8")
+    run_dir = tmp_path / "run_draft"
+    run_dir.mkdir()
+    draft = ExecutorAdapterDraft(
+        adapter_id="faprompt_mvtecad",
+        entrypoint="train.py",
+        smoke_argv=["python", "train.py"],
+        metrics_output="metrics.json",
+        allowed_paths=["train.py"],
+        protected_paths=["evaluate.py"],
+        investigation_evidence_ids=["ev_cli"],
+        source_files=["train.py", "dataset.py"],
+        preflight_commands={name: {"args": ["python", "train.py"]} for name in STANDARD_PREFLIGHT_CHECKS},
+    )
+    request = PreparationInvestigationRequest(
+        user_goal="验证 agent adapter 草案",
+        repositories=[PreparationRepository(repository_id="repo_baseline", role="baseline", display_name="baseline", path=str(repository))],
+        adapter_drafts={"repo_baseline": draft},
+    )
+
+    result = ExperimentPreparationCoordinator().investigate(run_dir, request)
+
+    assert result.preparation.repositories[0].investigation_status == "complete"
+    assert result.preparation.execution_freeze is not None
+    assert result.preparation.execution_freeze.adapter_ids == {"repo_baseline": "faprompt_mvtecad"}
+    assert any("draft" in item.summary for item in result.preparation.evidence)
+
+
 @pytest.mark.asyncio
 async def test_preparation_route_returns_empty_contract_and_persists_typed_record(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(experiment_config_route, "RUNS_ROOT", str(tmp_path))
@@ -220,5 +253,5 @@ async def test_preparation_route_returns_empty_contract_and_persists_typed_recor
     assert saved.status == "partially_ready"
     assert (await experiment_config_route.get_experiment_preparation(run_dir.name)).status == "partially_ready"
 
-    with pytest.raises(ValueError, match="does not match URL"):
+    with pytest.raises(HTTPException, match="does not match URL"):
         await experiment_config_route.save_experiment_preparation("different_run", _preparation(run_dir.name))

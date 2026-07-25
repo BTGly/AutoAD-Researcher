@@ -98,6 +98,35 @@ class ExperimentAttemptStore:
 
         return self._update(run_dir, attempt_id, mutate)
 
+    def bind_gpu_allocation(
+        self,
+        run_dir: Path,
+        *,
+        attempt_id: str,
+        device_ids: list[str],
+        gpu_uuids: dict[str, str | None],
+        world_size: int,
+        launch_method: str,
+        topology_ref: str,
+        topology_kind: str = "unknown",
+        execution_mode: str = "paused_unknown",
+        rank_mapping: dict[str, list[str]] | None = None,
+    ) -> ExperimentAttempt:
+        return self._update(
+            run_dir,
+            attempt_id,
+            lambda attempt: attempt.model_copy(update={
+                "gpu_device_ids": list(device_ids),
+                "gpu_uuids": dict(gpu_uuids),
+                "gpu_world_size": world_size,
+                "gpu_launch_method": launch_method,
+                "gpu_topology_ref": topology_ref,
+                "gpu_topology_kind": topology_kind,
+                "gpu_execution_mode": execution_mode,
+                "gpu_rank_mapping": rank_mapping or {},
+            }),
+        )
+
     def mark_running(self, run_dir: Path, *, attempt_id: str, pid: int, process_group_id: int) -> ExperimentAttempt:
         def mutate(attempt: ExperimentAttempt) -> ExperimentAttempt:
             if attempt.runtime_status not in {"STARTING", "RUNNING"}:
@@ -234,6 +263,9 @@ class ExperimentAttemptStore:
             "session_id": attempt.session_id,
             "job_type": attempt.job_type,
             "attempt_purpose": attempt.attempt_purpose,
+            "experiment_role": attempt.experiment_role,
+            "paired_attempt_id": attempt.paired_attempt_id,
+            "held_out_confirmation_id": attempt.held_out_confirmation_id,
             "command_plan": attempt.command_plan.model_dump(mode="json"),
             "input_refs": attempt.input_refs.model_dump(mode="json"),
             "job_timeout_sec": attempt.job_timeout_sec,

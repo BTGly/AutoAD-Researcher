@@ -58,6 +58,7 @@ class BaselineContractInput(BaseModel):
     required_vram_mb: int = Field(default=0, ge=0)
     dataset_source_ids: list[str] = Field(default_factory=list)
     asset_source_ids: list[str] = Field(default_factory=list)
+    baseline_role: Literal["r0", "b1"] = "b1"
 
     @field_validator("b_dev_ref", "b_test_ref")
     @classmethod
@@ -273,6 +274,7 @@ class BaselineControlService:
             run_dir,
             session_id=session_id,
             job_type="experiment_baseline",
+            experiment_role=contract_input.baseline_role,
             idempotency_key=f"baseline:{session_id}:{frozen.sha256}",
             command_plan=plan,
             input_refs=refs,
@@ -385,6 +387,9 @@ class BaselineControlService:
             run_dir,
             session_id=session_id,
             job_type="experiment_baseline_b_test",
+            experiment_role="b_test",
+            paired_attempt_id=baseline.attempt_id,
+            held_out_confirmation_id=authorization.confirmation_id,
             idempotency_key=f"baseline-b-test:{session_id}:{frozen.sha256}",
             command_plan=plan,
             input_refs=refs,
@@ -401,6 +406,12 @@ class BaselineControlService:
             session_id=session_id,
             status="BASELINE_RUNNING",
             baseline_status="queued",
+        )
+        save_held_out_authorization(
+            run_dir,
+            authorization.model_copy(
+                update={"baseline_b_test_attempt_id": started.attempt.attempt_id, "status": "paired"}
+            ),
         )
         return BaselineLaunchResult(
             started=ExperimentAttemptStartResult(

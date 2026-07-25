@@ -207,6 +207,7 @@ def ensure_adapter_preflight(
     run_dir: Path,
     artifact_name: str,
     timeout_seconds: int = 60,
+    required_checks: list[str] | None = None,
 ) -> AdapterPreflightResult | None:
     """Run mandatory adapter checks while keeping legacy fixtures compatible."""
 
@@ -215,6 +216,7 @@ def ensure_adapter_preflight(
     result = run_adapter_preflight(
         repository_root,
         evidence,
+        required_checks=required_checks,
         timeout_seconds=timeout_seconds,
         artifact_path=run_dir / "experiments" / "preflight" / f"{artifact_name}.json",
     )

@@ -281,6 +281,13 @@ class ResourceUsageReport(BaseModel):
     wall_time_seconds: float | None = Field(default=None, ge=0)
     cpu_time_seconds: float | None = None
     peak_cpu_memory_mb: float | None = None
+    gpu_device_ids: list[str] = Field(default_factory=list)
+    gpu_uuids: dict[str, str | None] = Field(default_factory=dict)
+    gpu_world_size: int | None = Field(default=None, ge=1)
+    gpu_rank_mapping: dict[str, list[str]] = Field(default_factory=dict)
+    gpu_launch_method: str | None = None
+    gpu_topology_kind: str | None = None
+    gpu_execution_mode: str | None = None
 
     evidence_refs: list[ArtifactReferenceV2] = Field(default_factory=list)
 

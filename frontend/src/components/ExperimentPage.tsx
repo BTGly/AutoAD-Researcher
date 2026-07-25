@@ -6,7 +6,7 @@ import { IdeaTree } from './IdeaTree';
 import { AppButton } from './ui/AppButton';
 import { EmptyState } from './ui/EmptyState';
 import { StatusBadge } from './ui/StatusBadge';
-import { ApiError, approveCandidateProposal, confirmCandidate, generateCandidateProposal, getExperimentProjection, promoteCandidate, rejectCandidateProposal, saveExperimentPreparation, startBaseline } from '../lib/api';
+import { ApiError, approveCandidateProposal, confirmCandidate, generateCandidateProposal, getExperimentProjection, promoteCandidate, rejectCandidateProposal, resolvePreparationAsset, saveExperimentPreparation, startBaseline } from '../lib/api';
 import { attemptStatusLabel, baselineStatusLabel, environmentStatusLabel, sessionStatusLabel } from '../lib/experimentLabels';
 import type { BaselineContractInput, BaselineMetricInput, CandidateProposal, ExperimentActivity, ExperimentAttempt, ExperimentIdeaNode, ExperimentPreparation, ExperimentProjection } from '../lib/types';
 
@@ -147,6 +147,10 @@ function PreparationOverview({ runId, preparation, onChanged }: { runId: string;
       <Fact label="仓库调查" value={investigationStatusLabel(preparation.investigation_status)} />
     </div>
     {preparation.stages.length ? <div style={{ marginTop: 10 }}><b>阶段状态</b>{preparation.stages.map(stage => <div key={stage.stage_id} data-testid={`preparation-stage-${stage.stage_id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 5, fontSize: '0.85em' }}><span>{stage.display_name}</span><span style={{ color: stage.status === 'blocked' ? 'var(--orange)' : 'var(--text-muted)' }}>{preparationStageStatusLabel(stage.status)}{stage.blockers.length ? `：${stage.blockers.join('；')}` : ''}</span></div>)}</div> : null}
+    {preparation.repositories.length ? <div style={{ marginTop: 10 }} data-testid="preparation-repositories"><b>已发现仓库</b>{preparation.repositories.map(repository => <div key={repository.repository_id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 5, fontSize: '0.85em' }}><span>{repository.display_name}</span><span style={{ color: repository.investigation_status === 'blocked' ? 'var(--orange)' : 'var(--text-muted)' }}>{investigationRepositoryStatusLabel(repository.investigation_status)}</span></div>)}</div> : null}
+    {preparation.gpu_topology ? <div style={{ marginTop: 10 }} data-testid="preparation-gpu-topology"><b>GPU 拓扑</b><div style={{ marginTop: 5, fontSize: '0.85em', color: 'var(--text-muted)' }}>{gpuTopologyLabel(preparation.gpu_topology.topology_kind)} · {gpuExecutionModeLabel(preparation.gpu_topology.execution_mode)}{preparation.gpu_topology.world_size ? ` · world size ${preparation.gpu_topology.world_size}` : ''}</div><div style={{ marginTop: 3, fontSize: '0.8em', color: 'var(--text-muted)' }}>{preparation.gpu_topology.rationale}</div></div> : null}
+    {preparation.evidence.length ? <details style={{ marginTop: 10 }}><summary>查看调查证据摘要</summary><div data-testid="preparation-evidence" style={{ fontSize: '0.8em', color: 'var(--text-muted)' }}>{preparation.evidence.slice(-8).map(item => <div key={item.evidence_id} style={{ marginTop: 5 }}>{evidenceKindLabel(item.kind)}：{item.summary}</div>)}</div></details> : null}
+    {preparation.actions.some(item => item.available) ? <div style={{ marginTop: 10 }} data-testid="preparation-actions"><b>可执行动作</b>{preparation.actions.filter(item => item.available).map(item => <div key={item.action_id} style={{ marginTop: 5, fontSize: '0.85em', color: 'var(--text-muted)' }}>{item.label}{item.requires_user ? '（需要你的输入）' : ''}</div>)}</div> : null}
     {missingAssets.length ? <PreparationAssetInputs runId={runId} preparation={preparation} assets={missingAssets} onChanged={onChanged} /> : null}
     {pending.length ? <div style={{ marginTop: 10, color: 'var(--orange)', fontSize: '0.85em' }}><b>需要用户决定</b>{pending.map(item => <div key={item.decision_id} data-testid={`preparation-decision-${item.decision_id}`} style={{ marginTop: 5 }}>{item.question}<span style={{ color: 'var(--text-muted)' }}>（影响：{item.impact}）</span></div>)}</div> : null}
   </section>;
@@ -160,10 +164,19 @@ function PreparationAssetInputs({ runId, preparation, assets, onChanged }: { run
     const path = (paths[asset.asset_id] || '').trim();
     if (!path) { setError(`请提供${asset.display_name}路径。`); return; }
     setBusy(asset.asset_id); setError(null);
+    if (asset.kind === 'model_weight') {
+      try {
+        await resolvePreparationAsset(runId, asset.asset_id, { userPath: path });
+        if (!await onChanged()) setError('权重已提交，但准备状态刷新失败。');
+      } catch (reason) {
+        setError(reason instanceof ApiError ? reason.message : '权重校验失败，请确认文件路径后重试。');
+      } finally { setBusy(null); }
+      return;
+    }
     const next: ExperimentPreparation = {
       ...preparation,
       assets: preparation.assets.map(item => item.asset_id === asset.asset_id ? { ...item, path, status: 'available', source: 'user' } : item),
-      user_decisions: preparation.user_decisions.map(item => item.question.includes(asset.display_name) ? { ...item, status: 'answered', answer: path } : item),
+      user_decisions: preparation.user_decisions.map(item => item.decision_id === `decision_${asset.asset_id}_path` ? { ...item, status: 'answered', answer: path } : item),
     };
     try {
       await saveExperimentPreparation(runId, next);
@@ -172,7 +185,13 @@ function PreparationAssetInputs({ runId, preparation, assets, onChanged }: { run
       setError(reason instanceof ApiError ? reason.message : '路径提交失败，请保留当前内容后重试。');
     } finally { setBusy(null); }
   };
-  return <div style={{ marginTop: 10 }}><b>需要补充的资产</b>{assets.map(asset => <div key={asset.asset_id} data-testid={`preparation-asset-${asset.asset_id}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, .7fr) minmax(180px, 1fr) auto', gap: 8, alignItems: 'end', marginTop: 7 }}><label>{asset.display_name}<input aria-label={`${asset.display_name}路径`} value={paths[asset.asset_id] || ''} onChange={event => setPaths(values => ({ ...values, [asset.asset_id]: event.target.value }))} placeholder="填写已有本地目录路径" /></label><span style={{ color: 'var(--text-muted)', fontSize: '0.8em' }}>仅影响：{asset.stages.length ? asset.stages.map(stageId => preparation.stages.find(stage => stage.stage_id === stageId)?.display_name || '准备阶段').join('、') : '待调查'}</span><AppButton variant="primary" disabled={busy !== null} aria-busy={busy === asset.asset_id} onClick={() => void savePath(asset)}><Check size={15} aria-hidden="true" />提交路径</AppButton></div>)}{error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 7 }}>{error}</div>}</div>;
+  const resolveOfficial = async (asset: ExperimentPreparation['assets'][number]) => {
+    setBusy(`resolve:${asset.asset_id}`); setError(null);
+    try { await resolvePreparationAsset(runId, asset.asset_id, { autoDownload: true }); if (!await onChanged()) setError('自动获取已完成，但准备状态刷新失败。'); }
+    catch (reason) { setError(reason instanceof ApiError ? reason.message : '自动获取失败，请提供已下载文件路径。'); }
+    finally { setBusy(null); }
+  };
+  return <div style={{ marginTop: 10 }}><b>需要补充的资产</b>{assets.map(asset => <div key={asset.asset_id} data-testid={`preparation-asset-${asset.asset_id}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, .7fr) minmax(180px, 1fr) auto', gap: 8, alignItems: 'end', marginTop: 7 }}><label>{asset.display_name}<input aria-label={`${asset.display_name}路径`} value={paths[asset.asset_id] || ''} onChange={event => setPaths(values => ({ ...values, [asset.asset_id]: event.target.value }))} placeholder="填写已有本地目录路径" /></label><span style={{ color: 'var(--text-muted)', fontSize: '0.8em' }}>仅影响：{asset.stages.length ? asset.stages.map(stageId => preparation.stages.find(stage => stage.stage_id === stageId)?.display_name || '准备阶段').join('、') : '待调查'}</span><div style={{ display: 'flex', gap: 6 }}><AppButton variant="primary" disabled={busy !== null} aria-busy={busy === asset.asset_id} onClick={() => void savePath(asset)}><Check size={15} aria-hidden="true" />提交路径</AppButton>{asset.kind === 'model_weight' && <AppButton disabled={busy !== null} aria-busy={busy === `resolve:${asset.asset_id}`} onClick={() => void resolveOfficial(asset)}>自动获取并校验</AppButton>}</div></div>)}{error && <div role="alert" style={{ color: 'var(--orange)', marginTop: 7 }}>{error}</div>}</div>;
 }
 
 function selectDetail(
@@ -382,7 +401,7 @@ function SessionOverview({ projection }: { projection: ExperimentProjection }) {
 function AttemptList({ attempts, selectedIdeaId, selectedId, onSelect }: { attempts: ExperimentAttempt[]; selectedIdeaId: string | null; selectedId: string | null; onSelect: (item: ExperimentAttempt) => void }) {
   const relatedAttempts = selectedIdeaId ? attempts.filter(item => item.related_idea_ids.includes(selectedIdeaId)) : attempts;
   if (!relatedAttempts.length) return selectedIdeaId ? <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 10, color: 'var(--text-muted)', fontSize: '0.85em' }}>该 Idea 暂无关联实验。</div> : null;
-  return <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 10 }}><b style={{ fontSize: '0.85em' }}>{selectedIdeaId ? '关联实验' : '全部实验'}</b>{relatedAttempts.map(item => <button key={item.attempt_id} onClick={() => onSelect(item)} style={{ display: 'block', width: '100%', marginTop: 6, textAlign: 'left', padding: 6, background: selectedId === item.attempt_id ? 'var(--bg)' : 'transparent', border: `1px solid ${selectedId === item.attempt_id ? 'var(--blue)' : 'var(--border)'}`, borderRadius: 5, color: 'var(--text)', cursor: 'pointer' }}>{item.attempt_id} · {attemptStatusLabel(item.runtime_status)}</button>)}</div>;
+  return <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 10 }}><b style={{ fontSize: '0.85em' }}>{selectedIdeaId ? '关联实验' : '全部实验'}</b>{relatedAttempts.map(item => <button key={item.attempt_id} onClick={() => onSelect(item)} style={{ display: 'block', width: '100%', marginTop: 6, textAlign: 'left', padding: 6, background: selectedId === item.attempt_id ? 'var(--bg)' : 'transparent', border: `1px solid ${selectedId === item.attempt_id ? 'var(--blue)' : 'var(--border)'}`, borderRadius: 5, color: 'var(--text)', cursor: 'pointer' }}>{item.attempt_id} · {attemptRoleLabel(item.experiment_role)} · {attemptStatusLabel(item.runtime_status)}</button>)}</div>;
 }
 
 function recordDetail(value: Record<string, unknown> | null | undefined): string { return value && Object.keys(value).length ? Object.entries(value).map(([key, item]) => `${key}: ${String(item)}`).join('；') : '暂无'; }
@@ -398,6 +417,11 @@ function statusTone(value: string): 'neutral' | 'success' | 'warning' | 'danger'
 function preparationStatusLabel(value: ExperimentPreparation['status']): string { return ({ unresolved: '待调查', investigating: '调查中', partially_ready: '部分可运行', ready: '已准备', blocked: '存在阻断' })[value]; }
 function preparationStageStatusLabel(value: ExperimentPreparation['stages'][number]['status']): string { return ({ unknown: '待确认', blocked: '不可运行', ready: '可运行', running: '运行中', completed: '已完成' })[value]; }
 function investigationStatusLabel(value: ExperimentPreparation['investigation_status']): string { return ({ not_started: '尚未开始', running: '进行中', complete: '已完成', blocked: '受阻' })[value]; }
+function investigationRepositoryStatusLabel(value: ExperimentPreparation['repositories'][number]['investigation_status']): string { return ({ pending: '待调查', running: '调查中', complete: '已确认', blocked: '调查受阻' })[value]; }
+function evidenceKindLabel(value: ExperimentPreparation['evidence'][number]['kind']): string { return ({ observed: '已观察', inferred: '已推导', verified: '已验证', user_decision: '用户决定' })[value]; }
+function gpuTopologyLabel(value: string): string { return ({ single_gpu: '单卡拓扑', ddp_multi_gpu: '单个多卡训练', model_parallel: '模型并行', unknown: '拓扑未确定' } as Record<string, string>)[value] || '拓扑未确定'; }
+function gpuExecutionModeLabel(value: string): string { return ({ single_attempt_multi_gpu: '单个 Attempt 使用多卡', independent_attempts_parallel: '独立 Attempt 并行', independent_attempts_sequential: '独立 Attempt 顺序', paused_unknown: '等待拓扑确认' } as Record<string, string>)[value] || '执行方式未确定'; }
+function attemptRoleLabel(value: string | undefined): string { return ({ r0: 'R0 校准', b1: 'B1 本机基线', candidate_c: 'C candidate', b_test: 'B_test', legacy: '历史 Attempt' } as Record<string, string>)[value || 'legacy'] || 'Attempt'; }
 function championTone(value: ExperimentProjection['champion_status']): 'neutral' | 'success' | 'warning' | 'danger' {
   if (value === 'available') return 'success';
   if (value === 'assessment_missing') return 'warning';

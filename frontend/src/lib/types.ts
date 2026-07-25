@@ -286,6 +286,18 @@ export interface PreparationEvidence {
   artifact_ref: string | null;
 }
 
+export interface PreparationRepository {
+  repository_id: string;
+  role: 'baseline' | 'reference' | 'candidate';
+  display_name: string;
+  path: string | null;
+  remote: string | null;
+  requested_ref: string | null;
+  resolved_commit: string | null;
+  investigation_status: 'pending' | 'running' | 'complete' | 'blocked';
+  evidence_ids: string[];
+}
+
 export interface PreparationAsset {
   asset_id: string;
   display_name: string;
@@ -316,7 +328,7 @@ export interface ExperimentPreparation {
   run_id: string;
   status: 'unresolved' | 'investigating' | 'partially_ready' | 'ready' | 'blocked';
   current_stage: string | null;
-  repositories: Array<Record<string, unknown>>;
+  repositories: PreparationRepository[];
   assets: PreparationAsset[];
   evidence: PreparationEvidence[];
   user_decisions: Array<{ decision_id: string; question: string; status: 'pending' | 'answered' | 'rejected'; answer: string | null; impact: string }>;
@@ -324,7 +336,23 @@ export interface ExperimentPreparation {
   stages: PreparationStage[];
   runnable_stage_ids: string[];
   investigation_status: 'not_started' | 'running' | 'complete' | 'blocked';
-  gpu_topology?: Record<string, unknown> | null;
+  gpu_topology?: {
+    status: string;
+    topology_kind: string;
+    execution_mode: string;
+    world_size: number | null;
+    launch_method: string | null;
+    rationale: string;
+  } | null;
+  execution_freeze?: {
+    adapter_ids: Record<string, string>;
+    command_sha256: string | null;
+    environment_sha256: string | null;
+    dataset_manifest_sha256: string | null;
+    asset_manifest_sha256: string | null;
+    preflight_sha256: string | null;
+    frozen_at: string;
+  } | null;
   updated_at: string | null;
 }
 
@@ -354,6 +382,8 @@ export interface ExperimentIdeaNode {
 export interface ExperimentAttempt {
   attempt_id: string;
   attempt_purpose: string;
+  experiment_role?: string;
+  paired_attempt_id?: string | null;
   runtime_status: string;
   job_type: string;
   pipeline_job_id: string | null;

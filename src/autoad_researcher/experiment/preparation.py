@@ -131,6 +131,22 @@ class PreparationStage(BaseModel):
     approval_required: bool = False
 
 
+class PreparationExecutionFreeze(BaseModel):
+    """Hashes that bind a verified adapter investigation to later Attempts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    repository_fingerprints: dict[str, str] = Field(default_factory=dict)
+    adapter_ids: dict[str, str] = Field(default_factory=dict)
+    command_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    environment_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dataset_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    asset_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    preflight_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    frozen_at: str
+
+
 class ExperimentPreparation(BaseModel):
     """The durable preparation contract projected to the UI and agents."""
 
@@ -149,6 +165,7 @@ class ExperimentPreparation(BaseModel):
     runnable_stage_ids: list[str] = Field(default_factory=list)
     investigation_status: Literal["not_started", "running", "complete", "blocked"] = "not_started"
     gpu_topology: GpuExecutionPlan | None = None
+    execution_freeze: PreparationExecutionFreeze | None = None
     updated_at: str | None = None
 
     @model_validator(mode="after")

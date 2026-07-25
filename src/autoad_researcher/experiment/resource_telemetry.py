@@ -25,12 +25,24 @@ class GpuTelemetryCollector:
         attempt_id: str,
         attempt_purpose: str,
         device_ids: list[str],
+        gpu_uuids: dict[str, str | None] | None = None,
+        world_size: int | None = None,
+        launch_method: str | None = None,
+        topology_kind: str | None = None,
+        execution_mode: str | None = None,
+        rank_mapping: dict[str, list[str]] | None = None,
         started_at: str | None = None,
     ):
         self.output_dir = output_dir
         self.attempt_id = attempt_id
         self.attempt_purpose = attempt_purpose
         self.device_ids = list(device_ids)
+        self.gpu_uuids = dict(gpu_uuids or {})
+        self.world_size = world_size
+        self.launch_method = launch_method
+        self.topology_kind = topology_kind
+        self.execution_mode = execution_mode
+        self.rank_mapping = dict(rank_mapping or {})
         self.started_at = _parse_time(started_at) if started_at else datetime.now(timezone.utc)
         self._samples = _load_samples(output_dir / RESOURCE_SAMPLES_FILE)
 
@@ -83,6 +95,13 @@ class GpuTelemetryCollector:
             variant_id=None if self.attempt_purpose in {"baseline", "repair", "noise_calibration"} else self.attempt_id,
             measurement_kind=measurement_kind,
             measurement_tool="nvidia-smi+procfs",
+            gpu_device_ids=self.device_ids,
+            gpu_uuids=self.gpu_uuids,
+            gpu_world_size=self.world_size,
+            gpu_rank_mapping=self.rank_mapping,
+            gpu_launch_method=self.launch_method,
+            gpu_topology_kind=self.topology_kind,
+            gpu_execution_mode=self.execution_mode,
             **fields,
         )
         path = self.output_dir / RESOURCE_REPORT_FILE

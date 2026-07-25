@@ -281,6 +281,16 @@ export async function saveExperimentPreparation(runId: string, preparation: Expe
   return res.json();
 }
 
+export async function resolvePreparationAsset(runId: string, assetId: string, options: { userPath?: string; autoDownload?: boolean } = {}): Promise<ExperimentPreparation> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/experiment/preparation/assets/resolve`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ asset_id: assetId, user_path: options.userPath || null, auto_download: options.autoDownload === true }),
+  });
+  if (!res.ok) throw await apiError(res, `Resolve preparation asset error: ${res.status}`);
+  return res.json();
+}
+
 export async function startBaseline(
   runId: string,
   sessionId: string,

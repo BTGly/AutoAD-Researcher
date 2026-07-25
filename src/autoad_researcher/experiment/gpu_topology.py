@@ -35,6 +35,8 @@ class GpuTopologyObservation(BaseModel):
     world_size: int | None = Field(default=None, ge=1)
     launch_method: str | None = None
     independent_roles_confirmed: bool = False
+    independent_execution_mode: Literal["parallel", "sequential"] = "parallel"
+    rank_mapping: dict[str, list[str]] = Field(default_factory=dict)
     evidence_ids: list[str] = Field(default_factory=list)
     evidence_summary: str = Field(min_length=1)
 
@@ -45,6 +47,7 @@ class GpuRoleAssignment(BaseModel):
     role: GpuRole
     device_ids: list[str] = Field(min_length=1)
     gpu_uuids: dict[str, str | None] = Field(default_factory=dict)
+    rank_mapping: dict[str, list[str]] = Field(default_factory=dict)
     seed: int | None = None
 
 
@@ -85,6 +88,10 @@ def plan_gpu_execution(
                 rationale="multi-GPU topology was identified but the requested or observed device count is incomplete",
             )
         selected = devices[: observation.requested_device_count]
+        rank_mapping = observation.rank_mapping or {
+            str(rank): [device.device_id]
+            for rank, device in enumerate(selected)
+        }
         return GpuExecutionPlan(
             status="ready",
             topology_kind=observation.topology_kind,
@@ -95,6 +102,7 @@ def plan_gpu_execution(
                 role="baseline",
                 device_ids=[item.device_id for item in selected],
                 gpu_uuids={item.device_id: item.gpu_uuid for item in selected},
+                rank_mapping=rank_mapping,
             )],
             evidence_ids=observation.evidence_ids,
             rationale="repository evidence declares one multi-GPU training attempt",
@@ -112,12 +120,16 @@ def plan_gpu_execution(
         return GpuExecutionPlan(
             status="ready",
             topology_kind="single_gpu",
-            execution_mode="independent_attempts_parallel",
+            execution_mode=(
+                "independent_attempts_parallel"
+                if observation.independent_execution_mode == "parallel"
+                else "independent_attempts_sequential"
+            ),
             world_size=1,
             launch_method=observation.launch_method,
             assignments=[
-                GpuRoleAssignment(role="baseline", device_ids=[devices[0].device_id], gpu_uuids={devices[0].device_id: devices[0].gpu_uuid}),
-                GpuRoleAssignment(role="candidate", device_ids=[devices[1].device_id], gpu_uuids={devices[1].device_id: devices[1].gpu_uuid}),
+                GpuRoleAssignment(role="baseline", device_ids=[devices[0].device_id], gpu_uuids={devices[0].device_id: devices[0].gpu_uuid}, rank_mapping={"0": [devices[0].device_id]}),
+                GpuRoleAssignment(role="candidate", device_ids=[devices[1].device_id], gpu_uuids={devices[1].device_id: devices[1].gpu_uuid}, rank_mapping={"0": [devices[1].device_id]}),
             ],
             swap_roles_by_seed=swap_roles_by_seed,
             evidence_ids=observation.evidence_ids,

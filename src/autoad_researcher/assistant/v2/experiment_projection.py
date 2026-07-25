@@ -117,6 +117,8 @@ class AttemptProjection(BaseModel):
 
     attempt_id: str
     attempt_purpose: str
+    experiment_role: str
+    paired_attempt_id: str | None = None
     runtime_status: str
     job_type: str
     pipeline_job_id: str | None = None
@@ -137,10 +139,13 @@ class AttemptProjection(BaseModel):
     heartbeat_at: str | None = None
     resource_lease_id: str | None = None
     gpu_topology_ref: str | None = None
+    gpu_topology_kind: str | None = None
+    gpu_execution_mode: str | None = None
     gpu_device_ids: list[str] = Field(default_factory=list)
     gpu_uuids: dict[str, str | None] = Field(default_factory=dict)
     gpu_world_size: int | None = None
     gpu_launch_method: str | None = None
+    gpu_rank_mapping: dict[str, list[str]] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
@@ -500,6 +505,8 @@ def _attempt_projection(run_dir: Path, attempt: Any, related_idea_ids: list[str]
     return AttemptProjection(
         attempt_id=attempt.attempt_id,
         attempt_purpose=attempt.attempt_purpose,
+        experiment_role=attempt.experiment_role,
+        paired_attempt_id=attempt.paired_attempt_id,
         runtime_status=attempt.runtime_status,
         job_type=attempt.job_type,
         pipeline_job_id=attempt.pipeline_job_id,
@@ -520,10 +527,13 @@ def _attempt_projection(run_dir: Path, attempt: Any, related_idea_ids: list[str]
         heartbeat_at=attempt.heartbeat_at,
         resource_lease_id=attempt.resource_lease_id,
         gpu_topology_ref=attempt.gpu_topology_ref,
+        gpu_topology_kind=attempt.gpu_topology_kind,
+        gpu_execution_mode=attempt.gpu_execution_mode,
         gpu_device_ids=attempt.gpu_device_ids,
         gpu_uuids=attempt.gpu_uuids,
         gpu_world_size=attempt.gpu_world_size,
         gpu_launch_method=attempt.gpu_launch_method,
+        gpu_rank_mapping=attempt.gpu_rank_mapping,
         created_at=attempt.created_at,
         updated_at=attempt.updated_at,
     )

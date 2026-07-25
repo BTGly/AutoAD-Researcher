@@ -106,6 +106,12 @@ class CandidateConfirmationService:
         candidate = self._required_attempt(run_dir, value.candidate_attempt_id, session_id, "experiment_attempt")
         if candidate.runtime_status != "COMPLETED":
             raise ValueError("candidate confirmation requires a completed candidate Attempt")
+        if candidate.experiment_role not in {"candidate_c", "legacy"}:
+            raise ValueError("candidate confirmation requires the AutoAD candidate C Attempt")
+        if candidate.paired_attempt_id is not None:
+            b1 = self._attempt_store.load(run_dir, candidate.paired_attempt_id)
+            if b1 is None or b1.session_id != session_id or b1.experiment_role not in {"b1", "legacy"}:
+                raise ValueError("candidate confirmation requires C to remain paired with the local B1 Attempt")
         existing = next(
             (
                 item
@@ -156,7 +162,10 @@ class CandidateConfirmationService:
             baseline_started = baseline_result.b_test_started
             if baseline_started is None:
                 raise ValueError("held-out authorization did not create a baseline B_test")
-            authorization = authorization.model_copy(update={"baseline_b_test_attempt_id": baseline_started.attempt.attempt_id})
+            current_authorization = load_held_out_authorization(run_dir, authorization.confirmation_id)
+            if current_authorization is None:
+                raise FileNotFoundError("held-out authorization disappeared before baseline B_test binding")
+            authorization = current_authorization.model_copy(update={"baseline_b_test_attempt_id": baseline_started.attempt.attempt_id})
             save_held_out_authorization(run_dir, authorization)
             append_event(run_dir, "experiment.held_out.authorized", {"confirmation_id": authorization.confirmation_id, "candidate_attempt_id": candidate.attempt_id, "baseline_b_test_attempt_id": baseline_started.attempt.attempt_id})
             return CandidateConfirmationResult(
@@ -265,6 +274,9 @@ class CandidateConfirmationService:
             run_dir,
             session_id=session.session_id,
             job_type="experiment_confirmatory",
+            experiment_role="b_test",
+            paired_attempt_id=baseline_b_test.attempt_id,
+            held_out_confirmation_id=authorization.confirmation_id,
             idempotency_key=authorization.idempotency_key,
             command_plan=plan,
             input_refs=refs,
@@ -305,7 +317,10 @@ class CandidateConfirmationService:
                 source_commit=authorization.source_commit,
             ),
         )
-        updated_authorization = authorization.model_copy(update={"candidate_b_test_attempt_id": confirmation_id, "status": "paired"})
+        current_authorization = load_held_out_authorization(run_dir, authorization.confirmation_id)
+        if current_authorization is None:
+            raise FileNotFoundError("held-out authorization disappeared before Candidate B_test binding")
+        updated_authorization = current_authorization.model_copy(update={"candidate_b_test_attempt_id": confirmation_id, "status": "paired"})
         save_held_out_authorization(run_dir, updated_authorization)
         append_event(run_dir, "experiment.candidate.b_test_queued", {"candidate_attempt_id": candidate.attempt_id, "confirmation_attempt_id": confirmation_id, "held_out_confirmation_id": authorization.confirmation_id})
         return CandidateConfirmationResult(

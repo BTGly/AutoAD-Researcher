@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 import pytest
-from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
+from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterDraft, ExecutorAdapterInputs, STANDARD_PREFLIGHT_CHECKS
 from autoad_researcher.experiment.preflight import ensure_adapter_preflight, run_adapter_preflight
 
 @pytest.mark.parametrize("adapter_id", ["generic_python", "patchcore_style", "anomalib_style"])
@@ -20,6 +20,67 @@ def test_adapter_does_not_guess_missing_or_invalid_evidence(tmp_path: Path):
     assert blocked.status == "blocked" and blocked.blocker
     (tmp_path / "autoad_executor_adapter.json").write_text("{}", encoding="utf-8")
     assert ExecutorAdapter().inspect(tmp_path).status == "blocked"
+
+
+def test_agent_adapter_draft_is_separate_and_requires_backend_preflight(tmp_path: Path):
+    for name in ["train.py", "evaluate.py", "dataset.py", "checkpoint.py", "metrics.py"]:
+        (tmp_path / name).write_text("print('ok')\n", encoding="utf-8")
+    commands = {name: {"args": [sys.executable, "train.py"]} for name in STANDARD_PREFLIGHT_CHECKS}
+    draft = ExecutorAdapterDraft(
+        adapter_id="anomalyclip_mvtec",
+        entrypoint="train.py",
+        smoke_argv=[sys.executable, "train.py"],
+        metrics_output="metrics.json",
+        allowed_paths=["train.py"],
+        protected_paths=["evaluate.py"],
+        investigation_evidence_ids=["ev_cli"],
+        source_files=["train.py", "dataset.py"],
+        preflight_commands=commands,
+    )
+    inspected = ExecutorAdapter().inspect_draft(tmp_path, draft)
+    assert inspected.status == "supported"
+    assert inspected.source == "agent_draft"
+    assert inspected.required_preflight_checks == STANDARD_PREFLIGHT_CHECKS
+    result = run_adapter_preflight(tmp_path, inspected.evidence, required_checks=inspected.required_preflight_checks)
+    assert result.status == "passed"
+
+
+def test_agent_adapter_draft_fails_closed_when_a_standard_check_is_missing(tmp_path: Path):
+    (tmp_path / "train.py").write_text("print('ok')\n", encoding="utf-8")
+    draft = ExecutorAdapterDraft(
+        adapter_id="faprompt_mvtecad",
+        entrypoint="train.py",
+        smoke_argv=[sys.executable, "train.py"],
+        metrics_output="metrics.json",
+        allowed_paths=["train.py"],
+        protected_paths=["train.py"],
+        investigation_evidence_ids=["ev_cli"],
+        source_files=["train.py"],
+        preflight_commands={"help": {"args": [sys.executable, "train.py"]}},
+    )
+    inspected = ExecutorAdapter().inspect_draft(tmp_path, draft)
+    assert inspected.status == "blocked"
+    assert "mandatory preflight checks" in (inspected.blocker or "")
+
+
+def test_agent_adapter_draft_rejects_unobserved_source_files(tmp_path: Path):
+    (tmp_path / "train.py").write_text("print('ok')\n", encoding="utf-8")
+    draft = ExecutorAdapterDraft(
+        adapter_id="anomalyclip_mvtec",
+        entrypoint="train.py",
+        smoke_argv=[sys.executable, "train.py"],
+        metrics_output="metrics.json",
+        allowed_paths=["train.py"],
+        protected_paths=["train.py"],
+        investigation_evidence_ids=["ev_cli"],
+        source_files=["missing_loader.py"],
+        preflight_commands={name: {"args": [sys.executable, "train.py"]} for name in STANDARD_PREFLIGHT_CHECKS},
+    )
+
+    inspected = ExecutorAdapter().inspect_draft(tmp_path, draft)
+
+    assert inspected.status == "blocked"
+    assert "draft source file is missing" in (inspected.blocker or "")
 
 
 def test_adapter_preflight_runs_declared_checks_and_records_output(tmp_path: Path):

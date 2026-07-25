@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 
 from autoad_researcher.assistant.v2.event_service import append_event
 from autoad_researcher.assistant.v2.job_service import create_or_get_pipeline_job
-from autoad_researcher.experiment.attempt import AttemptJobType, AttemptPurpose, ExperimentAttempt
+from autoad_researcher.experiment.attempt import AttemptExperimentRole, AttemptJobType, AttemptPurpose, ExperimentAttempt
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.runner.models import ExperimentCommandPlan, ExperimentInputRefs
@@ -55,6 +55,9 @@ class ExperimentAttemptService:
         input_refs: ExperimentInputRefs,
         job_timeout_sec: int,
         attempt_purpose: AttemptPurpose | None = None,
+        experiment_role: AttemptExperimentRole = "legacy",
+        paired_attempt_id: str | None = None,
+        held_out_confirmation_id: str | None = None,
         max_retries: int = 0,
         required_device_count: int = 0,
         required_vram_mb: int = 0,
@@ -72,6 +75,15 @@ class ExperimentAttemptService:
         if purpose == "repair" and job_type != "experiment_baseline":
             raise ValueError("repair Attempt must use the baseline Job type")
         session = self._require_executable_session(run_dir, session_id, job_type, attempt_purpose=purpose)
+        self._require_held_out_authorization(
+            run_dir,
+            session_id=session_id,
+            job_type=job_type,
+            experiment_role=experiment_role,
+            held_out_confirmation_id=held_out_confirmation_id,
+            evaluation_contract_ref=evaluation_contract_ref,
+            evaluation_contract_sha256=evaluation_contract_sha256,
+        )
         self._validate_session_evaluation_contract(
             session,
             evaluation_contract_ref=evaluation_contract_ref,
@@ -85,6 +97,9 @@ class ExperimentAttemptService:
             idempotency_key=idempotency_key,
             job_type=job_type,
             attempt_purpose=purpose,
+            experiment_role=experiment_role,
+            paired_attempt_id=paired_attempt_id,
+            held_out_confirmation_id=held_out_confirmation_id,
             command_plan=command_plan,
             input_refs=input_refs,
             job_timeout_sec=job_timeout_sec,
@@ -140,6 +155,11 @@ class ExperimentAttemptService:
         )
 
     def create_retry(self, run_dir: Path, *, attempt_id: str) -> ExperimentAttemptStartResult:
+        parent = self._attempt_store.load(run_dir, attempt_id)
+        if parent is None:
+            raise FileNotFoundError("Attempt not found")
+        if parent.held_out_confirmation_id is not None or parent.job_type == "experiment_baseline_b_test":
+            raise ValueError("held-out Attempts require a new explicit authorization; automatic retry is forbidden")
         retry = self._attempt_store.create_retry_candidate(
             run_dir,
             attempt_id=attempt_id,
@@ -218,6 +238,38 @@ class ExperimentAttemptService:
             return
         if (evaluation_contract_ref, evaluation_contract_sha256) != (session_ref, session_sha):
             raise ValueError("Attempt evaluation contract must match the Session-frozen contract")
+
+    @staticmethod
+    def _require_held_out_authorization(
+        run_dir: Path,
+        *,
+        session_id: str,
+        job_type: AttemptJobType,
+        experiment_role: AttemptExperimentRole,
+        held_out_confirmation_id: str | None,
+        evaluation_contract_ref: str | None,
+        evaluation_contract_sha256: str | None,
+    ) -> None:
+        """Keep held-out execution authority at every Attempt creation entry."""
+
+        is_held_out = job_type == "experiment_baseline_b_test" or experiment_role == "b_test"
+        if not is_held_out:
+            if held_out_confirmation_id is not None:
+                raise ValueError("held-out authorization is valid only for B_test Attempts")
+            return
+        if held_out_confirmation_id is None:
+            raise ValueError("held_out_confirmation_required: B_test Attempt requires explicit authorization")
+        # Imported lazily to keep BaselineControlService and AttemptService in their
+        # existing dependency direction while sharing its durable authorization model.
+        from autoad_researcher.assistant.v2.experiment.baseline_control import load_held_out_authorization
+
+        authorization = load_held_out_authorization(run_dir, held_out_confirmation_id)
+        if authorization is None or authorization.session_id != session_id:
+            raise ValueError("held_out_confirmation_required: held-out authorization is missing")
+        if authorization.status not in {"authorized", "paired", "completed"}:
+            raise ValueError("held_out_confirmation_required: held-out authorization is invalid")
+        if evaluation_contract_ref is None or evaluation_contract_sha256 != authorization.evaluation_contract_sha256:
+            raise ValueError("held_out_confirmation_required: B_test contract differs from authorization")
 
 
 def _utc_now() -> str:

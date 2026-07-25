@@ -443,7 +443,7 @@ class CandidateProposalService:
             raise ValueError("execution_contract_incomplete: frozen evaluation contract changed")
         contract = EvaluationContract.model_validate_json(contract_path.read_text(encoding="utf-8"))
         baseline = next(
-            (item for item in self._attempts.list_for_session(run_dir, session_id=session_id) if item.job_type == "experiment_baseline" and item.runtime_status == "COMPLETED"),
+            (item for item in self._attempts.list_for_session(run_dir, session_id=session_id) if item.job_type == "experiment_baseline" and item.runtime_status == "COMPLETED" and item.experiment_role in {"b1", "legacy"}),
             None,
         )
         if baseline is None:
