@@ -393,6 +393,7 @@ def test_candidate_confirmation_runs_b_test_and_registers_immutable_candidate(tm
         time.sleep(0.02)
     authorization_path = run_dir / "experiments" / "held_out_confirmations" / f"{confirmation.held_out_confirmation_id}.json"
     authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+    assert authorization["baseline_b_test_attempt_id"] is not None
     confirmation_id = str(authorization["candidate_b_test_attempt_id"])
     snapshot = CandidateRegistry().load_candidate(run_dir, f"candidate_{int(candidate_attempt_id.rsplit('_', 1)[1]):06d}")
     assert snapshot.attempt_id == candidate_attempt_id

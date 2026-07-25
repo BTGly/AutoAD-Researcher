@@ -20,6 +20,12 @@ from autoad_researcher.reporting.service import ReportRequestService
 from autoad_researcher.reporting.store import ReportStore
 from autoad_researcher.schemas.decisions import ConfirmedDecision
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
+from autoad_researcher.experiment.preparation import (
+    ExperimentPreparation,
+    PreparationAsset,
+    PreparationStage,
+    PreparationStore,
+)
 from autoad_researcher.task_workspace.task_profile import create_task_profile
 from autoad_researcher.ui.sources import append_source_ref
 from autoad_researcher.worker.main import _process_pending_jobs
@@ -115,6 +121,55 @@ def main() -> None:
         ),
     )
     TaskBridge.build_experiment_task(run_dir, user_input="确认 micro repo 作为执行仓库")
+    mvtec = run_dir / "datasets" / "mvtec"
+    mvtec.mkdir(parents=True)
+    PreparationStore().save(
+        run_dir,
+        ExperimentPreparation(
+            run_id=RUN_ID,
+            current_stage="mvtec_training",
+            assets=[
+                PreparationAsset(
+                    asset_id="mvtec",
+                    display_name="MVTec AD",
+                    kind="dataset",
+                    status="verified",
+                    path=str(mvtec),
+                    stages=["mvtec_training", "official_calibration"],
+                ),
+                PreparationAsset(
+                    asset_id="mpdd",
+                    display_name="MPDD",
+                    kind="dataset",
+                    status="awaiting_user",
+                    stages=["mpdd_b_dev", "mpdd_b_test"],
+                ),
+            ],
+            stages=[
+                PreparationStage(
+                    stage_id="mvtec_training",
+                    display_name="MVTec 训练",
+                    required_asset_ids=["mvtec"],
+                ),
+                PreparationStage(
+                    stage_id="official_calibration",
+                    display_name="官方方法校准",
+                    required_asset_ids=["mvtec"],
+                ),
+                PreparationStage(
+                    stage_id="mpdd_b_dev",
+                    display_name="MPDD B_dev",
+                    required_asset_ids=["mpdd"],
+                ),
+                PreparationStage(
+                    stage_id="mpdd_b_test",
+                    display_name="MPDD B_test",
+                    required_asset_ids=["mpdd"],
+                    approval_required=True,
+                ),
+            ],
+        ),
+    )
 
 
 def _seed_report_run(runs_root: Path, *, created_at: datetime) -> None:

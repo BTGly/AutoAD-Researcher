@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "dataset": "mpdd",
+  "split_strategy": "fixed_target_class_holdout",
+  "b_dev_classes": [
+    "bracket_black",
+    "connector"
+  ],
+  "b_test_classes": [
+    "bracket_brown",
+    "bracket_white",
+    "metal_plate",
+    "tubes"
+  ],
+  "all_expected_classes": [
+    "bracket_black",
+    "bracket_brown",
+    "bracket_white",
+    "connector",
+    "metal_plate",
+    "tubes"
+  ],
+  "frozen_before_training": true,
+  "selection_note": "Fixed before runtime; do not alter based on metrics."
+}

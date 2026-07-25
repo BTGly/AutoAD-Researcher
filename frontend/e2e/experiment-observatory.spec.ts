@@ -116,6 +116,7 @@ test('launches a Baseline from an environment-ready Session with an explicit con
     await route.fulfill({ json: { started: {}, evaluation_contract_ref: 'contract.json', execution_inputs_ref: 'inputs.json' } });
   });
   await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByText('高级科学契约', { exact: true }).click();
   await page.getByLabel('Split 标识').fill('fixture-split');
   await page.getByLabel('B_dev 文件引用').fill('inputs/dev.json');
   await page.getByLabel('B_test 文件引用').fill('inputs/test.json');
@@ -130,6 +131,45 @@ test('launches a Baseline from an environment-ready Session with an explicit con
   await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
   await expect.poll(() => requestBody).not.toBeNull();
   expect(requestBody).toMatchObject({ contract: { primary_metric: 'image AUROC', max_wall_seconds: 20000, max_gpu_seconds: 0, required_device_count: 0, required_vram_mb: 0, b_dev_ref: 'inputs/dev.json', b_test_ref: 'inputs/test.json' } });
+});
+
+test('shows stage-scoped missing MPDD and submits its user path without blocking MVTec', async ({ page }) => {
+  const preparationProjection = structuredClone(projection) as typeof projection & { preparation: Record<string, unknown> };
+  preparationProjection.preparation = {
+    schema_version: 1,
+    run_id: run.run_id,
+    status: 'partially_ready',
+    current_stage: 'mvtec_training',
+    repositories: [],
+    assets: [
+      { asset_id: 'mvtec', display_name: 'MVTec AD', kind: 'dataset', status: 'verified', path: '/datasets/mvtec', source: 'user', sha256: null, stages: ['mvtec_training'], evidence_ids: [], user_action_id: null },
+      { asset_id: 'mpdd', display_name: 'MPDD', kind: 'dataset', status: 'awaiting_user', path: null, source: null, sha256: null, stages: ['mpdd_b_dev', 'mpdd_b_test'], evidence_ids: [], user_action_id: 'provide_mpdd' },
+    ],
+    evidence: [],
+    user_decisions: [{ decision_id: 'decision_mpdd_path', question: '请提供 MPDD 的本地目录路径。', status: 'pending', answer: null, impact: '只影响 MPDD B_dev/B_test 评价。' }],
+    actions: [{ action_id: 'provide_mpdd', action_type: 'provide_path', label: '提供 MPDD 路径', target_id: 'mpdd', available: true, requires_user: true }],
+    stages: [
+      { stage_id: 'mvtec_training', display_name: 'MVTec 训练', status: 'ready', required_asset_ids: ['mvtec'], depends_on_stage_ids: [], blockers: [], action_ids: [], evidence_ids: [], approval_required: false },
+      { stage_id: 'mpdd_b_dev', display_name: 'MPDD B_dev', status: 'blocked', required_asset_ids: ['mpdd'], depends_on_stage_ids: [], blockers: ['MPDD: awaiting_user'], action_ids: ['provide_mpdd'], evidence_ids: [], approval_required: false },
+      { stage_id: 'mpdd_b_test', display_name: 'MPDD B_test', status: 'blocked', required_asset_ids: ['mpdd'], depends_on_stage_ids: [], blockers: ['MPDD: awaiting_user'], action_ids: ['provide_mpdd'], evidence_ids: [], approval_required: true },
+    ],
+    runnable_stage_ids: ['mvtec_training'],
+    investigation_status: 'complete',
+    gpu_topology: null,
+    updated_at: '2026-07-25T00:00:00Z',
+  };
+  let saved: Record<string, unknown> | null = null;
+  await prepare(page, () => preparationProjection);
+  await page.route(`**/api/runs/${run.run_id}/experiment/preparation`, async route => {
+    saved = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({ json: preparationProjection.preparation });
+  });
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByTestId('preparation-stage-mvtec_training')).toContainText('可运行');
+  await expect(page.getByTestId('preparation-stage-mpdd_b_test')).toContainText('不可运行');
+  await page.getByLabel('MPDD路径').fill('/datasets/mpdd');
+  await page.getByRole('button', { name: '提交路径' }).click();
+  expect(saved?.assets).toEqual(expect.arrayContaining([expect.objectContaining({ asset_id: 'mpdd', path: '/datasets/mpdd', status: 'available', source: 'user' })]));
 });
 
 test('generates a reviewed Candidate Proposal before creating a Candidate Attempt', async ({ page }) => {
@@ -184,6 +224,7 @@ test('moves focus to the first invalid Baseline field while retaining the error'
   baselineProjection.actions.baseline_launch_available = true;
   await prepare(page, () => baselineProjection);
   await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByText('高级科学契约', { exact: true }).click();
   await page.getByRole('button', { name: '冻结契约并启动 Baseline' }).click();
   await expect(page.getByRole('alert')).toHaveText('数据集、split、checkpoint 选择和冻结文件引用均不能为空。');
   await expect(page.getByLabel('Split 标识')).toBeFocused();
@@ -200,6 +241,7 @@ test('keeps the Baseline form usable without horizontal overflow on mobile', asy
   await prepare(page, () => baselineProjection);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByText('高级科学契约', { exact: true }).click();
   const dimensions = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 1);
   const launchButton = page.getByRole('button', { name: '冻结契约并启动 Baseline' });
@@ -217,6 +259,7 @@ test('keeps Baseline validation actionable at a 200 percent layout scale', async
   await prepare(page, () => baselineProjection);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByText('高级科学契约', { exact: true }).click();
   await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
 
   const dimensions = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
@@ -247,6 +290,7 @@ test('releases the Baseline form when the post-start projection refresh fails', 
     await route.fulfill({ json: { started: {}, evaluation_contract_ref: 'contract.json', execution_inputs_ref: 'inputs.json' } });
   });
   await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByText('高级科学契约', { exact: true }).click();
   await page.getByLabel('Split 标识').fill('fixture-split');
   await page.getByLabel('B_dev 文件引用').fill('inputs/dev.json');
   await page.getByLabel('B_test 文件引用').fill('inputs/test.json');
@@ -279,6 +323,7 @@ test('keeps an additional confirmed metric as a recorded observation by default'
     await route.fulfill({ json: { started: {}, evaluation_contract_ref: 'contract.json', execution_inputs_ref: 'inputs.json' } });
   });
   await page.getByRole('button', { name: '实验工作台' }).click();
+  await page.getByText('高级科学契约', { exact: true }).click();
   await page.getByLabel('Split 标识').fill('fixture-split');
   await page.getByLabel('B_dev 文件引用').fill('inputs/dev.json');
   await page.getByLabel('B_test 文件引用').fill('inputs/test.json');

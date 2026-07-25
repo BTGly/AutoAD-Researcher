@@ -67,6 +67,18 @@ test('persists report review and human handoff without creating experiment jobs'
   expect(await readFile(jobsPath, 'utf8')).toBe(jobsBefore);
 });
 
+test('projects stage-scoped missing MPDD from the real FastAPI contract', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'fullstack-e2e', baseUrl: 'http://fixture.invalid', model: 'fixture' }));
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '实验工作台' }).click();
+  await expect(page.getByTestId('experiment-preparation')).toBeVisible();
+  await expect(page.getByTestId('preparation-stage-mvtec_training')).toContainText('可运行');
+  await expect(page.getByTestId('preparation-stage-mpdd_b_test')).toContainText('不可运行');
+  await expect(page.getByTestId('preparation-asset-mpdd')).toBeVisible();
+});
+
 async function openReportRun(page: Page) {
   await page.goto('/');
   const history = page.getByRole('button', { name: 'Session history' });

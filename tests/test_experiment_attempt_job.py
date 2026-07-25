@@ -10,6 +10,10 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.assistant.v2.event_service import load_events_since
+from autoad_researcher.assistant.v2.experiment.baseline_control import (
+    HeldOutAuthorization,
+    save_held_out_authorization,
+)
 from autoad_researcher.assistant.v2.job_service import claim_pipeline_job, load_pipeline_jobs
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
@@ -109,6 +113,68 @@ def test_attempt_replay_creates_one_attempt_and_one_pipeline_job(tmp_path: Path)
     assert first.attempt.attempt_id == "attempt_000001"
     assert first.attempt.pipeline_job_id == second.attempt.pipeline_job_id
     assert len(load_pipeline_jobs(run_dir)) == 1
+
+
+def test_attempt_service_rejects_direct_b_test_without_held_out_authorization(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_b_test_without_authorization"
+    session_id = _ready_session(run_dir)
+    plan = _plan()
+
+    with pytest.raises(ValueError, match="held_out_confirmation_required"):
+        ExperimentAttemptService().create_or_get_attempt(
+            run_dir,
+            session_id=session_id,
+            job_type="experiment_baseline_b_test",
+            experiment_role="b_test",
+            idempotency_key="baseline:b-test-without-approval",
+            command_plan=plan,
+            input_refs=_refs(plan),
+            job_timeout_sec=60,
+        )
+
+
+def test_worker_and_retry_fail_closed_for_an_unbound_held_out_attempt(tmp_path: Path):
+    run_dir = tmp_path / "run_attempt_unbound_held_out"
+    session_id = _ready_session(run_dir)
+    confirmation_id = "heldout_0123456789abcdef"
+    save_held_out_authorization(
+        run_dir,
+        HeldOutAuthorization(
+            confirmation_id=confirmation_id,
+            session_id=session_id,
+            candidate_attempt_id="attempt_000001",
+            noise_threshold=0.01,
+            idempotency_key="confirm:fixture",
+            evaluation_contract_sha256="a" * 64,
+            source_branch="candidate/fixture",
+            source_commit="b" * 40,
+            created_at="2026-07-25T00:00:00+00:00",
+        ),
+    )
+    plan = _plan()
+    started = ExperimentAttemptService().create_or_get_attempt(
+        run_dir,
+        session_id=session_id,
+        job_type="experiment_baseline_b_test",
+        experiment_role="b_test",
+        held_out_confirmation_id=confirmation_id,
+        idempotency_key="baseline:b-test-unbound",
+        command_plan=plan,
+        input_refs=_refs(plan),
+        job_timeout_sec=60,
+        evaluation_contract_ref="contract.json",
+        evaluation_contract_sha256="a" * 64,
+        protected_artifact_report_ref="protected.json",
+        protected_artifact_report_sha256="b" * 64,
+    )
+
+    with pytest.raises(ValueError, match="automatic retry is forbidden"):
+        ExperimentAttemptService().create_retry(run_dir, attempt_id=started.attempt.attempt_id)
+    assert _process_pending_jobs(run_dir) == 1
+    failed = ExperimentAttemptStore().load(run_dir, started.attempt.attempt_id)
+    assert failed is not None
+    assert failed.runtime_status == "FAILED"
+    assert failed.failure_code == "HELD_OUT_AUTHORIZATION_INVALID"
 
 
 def test_attempt_creation_freezes_protocol_references_in_its_identity(tmp_path: Path):

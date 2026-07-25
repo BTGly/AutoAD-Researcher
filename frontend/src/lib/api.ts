@@ -13,6 +13,7 @@ import type {
   TaskRun,
   BaselineContractInput,
   CandidateProposal,
+  ExperimentPreparation,
 } from './types';
 
 export class ApiError extends Error {
@@ -261,6 +262,32 @@ export async function getExperimentProjection(runId: string, sessionId?: string,
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
   const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders(), signal });
   if (!res.ok) throw await apiError(res, `Experiment projection error: ${res.status}`);
+  return res.json();
+}
+
+export async function getExperimentPreparation(runId: string): Promise<ExperimentPreparation> {
+  const res = await fetch(`/api/runs/${runId}/experiment/preparation`, { headers: getHeaders() });
+  if (!res.ok) throw await apiError(res, `Experiment preparation error: ${res.status}`);
+  return res.json();
+}
+
+export async function saveExperimentPreparation(runId: string, preparation: ExperimentPreparation): Promise<ExperimentPreparation> {
+  const res = await fetch(`/api/runs/${runId}/experiment/preparation`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(preparation),
+  });
+  if (!res.ok) throw await apiError(res, `Save experiment preparation error: ${res.status}`);
+  return res.json();
+}
+
+export async function resolvePreparationAsset(runId: string, assetId: string, options: { userPath?: string; autoDownload?: boolean } = {}): Promise<ExperimentPreparation> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/experiment/preparation/assets/resolve`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ asset_id: assetId, user_path: options.userPath || null, auto_download: options.autoDownload === true }),
+  });
+  if (!res.ok) throw await apiError(res, `Resolve preparation asset error: ${res.status}`);
   return res.json();
 }
 

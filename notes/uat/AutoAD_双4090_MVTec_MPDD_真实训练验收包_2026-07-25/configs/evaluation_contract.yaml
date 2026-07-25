@@ -1,0 +1,65 @@
+evaluation_contract_version: 2
+protocol: cross_dataset_zero_shot_target_class_holdout
+source_train_dataset: mvtecad
+target_dataset: mpdd
+target_class_split_ref: configs/mpdd_class_split.json
+phases:
+  b_dev:
+    target_view: mpdd_b_dev
+    classes: [bracket_black, connector]
+    target_training_allowed: false
+  b_test:
+    target_view: mpdd_b_test
+    classes: [bracket_brown, bracket_white, metal_plate, tubes]
+    target_training_allowed: false
+    requires_human_approval: true
+metrics:
+  primary:
+    name: image_auroc
+    unit: percentage_point
+    direction: maximize
+    aggregation: unweighted_mean_across_phase_classes
+  secondary:
+    - name: image_ap
+      unit: percentage_point
+      direction: maximize
+success_gates:
+  b_dev:
+    candidate_minus_baseline_primary_min: 2.0
+  b_test:
+    candidate_minus_baseline_primary_min: 2.0
+  confirmation:
+    required_seeds: [111, 222, 333]
+    mean_paired_delta_min: 2.0
+    positive_delta_seed_count_min: 2
+fixed_hyperparameters:
+  epochs: 15
+  batch_size: 8
+  image_size: 518
+  learning_rate: 0.001
+  depth: 9
+  n_ctx: 12
+  t_n_ctx: 4
+  features_list: [6, 12, 18, 24]
+  feature_map_layer: [0, 1, 2, 3]
+protected_artifacts:
+  - baseline_repo/metrics.py
+  - candidate_repo/metrics.py
+  - datasets/mvtecad/meta.json
+  - datasets/mpdd/meta.json
+  - datasets/mpdd_b_dev/meta.json
+  - datasets/mpdd_b_test/meta.json
+  - datasets/mpdd_split_manifest.json
+  - configs/mpdd_class_split.json
+  - tools/parse_metrics.py
+  - configs/evaluation_contract.yaml
+non_comparable_if:
+  - missing checkpoint
+  - missing mean metric row
+  - non_finite metric
+  - mismatched seed
+  - mismatched phase view
+  - protected artifact hash changed
+  - candidate trained on MPDD
+  - b_test accessed before approval
+  - class split changed after freeze

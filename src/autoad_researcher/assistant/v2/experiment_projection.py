@@ -18,6 +18,7 @@ from autoad_researcher.experiment.cognitive_budget import CognitiveUsageStore
 from autoad_researcher.experiment.finalizer import OutcomeCard
 from autoad_researcher.experiment.idea_tree import IdeaNode, IdeaTreeStore
 from autoad_researcher.experiment.promotion import CandidateRegistry, CandidateSnapshot
+from autoad_researcher.experiment.preparation import ExperimentPreparation, PreparationStore, empty_preparation
 from autoad_researcher.experiment.scientific_assessment import (
     AssessmentReconciliation,
     ScientificAssessment,
@@ -116,6 +117,8 @@ class AttemptProjection(BaseModel):
 
     attempt_id: str
     attempt_purpose: str
+    experiment_role: str
+    paired_attempt_id: str | None = None
     runtime_status: str
     job_type: str
     pipeline_job_id: str | None = None
@@ -135,6 +138,14 @@ class AttemptProjection(BaseModel):
     pid: int | None = None
     heartbeat_at: str | None = None
     resource_lease_id: str | None = None
+    gpu_topology_ref: str | None = None
+    gpu_topology_kind: str | None = None
+    gpu_execution_mode: str | None = None
+    gpu_device_ids: list[str] = Field(default_factory=list)
+    gpu_uuids: dict[str, str | None] = Field(default_factory=dict)
+    gpu_world_size: int | None = None
+    gpu_launch_method: str | None = None
+    gpu_rank_mapping: dict[str, list[str]] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 
@@ -260,6 +271,7 @@ class ExperimentProjection(BaseModel):
     activity_truncated: bool = False
     activity_scan_truncated: bool = False
     developer_refs: DeveloperRefs | None = None
+    preparation: ExperimentPreparation | None = None
 
 
 def build_projection(run_dir: Path, session_id: str | None = None) -> ExperimentProjection:
@@ -268,7 +280,8 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
     if session_id is None:
         sessions = _discover_sessions(run_dir)
         if not sessions:
-            return ExperimentProjection(selection_status="no_session")
+            preparation = PreparationStore().load(run_dir)
+            return ExperimentProjection(selection_status="no_session", preparation=preparation or empty_preparation(run_dir.name))
         if len(sessions) > 1:
             return ExperimentProjection(
                 selection_status="ambiguous",
@@ -312,6 +325,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
     )
     artifact_paths = _artifact_paths(attempt_views, champion)
     pipeline_job_ids = [item.pipeline_job_id for item in attempts if item.pipeline_job_id]
+    preparation = PreparationStore().load(run_dir)
     return ExperimentProjection(
         selection_status="selected",
         session=_session_projection(session),
@@ -347,6 +361,7 @@ def build_projection(run_dir: Path, session_id: str | None = None) -> Experiment
             pipeline_job_ids=pipeline_job_ids,
             event_log_path="events/events.jsonl",
         ),
+        preparation=preparation or empty_preparation(run_dir.name),
     )
 
 
@@ -490,6 +505,8 @@ def _attempt_projection(run_dir: Path, attempt: Any, related_idea_ids: list[str]
     return AttemptProjection(
         attempt_id=attempt.attempt_id,
         attempt_purpose=attempt.attempt_purpose,
+        experiment_role=attempt.experiment_role,
+        paired_attempt_id=attempt.paired_attempt_id,
         runtime_status=attempt.runtime_status,
         job_type=attempt.job_type,
         pipeline_job_id=attempt.pipeline_job_id,
@@ -509,6 +526,14 @@ def _attempt_projection(run_dir: Path, attempt: Any, related_idea_ids: list[str]
         pid=attempt.pid,
         heartbeat_at=attempt.heartbeat_at,
         resource_lease_id=attempt.resource_lease_id,
+        gpu_topology_ref=attempt.gpu_topology_ref,
+        gpu_topology_kind=attempt.gpu_topology_kind,
+        gpu_execution_mode=attempt.gpu_execution_mode,
+        gpu_device_ids=attempt.gpu_device_ids,
+        gpu_uuids=attempt.gpu_uuids,
+        gpu_world_size=attempt.gpu_world_size,
+        gpu_launch_method=attempt.gpu_launch_method,
+        gpu_rank_mapping=attempt.gpu_rank_mapping,
         created_at=attempt.created_at,
         updated_at=attempt.updated_at,
     )

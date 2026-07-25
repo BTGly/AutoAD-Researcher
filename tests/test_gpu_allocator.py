@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from autoad_researcher.experiment.gpu import GpuAllocator, GpuDevice, GpuUnavailableError
+from autoad_researcher.experiment.gpu_topology import GpuTopologyObservation, plan_gpu_execution
 
 
 def _devices() -> list[GpuDevice]:
@@ -29,6 +30,62 @@ def test_allocator_selects_available_devices_and_exposes_cuda_visible_devices(tm
 
     assert lease.device_ids == ["0", "1"]
     assert lease.cuda_visible_devices == "0,1"
+    assert lease.gpu_uuids == {"0": None, "1": None}
+
+
+def test_gpu_topology_does_not_split_two_devices_without_agent_evidence():
+    observation = GpuTopologyObservation(
+        topology_kind="unknown",
+        devices=[
+            GpuDevice(device_id="0", gpu_uuid="GPU-A", total_vram_mb=24_000, used_vram_mb=0),
+            GpuDevice(device_id="1", gpu_uuid="GPU-B", total_vram_mb=24_000, used_vram_mb=0),
+        ],
+        evidence_summary="two devices observed, training launch not yet understood",
+    )
+
+    plan = plan_gpu_execution(observation)
+
+    assert plan.execution_mode == "paused_unknown"
+    assert plan.assignments == []
+
+
+def test_gpu_topology_uses_one_multi_gpu_attempt_for_explicit_ddp_evidence():
+    observation = GpuTopologyObservation(
+        topology_kind="ddp_multi_gpu",
+        devices=[
+            GpuDevice(device_id="0", gpu_uuid="GPU-A", total_vram_mb=24_000, used_vram_mb=0),
+            GpuDevice(device_id="1", gpu_uuid="GPU-B", total_vram_mb=24_000, used_vram_mb=0),
+        ],
+        requested_device_count=2,
+        world_size=2,
+        launch_method="torchrun",
+        evidence_ids=["ev_torchrun"],
+        evidence_summary="repository launches torchrun with world size 2",
+    )
+
+    plan = plan_gpu_execution(observation)
+
+    assert plan.execution_mode == "single_attempt_multi_gpu"
+    assert plan.assignments[0].device_ids == ["0", "1"]
+    assert plan.assignments[0].gpu_uuids == {"0": "GPU-A", "1": "GPU-B"}
+
+
+def test_gpu_topology_allows_parallel_roles_only_when_explicitly_confirmed():
+    observation = GpuTopologyObservation(
+        topology_kind="single_gpu",
+        devices=[
+            GpuDevice(device_id="0", gpu_uuid="GPU-A", total_vram_mb=24_000, used_vram_mb=0),
+            GpuDevice(device_id="1", gpu_uuid="GPU-B", total_vram_mb=24_000, used_vram_mb=0),
+        ],
+        independent_roles_confirmed=True,
+        evidence_summary="both repositories are single-GPU and independent execution was confirmed",
+    )
+
+    plan = plan_gpu_execution(observation, swap_roles_by_seed=True)
+
+    assert plan.execution_mode == "independent_attempts_parallel"
+    assert plan.swap_roles_by_seed is True
+    assert [item.role for item in plan.assignments] == ["baseline", "candidate"]
 
 
 def test_active_lease_prevents_gpu_oversell_and_is_idempotent_per_attempt(tmp_path: Path):

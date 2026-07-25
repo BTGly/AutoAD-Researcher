@@ -16,6 +16,7 @@ AttemptPurpose = Literal[
     "noise_calibration",
     "repair",
 ]
+AttemptExperimentRole = Literal["r0", "b1", "candidate_c", "b_test", "legacy"]
 AttemptRuntimeStatus = Literal[
     "QUEUED",
     "STARTING",
@@ -33,6 +34,8 @@ AttemptJobType = Literal[
     "experiment_attempt",
     "experiment_confirmatory",
 ]
+GpuTopologyKind = Literal["single_gpu", "ddp_multi_gpu", "model_parallel", "unknown"]
+GpuExecutionMode = Literal["single_attempt_multi_gpu", "independent_attempts_parallel", "independent_attempts_sequential", "paused_unknown"]
 
 
 class ExperimentAttempt(BaseModel):
@@ -48,11 +51,22 @@ class ExperimentAttempt(BaseModel):
     job_type: AttemptJobType
     pipeline_job_id: str | None = Field(default=None, pattern=r"^job_[0-9]{6}$")
     attempt_purpose: AttemptPurpose
+    experiment_role: AttemptExperimentRole = "legacy"
+    paired_attempt_id: str | None = Field(default=None, pattern=r"^attempt_[0-9]{6}$")
+    held_out_confirmation_id: str | None = Field(default=None, pattern=r"^heldout_[0-9a-f]{16}$")
     command_plan: ExperimentCommandPlan
     input_refs: ExperimentInputRefs
     required_device_count: int = Field(default=0, ge=0)
     required_vram_mb: int = Field(default=0, ge=0)
     resource_lease_id: str | None = Field(default=None, pattern=r"^lease_[0-9]{6}$")
+    gpu_topology_ref: str | None = None
+    gpu_topology_kind: GpuTopologyKind | None = None
+    gpu_execution_mode: GpuExecutionMode | None = None
+    gpu_device_ids: list[str] = Field(default_factory=list)
+    gpu_uuids: dict[str, str | None] = Field(default_factory=dict)
+    gpu_world_size: int | None = Field(default=None, ge=1)
+    gpu_launch_method: str | None = None
+    gpu_rank_mapping: dict[str, list[str]] = Field(default_factory=dict)
     runtime_status: AttemptRuntimeStatus = "QUEUED"
     pid: int | None = Field(default=None, gt=0)
     process_group_id: int | None = Field(default=None, gt=0)

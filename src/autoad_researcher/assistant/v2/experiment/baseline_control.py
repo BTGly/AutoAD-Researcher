@@ -29,6 +29,8 @@ from autoad_researcher.experiment.evaluation_contract import (
     freeze_protected_artifacts,
 )
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
+from autoad_researcher.experiment.preflight import ensure_adapter_preflight
+from autoad_researcher.experiment.preparation import require_preparation_stage_if_declared
 from autoad_researcher.experiment.finalizer import ProtectedArtifactHashes
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.experiment.worktree import WorktreeManager
@@ -56,6 +58,7 @@ class BaselineContractInput(BaseModel):
     required_vram_mb: int = Field(default=0, ge=0)
     dataset_source_ids: list[str] = Field(default_factory=list)
     asset_source_ids: list[str] = Field(default_factory=list)
+    baseline_role: Literal["r0", "b1"] = "b1"
 
     @field_validator("b_dev_ref", "b_test_ref")
     @classmethod
@@ -171,6 +174,7 @@ class BaselineControlService:
         self._contracts = EvaluationContractStore()
 
     def start(self, run_dir: Path, *, session_id: str, contract_input: BaselineContractInput) -> BaselineLaunchResult:
+        require_preparation_stage_if_declared(run_dir, "official_calibration")
         session = self._require_ready_session(run_dir, session_id)
         existing = next(
             (
@@ -224,6 +228,13 @@ class BaselineControlService:
             raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
         if adapter_result.adapter_id != binding.adapter_id:
             raise ValueError("execution adapter differs from the frozen repository binding")
+        ensure_adapter_preflight(
+            Path(workspace.worktree_path),
+            adapter_result.evidence,
+            run_dir=run_dir,
+            artifact_name=f"baseline_{session_id}",
+            timeout_seconds=contract_input.max_wall_seconds,
+        )
 
         frozen = self._freeze_contract(
             run_dir,
@@ -263,6 +274,7 @@ class BaselineControlService:
             run_dir,
             session_id=session_id,
             job_type="experiment_baseline",
+            experiment_role=contract_input.baseline_role,
             idempotency_key=f"baseline:{session_id}:{frozen.sha256}",
             command_plan=plan,
             input_refs=refs,
@@ -289,6 +301,7 @@ class BaselineControlService:
         confirmation_id: str | None = None,
     ) -> BaselineLaunchResult:
         """Queue Baseline B_test only for a persisted Candidate approval."""
+        require_preparation_stage_if_declared(run_dir, "mpdd_b_test")
         if confirmation_id is None:
             raise ValueError("held_out_confirmation_required: Candidate approval must precede B_test")
         authorization = load_held_out_authorization(run_dir, confirmation_id)
@@ -348,6 +361,13 @@ class BaselineControlService:
             raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
         if "b_test" not in adapter_result.evidence.evaluation_commands:
             raise ValueError("adapter has no explicit b_test command for the frozen split")
+        ensure_adapter_preflight(
+            workspace_path,
+            adapter_result.evidence,
+            run_dir=run_dir,
+            artifact_name=f"baseline_b_test_{session_id}",
+            timeout_seconds=contract.resource_budget.max_wall_seconds,
+        )
         plan, refs = ExecutorAdapter().build_execution(
             adapter_result,
             ExecutorAdapterInputs(
@@ -367,6 +387,9 @@ class BaselineControlService:
             run_dir,
             session_id=session_id,
             job_type="experiment_baseline_b_test",
+            experiment_role="b_test",
+            paired_attempt_id=baseline.attempt_id,
+            held_out_confirmation_id=authorization.confirmation_id,
             idempotency_key=f"baseline-b-test:{session_id}:{frozen.sha256}",
             command_plan=plan,
             input_refs=refs,
@@ -383,6 +406,12 @@ class BaselineControlService:
             session_id=session_id,
             status="BASELINE_RUNNING",
             baseline_status="queued",
+        )
+        save_held_out_authorization(
+            run_dir,
+            authorization.model_copy(
+                update={"baseline_b_test_attempt_id": started.attempt.attempt_id, "status": "paired"}
+            ),
         )
         return BaselineLaunchResult(
             started=ExperimentAttemptStartResult(
