@@ -60,6 +60,7 @@ TaskConfirmationConflictCode = Literal[
     "execution_adapter_unsupported",
     "execution_contract_incomplete",
     "materials_unresolved",
+    "confirmation_not_ready",
     "confirmation_invalid",
 ]
 
@@ -98,6 +99,21 @@ class ExperimentTaskDraft(BaseModel):
     created_at: str
     confirmed_at: str | None = None
     material_blockers: list[str] = Field(default_factory=list)
+
+
+class ExperimentTaskReadiness(BaseModel):
+    """Dynamic gate deciding whether the confirmation UI may be shown."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    ready: bool = False
+    blockers: list[str] = Field(default_factory=list)
+    pending_job_ids: list[str] = Field(default_factory=list)
+    failed_job_ids: list[str] = Field(default_factory=list)
+    unready_source_ids: list[str] = Field(default_factory=list)
+    admitted_execution_repository_source_ids: list[str] = Field(default_factory=list)
+    summary_current: bool = True
 
 
 class ExperimentTaskSourceReport(BaseModel):
@@ -230,7 +246,6 @@ class TaskBridge:
                     "materials_unresolved",
                     "material intake must succeed before confirming the experiment task",
                 )
-
             if draft.status == "pending_confirmation":
                 summary = load_research_intent_summary(run_dir)
                 if summary is None or _summary_sha256(summary) != draft.summary_sha256:
@@ -240,6 +255,18 @@ class TaskBridge:
                     )
                 _validate_existing_input_task(run_dir, draft)
                 _require_execution_contract(draft, execution_mode=execution_mode)
+                if execution_mode != "plan_only":
+                    readiness = evaluate_experiment_task_readiness(
+                        run_dir,
+                        draft,
+                        execution_mode=execution_mode,
+                    )
+                    if not readiness.ready:
+                        raise TaskConfirmationConflict(
+                            "confirmation_not_ready",
+                            "experiment task is not ready for confirmation: "
+                            + "; ".join(readiness.blockers),
+                        )
                 binding = _require_execution_repository_binding(
                     run_dir,
                     execution_mode=execution_mode,
@@ -458,6 +485,99 @@ def _build_and_write_pending_task(
     )
     _write_json_atomic(run_dir / BRIDGE_DIR / PENDING_TASK_FILE, draft.model_dump(mode="json"))
     return draft
+
+
+def evaluate_experiment_task_readiness(
+    run_dir: Path,
+    draft: ExperimentTaskDraft,
+    *,
+    execution_mode: ExecutionMode = "agent_assisted_after_approval",
+) -> ExperimentTaskReadiness:
+    """Evaluate whether a draft may be confirmed for one execution mode.
+
+    The result is dynamic and read-only: source Jobs can finish without
+    rewriting the durable draft or changing the user's consent record.
+    """
+    from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
+
+    blockers: list[str] = []
+    pending_job_ids: list[str] = []
+    failed_job_ids: list[str] = []
+    unready_source_ids: list[str] = []
+
+    if draft.status == "blocked_by_materials":
+        blockers.extend(draft.material_blockers or ["资料 intake 未完成"])
+    elif draft.status != "pending_confirmation":
+        blockers.append("任务不再等待确认")
+
+    summary = load_research_intent_summary(run_dir)
+    summary_current = summary is not None and _summary_sha256(summary) == draft.summary_sha256
+    if not summary_current:
+        blockers.append("研究摘要已变化，请重新生成任务草案")
+    elif summary is not None and summary.blocking_question is not None:
+        blockers.append(f"尚有待解决问题：{summary.blocking_question}")
+
+    task_source_ids = set(draft.input_task.source_ids)
+    sources = load_source_registry(run_dir).get("sources", [])
+    source_by_id = {
+        str(source.get("source_id")): source
+        for source in sources
+        if isinstance(source, dict) and source.get("source_id")
+    }
+    for source_id in sorted(task_source_ids):
+        source = source_by_id.get(source_id)
+        if source is None:
+            unready_source_ids.append(source_id)
+            blockers.append(f"资料 {source_id} 未登记")
+            continue
+        if source.get("intake_status") != "ok":
+            unready_source_ids.append(source_id)
+            blockers.append(f"资料 {source_id} 尚未完成采集")
+
+    relevant_jobs = [
+        job for job in load_pipeline_jobs(run_dir)
+        if str(job.get("source_id") or "") in task_source_ids
+        and str(job.get("job_type") or "") not in {"experiment_environment_prepare"}
+    ]
+    for job in relevant_jobs:
+        status = str(job.get("status") or "")
+        job_id = str(job.get("job_id") or "")
+        if status in {"queued", "running"}:
+            pending_job_ids.append(job_id)
+        elif status == "failed":
+            failed_job_ids.append(job_id)
+    if pending_job_ids:
+        blockers.append("资料任务仍在处理中")
+    if failed_job_ids:
+        blockers.append("资料任务存在失败项，请先处理失败资料")
+
+    if not task_source_ids:
+        blockers.append("任务尚未绑定资料")
+
+    admitted_execution_repository_source_ids: list[str] = []
+    if execution_mode != "plan_only":
+        if not draft.input_task.primary_metrics:
+            blockers.append("主指标尚未确认")
+        for source_id in sorted(task_source_ids):
+            admission = resolve_execution_repository(
+                run_dir,
+                execution_source_id=source_id,
+            )
+            if admission.status == "admitted":
+                admitted_execution_repository_source_ids.append(source_id)
+        if not admitted_execution_repository_source_ids:
+            blockers.append("当前没有已完成采集且通过执行绑定检查的代码仓库")
+
+    return ExperimentTaskReadiness(
+        task_id=draft.task_id,
+        ready=not blockers,
+        blockers=list(dict.fromkeys(blockers)),
+        pending_job_ids=pending_job_ids,
+        failed_job_ids=failed_job_ids,
+        unready_source_ids=unready_source_ids,
+        admitted_execution_repository_source_ids=admitted_execution_repository_source_ids,
+        summary_current=summary_current,
+    )
 
 
 def _confirmed_value(value: Any) -> str | None:

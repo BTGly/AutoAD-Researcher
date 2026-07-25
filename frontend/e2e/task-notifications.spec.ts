@@ -7,6 +7,7 @@ const run = {
 
 test('inserts a durable task result from WebSocket and restores it once from transcript', async ({ page }) => {
   let transcript: object[] = [];
+  let sourceReads = 0;
   await page.addInitScript(() => {
     type Listener = ((event: { data: string }) => void) | null;
     const sockets: Array<{ onmessage: Listener; readyState: number }> = [];
@@ -38,6 +39,7 @@ test('inserts a durable task result from WebSocket and restores it once from tra
     if (path === '/api/runs') return route.fulfill({ json: [run] });
     if (path === `/api/runs/${run.run_id}/transcript`) return route.fulfill({ json: transcript });
     if (path === `/api/runs/${run.run_id}/sources`) {
+      sourceReads += 1;
       return route.fulfill({ json: [{ source_id: 'src_mvtec', kind: 'dataset', user_label: 'MVTec AD', status: 'registered' }] });
     }
     if (path === `/api/runs/${run.run_id}/jobs`) {
@@ -64,6 +66,17 @@ test('inserts a durable task result from WebSocket and restores it once from tra
   await expect(page.locator('.message-task')).toHaveCount(1);
   await expect(page.getByText('数据集清单生成已完成')).toBeVisible();
   await expect(page.getByText('产物：sources/src_mvtec/dataset_manifest.json')).toBeVisible();
+
+  const sourceReadsBeforeCompletion = sourceReads;
+  const completedMessage = {
+    type: 'job.completed', job_id: 'job_000001', job_type: 'dataset_manifest',
+    source_id: 'src_mvtec', outputs: ['sources/src_mvtec/dataset_manifest.json'],
+  };
+  expect(await page.evaluate(
+    message => (window as typeof window & { emitTaskResult: (value: object) => number }).emitTaskResult(message),
+    completedMessage,
+  )).toBeGreaterThan(0);
+  await expect.poll(() => sourceReads).toBeGreaterThan(sourceReadsBeforeCompletion);
 
   transcript = [{
     role: 'assistant', content: taskResult.content, created_at: taskResult.created_at,

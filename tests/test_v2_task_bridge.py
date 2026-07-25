@@ -795,7 +795,8 @@ def test_orchestrator_act_request_prepares_missing_contract_without_task_action(
     )
 
     assert result.dialogue_mode == "act"
-    assert "研究任务草案已准备" in result.reply
+    assert "研究任务草案已保存，当前尚不能交给实验 Agent" in result.reply
+    assert "主指标尚未确认" in result.reply
     assert result.experiment_task is not None
     assert result.experiment_task["status"] == "pending_confirmation"
     assert (run_dir / BRIDGE_DIR / PENDING_TASK_FILE).exists()

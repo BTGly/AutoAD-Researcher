@@ -13,8 +13,10 @@ from autoad_researcher.server.routes.chat import _extract_role_route
 from autoad_researcher.assistant.v2.task_bridge import (
     ExperimentTaskDraft,
     ExperimentTaskConfirmationResult,
+    ExperimentTaskReadiness,
     TaskBridge,
     TaskConfirmationConflict,
+    evaluate_experiment_task_readiness,
 )
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
@@ -232,6 +234,25 @@ async def get_pending_experiment_task(run_id: str):
     run_dir = _existing_run_dir(run_id)
     try:
         return TaskBridge.load_pending_experiment_task(run_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "confirmation_invalid", "message": str(exc)},
+        ) from exc
+
+
+@router.get(
+    "/{run_id}/experiment-task/pending/readiness",
+    response_model=ExperimentTaskReadiness,
+)
+async def get_pending_experiment_task_readiness(run_id: str):
+    """Return the current confirmation gate without changing the draft."""
+    run_dir = _existing_run_dir(run_id)
+    try:
+        draft = TaskBridge.load_pending_experiment_task(run_dir)
+        return evaluate_experiment_task_readiness(run_dir, draft)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

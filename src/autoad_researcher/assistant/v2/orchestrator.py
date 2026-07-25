@@ -39,11 +39,18 @@ from autoad_researcher.assistant.v2.source_actions import (
     plan_explicit_source_actions,
 )
 from autoad_researcher.assistant.v2.source_service import register_source_intake
-from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmationConflict
+from autoad_researcher.assistant.v2.task_bridge import (
+    ExperimentTaskReadiness,
+    TaskBridge,
+    TaskConfirmationConflict,
+    evaluate_experiment_task_readiness,
+)
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 from autoad_researcher.ui.sources import (
+    LocalSourcePathError,
     load_source_registry,
     register_local_path_source,
+    resolve_local_source_path,
 )
 from autoad_researcher.ui.session_context import (
     attach_local_context,
@@ -66,6 +73,7 @@ class OrchestratorResult:
     source_action: dict[str, str] | None = None
     source_permission: dict[str, Any] | None = None
     experiment_task: dict[str, Any] | None = None
+    experiment_task_readiness: dict[str, Any] | None = None
     dialogue_mode: DialogueMode = "ask"
     action_scope: str = "none"
     policy: str = "allow"
@@ -104,7 +112,7 @@ class ResearchOrchestratorV2:
         local_contexts: list[dict[str, Any]] = []
         seen_turn_paths: set[str] = set()
         for explicit_path in extract_local_path_candidates(user_input, attachments):
-            path_key = _context_path_key(explicit_path)
+            path_key = _context_path_key(run_dir, explicit_path)
             if path_key in seen_turn_paths:
                 continue
             seen_turn_paths.add(path_key)
@@ -168,7 +176,7 @@ class ResearchOrchestratorV2:
         local_sources: list[dict[str, Any]] = []
         local_actions = _local_source_instructions(decision)
         for local_action in local_actions:
-            path_key = _context_path_key(local_action.source_path)
+            path_key = _context_path_key(run_dir, local_action.source_path)
             if path_key in seen_turn_paths:
                 continue
             seen_turn_paths.add(path_key)
@@ -354,6 +362,7 @@ class ResearchOrchestratorV2:
         if source_job is not None:
             created_jobs.append(source_job)
         experiment_task = None
+        experiment_task_readiness: ExperimentTaskReadiness | None = None
         task_preparation_disposition = None
         task_draft_requested = (
             DialogueGate.task_action_allowed(decision, reply_response.summary)
@@ -379,6 +388,10 @@ class ResearchOrchestratorV2:
                 )
                 if draft is not None:
                     experiment_task = draft.model_dump(mode="json")
+                    experiment_task_readiness = evaluate_experiment_task_readiness(
+                        run_dir,
+                        draft,
+                    )
                 if task_preparation_disposition == "replaced":
                     append_event(
                         run_dir,
@@ -405,6 +418,7 @@ class ResearchOrchestratorV2:
             decision,
             reply_response,
             experiment_task=experiment_task,
+            experiment_task_readiness=experiment_task_readiness,
             task_preparation_disposition=task_preparation_disposition,
             action_receipts=action_receipts,
         )
@@ -426,6 +440,11 @@ class ResearchOrchestratorV2:
             ),
             source_permission=decision.source_permission,
             experiment_task=experiment_task,
+            experiment_task_readiness=(
+                experiment_task_readiness.model_dump(mode="json")
+                if experiment_task_readiness is not None
+                else None
+            ),
             dialogue_mode=decision.dialogue_mode,
             action_scope=decision.action_scope,
             policy=decision.policy,
@@ -442,6 +461,7 @@ def _validated_dialogue_reply(
     reply_response: ResearchReplyResponse,
     *,
     experiment_task: dict[str, Any] | None = None,
+    experiment_task_readiness: ExperimentTaskReadiness | None = None,
     task_preparation_disposition: str | None = None,
     action_receipts: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -454,6 +474,10 @@ def _validated_dialogue_reply(
     if experiment_task is not None:
         if experiment_task.get("status") == "blocked_by_materials":
             return f"{material_status}\n\n研究任务草案已保存，但当前被资料状态阻塞；资料问题解决后才能确认或执行。"
+        if experiment_task_readiness is not None and not experiment_task_readiness.ready:
+            blockers = "；".join(experiment_task_readiness.blockers)
+            reply = f"研究任务草案已保存，当前尚不能交给实验 Agent：{blockers}。"
+            return f"{material_status}\n\n{reply}" if material_status else reply
         if reply_response.summary.blocking_question is not None:
             reply = (
                 "研究任务草案已准备。"
@@ -591,14 +615,20 @@ def _attach_local_context_action(
     require_in_message: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     if require_in_message and path not in user_input:
-        receipt = {
-            "kind": "session_context",
-            "source_path": path,
-            "status": "rejected",
-            "reason": "source_path_not_present_in_current_user_message",
-        }
-        append_event(run_dir, "assistant.local_context.attach_rejected", receipt)
-        return receipt, None
+        existing = next(
+            (item for item in load_session_context(run_dir)
+             if item.get("path") == _context_path_key(run_dir, path)),
+            None,
+        )
+        if existing is None:
+            receipt = {
+                "kind": "session_context",
+                "source_path": path,
+                "status": "rejected",
+                "reason": "source_path_not_present_in_current_user_message",
+            }
+            append_event(run_dir, "assistant.local_context.attach_rejected", receipt)
+            return receipt, None
     receipt, context_ref = attach_local_context(
         run_dir,
         path,
@@ -614,10 +644,10 @@ def _attach_local_context_action(
     return receipt, context_ref
 
 
-def _context_path_key(path: str) -> str:
+def _context_path_key(run_dir: Path, path: str) -> str:
     try:
-        return str(Path(path).expanduser().resolve(strict=False))
-    except (OSError, RuntimeError):
+        return str(resolve_local_source_path(run_dir, path, allow_explicit_user_path=True))
+    except LocalSourcePathError:
         return str(path)
 
 

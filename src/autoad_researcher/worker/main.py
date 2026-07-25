@@ -543,10 +543,13 @@ def _run_local_repo_acquire(run_dir: Path, job: dict[str, Any]) -> tuple[bool, l
     original_reference = str((source or {}).get("original_reference") or payload.get("original_reference") or "")
     stored_path = str(payload.get("stored_path") or "")
     if original_reference:
-        from autoad_researcher.ui.sources import is_allowed_local_source_path
+        from autoad_researcher.ui.sources import resolve_local_source_path
 
-        local_path = Path(original_reference).expanduser().resolve()
-        if not is_allowed_local_source_path(local_path):
+        try:
+            local_path = resolve_local_source_path(
+                run_dir, original_reference, allow_explicit_user_path=True
+            )
+        except ValueError:
             _write_parse_error(run_dir, source_id, "local_repo_acquire", "local repository path is not allowed")
             return False, []
     else:
@@ -617,16 +620,20 @@ def _run_dataset_manifest(run_dir: Path, job: dict[str, Any]) -> tuple[bool, lis
         return False, []
     from autoad_researcher.ui.sources import (
         inspect_local_path,
-        is_allowed_local_source_path,
+        resolve_local_source_path,
         set_source_metadata,
+        update_source_intake_result,
     )
 
-    local_path = Path(reference).expanduser().resolve()
-    if not is_allowed_local_source_path(local_path):
+    try:
+        local_path = resolve_local_source_path(
+            run_dir, reference, allow_explicit_user_path=True
+        )
+    except ValueError:
         _write_parse_error(run_dir, source_id, "dataset_manifest", "dataset path is not allowed")
         return False, []
     try:
-        inspection = inspect_local_path(local_path)
+        inspection = inspect_local_path(local_path, allow_explicit_user_path=True)
         manifest = run_dir / "sources" / source_id / "dataset_manifest.json"
         manifest.parent.mkdir(parents=True, exist_ok=True)
         temporary = manifest.with_suffix(".tmp")
@@ -652,6 +659,13 @@ def _run_dataset_manifest(run_dir: Path, job: dict[str, Any]) -> tuple[bool, lis
                 "dataset_manifest_path": manifest.relative_to(run_dir).as_posix(),
                 "dataset_manifest_inspection": inspection,
             },
+        )
+        update_source_intake_result(
+            run_dir,
+            source_id,
+            status="parsed",
+            intake_status="ok",
+            clear_intake_error=True,
         )
         return True, [manifest.relative_to(run_dir).as_posix()]
     except (OSError, ValueError, KeyError) as exc:

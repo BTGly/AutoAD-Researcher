@@ -75,6 +75,15 @@ LOCAL_PATH_MAX_DEPTH = 4
 LOCAL_PATH_MAX_SCANNED_ENTRIES = 4000
 
 
+class LocalSourcePathError(ValueError):
+    """A local source path cannot be resolved or is outside its scope."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 def _resolve_sources_dir(run_dir: Path) -> Path:
     return run_dir / SOURCES_DIR
 
@@ -731,10 +740,57 @@ def is_allowed_local_source_path(
     return _is_under_allowed_local_source_root(path, roots)
 
 
+def local_source_workspace_roots(run_dir: Path) -> list[Path]:
+    """Return the Run-relative workspace root used by internal callers."""
+    return [(run_dir / "workspace").resolve()]
+
+
+def resolve_local_source_path(
+    run_dir: Path,
+    source_path: str | Path,
+    *,
+    additional_allowed_roots: list[Path] | None = None,
+    allow_explicit_user_path: bool = False,
+) -> Path:
+    """Resolve a local source using the shared intake/worker path contract."""
+    raw = str(source_path).strip()
+    if not raw:
+        raise LocalSourcePathError("LOCAL_PATH_INVALID", "本地路径不能为空")
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        parts = candidate.parts
+        if parts and parts[0] == "workspace":
+            candidate = run_dir / candidate
+        elif allow_explicit_user_path:
+            candidate = Path.cwd() / candidate
+        else:
+            raise LocalSourcePathError(
+                "LOCAL_PATH_REQUIRES_ABSOLUTE",
+                "请提供绝对路径，或使用当前 Run 下的 workspace/... 路径",
+            )
+    try:
+        resolved = candidate.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise LocalSourcePathError("LOCAL_PATH_INVALID", "无法解析本地路径") from exc
+    roots = [
+        *local_source_workspace_roots(run_dir),
+        *(Path(root).expanduser().resolve() for root in (additional_allowed_roots or [])),
+    ]
+    if not allow_explicit_user_path and not _is_under_allowed_local_source_root(
+        resolved, [*get_allowed_local_source_roots(), *roots]
+    ):
+        raise LocalSourcePathError(
+            "LOCAL_PATH_OUTSIDE_ALLOWED_ROOT",
+            "路径不在当前 Run workspace 或已授权的本地资料目录内",
+        )
+    return resolved
+
+
 def inspect_local_path(
     source_path: str | Path,
     *,
     additional_allowed_roots: list[Path] | None = None,
+    allow_explicit_user_path: bool = False,
 ) -> dict[str, Any]:
     """Collect a bounded structural description of an allowed local path.
 
@@ -742,7 +798,9 @@ def inspect_local_path(
     semantic label. It never reads file contents and never follows symlinks.
     """
     path = Path(source_path).expanduser().resolve()
-    if not is_allowed_local_source_path(path, additional_roots=additional_allowed_roots):
+    if not allow_explicit_user_path and not is_allowed_local_source_path(
+        path, additional_roots=additional_allowed_roots
+    ):
         raise ValueError("该路径不在允许的资料目录内")
     if not path.exists():
         raise ValueError("该路径不存在")
@@ -1100,8 +1158,15 @@ def register_local_path_source(
     Mixed directories, collections, and unknown material remain ``local_path``
     sources with a bounded manifest so later dialogue can choose a focus.
     """
-    path = Path(source_path).expanduser().resolve()
-    inspection = inspect_local_path(path, additional_allowed_roots=additional_allowed_roots)
+    path = resolve_local_source_path(
+        run_dir, source_path,
+        additional_allowed_roots=additional_allowed_roots,
+        allow_explicit_user_path=True,
+    )
+    inspection = inspect_local_path(
+        path, additional_allowed_roots=additional_allowed_roots,
+        allow_explicit_user_path=True,
+    )
     reference = str(path)
     registry = load_source_registry(run_dir)
     for source in registry["sources"]:
@@ -1123,7 +1188,7 @@ def register_local_path_source(
     if inspection["path_kind"] == "file":
         try:
             source = register_local_file_source(
-                run_dir, path, additional_allowed_roots=additional_allowed_roots
+                run_dir, path, additional_allowed_roots=[path, *(additional_allowed_roots or [])]
             )
         except ValueError:
             source_id = _generate_source_id()
@@ -1140,11 +1205,13 @@ def register_local_path_source(
             source = {"source_id": source_id, "kind": "local_path", "status": "user_provided_not_ingested"}
     elif inspection["detected_kind"] == "repository":
         source = register_local_repo_source(
-            run_dir, path, user_label=label, additional_allowed_roots=additional_allowed_roots
+            run_dir, path, user_label=label,
+            additional_allowed_roots=[path, *(additional_allowed_roots or [])]
         )
     elif inspection["detected_kind"] == "dataset":
         source = register_local_dataset_source(
-            run_dir, path, user_label=label, additional_allowed_roots=additional_allowed_roots
+            run_dir, path, user_label=label,
+            additional_allowed_roots=[path, *(additional_allowed_roots or [])]
         )
     else:
         source_id = _generate_source_id()

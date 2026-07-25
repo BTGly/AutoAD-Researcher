@@ -3,7 +3,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from autoad_researcher.assistant.v2.research_dialogue_agent import SourceInstruction
-from autoad_researcher.assistant.v2.task_bridge import ExperimentTaskDraft
+from autoad_researcher.assistant.v2.task_bridge import (
+    ExperimentTaskDraft,
+    ExperimentTaskReadiness,
+)
 
 
 class ChatRequest(BaseModel):
@@ -24,6 +27,7 @@ class ChatResponse(BaseModel):
     reply_kind: str = "answer"
     source_action: SourceInstruction | None = None
     experiment_task: ExperimentTaskDraft | None = None
+    experiment_task_readiness: ExperimentTaskReadiness | None = None
     action_receipts: list[dict[str, Any]] = Field(default_factory=list)
     material_action_status: str = "none"
 

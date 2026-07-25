@@ -1,6 +1,7 @@
 import type {
   ExperimentTaskConfirmationResult,
   ExperimentTaskDraft,
+  ExperimentTaskReadiness,
   ExperimentProjection,
   SourceInstruction,
   ReportDigest,
@@ -66,6 +67,7 @@ export async function sendChat(
   reply_kind: string;
   source_action: SourceInstruction | null;
   experiment_task: ExperimentTaskDraft | null;
+  experiment_task_readiness: ExperimentTaskReadiness | null;
 }> {
   const res = await fetch('/api/chat/send', {
     method: 'POST',
@@ -131,6 +133,13 @@ export async function getPendingExperimentTask(runId: string): Promise<Experimen
   const res = await fetch(`/api/runs/${runId}/experiment-task/pending`, { headers: getHeaders() });
   if (res.status === 404) return null;
   if (!res.ok) throw await apiError(res, `Pending experiment task error: ${res.status}`);
+  return res.json();
+}
+
+export async function getPendingExperimentTaskReadiness(runId: string): Promise<ExperimentTaskReadiness | null> {
+  const res = await fetch(`/api/runs/${runId}/experiment-task/pending/readiness`, { headers: getHeaders() });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await apiError(res, `Experiment task readiness error: ${res.status}`);
   return res.json();
 }
 

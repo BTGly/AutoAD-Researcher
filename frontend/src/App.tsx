@@ -20,7 +20,6 @@ import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
   ApiError,
-  confirmPrimaryMetrics,
   confirmExperimentTask,
   createRun,
   deleteSource,
@@ -31,6 +30,7 @@ import {
   getIntentSummary,
   getJobs,
   getPendingExperimentTask,
+  getPendingExperimentTaskReadiness,
   getRuns,
   getSources,
   getTranscript,
@@ -40,7 +40,7 @@ import {
   uploadSource,
 } from './lib/api';
 import { generateId } from './lib/mock';
-import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary, ExperimentTaskDraft } from './lib/types';
+import type { Message, QueuedChatMessage, ToastItem, SourceItem, JobItem, EvidenceItem, UnusableParsedSource, WSMessage, PageId, TaskRun, IntentSummary, ExperimentTaskDraft, ExperimentTaskReadiness } from './lib/types';
 import { ChevronDown, ChevronRight, File, FileText, FolderArchive, Globe2, Settings } from 'lucide-react';
 
 type ArtifactKind = 'paper' | 'repo' | 'web' | 'file';
@@ -55,6 +55,7 @@ interface ArtifactEntry {
 interface PendingExperimentTaskConfirmation {
   runId: string;
   task: ExperimentTaskDraft;
+  readiness: ExperimentTaskReadiness;
 }
 
 function hasIntentSummary(summary: IntentSummary | null): boolean {
@@ -161,6 +162,22 @@ export default function App() {
     await refreshSidebarForRun(runId);
   }, [runId, refreshSidebarForRun]);
 
+  const refreshTaskConfirmation = useCallback(async (nextRunId: string) => {
+    if (!nextRunId) return;
+    const [task, readiness] = await Promise.all([
+      getPendingExperimentTask(nextRunId).catch(() => null),
+      getPendingExperimentTaskReadiness(nextRunId).catch(() => null),
+    ]);
+    if (currentRunIdRef.current !== nextRunId) return;
+    if (task?.status === 'pending_confirmation' && readiness?.ready) {
+      setPendingExperimentTaskConfirmation({ runId: nextRunId, task, readiness });
+      return;
+    }
+    setPendingExperimentTaskConfirmation(current => (
+      current?.runId === nextRunId ? null : current
+    ));
+  }, []);
+
   const switchRun = useCallback(async (nextRunId: string) => {
     if (!nextRunId) return;
     setRunLoading(true);
@@ -197,15 +214,12 @@ export default function App() {
     }));
     setMessages(current => mergeTranscriptMessages(transcriptMessages, current));
     await refreshSidebarForRun(nextRunId);
-    const pendingTask = await getPendingExperimentTask(nextRunId).catch(() => null);
+    await refreshTaskConfirmation(nextRunId);
     if (currentRunIdRef.current === nextRunId) {
-      if (pendingTask?.status === 'pending_confirmation') {
-        setPendingExperimentTaskConfirmation({ runId: nextRunId, task: pendingTask });
-      }
       setLoadedRunId(nextRunId);
       setRunLoading(false);
     }
-  }, [refreshSidebarForRun]);
+  }, [refreshSidebarForRun, refreshTaskConfirmation]);
 
   useEffect(() => {
     if (!config.apiKey) return;
@@ -360,8 +374,12 @@ export default function App() {
               addToast(`任务恢复失败：${message}`, 'error');
             }
           }
-        } else {
-          setPendingExperimentTaskConfirmation({ runId: targetRunId, task });
+        } else if (res.experiment_task_readiness?.ready) {
+          setPendingExperimentTaskConfirmation({
+            runId: targetRunId,
+            task,
+            readiness: res.experiment_task_readiness,
+          });
         }
       }
       if (currentRunIdRef.current === targetRunId) await refreshSidebarForRun(targetRunId);
@@ -559,11 +577,14 @@ export default function App() {
     if (msg.type === 'job.completed') {
       setJobs(prev => prev.map(j => j.jobId === jobId ? { ...j, status: 'completed' } : j));
       setTaskStatus('Ready');
+      refreshSidebar();
+      void refreshTaskConfirmation(runId);
     }
     if (msg.type === 'job.failed') {
       setJobs(prev => prev.map(j => j.jobId === jobId ? { ...j, status: 'failed', error: msg.error || msg.message || j.error } : j));
       setTaskStatus('Error');
       refreshSidebar();
+      void refreshTaskConfirmation(runId);
     }
     if (msg.type === 'artifact.created') {
       const paths: string[] = (msg as any).paths || [];
@@ -605,7 +626,7 @@ export default function App() {
     }
     if (msg.type === 'toast.success' && msg.message) addToast(msg.message, 'success');
     if (msg.type === 'toast.error' && msg.message) addToast(msg.message, 'error');
-  }, [addToast, refreshSidebar]);
+  }, [addToast, refreshSidebar, refreshTaskConfirmation, runId]);
 
   useWebSocket({ runId, onMessage: onWsMessage, enabled: !!runId });
 
@@ -620,14 +641,15 @@ export default function App() {
       {pendingExperimentTaskConfirmation && (
         <ExperimentTaskConfirmation
           task={pendingExperimentTaskConfirmation.task}
+          readiness={pendingExperimentTaskConfirmation.readiness}
           sources={sources}
           onClose={() => setPendingExperimentTaskConfirmation(null)}
-          onConfirm={async (executionMode, executionRepositorySourceId) => {
+          onConfirm={async executionRepositorySourceId => {
             try {
               const prepared = await confirmExperimentTask(
                 pendingExperimentTaskConfirmation.runId,
                 pendingExperimentTaskConfirmation.task.task_id,
-                executionMode,
+                'agent_assisted_after_approval',
                 executionRepositorySourceId,
               );
               setPendingExperimentTaskConfirmation(null);
@@ -639,18 +661,6 @@ export default function App() {
               }
               throw error;
             }
-          }}
-          onConfirmPrimaryMetrics={async primaryMetrics => {
-            const updatedTask = await confirmPrimaryMetrics(
-              pendingExperimentTaskConfirmation.runId,
-              primaryMetrics,
-            );
-            setPendingExperimentTaskConfirmation(current => current && {
-              ...current,
-              task: updatedTask,
-            });
-            addToast('主指标已确认；请检查刷新后的任务草案后再确认执行。', 'success');
-            await refreshSidebarForRun(pendingExperimentTaskConfirmation.runId);
           }}
         />
       )}

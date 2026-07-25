@@ -16,9 +16,8 @@ test('persists an explicitly selected execution repository through the real API'
 
   await page.goto('/');
   await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
-  await page.getByRole('button', { name: '逐步确认' }).click();
   await page.getByLabel('执行仓库').selectOption('repo_micro');
-  await page.getByRole('button', { name: '确认任务' }).click();
+  await page.getByRole('button', { name: '确认并交给实验 Agent' }).click();
   await expect(page.getByText('实验任务已确认（created）')).toBeVisible();
 
   const runDir = join(runsRoot!, runId);
@@ -37,7 +36,7 @@ test('persists an explicitly selected execution repository through the real API'
     status: 'CREATED',
     environment_status: 'not_started',
     repository_ref: 'repos/repo_micro',
-    authorization: { execution_mode: 'approve_each_step' },
+    authorization: { execution_mode: 'agent_assisted_after_approval' },
   });
 });
 

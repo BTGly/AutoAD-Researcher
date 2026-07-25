@@ -23,7 +23,7 @@ def test_attach_context_auto_allows_current_run_workspace_without_registry(tmp_p
     assert not (run_dir / "sources" / "source_references.json").exists()
 
 
-def test_attach_context_is_idempotent_and_reports_structured_outside_root_error(tmp_path: Path, monkeypatch):
+def test_attach_context_is_idempotent_and_accepts_explicit_user_path(tmp_path: Path, monkeypatch):
     allowed = tmp_path / "allowed"
     outside = tmp_path / "outside"
     allowed.mkdir()
@@ -40,12 +40,12 @@ def test_attach_context_is_idempotent_and_reports_structured_outside_root_error(
     assert first["status"] == "context_attached"
     assert second["status"] == "context_already_attached"
     assert rejected["status"] == "failed"
-    assert rejected["error"]["code"] == "LOCAL_PATH_OUTSIDE_ALLOWED_ROOT"
+    assert rejected["error"]["code"] == "LOCAL_PATH_NOT_FOUND"
     assert context is None
     assert len(load_session_context(run_dir)) == 1
 
 
-def test_attach_context_allows_sibling_run_workspace_but_not_runs_root(tmp_path: Path, monkeypatch):
+def test_attach_context_allows_explicit_paths_without_special_runs_root_rules(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", raising=False)
     runs_root = tmp_path / "runs"
     monkeypatch.setenv("AUTOAD_RUNS_ROOT", str(runs_root))
@@ -61,8 +61,8 @@ def test_attach_context_allows_sibling_run_workspace_but_not_runs_root(tmp_path:
     outside = runs_root / "unmanaged.txt"
     outside.write_text("do not admit the whole runs root", encoding="utf-8")
     rejected, context = attach_local_context(chat_run, outside)
-    assert rejected["error"]["code"] == "LOCAL_PATH_OUTSIDE_ALLOWED_ROOT"
-    assert context is None
+    assert rejected["status"] == "context_attached"
+    assert context is not None
 
 
 def test_extracts_multiple_absolute_paths_without_classifying_them(tmp_path: Path):
@@ -71,3 +71,13 @@ def test_extracts_multiple_absolute_paths_without_classifying_them(tmp_path: Pat
     paths = extract_local_path_candidates(f"仓库 {repo}，数据集 {dataset}，以及论文 /tmp/paper.pdf。")
 
     assert paths == [str(repo), str(dataset), "/tmp/paper.pdf"]
+
+
+def test_extracts_explicit_relative_paths(tmp_path: Path):
+    paths = extract_local_path_candidates("检查 ./repo、../dataset 和 workspace/config.yaml")
+
+    assert paths == ["./repo", "../dataset", "workspace/config.yaml"]
+
+
+def test_does_not_treat_slash_in_prose_as_root_path():
+    assert extract_local_path_candidates("MVTec AD / bottle") == []

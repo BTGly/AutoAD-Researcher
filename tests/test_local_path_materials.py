@@ -12,6 +12,7 @@ from autoad_researcher.ui.sources import (
     load_source_registry,
     register_local_path_source,
 )
+from autoad_researcher.worker.main import _run_dataset_manifest
 
 
 def test_local_path_inspection_keeps_mixed_directory_as_multiple_profiles(tmp_path, monkeypatch):
@@ -29,6 +30,35 @@ def test_local_path_inspection_keeps_mixed_directory_as_multiple_profiles(tmp_pa
     assert inspection["profiles"] == ["repository", "dataset", "document"]
     assert inspection["entry_count"] == 3
     assert inspection["confidence"] < 1
+
+
+def test_dataset_manifest_worker_reuses_explicit_path_authorization(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", raising=False)
+    run_dir = tmp_path / "run"
+    dataset = tmp_path / "user_dataset"
+    (dataset / "train" / "good").mkdir(parents=True)
+    (dataset / "train" / "good" / "sample.png").write_bytes(b"png")
+
+    source = register_local_path_source(run_dir, dataset, user_label="user dataset")
+    success, outputs = _run_dataset_manifest(
+        run_dir,
+        {
+            "source_id": source["source_id"],
+            "payload": {"original_reference": source["original_reference"]},
+        },
+    )
+
+    assert success is True
+    assert outputs == [f"sources/{source['source_id']}/dataset_manifest.json"]
+    assert (run_dir / outputs[0]).is_file()
+    registered = next(
+        item for item in load_source_registry(run_dir)["sources"]
+        if item["source_id"] == source["source_id"]
+    )
+    assert registered["status"] == "parsed"
+    assert registered["intake_status"] == "ok"
+    assert registered["intake_error"] is None
+    assert registered["metadata"]["dataset_manifest_path"] == outputs[0]
 
 
 def test_local_path_registers_manifest_without_guessing_unknown_file(tmp_path, monkeypatch):

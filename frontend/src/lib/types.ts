@@ -79,7 +79,7 @@ export interface ExperimentTaskDraft {
   schema_version: 1;
   task_id: string;
   run_id: string;
-  status: 'pending_confirmation' | 'confirmed';
+  status: 'pending_confirmation' | 'blocked_by_materials' | 'confirmed';
   execution_mode: 'plan_only' | 'approve_each_step' | 'agent_assisted_after_approval';
   input_task: PipelineInputTask;
   primary_metric_candidates?: string[];
@@ -87,6 +87,17 @@ export interface ExperimentTaskDraft {
   summary_sha256: string;
   created_at: string;
   confirmed_at: string | null;
+}
+
+export interface ExperimentTaskReadiness {
+  task_id: string;
+  ready: boolean;
+  blockers: string[];
+  pending_job_ids: string[];
+  failed_job_ids: string[];
+  unready_source_ids: string[];
+  admitted_execution_repository_source_ids: string[];
+  summary_current: boolean;
 }
 
 export interface ExperimentTaskConfirmationResult {

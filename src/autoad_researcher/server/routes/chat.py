@@ -162,6 +162,7 @@ async def chat_send(req: ChatRequest, request: Request):
         reply_kind=result.reply_kind,
         source_action=result.source_action,
         experiment_task=result.experiment_task,
+        experiment_task_readiness=result.experiment_task_readiness,
         action_receipts=result.action_receipts,
         material_action_status=result.material_action_status,
     )

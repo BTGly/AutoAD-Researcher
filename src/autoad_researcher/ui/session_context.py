@@ -5,13 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import unquote, urlsplit
 
-from autoad_researcher.ui.sources import inspect_local_path, is_allowed_local_source_path
+from autoad_researcher.ui.sources import (
+    LocalSourcePathError,
+    inspect_local_path,
+    resolve_local_source_path,
+)
 
 CONTEXT_DIR = "context"
 CONTEXT_FILE = "session_context.json"
@@ -57,11 +62,26 @@ def extract_local_path_candidates(
     values.extend(str(item) for item in (attachments or []) if isinstance(item, str))
 
     candidates: list[str] = []
-    for value in values:
-        candidate = _clean_path_candidate(value)
-        if candidate is not None and candidate not in candidates:
-            candidates.append(candidate)
+    for value in [*values, user_input, *(attachments or [])]:
+        for candidate in _path_fragments(str(value)):
+            if candidate not in candidates:
+                candidates.append(candidate)
     return candidates
+
+
+_PATH_FRAGMENT_RE = re.compile(
+    r"(?<![\w])(?:\.\.?/|workspace/|/(?![\s/]))[^\s，。；：、,;!?\)\]\}>]+"
+)
+
+
+def _path_fragments(value: str) -> list[str]:
+    """Return explicit path-shaped fragments, including multiple paths per token."""
+    fragments: list[str] = []
+    for match in _PATH_FRAGMENT_RE.finditer(value):
+        candidate = _clean_path_candidate(match.group(0))
+        if candidate is not None and candidate not in fragments:
+            fragments.append(candidate)
+    return fragments
 
 
 def attach_local_context(
@@ -74,17 +94,10 @@ def attach_local_context(
     """Inspect and attach one local path as a read-only conversation context."""
     raw_path = str(source_path)
     try:
-        path = Path(raw_path).expanduser().resolve(strict=False)
-    except (OSError, RuntimeError):
-        return _failure(raw_path, "LOCAL_PATH_INVALID", "无法解析本地路径"), None
+        path = resolve_local_source_path(run_dir, raw_path, allow_explicit_user_path=True)
+    except LocalSourcePathError as exc:
+        return _failure(raw_path, exc.code, exc.message), None
 
-    extra_roots = _session_workspace_roots(run_dir, path)
-    if not is_allowed_local_source_path(path, additional_roots=extra_roots):
-        return _failure(
-            raw_path,
-            "LOCAL_PATH_OUTSIDE_ALLOWED_ROOT",
-            "路径不在当前 Run workspace 或已授权的本地资料目录内",
-        ), None
     if not path.exists():
         return _failure(raw_path, "LOCAL_PATH_NOT_FOUND", "路径不存在"), None
     if not os.access(path, os.R_OK):
@@ -93,7 +106,11 @@ def attach_local_context(
         return _failure(raw_path, "LOCAL_PATH_UNSUPPORTED", "路径不是文件或目录"), None
 
     try:
-        inspection = inspect_local_path(path, additional_allowed_roots=extra_roots)
+        inspection = inspect_local_path(
+            path,
+            additional_allowed_roots=[run_dir / "workspace", path],
+            allow_explicit_user_path=True,
+        )
     except (OSError, ValueError) as exc:
         return _failure(raw_path, "LOCAL_PATH_INSPECTION_FAILED", str(exc)), None
 
@@ -129,22 +146,6 @@ def attach_local_context(
     }, context
 
 
-def _session_workspace_roots(run_dir: Path, path: Path) -> list[Path]:
-    """Allow current or sibling run workspaces below the configured runs root."""
-    roots = [run_dir / "workspace"]
-    configured_root = Path(os.environ.get("AUTOAD_RUNS_ROOT", "runs")).expanduser().resolve()
-    for ancestor in (path, *path.parents):
-        if ancestor.name != "workspace":
-            continue
-        try:
-            ancestor.relative_to(configured_root)
-        except ValueError:
-            continue
-        if ancestor not in roots:
-            roots.append(ancestor)
-    return roots
-
-
 def _clean_path_candidate(value: str) -> str | None:
     candidate = value.strip()
     if not candidate:
@@ -152,7 +153,14 @@ def _clean_path_candidate(value: str) -> str | None:
     if candidate.startswith("file://"):
         parsed = urlsplit(candidate)
         candidate = unquote(parsed.path)
-    if not candidate.startswith("/") or candidate.startswith("//"):
+    if candidate.startswith("//"):
+        return None
+    is_explicit_relative = (
+        candidate in {".", ".."}
+        or candidate.startswith(("./", "../", "workspace/"))
+        or "/" in candidate
+    )
+    if not candidate.startswith("/") and not is_explicit_relative:
         return None
     for delimiter in "，。；：、":
         candidate = candidate.split(delimiter, 1)[0]

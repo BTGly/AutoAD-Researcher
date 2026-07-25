@@ -15,8 +15,15 @@ const task = {
   primary_metric_candidates: [],
 };
 
-async function prepare(page: Page, options: { confirmStatus?: number; task?: typeof task; screenshotName?: string } = {}) {
+const readiness = {
+  task_id: task.task_id, ready: true, blockers: [], pending_job_ids: [],
+  failed_job_ids: [], unready_source_ids: [],
+  admitted_execution_repository_source_ids: ['repo_official', 'repo_micro'], summary_current: true,
+};
+
+async function prepare(page: Page, options: { confirmStatus?: number; task?: typeof task; readiness?: typeof readiness; screenshotName?: string } = {}) {
   const taskPayload = options.task ?? task;
+  const readinessPayload = options.readiness ?? readiness;
   await page.addInitScript(() => localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' })));
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
@@ -31,7 +38,8 @@ async function prepare(page: Page, options: { confirmStatus?: number; task?: typ
     if (url.pathname === `/api/runs/${run.run_id}/evidence/state`) return route.fulfill({ json: { usable_evidence: [], unusable_parsed_sources: [] } });
     if (url.pathname === `/api/runs/${run.run_id}/intent-summary`) return route.fulfill({ json: { goal: '', confirmed_facts: [], inferred_facts: [], unresolved_conflicts: [], blocking_question: null } });
     if (url.pathname === `/api/runs/${run.run_id}/intent-summary/primary-metrics`) return route.fulfill({ json: { ...taskPayload, input_task: { ...taskPayload.input_task, primary_metrics: ['image_auroc'] }, primary_metric_candidates: taskPayload.primary_metric_candidates ?? [] } });
-    if (url.pathname === '/api/chat/send') return route.fulfill({ json: { reply: '已生成草案', reply_kind: 'answer', source_action: null, experiment_task: taskPayload } });
+    if (url.pathname === `/api/runs/${run.run_id}/experiment-task/pending/readiness`) return route.fulfill({ json: readinessPayload });
+    if (url.pathname === '/api/chat/send') return route.fulfill({ json: { reply: '已生成草案', reply_kind: 'answer', source_action: null, experiment_task: taskPayload, experiment_task_readiness: readinessPayload } });
     if (url.pathname === `/api/runs/${run.run_id}/experiment-task/${task.task_id}/confirm`) {
       if (options.confirmStatus) return route.fulfill({ status: options.confirmStatus, json: { detail: { code: 'summary_changed', message: '研究摘要已更新' } } });
       return route.fulfill({ json: { task: { ...taskPayload, status: 'confirmed' }, session_id: 'session_000001', session_status: 'ENVIRONMENT_PENDING', environment_job_id: 'job_000001', disposition: 'created' } });
@@ -43,14 +51,17 @@ async function prepare(page: Page, options: { confirmStatus?: number; task?: typ
   const send = page.getByRole('button', { name: '发送' });
   await expect(send).toBeEnabled();
   await send.click();
-  await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
-  await expect(page).toHaveScreenshot(options.screenshotName ?? 'experiment-confirmation.png', { fullPage: true, animations: 'disabled' });
+  if (readinessPayload.ready) {
+    await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
+    await expect(page).toHaveScreenshot(options.screenshotName ?? 'experiment-confirmation.png', { fullPage: true, animations: 'disabled' });
+  } else {
+    await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeHidden();
+  }
 }
 
 async function selectMicroRepository(page: Page) {
-  await page.getByRole('button', { name: '逐步确认' }).click();
   await page.getByLabel('执行仓库').selectOption('repo_micro');
-  await expect(page.getByText('本次实验使用：05_RareCLIP_微型仓库_中文')).toBeVisible();
+  await expect(page.getByText('已选择：05_RareCLIP_微型仓库_中文')).toBeVisible();
 }
 
 test('binds the explicitly selected repository source ID', async ({ page }) => {
@@ -61,12 +72,12 @@ test('binds the explicitly selected repository source ID', async ({ page }) => {
     requestBody = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({ json: { task: { ...task, status: 'confirmed' }, session_id: 'session_000001', session_status: 'ENVIRONMENT_PENDING', environment_job_id: 'job_000001', disposition: 'created' } });
   });
-  await page.getByRole('button', { name: '确认任务' }).click();
+  await page.getByRole('button', { name: '确认并交给实验 Agent' }).click();
   await expect(page.getByText('实验任务已确认（created）')).toBeVisible();
-  expect(requestBody).toEqual({ execution_mode: 'approve_each_step', execution_repository_source_id: 'repo_micro' });
+  expect(requestBody).toEqual({ execution_mode: 'agent_assisted_after_approval', execution_repository_source_id: 'repo_micro' });
 });
 
-test('cancel leaves confirmation endpoint untouched', async ({ page }) => {
+test('refining the draft leaves confirmation endpoint untouched', async ({ page }) => {
   let confirmations = 0;
   await prepare(page);
   await page.route(`**/api/runs/${run.run_id}/experiment-task/${task.task_id}/confirm`, async route => {
@@ -74,7 +85,7 @@ test('cancel leaves confirmation endpoint untouched', async ({ page }) => {
     await route.fulfill({ json: {} });
   });
   await selectMicroRepository(page);
-  await page.getByRole('button', { name: '取消' }).click();
+  await page.getByRole('button', { name: '还需要细化实验草案' }).click();
   await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeHidden();
   expect(confirmations).toBe(0);
 });
@@ -82,24 +93,19 @@ test('cancel leaves confirmation endpoint untouched', async ({ page }) => {
 test('renders a stable backend conflict without confirming', async ({ page }) => {
   await prepare(page, { confirmStatus: 409 });
   await selectMicroRepository(page);
-  await page.getByRole('button', { name: '确认任务' }).click();
+  await page.getByRole('button', { name: '确认并交给实验 Agent' }).click();
   await expect(page.getByText('研究摘要已更新')).toBeVisible();
   await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
 });
 
-test('selects a discussed primary metric without a free-text fallback', async ({ page }) => {
+test('does not open confirmation while the primary metric is unresolved', async ({ page }) => {
   await prepare(page, {
-    screenshotName: 'experiment-confirmation-primary-metric.png',
     task: {
       ...task,
       input_task: { ...task.input_task, primary_metrics: [] },
       primary_metric_candidates: ['image_auroc', 'pixel_auroc'],
     },
+    readiness: { ...readiness, ready: false, blockers: ['主指标尚未确认'] },
   });
-  await expect(page.getByRole('textbox', { name: '主指标' })).toHaveCount(0);
-  await selectMicroRepository(page);
-  await expect(page.getByRole('button', { name: '确认任务' })).toBeDisabled();
-  await page.getByRole('button', { name: 'image_auroc' }).click();
-  await page.getByRole('button', { name: '确认所选主指标并刷新草案' }).click();
-  await expect(page.getByText('主指标已确认；请检查刷新后的任务草案后再确认执行。')).toBeVisible();
+  await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeHidden();
 });

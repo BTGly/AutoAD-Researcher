@@ -12,7 +12,10 @@ from fastapi import HTTPException
 from autoad_researcher.assistant.v2.event_service import load_events_since
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
 from autoad_researcher.assistant.v2.job_service import (
+    append_pipeline_job,
+    complete_pipeline_job,
     create_or_get_pipeline_job,
+    fail_pipeline_job,
     load_pipeline_jobs,
 )
 from autoad_researcher.assistant.v2.research_intent_summary import (
@@ -20,7 +23,11 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     save_research_intent_summary,
 )
-from autoad_researcher.assistant.v2.task_bridge import TaskBridge, TaskConfirmationConflict
+from autoad_researcher.assistant.v2.task_bridge import (
+    TaskBridge,
+    TaskConfirmationConflict,
+    evaluate_experiment_task_readiness,
+)
 from autoad_researcher.benchmarks.hashing import canonical_sha256
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.repository_intelligence.acquisition import RepositoryAttestation
@@ -278,6 +285,25 @@ def test_pending_task_route_returns_the_durable_draft(tmp_path: Path, monkeypatc
     assert loaded == draft
 
 
+def test_pending_task_readiness_route_returns_dynamic_confirmation_gate(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run_pending_readiness_route"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    job = append_pipeline_job(
+        run_dir,
+        source_id=EXECUTION_SOURCE_ID,
+        job_type="repo_summarize",
+    )
+    monkeypatch.setattr(runs_route, "RUNS_ROOT", tmp_path)
+
+    import asyncio
+    readiness = asyncio.run(runs_route.get_pending_experiment_task_readiness(run_dir.name))
+
+    assert readiness.task_id == draft.task_id
+    assert readiness.ready is False
+    assert readiness.pending_job_ids == [job["job_id"]]
+
+
 def test_execution_confirmation_without_source_selection_has_zero_execution_side_effects(tmp_path: Path):
     run_dir = tmp_path / "run_missing_execution_source"
     run_dir.mkdir()
@@ -317,6 +343,59 @@ def test_execution_confirmation_without_primary_metric_has_zero_execution_side_e
     assert not (run_dir / "task_bridge" / "execution_repository_binding.json").exists()
     assert not (run_dir / "experiments" / "sessions").exists()
     assert load_pipeline_jobs(run_dir) == []
+
+
+def test_confirmation_readiness_waits_for_material_jobs_then_allows_agent_handoff(tmp_path: Path):
+    run_dir = tmp_path / "run_confirmation_readiness_pending"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    job = append_pipeline_job(
+        run_dir,
+        source_id=EXECUTION_SOURCE_ID,
+        job_type="repo_summarize",
+    )
+
+    pending = evaluate_experiment_task_readiness(run_dir, draft)
+
+    assert pending.ready is False
+    assert pending.pending_job_ids == [job["job_id"]]
+    assert "资料任务仍在处理中" in pending.blockers
+
+    with pytest.raises(TaskConfirmationConflict) as excinfo:
+        TaskBridge.confirm_or_load_existing(
+            run_dir,
+            task_id=draft.task_id,
+            execution_mode="agent_assisted_after_approval",
+            execution_repository_source_id=EXECUTION_SOURCE_ID,
+        )
+
+    assert excinfo.value.code == "confirmation_not_ready"
+    assert not (run_dir / "input_task.yaml").exists()
+    assert not (run_dir / "experiments" / "sessions").exists()
+
+    complete_pipeline_job(run_dir, job["job_id"])
+    ready = evaluate_experiment_task_readiness(run_dir, draft)
+
+    assert ready.ready is True
+    assert ready.admitted_execution_repository_source_ids == [EXECUTION_SOURCE_ID]
+
+
+def test_confirmation_readiness_reports_failed_material_job(tmp_path: Path):
+    run_dir = tmp_path / "run_confirmation_readiness_failed"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    job = append_pipeline_job(
+        run_dir,
+        source_id=EXECUTION_SOURCE_ID,
+        job_type="repo_summarize",
+    )
+    fail_pipeline_job(run_dir, job["job_id"], error="summary failed")
+
+    readiness = evaluate_experiment_task_readiness(run_dir, draft)
+
+    assert readiness.ready is False
+    assert readiness.failed_job_ids == [job["job_id"]]
+    assert "资料任务存在失败项，请先处理失败资料" in readiness.blockers
 
 
 @pytest.mark.asyncio
