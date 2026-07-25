@@ -21,8 +21,15 @@ test('inserts a durable task result from WebSocket and restores it once from tra
       close() { this.readyState = FixtureWebSocket.CLOSED; this.onclose?.(); }
     }
     Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket });
-    (window as typeof window & { emitTaskResult: (message: object) => void }).emitTaskResult = message => {
-      for (const socket of sockets) socket.onmessage?.({ data: JSON.stringify(message) });
+    (window as typeof window & { emitTaskResult: (message: object) => number }).emitTaskResult = message => {
+      let delivered = 0;
+      for (const socket of sockets) {
+        if (socket.onmessage) {
+          socket.onmessage({ data: JSON.stringify(message) });
+          delivered += 1;
+        }
+      }
+      return delivered;
     };
     localStorage.setItem('autoad_config', JSON.stringify({ apiKey: 'e2e-key', baseUrl: 'http://example.invalid', model: 'fixture' }));
   });
@@ -50,7 +57,10 @@ test('inserts a durable task result from WebSocket and restores it once from tra
   };
   await page.goto('/');
   await expect(page.getByPlaceholder('输入问题，或粘贴 URL…')).toBeVisible();
-  await page.evaluate(message => (window as typeof window & { emitTaskResult: (value: object) => void }).emitTaskResult(message), taskResult);
+  await expect.poll(() => page.evaluate(
+    message => (window as typeof window & { emitTaskResult: (value: object) => number }).emitTaskResult(message),
+    taskResult,
+  )).toBeGreaterThan(0);
   await expect(page.locator('.message-task')).toHaveCount(1);
   await expect(page.getByText('数据集清单生成已完成')).toBeVisible();
   await expect(page.getByText('产物：sources/src_mvtec/dataset_manifest.json')).toBeVisible();
