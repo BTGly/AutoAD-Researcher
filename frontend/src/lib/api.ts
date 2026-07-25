@@ -271,6 +271,16 @@ export async function getExperimentPreparation(runId: string): Promise<Experimen
   return res.json();
 }
 
+export async function saveExperimentPreparation(runId: string, preparation: ExperimentPreparation): Promise<ExperimentPreparation> {
+  const res = await fetch(`/api/runs/${runId}/experiment/preparation`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify(preparation),
+  });
+  if (!res.ok) throw await apiError(res, `Save experiment preparation error: ${res.status}`);
+  return res.json();
+}
+
 export async function startBaseline(
   runId: string,
   sessionId: string,
