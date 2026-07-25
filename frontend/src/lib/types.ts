@@ -272,6 +272,62 @@ export interface ExperimentProjectionSession {
   updated_at: string;
 }
 
+export interface PreparationEvidence {
+  evidence_id: string;
+  kind: 'observed' | 'inferred' | 'verified' | 'user_decision';
+  summary: string;
+  repository_ref: string | null;
+  repository_commit: string | null;
+  file_path: string | null;
+  command: string[] | null;
+  exit_code: number | null;
+  output: string | null;
+  output_sha256: string | null;
+  artifact_ref: string | null;
+}
+
+export interface PreparationAsset {
+  asset_id: string;
+  display_name: string;
+  kind: string;
+  status: 'unknown' | 'missing' | 'available' | 'verified' | 'failed' | 'awaiting_user';
+  path: string | null;
+  source: string | null;
+  sha256: string | null;
+  stages: string[];
+  evidence_ids: string[];
+  user_action_id: string | null;
+}
+
+export interface PreparationStage {
+  stage_id: string;
+  display_name: string;
+  status: 'unknown' | 'blocked' | 'ready' | 'running' | 'completed';
+  required_asset_ids: string[];
+  depends_on_stage_ids: string[];
+  blockers: string[];
+  action_ids: string[];
+  evidence_ids: string[];
+  approval_required: boolean;
+}
+
+export interface ExperimentPreparation {
+  schema_version: 1;
+  run_id: string;
+  status: 'unresolved' | 'investigating' | 'partially_ready' | 'ready' | 'blocked';
+  current_stage: string | null;
+  repositories: Array<Record<string, unknown>>;
+  assets: PreparationAsset[];
+  evidence: PreparationEvidence[];
+  user_decisions: Array<{ decision_id: string; question: string; status: 'pending' | 'answered' | 'rejected'; answer: string | null; impact: string }>;
+  actions: Array<{ action_id: string; action_type: string; label: string; target_id: string; available: boolean; requires_user: boolean }>;
+  stages: PreparationStage[];
+  runnable_stage_ids: string[];
+  investigation_status: 'not_started' | 'running' | 'complete' | 'blocked';
+  gpu_topology?: Record<string, unknown> | null;
+  updated_at: string | null;
+}
+
 export interface ExperimentIdeaNode {
   node_id: string;
   parent_id: string | null;
@@ -317,6 +373,11 @@ export interface ExperimentAttempt {
   pid: number | null;
   heartbeat_at: string | null;
   resource_lease_id: string | null;
+  gpu_topology_ref?: string | null;
+  gpu_device_ids?: string[];
+  gpu_uuids?: Record<string, string | null>;
+  gpu_world_size?: number | null;
+  gpu_launch_method?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -384,6 +445,7 @@ export interface ExperimentProjection {
   developer_refs: {
     run_id: string; session_id: string; event_ids: number[]; artifact_paths: string[]; pipeline_job_ids: string[]; event_log_path: string;
   } | null;
+  preparation?: ExperimentPreparation | null;
 }
 
 export interface CandidateProposal {

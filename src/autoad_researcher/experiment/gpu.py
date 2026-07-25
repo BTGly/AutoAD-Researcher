@@ -22,6 +22,7 @@ class GpuDevice(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device_id: str = Field(pattern=r"^[0-9]+$")
+    gpu_uuid: str | None = None
     total_vram_mb: int = Field(ge=0)
     used_vram_mb: int = Field(ge=0)
 
@@ -41,6 +42,7 @@ class ResourceLease(BaseModel):
     attempt_id: str = Field(pattern=r"^attempt_[0-9]{6}$")
     worker_id: str = Field(min_length=1)
     device_ids: list[str] = Field(min_length=1)
+    gpu_uuids: dict[str, str | None] = Field(default_factory=dict)
     required_device_count: int = Field(gt=0)
     required_vram_mb: int = Field(ge=0)
     allocated_at: str
@@ -134,6 +136,7 @@ class GpuAllocator:
                 attempt_id=attempt_id,
                 worker_id=worker_id,
                 device_ids=device_ids,
+                gpu_uuids={device.device_id: device.gpu_uuid for device in eligible[:required_device_count]},
                 required_device_count=required_device_count,
                 required_vram_mb=required_vram_mb,
                 allocated_at=current.isoformat(),
@@ -252,7 +255,7 @@ def probe_local_gpus() -> list[GpuDevice]:
         completed = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,memory.total,memory.used",
+                "--query-gpu=index,uuid,memory.total,memory.used",
                 "--format=csv,noheader,nounits",
             ],
             shell=False,
@@ -268,14 +271,18 @@ def probe_local_gpus() -> list[GpuDevice]:
     devices: list[GpuDevice] = []
     for line in completed.stdout.splitlines():
         values = [value.strip() for value in line.split(",")]
-        if len(values) != 3:
+        if len(values) not in {3, 4}:
             continue
         try:
-            devices.append(
-                GpuDevice(
-                    device_id=values[0], total_vram_mb=int(values[1]), used_vram_mb=int(values[2])
-                )
-            )
+            gpu_uuid = None if len(values) == 3 else values[1]
+            total_index = 1 if len(values) == 3 else 2
+            used_index = 2 if len(values) == 3 else 3
+            devices.append(GpuDevice(
+                device_id=values[0],
+                gpu_uuid=gpu_uuid,
+                total_vram_mb=int(values[total_index]),
+                used_vram_mb=int(values[used_index]),
+            ))
         except ValueError:
             continue
     return devices

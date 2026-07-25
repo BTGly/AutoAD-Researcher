@@ -26,6 +26,16 @@ class ExecutorEvaluationCommand(BaseModel):
     split_ref_arg_index: int | None = Field(default=None, ge=0)
 
 
+class ExecutorPreflightCommand(BaseModel):
+    """One repository-declared, bounded command used before training."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    args: list[str] = Field(min_length=1)
+    environment: dict[str, str] = Field(default_factory=dict)
+    required: bool = True
+
+
 class ExecutorAdapterEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
     adapter_id: Literal["generic_python", "patchcore_style", "anomalib_style"]
@@ -36,6 +46,8 @@ class ExecutorAdapterEvidence(BaseModel):
     protected_paths: list[str] = Field(min_length=1)
     activation_evidence: Literal["observed", "unverified"] = "unverified"
     evaluation_commands: dict[Literal["b_dev", "b_test"], ExecutorEvaluationCommand] = Field(default_factory=dict)
+    preflight_required: bool = False
+    preflight_commands: dict[str, ExecutorPreflightCommand] = Field(default_factory=dict)
 
 class ExecutorAdapterResult(BaseModel):
     model_config = ConfigDict(extra="forbid")

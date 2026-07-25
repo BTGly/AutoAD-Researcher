@@ -121,6 +121,7 @@ export function ExperimentPage({ runId, experimentRefreshTick, onDiscuss }: Prop
     </section>}
     {runId && projection?.selection_status === 'selected' && projection.session && projection.summary && <>
       <SessionOverview projection={projection} />
+      <PreparationOverview preparation={projection.preparation} />
       <ExperimentActions runId={runId} projection={projection} onChanged={() => loadProjection(runId, sessionId, { suppressError: true })} />
       <div className="observatory-layout">
         <Panel title="Idea Tree"><IdeaTree nodes={projection.idea_tree?.nodes || []} championIdeaId={projection.champion?.idea_id || null} selectedId={selection?.kind === 'idea' ? selection.id : null} onSelect={chooseIdea} /></Panel>
@@ -129,6 +130,21 @@ export function ExperimentPage({ runId, experimentRefreshTick, onDiscuss }: Prop
       </div>
     </>}
   </main>;
+}
+
+function PreparationOverview({ preparation }: { preparation?: ExperimentProjection['preparation'] }) {
+  if (!preparation) return null;
+  const pending = preparation.user_decisions.filter(item => item.status === 'pending');
+  return <section className="session-overview surface" aria-label="实验准备状态" data-testid="experiment-preparation">
+    <div className="session-overview-heading"><div className="session-goal">实验准备</div><StatusBadge tone={statusTone(preparation.status)}>{preparation.status}</StatusBadge></div>
+    <div className="observatory-facts">
+      <Fact label="当前阶段" value={preparation.current_stage || '尚未确定'} />
+      <Fact label="可运行阶段" value={preparation.runnable_stage_ids.length ? preparation.runnable_stage_ids.join('、') : '暂无'} />
+      <Fact label="调查" value={preparation.investigation_status} />
+    </div>
+    {preparation.stages.length ? <div style={{ marginTop: 10 }}><b>阶段状态</b>{preparation.stages.map(stage => <div key={stage.stage_id} data-testid={`preparation-stage-${stage.stage_id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 5, fontSize: '0.85em' }}><span>{stage.display_name}</span><span style={{ color: stage.status === 'blocked' ? 'var(--orange)' : 'var(--text-muted)' }}>{stage.status}{stage.blockers.length ? `：${stage.blockers.join('；')}` : ''}</span></div>)}</div> : null}
+    {pending.length ? <div style={{ marginTop: 10, color: 'var(--orange)', fontSize: '0.85em' }}><b>需要用户决定</b>{pending.map(item => <div key={item.decision_id} data-testid={`preparation-decision-${item.decision_id}`} style={{ marginTop: 5 }}>{item.question}<span style={{ color: 'var(--text-muted)' }}>（影响：{item.impact}）</span></div>)}</div> : null}
+  </section>;
 }
 
 function selectDetail(

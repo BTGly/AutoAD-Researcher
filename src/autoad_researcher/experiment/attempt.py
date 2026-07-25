@@ -53,6 +53,11 @@ class ExperimentAttempt(BaseModel):
     required_device_count: int = Field(default=0, ge=0)
     required_vram_mb: int = Field(default=0, ge=0)
     resource_lease_id: str | None = Field(default=None, pattern=r"^lease_[0-9]{6}$")
+    gpu_topology_ref: str | None = None
+    gpu_device_ids: list[str] = Field(default_factory=list)
+    gpu_uuids: dict[str, str | None] = Field(default_factory=dict)
+    gpu_world_size: int | None = Field(default=None, ge=1)
+    gpu_launch_method: str | None = None
     runtime_status: AttemptRuntimeStatus = "QUEUED"
     pid: int | None = Field(default=None, gt=0)
     process_group_id: int | None = Field(default=None, gt=0)

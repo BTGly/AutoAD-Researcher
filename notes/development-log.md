@@ -8,6 +8,7 @@
 
 | 日期 | 文件 | 主要工作 |
 |---|---|---|
+| 2026-07-25 | [2026-07-25.md](2026-07-25.md) | 实验准备合同、仓库调查协调器、adapter preflight、阶段级资产门禁与证据驱动 GPU 拓扑 |
 | 2026-07-24 | [2026-07-24.md](2026-07-24.md) | 双 RTX 4090 运行测试、跨 run GPU lease 互斥、Attempt 资源 telemetry 与 PatchCore readiness 边界 |
 | 2026-07-23 | [2026-07-23.md](2026-07-23.md) | Candidate Proposal 正式入口、人工审核、幂等 Candidate 启动和浏览器闭环 |
 | 2026-07-23 | [2026-07-23.md](2026-07-23.md) | 高级联合 UAT 第一轮：CPU fixture 输出合同、split typed binding、完整指标科学门禁与报告讨论响应恢复 |

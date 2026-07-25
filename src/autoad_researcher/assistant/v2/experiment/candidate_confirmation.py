@@ -28,6 +28,8 @@ from autoad_researcher.benchmarks.hashing import canonical_sha256, sha256_file
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService, ExperimentAttemptStartResult
 from autoad_researcher.experiment.attempt_store import ExperimentAttemptStore
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
+from autoad_researcher.experiment.preflight import ensure_adapter_preflight
+from autoad_researcher.experiment.preparation import require_preparation_stage_if_declared
 from autoad_researcher.experiment.executor_contracts import WorkspaceSpec
 from autoad_researcher.experiment.intervention_admission import InterventionAdmission
 from autoad_researcher.experiment.promotion import CandidateRegistry, CandidateSnapshot, DecisionEngine
@@ -90,6 +92,7 @@ class CandidateConfirmationService:
         session_id: str,
         value: CandidateConfirmationInput,
     ) -> CandidateConfirmationResult:
+        require_preparation_stage_if_declared(run_dir, "mpdd_b_test")
         session = self._sessions.load(run_dir, session_id)
         if session is None:
             raise FileNotFoundError("experiment session not found")
@@ -233,6 +236,13 @@ class CandidateConfirmationService:
             raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
         if "b_test" not in adapter_result.evidence.evaluation_commands:
             raise ValueError("adapter has no explicit b_test command for the frozen split")
+        ensure_adapter_preflight(
+            Path(workspace.worktree_path),
+            adapter_result.evidence,
+            run_dir=run_dir,
+            artifact_name=f"candidate_b_test_{candidate.attempt_id}",
+            timeout_seconds=contract.resource_budget.max_wall_seconds,
+        )
         inputs_payload = json.loads((run_dir / "experiments" / "execution_inputs" / f"{session.session_id}.json").read_text(encoding="utf-8"))
         adapter_inputs = ExecutorAdapterInputs(
             run_id=run_dir.name,

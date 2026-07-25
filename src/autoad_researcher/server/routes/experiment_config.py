@@ -3,6 +3,16 @@ import json
 
 from fastapi import APIRouter
 
+from autoad_researcher.experiment.preparation import (
+    ExperimentPreparation,
+    PreparationStore,
+    empty_preparation,
+)
+from autoad_researcher.experiment.preparation_coordinator import (
+    ExperimentPreparationCoordinator,
+    PreparationInvestigationRequest,
+    PreparationInvestigationResult,
+)
 from autoad_researcher.server.config import RUNS_ROOT
 from autoad_researcher.server.run_paths import run_dir_or_400
 
@@ -32,3 +42,26 @@ async def save_experiment_config(run_id: str, config: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
     return {"status": "ok", "run_id": run_id}
+
+
+@router.get("/experiment/preparation", response_model=ExperimentPreparation)
+async def get_experiment_preparation(run_id: str) -> ExperimentPreparation:
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
+    preparation = PreparationStore().load(run_dir)
+    return preparation or empty_preparation(run_id)
+
+
+@router.put("/experiment/preparation", response_model=ExperimentPreparation)
+async def save_experiment_preparation(run_id: str, preparation: ExperimentPreparation) -> ExperimentPreparation:
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
+    if preparation.run_id != run_id:
+        raise ValueError("preparation run_id does not match URL")
+    return PreparationStore().save(run_dir, preparation)
+
+
+@router.post("/experiment/preparation/investigate", response_model=PreparationInvestigationResult)
+async def investigate_experiment_preparation(run_id: str, request: PreparationInvestigationRequest) -> PreparationInvestigationResult:
+    run_dir = run_dir_or_400(RUNS_ROOT, run_id)
+    if request.repositories and any(item.path and ".." in Path(item.path).parts for item in request.repositories):
+        raise ValueError("repository paths must not contain parent traversal")
+    return ExperimentPreparationCoordinator().investigate(run_dir, request)

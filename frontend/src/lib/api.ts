@@ -13,6 +13,7 @@ import type {
   TaskRun,
   BaselineContractInput,
   CandidateProposal,
+  ExperimentPreparation,
 } from './types';
 
 export class ApiError extends Error {
@@ -261,6 +262,12 @@ export async function getExperimentProjection(runId: string, sessionId?: string,
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
   const res = await fetch(`/api/runs/${runId}/experiment/projection${query}`, { headers: getHeaders(), signal });
   if (!res.ok) throw await apiError(res, `Experiment projection error: ${res.status}`);
+  return res.json();
+}
+
+export async function getExperimentPreparation(runId: string): Promise<ExperimentPreparation> {
+  const res = await fetch(`/api/runs/${runId}/experiment/preparation`, { headers: getHeaders() });
+  if (!res.ok) throw await apiError(res, `Experiment preparation error: ${res.status}`);
   return res.json();
 }
 

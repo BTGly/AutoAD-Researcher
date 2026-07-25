@@ -9,6 +9,7 @@ from autoad_researcher.benchmarks.hashing import sha256_file
 from autoad_researcher.experiment.attempt_service import ExperimentAttemptService, ExperimentAttemptStartResult
 from autoad_researcher.experiment.attempt import AttemptPurpose
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
+from autoad_researcher.experiment.preflight import ensure_adapter_preflight
 from autoad_researcher.experiment.executor_agent import ExecutorAgent, ExecutorLimits, ExecutorProposal, ExecutorSummary
 from autoad_researcher.experiment.executor_contracts import InterventionContract, WorkspaceSpec
 from autoad_researcher.experiment.intervention_admission import InterventionAdmissionService
@@ -54,6 +55,16 @@ class ExecutorAttemptHandoffService:
         manager = WorktreeManager(run_dir / "executor_worktrees")
         protected_paths = list(dict.fromkeys([*adapter_result.evidence.protected_paths, *request.additional_protected_paths]))
         workspace = manager.create(repository_path=request.repository_path, attempt_id=key, base_commit=request.base_commit, protected_paths=protected_paths, environment_snapshot_ref=request.environment_snapshot_ref)
+        try:
+            ensure_adapter_preflight(
+                Path(workspace.worktree_path),
+                adapter_result.evidence,
+                run_dir=run_dir,
+                artifact_name=f"handoff_{key}",
+                timeout_seconds=request.job_timeout_sec,
+            )
+        except ValueError as exc:
+            return ExecutorHandoffResult(status="blocked", blocker=str(exc), workspace=workspace)
         staging = run_dir / "executor_staging" / key
         summary_path = staging / "executor_summary.json"
         admission_path = staging / "intervention_admission.json"

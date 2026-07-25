@@ -29,6 +29,8 @@ from autoad_researcher.experiment.evaluation_contract import (
     freeze_protected_artifacts,
 )
 from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, ExecutorAdapterInputs
+from autoad_researcher.experiment.preflight import ensure_adapter_preflight
+from autoad_researcher.experiment.preparation import require_preparation_stage_if_declared
 from autoad_researcher.experiment.finalizer import ProtectedArtifactHashes
 from autoad_researcher.experiment.session_store import ExperimentSessionStore
 from autoad_researcher.experiment.worktree import WorktreeManager
@@ -171,6 +173,7 @@ class BaselineControlService:
         self._contracts = EvaluationContractStore()
 
     def start(self, run_dir: Path, *, session_id: str, contract_input: BaselineContractInput) -> BaselineLaunchResult:
+        require_preparation_stage_if_declared(run_dir, "official_calibration")
         session = self._require_ready_session(run_dir, session_id)
         existing = next(
             (
@@ -224,6 +227,13 @@ class BaselineControlService:
             raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
         if adapter_result.adapter_id != binding.adapter_id:
             raise ValueError("execution adapter differs from the frozen repository binding")
+        ensure_adapter_preflight(
+            Path(workspace.worktree_path),
+            adapter_result.evidence,
+            run_dir=run_dir,
+            artifact_name=f"baseline_{session_id}",
+            timeout_seconds=contract_input.max_wall_seconds,
+        )
 
         frozen = self._freeze_contract(
             run_dir,
@@ -289,6 +299,7 @@ class BaselineControlService:
         confirmation_id: str | None = None,
     ) -> BaselineLaunchResult:
         """Queue Baseline B_test only for a persisted Candidate approval."""
+        require_preparation_stage_if_declared(run_dir, "mpdd_b_test")
         if confirmation_id is None:
             raise ValueError("held_out_confirmation_required: Candidate approval must precede B_test")
         authorization = load_held_out_authorization(run_dir, confirmation_id)
@@ -348,6 +359,13 @@ class BaselineControlService:
             raise ValueError(adapter_result.blocker or "execution adapter is unsupported")
         if "b_test" not in adapter_result.evidence.evaluation_commands:
             raise ValueError("adapter has no explicit b_test command for the frozen split")
+        ensure_adapter_preflight(
+            workspace_path,
+            adapter_result.evidence,
+            run_dir=run_dir,
+            artifact_name=f"baseline_b_test_{session_id}",
+            timeout_seconds=contract.resource_budget.max_wall_seconds,
+        )
         plan, refs = ExecutorAdapter().build_execution(
             adapter_result,
             ExecutorAdapterInputs(

@@ -19,6 +19,7 @@ from autoad_researcher.experiment.executor_adapters import ExecutorAdapter, Exec
 from autoad_researcher.experiment.executor_agent import ExecutorProposal
 from autoad_researcher.experiment.executor_contracts import InterventionContract
 from autoad_researcher.experiment.executor_handoff import ExecutorHandoffRequest
+from autoad_researcher.experiment.preparation import require_preparation_stage_if_declared
 from autoad_researcher.experiment.idea_tree import IdeaTreeStore
 from autoad_researcher.experiment.scientific_assessment import (
     ScientificEvaluationInputs,
@@ -59,6 +60,7 @@ class CandidateControlService:
         self._trees = IdeaTreeStore()
 
     def start(self, run_dir: Path, *, session_id: str, value: CandidateLaunchInput) -> CandidateLaunchResult:
+        require_preparation_stage_if_declared(run_dir, "candidate")
         session = self._sessions.load(run_dir, session_id)
         if session is None:
             raise FileNotFoundError("experiment session not found")
