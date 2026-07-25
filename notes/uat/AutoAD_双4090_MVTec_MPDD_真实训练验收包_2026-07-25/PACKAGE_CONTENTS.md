@@ -1,15 +1,16 @@
 # 资料包内容与验证
 
-完整重建后的 ZIP 内含 37 个文件、43 个 ZIP 成员（含目录项）：
+完整重建后的 ZIP 内含 40 个文件、46 个 ZIP 成员（含目录项）：
 
 - `README.md`、执行检查清单、结果模板；
 - `config.example.env`；
 - 冻结仓库提交、来源清单、评价合同、MPDD 类别划分、Idea 与 Agent 提示；
-- 双 GPU baseline/candidate 并行训练脚本；
+- MVTec baseline calibration、独立 adapter 矩阵和 baseline/candidate 并行训练脚本；
 - MPDD B_dev/B_test 类别视图生成器；
 - preflight、protected hashes、人工批准、指标解析与三 seed 汇总工具；
 - 论文下载链接和本地 PDF SHA256，但不重分发 PDF；
 - 数据集许可边界。
+- 用户提供仓库、MVTec 和 MPDD 的分阶段资产边界；不自动 clone 或下载。
 
 ## GitHub 发布修复
 
@@ -23,10 +24,10 @@ python3 rebuild_release_zip.py
 
 重建结果必须同时满足：
 
-- 大小：`34,648` bytes；
-- SHA256：`95a3b970b5f29d52026aba178e3cca9ae667159e8e520a650db22349cb239077`；
+- 大小：`40,181` bytes；
+- SHA256：`11a5a9848df40532387324c501e39b97eb0add38b7f0b9e9efbe66c6d6333650`；
 - central directory 可读；
-- 43 个 ZIP 成员可枚举；
+- 46 个 ZIP 成员可枚举；
 - 所有成员 CRC 检查通过。
 
 逐分片 Git blob SHA 见 `RELEASE_INTEGRITY.md`。

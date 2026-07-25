@@ -7,28 +7,28 @@ The corrupted ZIP has been removed. The executable ZIP is now reconstructed from
 ## Expected reconstructed artifact
 
 - File: `AutoAD_MVTec_MPDD_4090x2_UAT_2026-07-25.zip`
-- Size: `34,648` bytes
-- SHA256: `95a3b970b5f29d52026aba178e3cca9ae667159e8e520a650db22349cb239077`
-- ZIP members: `43`
+- Size: `40,181` bytes
+- SHA256: `11a5a9848df40532387324c501e39b97eb0add38b7f0b9e9efbe66c6d6333650`
+- ZIP members: `46`
 - Central directory: valid
 - Member CRC test: pass
 
 ## Verified Git blob manifest
 
 ```text
-part00   76a8e8671eb610dd7374c369ad5d23ebf257ba98
-part01   c0d5ef1b2e4305e33d6ab0d2063cedd61a28e483
-part02   cbc076f0df3f64fac03f1d9b642afbc4ffa4e267
-part030  6aad13f4d3b4a54b06d1b7cfd3c6a14cc8f24cd3
-part031  fc756efb78197cce2f9fa7a30db3f8d1917bb54e
-part032  a8c750fa337a897067edf35e43d5d28f2e986d73
-part033  ed705942dd58f7a4627d832dcb29f62ab255a821
-part034  de9bf3de7f2e1531aff4be5dabc7b3550c4d188e
-part035  d519dded90509dda61e608532dacea6be1848c52
-part04   5904852d87b06fe87cbf30d8b4edc08b7780d91a
-part05   9aab14d5760c40f2aaafe7a58f3b1742905dfa2e
-part06   f467ff6efe33d196db1c3067d0d6d4d2c702f95a
-part07   d856145831956a595abef011b534ee83c1c6d43d
+part00   5a2e342f0d002a470ce7df1ecbd23406da4d0e7a
+part01   d1ea2412d97a5d2a3afa72857b427aecf1919d1b
+part02   a2b3382b3baf487d406ef8be4e0eacd8ae226a44
+part030  2cb8e35bd371b15b487e8dff3737bd89f71b004d
+part031  b49c840ba9440aa98f640adae443813e9b71c998
+part032  65a2bdf67045c85819fef0a6f01d5795471914b8
+part033  0c1ce962bf399665649f1dbb84d3c5329475fad1
+part034  035c5ca159766443dd04232dd7362d2f9baa0947
+part035  1a08c6aea7a5a6555e7e7729b2180e040d7e86e5
+part04   2c1e639be2e25a1694a22bec54aa664ccb246cfa
+part05   d2e1066adc23f0a136c7c216f966f31508cb1d72
+part06   a8f16e07e465533df79e3988333e09ab2c46fe83
+part07   f4df102f750744f1fda71c5f16a488e57b01f531
 ```
 
 Each SHA above was compared with the corresponding local source segment before the reconstruction test.
