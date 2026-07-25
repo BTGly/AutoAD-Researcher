@@ -6,6 +6,16 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
+REUSE_PYTEST=0
+if [ "${1:-}" = "--reuse-pytest" ]; then
+  REUSE_PYTEST=1
+  shift
+fi
+if [ $# -ne 0 ]; then
+  echo "Usage: scripts/verify.sh [--reuse-pytest]"
+  exit 1
+fi
+
 if command -v uv >/dev/null 2>&1; then
   UV_BIN="uv"
 elif [ -x "$HOME/.local/bin/uv" ]; then
@@ -240,7 +250,12 @@ print("[verify] environment plan fixtures ok.")
 PY
 
 echo "[verify] running pytest..."
-"$UV_BIN" run --extra dev pytest -q
+if [ "$REUSE_PYTEST" -eq 1 ] && "$UV_BIN" run python scripts/pytest_verification_state.py matches; then
+  echo "[verify] reusing matching local full-pytest verification."
+else
+  "$UV_BIN" run --extra dev pytest -q --durations=20
+  "$UV_BIN" run python scripts/pytest_verification_state.py record
+fi
 
 echo "[verify] checking development log..."
 test -f notes/development-log.md

@@ -12,8 +12,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT"
 
-echo "[gate] running verification..."
-bash "$SCRIPT_DIR/verify.sh"
+echo "[gate] running verification (reuse matching local pytest when available)..."
+bash "$SCRIPT_DIR/verify.sh" --reuse-pytest
 
 echo "[gate] verification passed."
 

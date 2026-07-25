@@ -80,8 +80,9 @@ cd frontend && npm run dev     # http://localhost:5173
 cd frontend && npm run build   # output → frontend/dist/
 
 # Tests (dev extra required)
-uv run --extra dev pytest                              # all project tests
-uv run --extra dev pytest -k test_intent_contract      # single file
+bash scripts/test.sh                                   # all project tests, with slowest-test report
+bash scripts/test.sh tests/test_v2_chat_route.py       # selected file
+bash scripts/test.sh -k test_intent_contract           # selected expression
 
 # Read-only CLI checks
 uv run autoad repository-intelligence --run-id run_demo --local-path /path/to/repository
@@ -101,8 +102,9 @@ bash scripts/docker-up.sh        # or docker compose -f docker/docker-compose.ym
 | `assistant/v2/research_intent_summary.py` | Compact research dialogue summary model + atomic persistence |
 | `assistant/v2/intent_contract.py` | Read-only compatibility for legacy intent-contract artifacts |
 | `src/autoad_researcher/schemas/` | Pydantic v2 schemas |
-| `scripts/verify.sh` | Full verification gate |
-| `scripts/verify_and_push.sh` | Verify → add → commit → push (reads `.env` for token) |
+| `scripts/test.sh` | Local pytest entrypoint; accepts normal pytest selectors |
+| `scripts/verify.sh` | Full verification gate; records a local full-pytest verification |
+| `scripts/verify_and_push.sh` | Full gate → add → commit → push; only reuses an exact matching local pytest verification (reads `.env` for token) |
 
 ## Frontend Layout
 
