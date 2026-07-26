@@ -83,7 +83,14 @@ class ConfirmExperimentTaskRequest(BaseModel):
         "approve_each_step",
         "agent_assisted_after_approval",
     ]
-    execution_repository_source_id: str | None = Field(default=None, min_length=1)
+
+
+class AuthorizeExecutionRepositoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(min_length=1)
+    decision: Literal["confirm", "reference_only", "cancel"]
+    candidate_revision: str = Field(min_length=64, max_length=64)
 
 
 @router.get("", response_model=list[RunInfo])
@@ -189,7 +196,6 @@ async def confirm_experiment_task(
             run_dir,
             task_id=task_id,
             execution_mode=request.execution_mode,
-            execution_repository_source_id=request.execution_repository_source_id,
         )
         effective_mode = task.execution_mode
         if effective_mode == "plan_only":
@@ -219,6 +225,46 @@ async def confirm_experiment_task(
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
     except (FileExistsError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "confirmation_invalid", "message": str(exc)},
+        ) from exc
+
+
+@router.post(
+    "/{run_id}/experiment-task/{task_id}/execution-repository",
+    response_model=ExperimentTaskReadiness,
+)
+async def authorize_execution_repository(
+    run_id: str,
+    task_id: str,
+    request: AuthorizeExecutionRepositoryRequest,
+):
+    """Record repository consent separately from final experiment confirmation."""
+    run_dir = _existing_run_dir(run_id)
+    evidence = {
+        "confirm": "用户在执行仓库确认界面明确授权该仓库用于本次实验",
+        "reference_only": "用户明确要求该仓库仅作为只读参考资料",
+        "cancel": "用户取消当前执行仓库授权并保留候选资料",
+    }[request.decision]
+    try:
+        task = TaskBridge.authorize_execution_repository(
+            run_dir,
+            task_id=task_id,
+            source_id=request.source_id,
+            decision=request.decision,
+            candidate_revision=request.candidate_revision,
+            evidence=evidence,
+        )
+        return evaluate_experiment_task_readiness(run_dir, task)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TaskConfirmationConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except (KeyError, ValueError) as exc:
         raise HTTPException(
             status_code=409,
             detail={"code": "confirmation_invalid", "message": str(exc)},

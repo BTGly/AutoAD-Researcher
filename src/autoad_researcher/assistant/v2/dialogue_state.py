@@ -42,6 +42,7 @@ class DialogueTransitionRecord(BaseModel):
     source_action: dict[str, Any] | None = None
     source_permission_decision: Literal["allow", "ask", "deny"] | None = None
     task_action: str | None = None
+    repository_action: dict[str, Any] | None = None
     execution_gate: str
     gate_notes: list[str] = Field(default_factory=list)
     summary_sha256: str = Field(min_length=64, max_length=64)
@@ -80,6 +81,7 @@ class DialogueStateProjection(BaseModel):
     pending_source_actions: list[PendingSourceAction] = Field(default_factory=list)
     task_state: Literal["none", "pending_confirmation", "confirmed"] = "none"
     sources: list[SourceStateProjection] = Field(default_factory=list)
+    execution_repository_confirmation: dict[str, Any] | None = None
 
 
 def append_dialogue_transition(
@@ -117,6 +119,11 @@ def append_dialogue_transition(
             if decision.task_action is not None
             else None
         ),
+        repository_action=(
+            decision.repository_action.model_dump(mode="json")
+            if decision.repository_action is not None
+            else None
+        ),
         execution_gate=decision.execution_gate,
         gate_notes=list(decision.gate_notes),
         summary_sha256=_summary_sha256(summary),
@@ -139,6 +146,7 @@ def build_dialogue_state_projection(run_dir: Path) -> DialogueStateProjection:
         pending_source_actions=_pending_source_actions(run_dir),
         task_state=_task_state(run_dir),
         sources=_source_states(run_dir),
+        execution_repository_confirmation=_execution_repository_confirmation(run_dir),
     )
 
 
@@ -213,6 +221,33 @@ def _source_states(run_dir: Path) -> list[SourceStateProjection]:
             )
         )
     return states
+
+
+def _execution_repository_confirmation(run_dir: Path) -> dict[str, Any] | None:
+    """Project the current checked candidate set without creating authorization."""
+    from autoad_researcher.assistant.v2.task_bridge import (
+        TaskBridge,
+        evaluate_experiment_task_readiness,
+    )
+
+    try:
+        task = TaskBridge.load_pending_experiment_task(run_dir)
+        if task.status != "pending_confirmation":
+            return None
+        readiness = evaluate_experiment_task_readiness(run_dir, task)
+    except (FileNotFoundError, ValueError):
+        return None
+    return {
+        "task_id": task.task_id,
+        "state": readiness.execution_repository_state,
+        "candidate_revision": readiness.execution_repository_candidate_revision,
+        "candidates": [
+            candidate.model_dump(mode="json")
+            for candidate in readiness.execution_repository_candidates
+        ],
+        "admission_code": readiness.execution_repository_admission_code,
+        "admission_blocker": readiness.execution_repository_admission_blocker,
+    }
 
 
 def _summary_sha256(summary: ResearchIntentSummary) -> str:

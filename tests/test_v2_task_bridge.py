@@ -553,6 +553,97 @@ def test_orchestrator_does_not_duplicate_explicit_and_model_local_path_actions(
     assert (run_dir / "sources" / "source_references.json").is_file()
 
 
+def test_orchestrator_registers_explicit_path_without_model_material_action(
+    monkeypatch,
+    tmp_path: Path,
+):
+    run_dir = tmp_path / "run_explicit_path"
+    run_dir.mkdir()
+    material = tmp_path / "notes.txt"
+    material.write_text("observation", encoding="utf-8")
+    _mock_material_inspection_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "ask",
+            "current_turn_intent": "answer_current_turn",
+            "policy_assessment": {
+                "decision": "allow",
+                "category": "none",
+                "reason": "",
+                "safe_alternative": "",
+            },
+            "local_path_sources": [],
+        },
+        {
+            "reply_to_user": "已收到资料。",
+            "summary": {
+                "goal": "读取资料",
+                "confirmed_facts": [],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=f"这是资料：{material}",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert len(result.created_sources) == 1
+    assert result.action_receipts[0]["status"] == "created"
+    registry = json.loads(
+        (run_dir / "sources" / "source_references.json").read_text(encoding="utf-8")
+    )
+    assert len(registry["sources"]) == 1
+
+
+def test_orchestrator_keeps_structure_type_conflict_read_only_without_jobs(
+    monkeypatch,
+    tmp_path: Path,
+):
+    run_dir = tmp_path / "run_local_type_conflict"
+    run_dir.mkdir()
+    material = tmp_path / "repository"
+    material.mkdir()
+    (material / "train.py").write_text("print('repo')", encoding="utf-8")
+    _mock_material_inspection_call(
+        monkeypatch,
+        {
+            "dialogue_mode": "ask",
+            "current_turn_intent": "material_action",
+            "policy_assessment": {"decision": "allow", "category": "none", "reason": "", "safe_alternative": ""},
+            "local_path_source": {
+                "source_path": str(material),
+                "user_claimed_kind": "dataset",
+                "purpose": "inspect",
+            },
+        },
+        {
+            "reply_to_user": "这个路径的结构更像代码仓库，请确认它是否真的是数据集。",
+            "summary": {"goal": "检查资料", "confirmed_facts": [], "inferred_facts": [], "unresolved_conflicts": [], "blocking_question": None},
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input=f"检查这个数据集目录 {material}",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    assert result.action_receipts[0]["status"] == "confirmation_required"
+    assert result.created_sources == []
+    assert result.created_jobs == []
+    assert load_pipeline_jobs(run_dir) == []
+    assert not (run_dir / "sources" / "source_references.json").exists()
+
+
 def test_local_repo_job_graph_reconciles_a_missing_successor_without_duplicates(tmp_path: Path):
     run_dir = tmp_path / "run_local_repo_reconcile"
     run_dir.mkdir()

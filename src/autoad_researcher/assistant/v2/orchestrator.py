@@ -111,6 +111,7 @@ class ResearchOrchestratorV2:
         action_receipts: list[dict[str, Any]] = []
         local_contexts: list[dict[str, Any]] = []
         seen_turn_paths: set[str] = set()
+        explicit_source_path_by_key: dict[str, str] = {}
         for explicit_path in extract_local_path_candidates(user_input, attachments):
             path_key = _context_path_key(run_dir, explicit_path)
             if path_key in seen_turn_paths:
@@ -124,13 +125,8 @@ class ResearchOrchestratorV2:
             )
             if context_ref is not None:
                 local_contexts.append(context_ref)
-                source_receipt, source, jobs = _register_attached_local_source(
-                    run_dir, path=explicit_path, context_ref=context_ref
-                )
-                action_receipts.append(source_receipt)
-                if source is not None and source_receipt.get("status") != "already_registered":
-                    created_sources.append(source)
-                created_jobs.extend(jobs)
+                explicit_source_path_by_key[path_key] = explicit_path
+                action_receipts.append(receipt)
             else:
                 action_receipts.append(receipt)
         source_plan = plan_explicit_source_actions(
@@ -174,32 +170,84 @@ class ResearchOrchestratorV2:
             registered_sources=registered_sources,
         )
         local_sources: list[dict[str, Any]] = []
+        promoted_path_keys: set[str] = set()
         local_actions = _local_source_instructions(decision)
         for local_action in local_actions:
             path_key = _context_path_key(run_dir, local_action.source_path)
-            if path_key in seen_turn_paths:
-                continue
-            seen_turn_paths.add(path_key)
-            context_receipt, context_ref = _attach_local_context_action(
-                run_dir,
-                user_input=user_input,
-                path=local_action.source_path,
-                user_label=local_action.user_claimed_kind or "",
-                user_hint=local_action.purpose or "",
+            receipt_source_path = explicit_source_path_by_key.get(
+                path_key,
+                local_action.source_path,
             )
-            if context_ref is not None:
-                local_contexts.append(context_ref)
-                source_receipt, source, jobs = _register_attached_local_source(
-                    run_dir, path=local_action.source_path, context_ref=context_ref
+            existing_context = next(
+                (item for item in local_contexts if item.get("path") == path_key),
+                None,
+            )
+            if existing_context is not None and not (
+                local_action.user_claimed_kind or local_action.purpose
+            ):
+                context_receipt, context_ref = {
+                    "kind": "session_context",
+                    "source_path": local_action.source_path,
+                    "status": "context_already_attached",
+                }, existing_context
+            else:
+                seen_turn_paths.add(path_key)
+                context_receipt, context_ref = _attach_local_context_action(
+                    run_dir,
+                    user_input=user_input,
+                    path=local_action.source_path,
+                    user_label=local_action.user_claimed_kind or "",
+                    user_hint=local_action.purpose or "",
+                    user_claimed_kind=local_action.user_claimed_kind,
                 )
-                action_receipts.append(source_receipt)
+            if context_ref is not None:
+                if existing_context is not None:
+                    local_contexts = [
+                        context_ref if item.get("path") == path_key else item
+                        for item in local_contexts
+                    ]
+                else:
+                    local_contexts.append(context_ref)
+                source_receipt, source, jobs = _register_attached_local_source(
+                    run_dir, path=receipt_source_path, context_ref=context_ref
+                )
+                if existing_context is not None:
+                    action_receipts = _replace_material_receipt(
+                        action_receipts,
+                        source_path=receipt_source_path,
+                        replacement=source_receipt,
+                    )
+                else:
+                    action_receipts.append(source_receipt)
+                promoted_path_keys.add(path_key)
                 if source is not None and source_receipt.get("status") != "already_registered":
                     created_sources.append(source)
                 created_jobs.extend(jobs)
                 local_sources.append(_inspection_source_for_context(context_ref))
             else:
                 action_receipts.append(context_receipt)
-        if local_actions:
+
+        for context_ref in local_contexts:
+            path_key = str(context_ref.get("path") or "")
+            source_path = explicit_source_path_by_key.get(path_key)
+            if source_path is None or path_key in promoted_path_keys:
+                continue
+            source_receipt, source, jobs = _register_attached_local_source(
+                run_dir,
+                path=source_path,
+                context_ref=context_ref,
+            )
+            action_receipts = _replace_material_receipt(
+                action_receipts,
+                source_path=source_path,
+                replacement=source_receipt,
+            )
+            promoted_path_keys.add(path_key)
+            if source is not None and source_receipt.get("status") != "already_registered":
+                created_sources.append(source)
+            created_jobs.extend(jobs)
+
+        if local_actions or explicit_source_path_by_key:
             context["current_turn_material_actions"] = {
                 "created_sources": created_sources,
                 "created_jobs": created_jobs,
@@ -258,6 +306,48 @@ class ResearchOrchestratorV2:
             ))
         if observations:
             context["material_inspections"] = observations
+
+        if decision.repository_action is not None:
+            repository_action = decision.repository_action
+            repository_decision = {
+                "confirm_execution_repository": "confirm",
+                "keep_repository_reference_only": "reference_only",
+                "cancel_execution_repository_confirmation": "cancel",
+            }[repository_action.action]
+            try:
+                pending_task = TaskBridge.load_pending_experiment_task(run_dir)
+                updated_task = TaskBridge.authorize_execution_repository(
+                    run_dir,
+                    task_id=pending_task.task_id,
+                    source_id=repository_action.source_id,
+                    decision=repository_decision,
+                    candidate_revision=repository_action.candidate_revision,
+                    evidence=f"当前用户消息：{user_input}",
+                )
+                updated_readiness = evaluate_experiment_task_readiness(
+                    run_dir,
+                    updated_task,
+                )
+                repository_receipt = {
+                    "status": "applied",
+                    "task_id": updated_task.task_id,
+                    "source_id": repository_action.source_id,
+                    "decision": repository_decision,
+                    "repository_state": updated_readiness.execution_repository_state,
+                }
+            except (FileNotFoundError, TaskConfirmationConflict, ValueError) as exc:
+                repository_receipt = {
+                    "status": "failed",
+                    "source_id": repository_action.source_id,
+                    "decision": repository_decision,
+                    "code": (
+                        exc.code
+                        if isinstance(exc, TaskConfirmationConflict)
+                        else "confirmation_invalid"
+                    ),
+                    "message": str(exc),
+                }
+            context["current_turn_repository_authorization"] = repository_receipt
 
         if DialogueGate.plan_only_confirmation_allowed(decision):
             try:
@@ -528,7 +618,7 @@ def _material_blockers(receipts: list[dict[str, Any]]) -> list[str]:
     return [
         f"{receipt.get('source_path') or '本地路径'}：{receipt.get('reason') or '登记失败'}"
         for receipt in receipts
-        if receipt.get("status") in {"rejected", "failed"}
+        if receipt.get("status") in {"rejected", "failed", "confirmation_required"}
     ]
 
 
@@ -547,6 +637,13 @@ def _material_receipt_reply(receipts: list[dict[str, Any]]) -> str:
                 continue
             label = "已加入" if status == "context_attached" else "已在"
             lines.append(f"本地资料 {path}{label}当前会话的只读上下文，尚未纳入正式实验资料。")
+        elif status == "confirmation_required":
+            inspection = receipt.get("inspection") if isinstance(receipt.get("inspection"), dict) else {}
+            detected = inspection.get("detected_kind") or "未知"
+            lines.append(
+                f"本地资料 {path} 已找到并完成只读结构检查，检测为 {detected}，"
+                "与用户声明不一致；请确认后再登记处理。"
+            )
         elif status == "job_queued":
             jobs = ", ".join(str(item) for item in receipt.get("job_ids") or [] if item)
             suffix = f"，处理任务 {jobs} 已排队" if jobs else "，处理任务已排队"
@@ -605,6 +702,30 @@ def _local_source_instruction(
     return instructions[0] if instructions else None
 
 
+def _replace_material_receipt(
+    receipts: list[dict[str, Any]],
+    *,
+    source_path: str,
+    replacement: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Replace a path's transient context receipt without changing path order."""
+    replaced = False
+    result: list[dict[str, Any]] = []
+    for receipt in receipts:
+        if (
+            not replaced
+            and receipt.get("source_path") == source_path
+            and receipt.get("status") in {"context_attached", "context_already_attached"}
+        ):
+            result.append(replacement)
+            replaced = True
+        else:
+            result.append(receipt)
+    if not replaced:
+        result.append(replacement)
+    return result
+
+
 def _attach_local_context_action(
     run_dir: Path,
     *,
@@ -612,6 +733,7 @@ def _attach_local_context_action(
     path: str,
     user_label: str = "",
     user_hint: str = "",
+    user_claimed_kind: str | None = None,
     require_in_message: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     if require_in_message and path not in user_input:
@@ -634,6 +756,7 @@ def _attach_local_context_action(
         path,
         user_label=user_label,
         user_hint=user_hint,
+        user_claimed_kind=user_claimed_kind,
     )
     event_type = (
         "assistant.local_context.attached"
@@ -652,21 +775,8 @@ def _context_path_key(run_dir: Path, path: str) -> str:
 
 
 def _local_workspace_roots(run_dir: Path, path: str) -> list[Path]:
-    """Preserve the session-context boundary for sibling Run workspaces."""
-
-    roots = [run_dir / "workspace"]
-    configured_root = Path(os.environ.get("AUTOAD_RUNS_ROOT", "runs")).expanduser().resolve()
-    candidate = Path(path).expanduser().resolve(strict=False)
-    for ancestor in (candidate, *candidate.parents):
-        if ancestor.name != "workspace":
-            continue
-        try:
-            ancestor.relative_to(configured_root)
-        except ValueError:
-            continue
-        if ancestor not in roots:
-            roots.append(ancestor)
-    return roots
+    """Keep legacy registration callers scoped to the current Run workspace."""
+    return [run_dir / "workspace"]
 
 
 def _inspection_source_for_context(context_ref: dict[str, Any]) -> dict[str, Any]:
@@ -684,11 +794,28 @@ def _register_attached_local_source(
 ) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]]]:
     """Promote an already-authorized local context into durable source intake."""
 
+    resolution = context_ref.get("path_resolution")
+    if context_ref.get("confirmation_required"):
+        receipt = {
+            "kind": "local_path",
+            "source_path": path,
+            "status": "confirmation_required",
+            "reason": "路径已找到，但结构证据与用户声明的资料类型不一致",
+            "path": context_ref.get("path", ""),
+            "path_resolution": resolution,
+            "inspection": context_ref.get("inspection", {}),
+        }
+        append_event(run_dir, "assistant.local_source.confirmation_required", receipt)
+        return receipt, None, []
+
     try:
+        resolved_path = str(context_ref.get("path") or path)
         source = register_local_path_source(
             run_dir,
-            path,
+            resolved_path,
             user_label=str(context_ref.get("user_label") or ""),
+            user_claimed_kind=context_ref.get("user_claimed_kind"),
+            purpose=context_ref.get("user_hint"),
             additional_allowed_roots=_local_workspace_roots(run_dir, path),
         )
         jobs = _queue_local_path_jobs(run_dir, source)
@@ -700,6 +827,8 @@ def _register_attached_local_source(
             "source_status": source.get("status", ""),
             "job_ids": [job.get("job_id", "") for job in jobs],
             "inspection": source.get("inspection", {}),
+            "path": resolved_path,
+            "path_resolution": source.get("path_resolution", resolution),
         }
         append_event(run_dir, "assistant.local_source.registered", receipt)
         return receipt, source, jobs
@@ -717,13 +846,18 @@ def _queue_local_path_jobs(run_dir: Path, source: dict[str, Any]) -> list[dict[s
     if not source_id:
         return []
     if source.get("kind") == "local_repo":
+        path_fields = {}
+        if source.get("original_reference"):
+            path_fields["original_reference"] = source.get("original_reference")
+        if source.get("path_resolution"):
+            path_fields["path_resolution"] = source.get("path_resolution")
         acquire, acquire_created = create_or_get_pipeline_job(
             run_dir,
             source_id=source_id,
             job_type="local_repo_acquire",
             idempotency_key=f"local-source:{source_id}:local_repo_acquire",
             evidence_role="repo_acquired",
-            payload={"source_role": "local_repo"},
+            payload={"source_role": "local_repo", **path_fields},
         )
         summarize, summarize_created = create_or_get_pipeline_job(
             run_dir,
@@ -731,12 +865,15 @@ def _queue_local_path_jobs(run_dir: Path, source: dict[str, Any]) -> list[dict[s
             job_type="repo_summarize",
             idempotency_key=f"local-source:{source_id}:repo_summarize",
             evidence_role="repo_acquired",
-            payload={"depends_on": acquire.get("job_id"), "source_role": "local_repo"},
+            payload={"depends_on": acquire.get("job_id"), "source_role": "local_repo", **path_fields},
         )
         return [job for job, created in ((acquire, acquire_created), (summarize, summarize_created)) if created]
 
     kind = str(source.get("kind") or "")
     if kind == "dataset":
+        path_fields = {}
+        if source.get("path_resolution"):
+            path_fields["path_resolution"] = source.get("path_resolution")
         job, created = create_or_get_pipeline_job(
             run_dir,
             source_id=source_id,
@@ -747,6 +884,7 @@ def _queue_local_path_jobs(run_dir: Path, source: dict[str, Any]) -> list[dict[s
                 "original_reference": source.get("original_reference", ""),
                 "manifest_path": source.get("manifest_path", ""),
                 "source_role": "dataset",
+                **path_fields,
             },
         )
         return [job] if created else []

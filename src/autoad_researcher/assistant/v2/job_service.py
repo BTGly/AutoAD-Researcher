@@ -146,14 +146,14 @@ def create_or_get_pipeline_job(
                 "source_id": source_id,
                 "job_type": job_type,
                 "evidence_role": resolved_role,
-                "payload": normalized_payload,
+                "payload": _job_identity_payload(normalized_payload),
                 "report_id": report_id,
             }
             existing_identity = {
                 "source_id": existing.get("source_id", ""),
                 "job_type": existing.get("job_type"),
                 "evidence_role": existing.get("evidence_role", ""),
-                "payload": existing.get("payload", {}),
+                "payload": _job_identity_payload(existing.get("payload", {})),
                 "report_id": existing.get("report_id"),
             }
             if existing_identity != identity:
@@ -210,7 +210,7 @@ def create_or_get_pipeline_jobs(
                 "source_id": source_id,
                 "job_type": job_type,
                 "evidence_role": evidence_role,
-                "payload": payload,
+                "payload": _job_identity_payload(payload),
                 "report_id": report_id,
             }
             if existing is not None:
@@ -218,7 +218,7 @@ def create_or_get_pipeline_jobs(
                     "source_id": existing.get("source_id", ""),
                     "job_type": existing.get("job_type"),
                     "evidence_role": existing.get("evidence_role", ""),
-                    "payload": existing.get("payload", {}),
+                    "payload": _job_identity_payload(existing.get("payload", {})),
                     "report_id": existing.get("report_id"),
                 }
                 if existing_identity != identity:
@@ -240,6 +240,18 @@ def create_or_get_pipeline_jobs(
         if created:
             _write_jobs_unlocked(run_dir, jobs)
         return result, created
+
+
+def _job_identity_payload(payload: Any) -> Any:
+    """Ignore path lookup diagnostics when comparing an idempotent Job.
+
+    The resolved path remains persisted and is consumed by the Worker. The
+    search metadata can change during a replay without changing execution
+    semantics, so it must not create a false identity conflict.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    return {key: value for key, value in payload.items() if key != "path_resolution"}
 
 
 def _new_pipeline_job(

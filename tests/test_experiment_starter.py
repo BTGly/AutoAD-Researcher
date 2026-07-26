@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from autoad_researcher.assistant.v2.event_service import load_events_since
+from autoad_researcher.assistant.v2.execution_repository import get_repository_role_assignment
 from autoad_researcher.assistant.v2.experiment.starter import ExperimentStarter
 from autoad_researcher.assistant.v2.job_service import (
     append_pipeline_job,
@@ -23,6 +24,7 @@ from autoad_researcher.assistant.v2.research_intent_summary import (
     ResearchIntentSummary,
     save_research_intent_summary,
 )
+from autoad_researcher.assistant.v2.orchestrator import ResearchOrchestratorV2
 from autoad_researcher.assistant.v2.task_bridge import (
     TaskBridge,
     TaskConfirmationConflict,
@@ -105,11 +107,23 @@ def _draft(run_dir: Path):
 
 def _confirmed(run_dir: Path):
     draft = _draft(run_dir)
+    _authorize(run_dir, draft)
     return TaskBridge.confirm_or_load_existing(
         run_dir,
         task_id=draft.task_id,
         execution_mode="agent_assisted_after_approval",
-        execution_repository_source_id=EXECUTION_SOURCE_ID,
+    )
+
+
+def _authorize(run_dir: Path, draft, source_id: str = EXECUTION_SOURCE_ID):
+    readiness = evaluate_experiment_task_readiness(run_dir, draft)
+    return TaskBridge.authorize_execution_repository(
+        run_dir,
+        task_id=draft.task_id,
+        source_id=source_id,
+        decision="confirm",
+        candidate_revision=readiness.execution_repository_candidate_revision,
+        evidence="test fixture repository authorization",
     )
 
 
@@ -329,13 +343,13 @@ def test_execution_confirmation_without_primary_metric_has_zero_execution_side_e
     _prepare_executable_source(run_dir)
     save_research_intent_summary(run_dir, ResearchIntentSummary(goal="比较候选方法"))
     draft = TaskBridge.build_experiment_task(run_dir, user_input="准备实验")
+    _authorize(run_dir, draft)
 
     with pytest.raises(TaskConfirmationConflict) as excinfo:
         TaskBridge.confirm_or_load_existing(
             run_dir,
             task_id=draft.task_id,
             execution_mode="agent_assisted_after_approval",
-            execution_repository_source_id=EXECUTION_SOURCE_ID,
         )
 
     assert excinfo.value.code == "execution_contract_incomplete"
@@ -366,7 +380,6 @@ def test_confirmation_readiness_waits_for_material_jobs_then_allows_agent_handof
             run_dir,
             task_id=draft.task_id,
             execution_mode="agent_assisted_after_approval",
-            execution_repository_source_id=EXECUTION_SOURCE_ID,
         )
 
     assert excinfo.value.code == "confirmation_not_ready"
@@ -374,7 +387,8 @@ def test_confirmation_readiness_waits_for_material_jobs_then_allows_agent_handof
     assert not (run_dir / "experiments" / "sessions").exists()
 
     complete_pipeline_job(run_dir, job["job_id"])
-    ready = evaluate_experiment_task_readiness(run_dir, draft)
+    authorized = _authorize(run_dir, draft)
+    ready = evaluate_experiment_task_readiness(run_dir, authorized)
 
     assert ready.ready is True
     assert ready.admitted_execution_repository_source_ids == [EXECUTION_SOURCE_ID]
@@ -398,6 +412,96 @@ def test_confirmation_readiness_reports_failed_material_job(tmp_path: Path):
     assert "资料任务存在失败项，请先处理失败资料" in readiness.blockers
 
 
+def test_natural_language_repository_confirmation_uses_the_gated_candidate(
+    tmp_path: Path,
+    monkeypatch,
+):
+    run_dir = tmp_path / "run_repository_chat_confirmation"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    readiness = evaluate_experiment_task_readiness(run_dir, draft)
+    replies = iter([
+        {
+            "dialogue_mode": "ask",
+            "current_turn_intent": "confirm_repository",
+            "action_scope": "repository",
+            "conversation_transition": "confirm",
+            "policy_assessment": {
+                "decision": "allow",
+                "category": "none",
+                "reason": "",
+                "safe_alternative": "",
+            },
+            "repository_action": {
+                "action": "confirm_execution_repository",
+                "source_id": EXECUTION_SOURCE_ID,
+                "candidate_revision": readiness.execution_repository_candidate_revision,
+                "selection_basis": "pending_unique",
+            },
+        },
+        {
+            "reply_to_user": "执行仓库授权已记录，实验任务仍需单独确认。",
+            "summary": {
+                "goal": "比较候选方法",
+                "confirmed_facts": [],
+                "inferred_facts": [],
+                "unresolved_conflicts": [],
+                "blocking_question": None,
+            },
+        },
+    ])
+    monkeypatch.setattr(
+        "autoad_researcher.ui.chat_client.call_research_chat",
+        lambda *args, **kwargs: {
+            "reply": json.dumps(next(replies), ensure_ascii=False),
+            "error": "",
+        },
+    )
+
+    result = ResearchOrchestratorV2.handle(
+        run_dir,
+        user_input="可以，就用这个仓库",
+        api_key="sk-test",
+        provider_url="https://example.test",
+        model="configured-dialogue-model",
+    )
+
+    updated = TaskBridge.load_pending_experiment_task(run_dir)
+    assert result.reply == "执行仓库授权已记录，实验任务仍需单独确认。"
+    assert updated.status == "pending_confirmation"
+    assert updated.execution_repository_binding is not None
+    assert get_repository_role_assignment(run_dir, EXECUTION_SOURCE_ID).role == "executable"
+    assert not (run_dir / "input_task.yaml").exists()
+    assert load_pipeline_jobs(run_dir) == []
+
+
+@pytest.mark.asyncio
+async def test_repository_authorization_route_rejects_a_stale_candidate_revision(
+    tmp_path: Path,
+    monkeypatch,
+):
+    run_dir = tmp_path / "run_stale_repository_authorization"
+    run_dir.mkdir()
+    draft = _draft(run_dir)
+    monkeypatch.setattr(runs_route, "RUNS_ROOT", str(tmp_path))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await runs_route.authorize_execution_repository(
+            run_dir.name,
+            draft.task_id,
+            runs_route.AuthorizeExecutionRepositoryRequest(
+                source_id=EXECUTION_SOURCE_ID,
+                decision="confirm",
+                candidate_revision="0" * 64,
+            ),
+        )
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "confirmation_invalid"
+    assert get_repository_role_assignment(run_dir, EXECUTION_SOURCE_ID) is None
+    assert TaskBridge.load_pending_experiment_task(run_dir).execution_repository_binding is None
+
+
 @pytest.mark.asyncio
 async def test_confirm_route_reports_incomplete_execution_contract_with_stable_code(tmp_path: Path, monkeypatch):
     run_dir = tmp_path / "run_primary_metric_api"
@@ -413,7 +517,6 @@ async def test_confirm_route_reports_incomplete_execution_contract_with_stable_c
             draft.task_id,
             runs_route.ConfirmExperimentTaskRequest(
                 execution_mode="agent_assisted_after_approval",
-                execution_repository_source_id=EXECUTION_SOURCE_ID,
             ),
         )
 
@@ -433,11 +536,13 @@ def test_confirmed_execution_repository_is_immutable_on_replay(tmp_path: Path):
     task = _confirmed(run_dir)
 
     with pytest.raises(TaskConfirmationConflict) as excinfo:
-        TaskBridge.confirm_or_load_existing(
+        TaskBridge.authorize_execution_repository(
             run_dir,
             task_id=task.task_id,
-            execution_mode="agent_assisted_after_approval",
-            execution_repository_source_id="src_other",
+            source_id="src_other",
+            decision="confirm",
+            candidate_revision="a" * 64,
+            evidence="invalid replay",
         )
 
     assert excinfo.value.code == "confirmation_invalid"
@@ -502,6 +607,7 @@ async def test_confirm_route_returns_control_plane_references(tmp_path: Path, mo
     run_dir = tmp_path / "run_confirm_api"
     run_dir.mkdir()
     draft = _draft(run_dir)
+    _authorize(run_dir, draft)
     monkeypatch.setattr(runs_route, "RUNS_ROOT", str(tmp_path))
 
     result = await runs_route.confirm_experiment_task(
@@ -509,7 +615,6 @@ async def test_confirm_route_returns_control_plane_references(tmp_path: Path, mo
         draft.task_id,
         runs_route.ConfirmExperimentTaskRequest(
             execution_mode="agent_assisted_after_approval",
-            execution_repository_source_id=EXECUTION_SOURCE_ID,
         ),
     )
 

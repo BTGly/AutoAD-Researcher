@@ -79,5 +79,42 @@ def test_extracts_explicit_relative_paths(tmp_path: Path):
     assert paths == ["./repo", "../dataset", "workspace/config.yaml"]
 
 
+def test_attach_context_resolves_workspace_and_bounded_relative_search(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    runs_root = tmp_path / "runs"
+    run_dir = runs_root / "chat"
+    material = runs_root / "other" / "workspace" / "repos" / "AnomalyCLIP"
+    material.mkdir(parents=True)
+    (material / "README.md").write_text("baseline", encoding="utf-8")
+    current_material = run_dir / "workspace" / "config.yaml"
+    current_material.parent.mkdir(parents=True)
+    current_material.write_text("config", encoding="utf-8")
+
+    workspace_receipt, workspace_context = attach_local_context(run_dir, "workspace/config.yaml")
+    relative_receipt, relative_context = attach_local_context(run_dir, "repos/AnomalyCLIP")
+
+    assert workspace_receipt["status"] == "context_attached"
+    assert workspace_context["path"] == str(current_material.resolve())
+    assert workspace_receipt["path_resolution"]["match_kind"] == "run_workspace_exact"
+    assert relative_receipt["status"] == "context_attached"
+    assert relative_context["path"] == str(material.resolve())
+    assert relative_receipt["path_resolution"]["match_kind"] == "candidate_root_exact"
+
+
+def test_attach_context_reports_ambiguous_relative_path_without_context(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AUTOAD_ALLOWED_LOCAL_SOURCE_ROOTS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "one" / "repo").mkdir(parents=True)
+    (tmp_path / "two" / "repo").mkdir(parents=True)
+
+    receipt, context = attach_local_context(tmp_path / "run", "repo")
+
+    assert context is None
+    assert receipt["error"]["code"] == "LOCAL_PATH_AMBIGUOUS"
+    assert receipt["path_resolution"]["status"] == "ambiguous"
+    assert len(receipt["path_resolution"]["candidates"]) == 2
+
+
 def test_does_not_treat_slash_in_prose_as_root_path():
     assert extract_local_path_candidates("MVTec AD / bottle") == []

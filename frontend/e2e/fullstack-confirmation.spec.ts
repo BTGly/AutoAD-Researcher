@@ -15,8 +15,11 @@ test('persists an explicitly selected execution repository through the real API'
   });
 
   await page.goto('/');
-  await expect(page.getByRole('dialog', { name: '确认实验任务' })).toBeVisible();
-  await page.getByLabel('执行仓库').selectOption('repo_micro');
+  await expect(page.getByRole('dialog', { name: '确认执行仓库' })).toBeVisible();
+  await page.getByRole('button', { name: '授权用于实验' }).click();
+  const finalDialog = page.getByRole('dialog', { name: '确认实验任务' });
+  await expect(finalDialog).toBeVisible();
+  await expect(finalDialog.getByText('05_RareCLIP_micro_repo.zip')).toBeVisible();
   await page.getByRole('button', { name: '确认并交给实验 Agent' }).click();
   await expect(page.getByText('实验任务已确认（created）')).toBeVisible();
 

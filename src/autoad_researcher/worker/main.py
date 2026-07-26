@@ -536,6 +536,36 @@ def _run_local_repo_unpack(run_dir: Path, job: dict[str, Any]) -> tuple[bool, li
         return False, []
 
 
+def _worker_local_path(
+    run_dir: Path,
+    reference: str,
+    payload: dict[str, Any],
+    source: dict[str, Any] | None,
+) -> Path:
+    """Use the persisted intake lookup before resolving legacy jobs."""
+    resolution = payload.get("path_resolution")
+    if not isinstance(resolution, dict) and isinstance(source, dict):
+        metadata = source.get("metadata")
+        if isinstance(metadata, dict):
+            resolution = metadata.get("path_resolution")
+    if isinstance(resolution, dict):
+        status = resolution.get("status")
+        if status != "found":
+            code = "LOCAL_PATH_AMBIGUOUS" if status == "ambiguous" else "LOCAL_PATH_NOT_FOUND"
+            raise ValueError(f"{code}: persisted local path lookup did not find one path")
+        resolved_path = resolution.get("resolved_path")
+        if not isinstance(resolved_path, str) or not resolved_path:
+            raise ValueError("LOCAL_PATH_INVALID: persisted local path is missing")
+        path = Path(resolved_path).expanduser().resolve(strict=False)
+        if path.is_file() or path.is_dir():
+            return path
+        raise ValueError("LOCAL_PATH_NOT_FOUND: persisted local path no longer exists")
+
+    from autoad_researcher.ui.sources import resolve_local_source_path
+
+    return resolve_local_source_path(run_dir, reference, allow_explicit_user_path=True)
+
+
 def _run_local_repo_acquire(run_dir: Path, job: dict[str, Any]) -> tuple[bool, list[str]]:
     source_id = str(job.get("source_id", ""))
     source = _find_source(run_dir, source_id)
@@ -543,14 +573,10 @@ def _run_local_repo_acquire(run_dir: Path, job: dict[str, Any]) -> tuple[bool, l
     original_reference = str((source or {}).get("original_reference") or payload.get("original_reference") or "")
     stored_path = str(payload.get("stored_path") or "")
     if original_reference:
-        from autoad_researcher.ui.sources import resolve_local_source_path
-
         try:
-            local_path = resolve_local_source_path(
-                run_dir, original_reference, allow_explicit_user_path=True
-            )
-        except ValueError:
-            _write_parse_error(run_dir, source_id, "local_repo_acquire", "local repository path is not allowed")
+            local_path = _worker_local_path(run_dir, original_reference, payload, source)
+        except ValueError as exc:
+            _write_parse_error(run_dir, source_id, "local_repo_acquire", str(exc))
             return False, []
     else:
         if not stored_path and source:
@@ -620,17 +646,14 @@ def _run_dataset_manifest(run_dir: Path, job: dict[str, Any]) -> tuple[bool, lis
         return False, []
     from autoad_researcher.ui.sources import (
         inspect_local_path,
-        resolve_local_source_path,
         set_source_metadata,
         update_source_intake_result,
     )
 
     try:
-        local_path = resolve_local_source_path(
-            run_dir, reference, allow_explicit_user_path=True
-        )
-    except ValueError:
-        _write_parse_error(run_dir, source_id, "dataset_manifest", "dataset path is not allowed")
+        local_path = _worker_local_path(run_dir, reference, payload, source)
+    except ValueError as exc:
+        _write_parse_error(run_dir, source_id, "dataset_manifest", str(exc))
         return False, []
     try:
         inspection = inspect_local_path(local_path, allow_explicit_user_path=True)

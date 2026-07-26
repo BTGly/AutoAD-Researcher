@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 from autoad_researcher.ui.sources import (
     LocalSourcePathError,
+    find_local_source_path,
     inspect_local_path,
     resolve_local_source_path,
 )
@@ -81,6 +82,14 @@ def _path_fragments(value: str) -> list[str]:
         candidate = _clean_path_candidate(match.group(0))
         if candidate is not None and candidate not in fragments:
             fragments.append(candidate)
+    try:
+        tokens = shlex.split(value, posix=True)
+    except ValueError:
+        tokens = value.split()
+    for token in tokens:
+        candidate = _clean_path_candidate(token)
+        if candidate is not None and candidate not in fragments:
+            fragments.append(candidate)
     return fragments
 
 
@@ -90,20 +99,22 @@ def attach_local_context(
     *,
     user_label: str = "",
     user_hint: str = "",
+    user_claimed_kind: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Inspect and attach one local path as a read-only conversation context."""
     raw_path = str(source_path)
+    path_resolution = find_local_source_path(run_dir, raw_path)
     try:
         path = resolve_local_source_path(run_dir, raw_path, allow_explicit_user_path=True)
     except LocalSourcePathError as exc:
-        return _failure(raw_path, exc.code, exc.message), None
+        return _failure(raw_path, exc.code, exc.message, resolution=exc.resolution), None
 
     if not path.exists():
-        return _failure(raw_path, "LOCAL_PATH_NOT_FOUND", "路径不存在"), None
+        return _failure(raw_path, "LOCAL_PATH_NOT_FOUND", "路径不存在", resolution=path_resolution.as_dict()), None
     if not os.access(path, os.R_OK):
-        return _failure(raw_path, "LOCAL_PATH_NOT_READABLE", "路径不可读"), None
+        return _failure(raw_path, "LOCAL_PATH_NOT_READABLE", "路径不可读", resolution=path_resolution.as_dict()), None
     if not path.is_file() and not path.is_dir():
-        return _failure(raw_path, "LOCAL_PATH_UNSUPPORTED", "路径不是文件或目录"), None
+        return _failure(raw_path, "LOCAL_PATH_UNSUPPORTED", "路径不是文件或目录", resolution=path_resolution.as_dict()), None
 
     try:
         inspection = inspect_local_path(
@@ -112,7 +123,20 @@ def attach_local_context(
             allow_explicit_user_path=True,
         )
     except (OSError, ValueError) as exc:
-        return _failure(raw_path, "LOCAL_PATH_INSPECTION_FAILED", str(exc)), None
+        return _failure(raw_path, "LOCAL_PATH_INSPECTION_FAILED", str(exc), resolution=path_resolution.as_dict()), None
+
+    profiles = inspection.get("profiles", [])
+    confirmation_required = bool(
+        user_claimed_kind
+        and isinstance(profiles, list)
+        and user_claimed_kind not in profiles
+    )
+    confirmation = {
+        "required": confirmation_required,
+        "user_claimed_kind": user_claimed_kind,
+        "detected_kind": inspection.get("detected_kind"),
+        "profiles": profiles,
+    }
 
     contexts = load_session_context(run_dir)
     canonical = str(path)
@@ -123,9 +147,13 @@ def attach_local_context(
         "path": canonical,
         "user_label": user_label.strip() or path.name or canonical,
         "user_hint": user_hint.strip(),
+        "user_claimed_kind": user_claimed_kind,
         "access": "read_only",
         "status": "readable",
         "inspection": inspection,
+        "path_resolution": path_resolution.as_dict(),
+        "confirmation": confirmation,
+        "confirmation_required": confirmation_required,
         "attached_at": (existing or {}).get("attached_at") or _now(),
     }
     if existing is not None:
@@ -143,6 +171,9 @@ def attach_local_context(
         "status": status,
         "access": "read_only",
         "inspection": inspection,
+        "path_resolution": path_resolution.as_dict(),
+        "confirmation": confirmation,
+        "confirmation_required": confirmation_required,
     }, context
 
 
@@ -153,7 +184,7 @@ def _clean_path_candidate(value: str) -> str | None:
     if candidate.startswith("file://"):
         parsed = urlsplit(candidate)
         candidate = unquote(parsed.path)
-    if candidate.startswith("//"):
+    if candidate in {"/", "//"} or candidate.startswith("//"):
         return None
     is_explicit_relative = (
         candidate in {".", ".."}
@@ -177,8 +208,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _failure(path: str, code: str, message: str) -> dict[str, Any]:
-    return {
+def _failure(
+    path: str,
+    code: str,
+    message: str,
+    *,
+    resolution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    failure = {
         "kind": "session_context",
         "source_path": path,
         "status": "failed",
@@ -186,3 +223,6 @@ def _failure(path: str, code: str, message: str) -> dict[str, Any]:
         "error": {"code": code, "message": message},
         "reason": message,
     }
+    if resolution is not None:
+        failure["path_resolution"] = resolution
+    return failure

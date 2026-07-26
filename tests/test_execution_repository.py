@@ -6,6 +6,9 @@ from pathlib import Path
 
 from autoad_researcher.assistant.v2.execution_repository import (
     assign_execution_repository_role,
+    execution_repository_candidate_revision,
+    get_repository_role_assignment,
+    list_execution_repository_candidates,
     resolve_execution_repository,
 )
 from autoad_researcher.repository_intelligence.acquisition import RepositoryAttestation
@@ -127,7 +130,7 @@ def test_resolver_rejects_unsupported_executable_repository(tmp_path: Path):
     assert blocked.code == "execution_adapter_unsupported"
 
 
-def test_resolver_rejects_multiple_explicit_execution_targets(tmp_path: Path):
+def test_assigning_a_new_execution_target_demotes_the_previous_target(tmp_path: Path):
     for source_id in ("src_one", "src_two"):
         _append_repository(tmp_path, source_id, kind="local_repo")
         _write_acquired_repository(tmp_path, source_id)
@@ -138,10 +141,31 @@ def test_resolver_rejects_multiple_explicit_execution_targets(tmp_path: Path):
             authorization=_authorization(source_id),
         )
 
-    blocked = resolve_execution_repository(tmp_path)
+    admitted = resolve_execution_repository(tmp_path)
 
-    assert blocked.status == "blocked"
-    assert blocked.code == "execution_repository_unresolved"
+    assert admitted.status == "admitted"
+    assert admitted.binding is not None
+    assert admitted.binding.source_id == "src_two"
+    assert get_repository_role_assignment(tmp_path, "src_one").role == "candidate_source_only"
+    assert get_repository_role_assignment(tmp_path, "src_two").role == "executable"
+
+
+def test_candidate_revision_changes_with_adapter_manifest_content(tmp_path: Path):
+    _append_repository(tmp_path, "src_candidate", kind="local_repo")
+    _write_acquired_repository(tmp_path, "src_candidate")
+    before = execution_repository_candidate_revision(
+        list_execution_repository_candidates(tmp_path)
+    )
+    manifest_path = tmp_path / "repos" / "src_candidate" / "autoad_executor_adapter.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["allowed_paths"] = ["run_experiment.py", "new_component.py"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    after = execution_repository_candidate_revision(
+        list_execution_repository_candidates(tmp_path)
+    )
+
+    assert after != before
 
 
 def test_role_assignment_rejects_non_repository_source(tmp_path: Path):

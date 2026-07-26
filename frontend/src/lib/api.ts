@@ -114,18 +114,35 @@ export async function confirmExperimentTask(
   runId: string,
   taskId: string,
   executionMode: ExperimentTaskDraft['execution_mode'],
-  executionRepositorySourceId?: string,
 ): Promise<ExperimentTaskConfirmationResult> {
   const res = await fetch(`/api/runs/${runId}/experiment-task/${taskId}/confirm`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({
       execution_mode: executionMode,
-      execution_repository_source_id:
-        executionMode === 'plan_only' ? null : executionRepositorySourceId,
     }),
   });
   if (!res.ok) throw await apiError(res, `Experiment task confirmation error: ${res.status}`);
+  return res.json();
+}
+
+export async function authorizeExecutionRepository(
+  runId: string,
+  taskId: string,
+  sourceId: string,
+  decision: 'confirm' | 'reference_only' | 'cancel',
+  candidateRevision: string,
+): Promise<ExperimentTaskReadiness> {
+  const res = await fetch(`/api/runs/${runId}/experiment-task/${taskId}/execution-repository`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({
+      source_id: sourceId,
+      decision,
+      candidate_revision: candidateRevision,
+    }),
+  });
+  if (!res.ok) throw await apiError(res, `Execution repository authorization error: ${res.status}`);
   return res.json();
 }
 

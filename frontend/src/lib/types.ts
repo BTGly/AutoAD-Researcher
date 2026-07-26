@@ -84,9 +84,37 @@ export interface ExperimentTaskDraft {
   input_task: PipelineInputTask;
   primary_metric_candidates?: string[];
   evidence_refs: string[];
+  execution_repository_binding: ExecutionRepositoryBinding | null;
   summary_sha256: string;
   created_at: string;
   confirmed_at: string | null;
+}
+
+export interface ExecutionRepositoryBinding {
+  schema_version: 1;
+  source_id: string;
+  source_kind: 'github_repo' | 'local_repo';
+  execution_role: 'executable';
+  repository_ref: string;
+  repository_fingerprint: string;
+  attestation_ref: string;
+  attestation_sha256: string;
+  adapter_manifest_ref: string;
+  adapter_manifest_sha256: string;
+  adapter_id: string;
+  adapter_evidence: Record<string, unknown>;
+}
+
+export interface ExecutionRepositoryCandidate {
+  source_id: string;
+  source_kind: 'github_repo' | 'local_repo';
+  label: string;
+  stored_path: string | null;
+  adapter_id: string | null;
+  repository_fingerprint: string;
+  attestation_sha256: string;
+  adapter_manifest_sha256: string;
+  assigned_role: 'reference_only' | 'candidate_source_only' | 'executable' | null;
 }
 
 export interface ExperimentTaskReadiness {
@@ -97,6 +125,11 @@ export interface ExperimentTaskReadiness {
   failed_job_ids: string[];
   unready_source_ids: string[];
   admitted_execution_repository_source_ids: string[];
+  execution_repository_candidates: ExecutionRepositoryCandidate[];
+  execution_repository_candidate_revision: string;
+  execution_repository_state: 'no_repository_candidate' | 'repository_pending' | 'awaiting_repository_confirmation' | 'repository_admission_failed' | 'ready';
+  execution_repository_admission_code: string | null;
+  execution_repository_admission_blocker: string | null;
   summary_current: boolean;
 }
 
@@ -256,6 +289,7 @@ export interface WSMessage {
   content?: string;
   kind?: string;
   status?: string;
+  intake_status?: string;
   duration?: string;
   jobId?: string;
   jobType?: string;

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -73,15 +74,41 @@ LEGACY_PARSE_ATTEMPT_ID = "legacy_active"
 LOCAL_PATH_MAX_ENTRIES = 200
 LOCAL_PATH_MAX_DEPTH = 4
 LOCAL_PATH_MAX_SCANNED_ENTRIES = 4000
+LOCAL_PATH_MAX_SEARCH_DIRS = 2000
+LOCAL_PATH_MAX_SEARCH_MATCHES = 8
+LOCAL_PATH_SEARCH_DEPTH = 6
 
 
 class LocalSourcePathError(ValueError):
     """A local source path cannot be resolved or is outside its scope."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, resolution: dict[str, Any] | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.resolution = resolution
+
+
+@dataclass(frozen=True)
+class LocalPathResolution:
+    """Deterministic, bounded lookup result for one user-provided path."""
+
+    raw_path: str
+    status: Literal["found", "not_found", "ambiguous"]
+    resolved_path: str | None = None
+    match_kind: str | None = None
+    candidates: tuple[str, ...] = ()
+    searched_roots: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "raw_path": self.raw_path,
+            "status": self.status,
+            "resolved_path": self.resolved_path,
+            "match_kind": self.match_kind,
+            "candidates": list(self.candidates),
+            "searched_roots": list(self.searched_roots),
+        }
 
 
 def _resolve_sources_dir(run_dir: Path) -> Path:
@@ -179,6 +206,7 @@ def update_source_intake_result(
     error_message: str | None = None,
 ) -> None:
     registry = load_source_registry(run_dir)
+    updated_source: dict[str, Any] | None = None
     for source in registry["sources"]:
         if source.get("source_id") != source_id:
             continue
@@ -196,8 +224,23 @@ def update_source_intake_result(
             source["error_message"] = error_message
         elif status is not None and status != "failed":
             source.pop("error_message", None)
+        updated_source = dict(source)
         break
     _save_registry(run_dir, registry)
+    if updated_source is not None:
+        from autoad_researcher.assistant.v2.event_service import append_event
+
+        append_event(
+            run_dir,
+            "source.intake_updated",
+            {
+                "source_id": source_id,
+                "status": updated_source.get("status"),
+                "intake_status": updated_source.get("intake_status"),
+                "kind": updated_source.get("kind"),
+                "stored_path": updated_source.get("stored_path"),
+            },
+        )
 
 
 def update_source_kind(run_dir: Path, source_id: str, kind: SourceKind) -> None:
@@ -725,8 +768,21 @@ def is_allowed_local_source_path(
     source_path: str | Path,
     *,
     additional_roots: list[Path] | None = None,
+    allow_explicit_user_path: bool = False,
 ) -> bool:
-    """Return whether a server-local path is inside an explicitly configured root."""
+    """Return whether a path is allowed by the legacy intake boundary.
+
+    Explicit paths supplied by the single local user are still inspected
+    read-only, but are not rejected by the optional environment allowlist.
+    The flag is deliberately opt-in so unrelated internal callers retain the
+    existing boundary.
+    """
+    if allow_explicit_user_path:
+        try:
+            Path(source_path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            return False
+        return True
     roots = [
         *get_allowed_local_source_roots(),
         *(Path(root).expanduser().resolve() for root in (additional_roots or [])),
@@ -745,6 +801,190 @@ def local_source_workspace_roots(run_dir: Path) -> list[Path]:
     return [(run_dir / "workspace").resolve()]
 
 
+def _configured_runs_root(run_dir: Path) -> Path:
+    configured = os.environ.get("AUTOAD_RUNS_ROOT")
+    if configured:
+        root = Path(configured).expanduser()
+        return (Path.cwd() / root).resolve() if not root.is_absolute() else root.resolve()
+    run_path = Path(run_dir).expanduser().resolve(strict=False)
+    for ancestor in (run_path, *run_path.parents):
+        if ancestor.name == "runs":
+            return ancestor
+    return (Path.cwd() / "runs").resolve()
+
+
+def local_source_search_roots(run_dir: Path) -> list[Path]:
+    """Return a small, explainable set of roots for relative path lookup."""
+    run_path = Path(run_dir).expanduser().resolve(strict=False)
+    runs_root = _configured_runs_root(run_path)
+    roots = [run_path / "workspace", run_path, Path.cwd(), runs_root]
+    if runs_root.is_dir():
+        try:
+            run_children = sorted(runs_root.iterdir(), key=lambda item: item.name)
+        except OSError:
+            run_children = []
+        for child in run_children[:32]:
+            if child.is_dir() and not child.is_symlink():
+                roots.append(child / "workspace")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            resolved = root.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            continue
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            unique.append(resolved)
+    return unique
+
+
+def _existing_path(path: Path) -> Path | None:
+    try:
+        resolved = path.expanduser().resolve(strict=False)
+        return resolved if resolved.is_file() or resolved.is_dir() else None
+    except (OSError, RuntimeError):
+        return None
+
+
+def _relative_lookup_parts(candidate: Path) -> tuple[str, ...]:
+    parts = tuple(part for part in candidate.parts if part not in {"", "."})
+    if parts and parts[0] == "workspace":
+        return parts[1:]
+    return parts
+
+
+def _suffix_matches(root: Path, target_parts: tuple[str, ...]) -> list[Path]:
+    if not target_parts or ".." in target_parts or not root.is_dir() or root.is_symlink():
+        return []
+    matches: list[Path] = []
+    visited_dirs = 0
+    try:
+        walker = os.walk(root, topdown=True, followlinks=False)
+        for directory, dirnames, filenames in walker:
+            visited_dirs += 1
+            if visited_dirs > LOCAL_PATH_MAX_SEARCH_DIRS:
+                break
+            current = Path(directory)
+            try:
+                depth = len(current.relative_to(root).parts)
+            except ValueError:
+                continue
+            ignored = {".git", "node_modules", "__pycache__"}
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if name not in ignored
+                and not (current / name).is_symlink()
+                and depth < LOCAL_PATH_SEARCH_DEPTH
+            ]
+            for name in [*dirnames, *filenames]:
+                candidate = current / name
+                if candidate.is_symlink():
+                    continue
+                try:
+                    relative_parts = candidate.relative_to(root).parts
+                except ValueError:
+                    continue
+                if len(relative_parts) < len(target_parts):
+                    continue
+                if relative_parts[-len(target_parts):] != target_parts:
+                    continue
+                resolved = _existing_path(candidate)
+                if resolved is not None and resolved not in matches:
+                    matches.append(resolved)
+                    if len(matches) >= LOCAL_PATH_MAX_SEARCH_MATCHES:
+                        return matches
+    except OSError:
+        return matches
+    return matches
+
+
+def find_local_source_path(run_dir: Path, source_path: str | Path) -> LocalPathResolution:
+    """Find a user path without silently choosing an unrelated match."""
+    raw = str(source_path).strip()
+    if not raw:
+        return LocalPathResolution(raw_path=raw, status="not_found")
+
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        resolved = _existing_path(candidate)
+        return LocalPathResolution(
+            raw_path=raw,
+            status="found" if resolved is not None else "not_found",
+            resolved_path=str(resolved) if resolved is not None else None,
+            match_kind="absolute" if resolved is not None else None,
+            candidates=(str(resolved),) if resolved is not None else (),
+        )
+
+    roots = local_source_search_roots(run_dir)
+    exact: list[tuple[Path, str]] = []
+    run_path = Path(run_dir).expanduser().resolve(strict=False)
+    exact_roots = [run_path] if candidate.parts and candidate.parts[0] == "workspace" else roots
+    for root in exact_roots:
+        resolved = _existing_path(root / candidate)
+        if resolved is None or any(existing == resolved for existing, _ in exact):
+            continue
+        if candidate.parts and candidate.parts[0] == "workspace" and root == run_path:
+            match_kind = "run_workspace_exact"
+        elif root == Path.cwd().resolve():
+            match_kind = "cwd_exact"
+        elif root == run_path / "workspace":
+            match_kind = "run_workspace_exact"
+        else:
+            match_kind = "candidate_root_exact"
+        exact.append((resolved, match_kind))
+
+    searched = tuple(str(root) for root in roots)
+    if len(exact) == 1:
+        resolved, match_kind = exact[0]
+        return LocalPathResolution(
+            raw_path=raw,
+            status="found",
+            resolved_path=str(resolved),
+            match_kind=match_kind,
+            candidates=(str(resolved),),
+            searched_roots=searched,
+        )
+    if len(exact) > 1:
+        return LocalPathResolution(
+            raw_path=raw,
+            status="ambiguous",
+            candidates=tuple(str(path) for path, _ in exact[:LOCAL_PATH_MAX_SEARCH_MATCHES]),
+            searched_roots=searched,
+        )
+
+    target_parts = _relative_lookup_parts(candidate)
+    matches: list[Path] = []
+    for root in roots:
+        for match in _suffix_matches(root, target_parts):
+            if match not in matches:
+                matches.append(match)
+            if len(matches) >= LOCAL_PATH_MAX_SEARCH_MATCHES:
+                break
+        if len(matches) >= LOCAL_PATH_MAX_SEARCH_MATCHES:
+            break
+    if len(matches) == 1:
+        return LocalPathResolution(
+            raw_path=raw,
+            status="found",
+            resolved_path=str(matches[0]),
+            match_kind="bounded_suffix_search",
+            candidates=(str(matches[0]),),
+            searched_roots=searched,
+        )
+    if matches:
+        return LocalPathResolution(
+            raw_path=raw,
+            status="ambiguous",
+            candidates=tuple(str(path) for path in matches),
+            searched_roots=searched,
+        )
+    return LocalPathResolution(raw_path=raw, status="not_found", searched_roots=searched)
+
+
 def resolve_local_source_path(
     run_dir: Path,
     source_path: str | Path,
@@ -753,25 +993,22 @@ def resolve_local_source_path(
     allow_explicit_user_path: bool = False,
 ) -> Path:
     """Resolve a local source using the shared intake/worker path contract."""
-    raw = str(source_path).strip()
-    if not raw:
-        raise LocalSourcePathError("LOCAL_PATH_INVALID", "本地路径不能为空")
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        parts = candidate.parts
-        if parts and parts[0] == "workspace":
-            candidate = run_dir / candidate
-        elif allow_explicit_user_path:
-            candidate = Path.cwd() / candidate
-        else:
-            raise LocalSourcePathError(
-                "LOCAL_PATH_REQUIRES_ABSOLUTE",
-                "请提供绝对路径，或使用当前 Run 下的 workspace/... 路径",
-            )
-    try:
-        resolved = candidate.resolve(strict=False)
-    except (OSError, RuntimeError) as exc:
-        raise LocalSourcePathError("LOCAL_PATH_INVALID", "无法解析本地路径") from exc
+    resolution = find_local_source_path(run_dir, source_path)
+    if resolution.status == "not_found":
+        message = "未找到用户提供的本地路径"
+        if resolution.searched_roots:
+            message += "；已搜索：" + "、".join(resolution.searched_roots[:5])
+        raise LocalSourcePathError(
+            "LOCAL_PATH_NOT_FOUND", message, resolution=resolution.as_dict()
+        )
+    if resolution.status == "ambiguous":
+        message = "找到多个可能的本地路径，请确认具体目录"
+        if resolution.candidates:
+            message += "：" + "、".join(resolution.candidates)
+        raise LocalSourcePathError(
+            "LOCAL_PATH_AMBIGUOUS", message, resolution=resolution.as_dict()
+        )
+    resolved = Path(str(resolution.resolved_path))
     roots = [
         *local_source_workspace_roots(run_dir),
         *(Path(root).expanduser().resolve() for root in (additional_allowed_roots or [])),
@@ -782,6 +1019,7 @@ def resolve_local_source_path(
         raise LocalSourcePathError(
             "LOCAL_PATH_OUTSIDE_ALLOWED_ROOT",
             "路径不在当前 Run workspace 或已授权的本地资料目录内",
+            resolution=resolution.as_dict(),
         )
     return resolved
 
@@ -1158,6 +1396,7 @@ def register_local_path_source(
     Mixed directories, collections, and unknown material remain ``local_path``
     sources with a bounded manifest so later dialogue can choose a focus.
     """
+    path_resolution = find_local_source_path(run_dir, source_path)
     path = resolve_local_source_path(
         run_dir, source_path,
         additional_allowed_roots=additional_allowed_roots,
@@ -1173,14 +1412,31 @@ def register_local_path_source(
         if source.get("original_reference") != reference:
             continue
         existing_inspection = (source.get("metadata") or {}).get("local_path_inspection", inspection)
+        existing_kind = str(source.get("kind") or "local_path")
+        if existing_kind == "local_path" and _is_repository_admission(inspection):
+            update_source_kind(run_dir, source["source_id"], "local_repo")
+            set_source_metadata(
+                run_dir,
+                source["source_id"],
+                {
+                    "local_path_inspection": inspection,
+                    "path_resolution": path_resolution.as_dict(),
+                    "repository_admission": "marker:.git+code_files",
+                },
+            )
+            existing_kind = "local_repo"
+            existing_inspection = inspection
         return {
             "source_id": source["source_id"],
-            "kind": source.get("kind", "local_path"),
+            "kind": existing_kind,
             "user_label": source.get("user_label", user_label or path.name),
             "status": source.get("status", "user_provided_not_ingested"),
             "stored_path": source.get("stored_path"),
             "original_reference": reference,
             "inspection": existing_inspection,
+            "path_resolution": (source.get("metadata") or {}).get(
+                "path_resolution", path_resolution.as_dict()
+            ),
             "receipt_status": "already_registered",
         }
 
@@ -1203,7 +1459,7 @@ def register_local_path_source(
                 original_reference=reference,
             )
             source = {"source_id": source_id, "kind": "local_path", "status": "user_provided_not_ingested"}
-    elif inspection["detected_kind"] == "repository":
+    elif _is_repository_admission(inspection):
         source = register_local_repo_source(
             run_dir, path, user_label=label,
             additional_allowed_roots=[path, *(additional_allowed_roots or [])]
@@ -1231,6 +1487,7 @@ def register_local_path_source(
     metadata_updates: dict[str, Any] = {
         "local_path_inspection": inspection,
         "manifest_path": manifest_path,
+        "path_resolution": path_resolution.as_dict(),
     }
     if user_claimed_kind:
         metadata_updates["user_claimed_kind"] = user_claimed_kind
@@ -1245,10 +1502,33 @@ def register_local_path_source(
         "user_label": source.get("user_label", label),
         "original_reference": reference,
         "inspection": inspection,
+        "path_resolution": path_resolution.as_dict(),
         "manifest_path": manifest_path,
         "receipt_status": source.get("receipt_status", "created"),
     })
     return source
+
+
+def _is_repository_admission(inspection: dict[str, Any]) -> bool:
+    """Admit a local directory as a repository only with strong evidence.
+
+    A repository may contain checkpoints, sample images, or documentation. A
+    mixed profile alone must not demote it to local_path; the explicit VCS
+    marker plus observed code files is the admission signal.
+    """
+    if inspection.get("detected_kind") == "repository":
+        return True
+    profiles = inspection.get("profiles")
+    evidence = inspection.get("evidence")
+    signals = inspection.get("content_signals")
+    return (
+        isinstance(profiles, list)
+        and "repository" in profiles
+        and isinstance(evidence, list)
+        and "marker:.git" in evidence
+        and isinstance(signals, dict)
+        and int(signals.get("code_files") or 0) > 0
+    )
 
 
 def _write_local_path_manifest(

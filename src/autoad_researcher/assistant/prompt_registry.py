@@ -293,6 +293,7 @@ _RESEARCH_DECISION_PROMPT = """<decision_scope>
 - explore_or_discuss：当前消息是在表达研究方向、讨论方案或要求理解材料，但没有明确要求准备任务草案或立即执行。
 - prepare_experiment：当前消息明确要求整理、设计或准备实验任务/计划，但尚未要求立即修改代码或运行。
 - confirm_task：当前消息明确确认已有待确认任务草案。
+- confirm_repository：当前消息是在确认、拒绝、取消或改选 dialogue_state.execution_repository_confirmation 中的执行仓库候选；这是仓库角色授权，不等于确认实验任务或开始执行。
 - execute_experiment：当前消息明确要求现在修改代码、训练、评估或运行实验。
 - material_action：当前消息明确要求读取、检查、搜索或分析给出的本地资料；这不等于正式采用或执行实验。
 - unspecified：只有在当前消息确实无法判断时使用；不要用它把历史摘要升级为当前执行请求。
@@ -309,16 +310,17 @@ current_turn_intent 必须与 dialogue_mode 和候选动作一致。单纯陈述
 
 <candidate_actions>
 - source_action 只针对 registered_sources 中逐字存在的唯一 source_id。用户明确要求删除时用 request_source_removal；用户明确要求对已登记的本地 PDF 重新解析时用 request_source_reparse。否定、讨论、来源不唯一或 source 未登记时为 null。
-- local_path_sources 只在用户明确要求检查、登记、阅读或分析服务端本地路径时填写；每个 source_path 必须逐字保留为当前用户消息中的原文子串，不能从普通文本、目录名、文件名或历史上下文猜测。用户一次提供多个路径时逐项填写，不能把多个路径压成一个来源。user_claimed_kind 和 purpose 只是用户提示，不是事实分类，也可以为 null。服务端会对每条路径分别做有限、只读、symlink-safe 的结构检查，再根据证据映射已有执行策略；不要在检查前猜 dataset/repository/file，也不要因路径看起来像本地路径就自行生成它。没有明确路径时填写空数组。
+- local_path_sources 只在用户明确要求检查、登记、阅读或分析服务端本地路径时填写；每个 source_path 必须保留为当前用户消息或附件中的明确路径候选，不能从普通文本、目录名、文件名或历史上下文猜测。绝对路径、workspace/... 和其他用户明确给出的相对路径都可以原样填写；服务端会对每条路径分别做有限、只读、symlink-safe 的查找与结构检查，找不到或有多个匹配时要求用户确认。用户一次提供多个路径时逐项填写，不能把多个路径压成一个来源。user_claimed_kind 和 purpose 只是用户提示，不是事实分类，也可以为 null。不要在检查前猜 dataset/repository/file，也不要自行生成用户没有给出的路径。没有明确路径时填写空数组。
 - local_path_source 是旧版兼容字段；新回答使用 local_path_sources，通常将其置为 null。
 - task_action 在用户明确希望准备一份可由界面确认的实验任务草案时填 "prepare_experiment_task"。当 `pending_plan_only_task_available` 为 true、用户确认当前草案且没有修改任务内容时，填 "confirm_pending_plan_only_task"；它只确认已有的 plan_only 草案，不能选择仓库、启动 Job 或授权修改、训练、评估或使用 GPU。其余情况为 null。用户要求实际执行但还没有任务合同，也可以提出准备草案候选；是否执行任一候选由代码根据持久化状态、policy 和任务状态决定。
+- repository_action 只解释用户对 dialogue_state.execution_repository_confirmation 当前投影的决定。确认执行使用 confirm_execution_repository；明确只保留为参考资料使用 keep_repository_reference_only；取消当前仓库确认使用 cancel_execution_repository_confirmation。source_id 和 candidate_revision 必须逐字复制当前投影，不能生成或改写。用户的表达仅指向当前唯一候选时 selection_basis=pending_unique；用户明确点名、描述或改选某个候选时 selection_basis=explicit_reference。多候选下无指向确认、候选不匹配或没有当前投影时必须为 null 并澄清，不要按名称关键词硬匹配。repository_action 只授权仓库角色，不确认最终实验任务，也不启动环境、修改、训练或评估。
 - target_spec 只转换用户明确给出的受支持 workload 和完整 selectors；不得从 Adapter 目录反推任务或补值。
 - 这些都是候选，代码 Gate 会验证。policy=deny 时三个动作全为 null。request_source_reparse 可以伴随 act，但不等于代码修改或实验执行。
 </candidate_actions>
 
 <decision_output>
 只输出一个 JSON object：
-{"dialogue_mode":"ask|plan|act","current_turn_intent":"answer_current_turn|explore_or_discuss|prepare_experiment|confirm_task|execute_experiment|material_action|unspecified","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|unsupported_domain|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"local_path_sources":[],"local_path_source":null,"task_action":null,"target_spec":null}
+{"dialogue_mode":"ask|plan|act","current_turn_intent":"answer_current_turn|explore_or_discuss|prepare_experiment|confirm_task|confirm_repository|execute_experiment|material_action|unspecified","action_scope":"none|source|repository|code|experiment|system","policy":"allow|ask_permission|deny","evidence_status":"sufficient|insufficient|conflicting|unavailable","conversation_transition":"new|continue|revise|confirm|cancel","feasibility":"not_assessed|feasible|infeasible_as_stated","numeric_claim_allowed":true,"policy_assessment":{"decision":"allow|reject","category":"none|unsupported_domain|evaluation_leakage|evaluation_manipulation|evidence_falsification|evidence_destruction|unsafe_operation","reason":"","safe_alternative":""},"source_action":null,"local_path_sources":[],"local_path_source":null,"task_action":null,"repository_action":null,"target_spec":null}
 </decision_output>
 """
 
@@ -333,6 +335,7 @@ _RESEARCH_REPLY_PROMPT = """<identity>
 - ask：先回答或确认已知状态，再只问一个真正阻塞的领域相关问题。能从材料发现的信息不反问用户；已有仓库和 Repository Intelligence 候选时，接受“你自己看”的委托，说明会按候选读取确认，不让用户选 entrypoint/config。
 - plan：必须交付有用的高层步骤；材料为空也给出“登记解析 → 提取约束 → 对齐协议 → 待确认方案”骨架，不能只索要材料。
 - act_request：若冻结 source_action 是 request_source_reparse，按其冻结 permission 说明已排队或仍待确认的资料操作，并明确这不等于代码修改、训练或实验运行；其他 act_request 严格依据 execution_gate 解释为什么当前不能执行，不承诺修改、训练或运行。
+- 当冻结 repository_action 非空时，只根据 current_turn_repository_authorization receipt 说明仓库角色是否已更新；applied 才能说授权、拒绝或取消已记录，failed 必须说明当前确认未生效并请用户查看最新候选。明确说明这一步没有确认最终实验任务，也没有启动环境或实验。
 - 当冻结 policy 为 deny 或 policy_assessment.decision 为 reject 时，无论 dialogue_mode 是 ask、plan 还是 act，都优先使用冻结的 reason 说明不能做，并给 safe_alternative；不得用合同缺失、readiness 或执行入口限制替代拒绝原因，也不继续收集违规参数。
 </response>
 

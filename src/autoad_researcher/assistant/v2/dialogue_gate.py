@@ -14,7 +14,11 @@ from autoad_researcher.assistant.v2.dialogue_permissions import (
     source_can_reparse,
 )
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
-from autoad_researcher.assistant.v2.task_bridge import TaskInstruction
+from autoad_researcher.assistant.v2.task_bridge import (
+    TaskBridge,
+    TaskInstruction,
+    evaluate_experiment_task_readiness,
+)
 from autoad_researcher.assistant.v2.target_adapter import get_target_adapter_registry
 from autoad_researcher.tools import append_permission_decision
 
@@ -59,6 +63,7 @@ class DialogueGate:
             if decision.task_action is not None
             else None
         )
+        repository_action = decision.repository_action
         target_spec = decision.target_spec
         actions_allowed = (
             decision.is_valid
@@ -70,11 +75,13 @@ class DialogueGate:
             source_action = None
             local_path_sources = []
             task_action = None
+            repository_action = None
             target_spec = None
         else:
             if current_turn_intent == "answer_current_turn":
                 source_action = None
                 task_action = None
+                repository_action = None
                 target_spec = None
                 if mode in {"act", "act_request"}:
                     mode = "ask"
@@ -82,11 +89,16 @@ class DialogueGate:
             elif current_turn_intent == "explore_or_discuss":
                 source_action = None
                 task_action = None
+                repository_action = None
                 target_spec = None
                 if mode in {"act", "act_request"}:
                     mode = "plan"
                     notes.append("current_turn_exploration_overrode_execution_mode")
-            elif current_turn_intent in {"prepare_experiment", "confirm_task"}:
+            elif current_turn_intent in {
+                "prepare_experiment",
+                "confirm_task",
+                "confirm_repository",
+            }:
                 if mode in {"act", "act_request"}:
                     mode = "plan"
                     notes.append("current_turn_preparation_overrode_execution_mode")
@@ -135,7 +147,54 @@ class DialogueGate:
             if source_action is not None:
                 local_path_sources = []
                 task_action = None
+                repository_action = None
                 target_spec = None
+            elif repository_action is not None:
+                try:
+                    pending_task = TaskBridge.load_pending_experiment_task(run_dir)
+                    repository_readiness = evaluate_experiment_task_readiness(
+                        run_dir,
+                        pending_task,
+                    )
+                except (FileNotFoundError, ValueError):
+                    repository_action = None
+                    notes.append("repository_confirmation_unavailable")
+                else:
+                    candidates = repository_readiness.execution_repository_candidates
+                    candidate_ids = {candidate.source_id for candidate in candidates}
+                    if (
+                        repository_action.candidate_revision
+                        != repository_readiness.execution_repository_candidate_revision
+                    ):
+                        repository_action = None
+                        notes.append("stale_repository_confirmation_removed")
+                    elif repository_action.source_id not in candidate_ids:
+                        repository_action = None
+                        notes.append("unknown_repository_candidate_removed")
+                    elif (
+                        repository_action.selection_basis == "pending_unique"
+                        and len(candidates) != 1
+                    ):
+                        repository_action = None
+                        notes.append("ambiguous_repository_confirmation_removed")
+                    elif (
+                        repository_action.action == "confirm_execution_repository"
+                        and decision.conversation_transition != "confirm"
+                    ):
+                        repository_action = None
+                        notes.append("repository_confirmation_transition_mismatch")
+                    elif (
+                        repository_action.action
+                        == "cancel_execution_repository_confirmation"
+                        and decision.conversation_transition != "cancel"
+                    ):
+                        repository_action = None
+                        notes.append("repository_cancel_transition_mismatch")
+                if repository_action is not None:
+                    source_action = None
+                    local_path_sources = []
+                    task_action = None
+                    target_spec = None
             elif mode not in {"ask", "plan"}:
                 # Repository targets remain unavailable from an execution request.
                 # A task-action proposal, however, is only a semantic handoff hint;
@@ -156,6 +215,8 @@ class DialogueGate:
             action_scope = "source"
         elif local_path_sources:
             action_scope = "source"
+        elif repository_action is not None:
+            action_scope = "repository"
         elif target_spec is not None:
             action_scope = "repository"
         elif task_action is not None:
@@ -163,7 +224,12 @@ class DialogueGate:
         if decision.action_scope != action_scope:
             notes.append("action_scope_normalized")
 
-        if mode == "act" and source_action is None and not local_path_sources:
+        if (
+            mode == "act"
+            and source_action is None
+            and not local_path_sources
+            and repository_action is None
+        ):
             execution_gate = (
                 "blocked_dialogue_only"
                 if (run_dir / "input_task.yaml").is_file()
@@ -185,6 +251,7 @@ class DialogueGate:
             local_path_sources=local_path_sources,
             local_path_source=local_path_sources[0] if local_path_sources else None,
             task_action=task_action,
+            repository_action=repository_action,
             target_spec=target_spec,
             execution_gate=execution_gate,
             gate_notes=notes,

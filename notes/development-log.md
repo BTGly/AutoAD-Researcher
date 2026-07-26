@@ -8,6 +8,7 @@
 
 | 日期 | 文件 | 主要工作 |
 |---|---|---|
+| 2026-07-26 | [2026-07-26.md](2026-07-26.md) | UAT round3：本地资料同轮登记、intake 实时刷新、执行仓库候选/授权/readiness 解耦与确认 UI |
 | 2026-07-25 | [2026-07-25.md](2026-07-25.md) | 实验准备合同、仓库调查协调器、adapter preflight、阶段级资产门禁与证据驱动 GPU 拓扑 |
 | 2026-07-24 | [2026-07-24.md](2026-07-24.md) | 双 RTX 4090 运行测试、跨 run GPU lease 互斥、Attempt 资源 telemetry 与 PatchCore readiness 边界 |
 | 2026-07-23 | [2026-07-23.md](2026-07-23.md) | Candidate Proposal 正式入口、人工审核、幂等 Candidate 启动和浏览器闭环 |

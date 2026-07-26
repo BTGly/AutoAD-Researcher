@@ -18,6 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from autoad_researcher.assistant.v2.evidence_service import load_usable_evidence
 from autoad_researcher.assistant.v2.execution_repository import (
     ExecutionRepositoryBinding,
+    ExecutionRepositoryCandidate,
+    assign_execution_repository_role,
+    execution_repository_candidate_revision,
+    get_repository_role_assignment,
+    list_execution_repository_candidates,
     resolve_execution_repository,
 )
 from autoad_researcher.benchmarks.hashing import canonical_sha256
@@ -45,6 +50,18 @@ TaskPreparationDisposition = Literal[
     "replaced",
     "already_materialized",
     "recovery_required",
+]
+ExecutionRepositoryState = Literal[
+    "no_repository_candidate",
+    "repository_pending",
+    "awaiting_repository_confirmation",
+    "repository_admission_failed",
+    "ready",
+]
+ExecutionRepositoryAuthorizationDecision = Literal[
+    "confirm",
+    "reference_only",
+    "cancel",
 ]
 TaskConfirmationConflictCode = Literal[
     "task_mismatch",
@@ -113,6 +130,11 @@ class ExperimentTaskReadiness(BaseModel):
     failed_job_ids: list[str] = Field(default_factory=list)
     unready_source_ids: list[str] = Field(default_factory=list)
     admitted_execution_repository_source_ids: list[str] = Field(default_factory=list)
+    execution_repository_candidates: list[ExecutionRepositoryCandidate] = Field(default_factory=list)
+    execution_repository_candidate_revision: str = Field(min_length=64, max_length=64)
+    execution_repository_state: ExecutionRepositoryState = "no_repository_candidate"
+    execution_repository_admission_code: str | None = None
+    execution_repository_admission_blocker: str | None = None
     summary_current: bool = True
 
 
@@ -172,6 +194,114 @@ class TaskBridge:
         return _load_pending_task(run_dir)
 
     @classmethod
+    def authorize_execution_repository(
+        cls,
+        run_dir: Path,
+        *,
+        task_id: str,
+        source_id: str,
+        decision: ExecutionRepositoryAuthorizationDecision,
+        candidate_revision: str,
+        evidence: str,
+    ) -> ExperimentTaskDraft:
+        """Persist one checked repository role decision without starting execution."""
+        _validate_run_dir(run_dir)
+        with _confirm_lock(run_dir):
+            draft = _load_pending_task(run_dir)
+            if draft.task_id != task_id:
+                raise TaskConfirmationConflict(
+                    "task_mismatch",
+                    "task_id does not match pending experiment task",
+                )
+            if draft.status != "pending_confirmation":
+                raise TaskConfirmationConflict(
+                    "confirmation_invalid",
+                    "experiment task is not awaiting repository authorization",
+                )
+            summary = load_research_intent_summary(run_dir)
+            if summary is None or _summary_sha256(summary) != draft.summary_sha256:
+                raise TaskConfirmationConflict(
+                    "summary_changed",
+                    "research summary changed after task preparation",
+                )
+            candidates = list_execution_repository_candidates(
+                run_dir,
+                source_ids=set(draft.input_task.source_ids),
+            )
+            current_revision = execution_repository_candidate_revision(candidates)
+            if candidate_revision != current_revision:
+                raise TaskConfirmationConflict(
+                    "confirmation_invalid",
+                    "execution repository candidates changed; review the current candidates",
+                )
+            selected = next(
+                (candidate for candidate in candidates if candidate.source_id == source_id),
+                None,
+            )
+            if selected is None:
+                raise TaskConfirmationConflict(
+                    "execution_repository_unresolved",
+                    "selected source is not a current execution repository candidate",
+                )
+            from autoad_researcher.assistant.v2.job_service import load_pipeline_jobs
+
+            if any(
+                str(job.get("source_id") or "") == source_id
+                and str(job.get("status") or "") in {"queued", "running"}
+                for job in load_pipeline_jobs(run_dir)
+            ):
+                raise TaskConfirmationConflict(
+                    "confirmation_not_ready",
+                    "execution repository checks are still running",
+                )
+
+            role = {
+                "confirm": "executable",
+                "reference_only": "reference_only",
+                "cancel": "candidate_source_only",
+            }[decision]
+            assign_execution_repository_role(
+                run_dir,
+                source_id=source_id,
+                role=role,
+                authorization=ConfirmedDecision(
+                    value=source_id,
+                    source="user_confirmed",
+                    evidence=evidence,
+                ),
+            )
+            binding: ExecutionRepositoryBinding | None = None
+            if decision == "confirm":
+                admission = resolve_execution_repository(
+                    run_dir,
+                    execution_source_id=source_id,
+                )
+                if admission.status == "admitted":
+                    binding = admission.binding
+            updated = draft.model_copy(
+                update={"execution_repository_binding": binding},
+            )
+            _write_json_atomic(
+                run_dir / BRIDGE_DIR / PENDING_TASK_FILE,
+                updated.model_dump(mode="json"),
+            )
+            from autoad_researcher.assistant.v2.event_service import append_event
+
+            append_event(
+                run_dir,
+                "execution_repository.authorization_updated",
+                {
+                    "task_id": task_id,
+                    "source_id": source_id,
+                    "decision": decision,
+                    "role": role,
+                    "candidate_revision": current_revision,
+                    "admitted": binding is not None,
+                },
+            )
+            return updated
+
+    @classmethod
     def prepare_or_reuse_experiment_task(
         cls,
         run_dir: Path,
@@ -225,7 +355,6 @@ class TaskBridge:
         *,
         task_id: str,
         execution_mode: ExecutionMode,
-        execution_repository_source_id: str | None = None,
     ) -> ExperimentTaskDraft:
         run_id = _validate_run_dir(run_dir)
         with _confirm_lock(run_dir):
@@ -262,6 +391,21 @@ class TaskBridge:
                         execution_mode=execution_mode,
                     )
                     if not readiness.ready:
+                        if readiness.execution_repository_state in {
+                            "no_repository_candidate",
+                            "awaiting_repository_confirmation",
+                        }:
+                            raise TaskConfirmationConflict(
+                                "execution_repository_unresolved",
+                                "请先确认本次实验使用的执行仓库",
+                            )
+                        if readiness.execution_repository_state == "repository_admission_failed":
+                            raise TaskConfirmationConflict(
+                                readiness.execution_repository_admission_code
+                                or "execution_repository_unresolved",
+                                readiness.execution_repository_admission_blocker
+                                or "execution repository admission failed",
+                            )
                         raise TaskConfirmationConflict(
                             "confirmation_not_ready",
                             "experiment task is not ready for confirmation: "
@@ -269,8 +413,8 @@ class TaskBridge:
                         )
                 binding = _require_execution_repository_binding(
                     run_dir,
+                    draft=draft,
                     execution_mode=execution_mode,
-                    execution_repository_source_id=execution_repository_source_id,
                 )
                 confirmed = draft.model_copy(
                     update={
@@ -294,16 +438,6 @@ class TaskBridge:
                     )
                 confirmed = draft
 
-                if (
-                    execution_repository_source_id is not None
-                    and confirmed.execution_repository_binding is not None
-                    and execution_repository_source_id != confirmed.execution_repository_binding.source_id
-                ):
-                    raise TaskConfirmationConflict(
-                        "confirmation_invalid",
-                        "execution repository differs from confirmed task",
-                    )
-
             _materialize_execution_repository_binding(run_dir, confirmed)
             _materialize_input_task(run_dir, confirmed)
             _materialize_source_report(run_dir, run_id, confirmed)
@@ -316,14 +450,12 @@ class TaskBridge:
         *,
         task_id: str,
         execution_mode: ExecutionMode,
-        execution_repository_source_id: str | None = None,
     ) -> ExperimentTaskDraft:
         """Backward-compatible name for the reconcile-style confirmation API."""
         return cls.confirm_or_load_existing(
             run_dir,
             task_id=task_id,
             execution_mode=execution_mode,
-            execution_repository_source_id=execution_repository_source_id,
         )
 
     @classmethod
@@ -555,18 +687,75 @@ def evaluate_experiment_task_readiness(
         blockers.append("任务尚未绑定资料")
 
     admitted_execution_repository_source_ids: list[str] = []
+    execution_repository_candidates = list_execution_repository_candidates(
+        run_dir,
+        source_ids=task_source_ids,
+    )
+    candidate_revision = execution_repository_candidate_revision(
+        execution_repository_candidates,
+    )
+    repository_sources = [
+        source_by_id[source_id]
+        for source_id in sorted(task_source_ids)
+        if source_id in source_by_id
+        and source_by_id[source_id].get("kind") in {"github_repo", "local_repo"}
+    ]
+    repository_source_ids = {
+        str(source.get("source_id") or "") for source in repository_sources
+    }
+    repository_jobs_pending = any(
+        str(job.get("source_id") or "") in repository_source_ids
+        and str(job.get("status") or "") in {"queued", "running"}
+        for job in relevant_jobs
+    )
+    execution_repository_state: ExecutionRepositoryState = "no_repository_candidate"
+    admission_code: str | None = None
+    admission_blocker: str | None = None
     if execution_mode != "plan_only":
         if not draft.input_task.primary_metrics:
             blockers.append("主指标尚未确认")
-        for source_id in sorted(task_source_ids):
-            admission = resolve_execution_repository(
-                run_dir,
-                execution_source_id=source_id,
+        executable_source_ids = [
+            source_id
+            for source_id in sorted(task_source_ids)
+            if (
+                assignment := get_repository_role_assignment(run_dir, source_id)
+            ) is not None and assignment.role == "executable"
+        ]
+        admission = resolve_execution_repository(run_dir)
+        if (
+            admission.status == "admitted"
+            and admission.binding is not None
+            and admission.binding.source_id in task_source_ids
+            and draft.execution_repository_binding == admission.binding
+        ):
+            execution_repository_state = "ready"
+            admitted_execution_repository_source_ids.append(admission.binding.source_id)
+        elif executable_source_ids:
+            execution_repository_state = "repository_admission_failed"
+            admission_code = admission.code or "execution_repository_unresolved"
+            admission_blocker = (
+                admission.blocker
+                or "执行仓库授权已记录，但当前 binding 已失效；请重新确认"
             )
-            if admission.status == "admitted":
-                admitted_execution_repository_source_ids.append(source_id)
-        if not admitted_execution_repository_source_ids:
-            blockers.append("当前没有已完成采集且通过执行绑定检查的代码仓库")
+            blockers.append(f"已授权执行仓库未通过绑定检查：{admission_blocker}")
+        elif repository_jobs_pending or any(
+            source.get("intake_status") != "ok" for source in repository_sources
+        ):
+            execution_repository_state = "repository_pending"
+            blockers.append("执行仓库仍在采集或检查中")
+        elif execution_repository_candidates:
+            execution_repository_state = "awaiting_repository_confirmation"
+            unassigned_candidates = [
+                candidate
+                for candidate in execution_repository_candidates
+                if candidate.assigned_role is None
+            ]
+            if unassigned_candidates:
+                blockers.append("执行仓库候选已准备，请确认要用于本次实验的仓库")
+            else:
+                blockers.append("现有代码仓库尚未获得执行授权；如需继续，请重新授权或提供其他仓库")
+        else:
+            blockers.append("当前没有已完成采集且通过检查的代码仓库候选")
 
     return ExperimentTaskReadiness(
         task_id=draft.task_id,
@@ -576,6 +765,11 @@ def evaluate_experiment_task_readiness(
         failed_job_ids=failed_job_ids,
         unready_source_ids=unready_source_ids,
         admitted_execution_repository_source_ids=admitted_execution_repository_source_ids,
+        execution_repository_candidates=execution_repository_candidates,
+        execution_repository_candidate_revision=candidate_revision,
+        execution_repository_state=execution_repository_state,
+        execution_repository_admission_code=admission_code,
+        execution_repository_admission_blocker=admission_blocker,
         summary_current=summary_current,
     )
 
@@ -723,31 +917,32 @@ def _materialize_source_report(
 def _require_execution_repository_binding(
     run_dir: Path,
     *,
+    draft: ExperimentTaskDraft,
     execution_mode: ExecutionMode,
-    execution_repository_source_id: str | None,
 ) -> ExecutionRepositoryBinding | None:
     if execution_mode == "plan_only":
-        if execution_repository_source_id is not None:
-            raise TaskConfirmationConflict(
-                "confirmation_invalid",
-                "plan_only confirmation must not select an execution repository",
-            )
         return None
-    if execution_repository_source_id is None:
+    expected = draft.execution_repository_binding
+    if expected is None:
         raise TaskConfirmationConflict(
             "execution_repository_unresolved",
-            "an explicit execution repository selection is required",
+            "execution repository authorization must be confirmed before the experiment task",
         )
     admission = resolve_execution_repository(
         run_dir,
-        execution_source_id=execution_repository_source_id,
+        execution_source_id=expected.source_id,
     )
     if admission.status != "admitted" or admission.binding is None:
         raise TaskConfirmationConflict(
             admission.code or "execution_repository_unresolved",
             admission.blocker or "execution repository is unresolved",
         )
-    return admission.binding
+    if admission.binding != expected:
+        raise TaskConfirmationConflict(
+            "execution_repository_attestation_invalid",
+            "execution repository identity changed after authorization",
+        )
+    return expected
 
 
 def _require_execution_contract(

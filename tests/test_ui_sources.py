@@ -19,11 +19,13 @@ from autoad_researcher.ui.sources import (
     resolve_source_pdf_path_safely,
     save_uploaded_file,
     set_active_parse_attempt,
+    update_source_intake_result,
     update_source_status,
     update_source_parse_attempt,
     register_url_source,
 )
 from autoad_researcher.core.events import EventStore
+from autoad_researcher.assistant.v2.event_service import load_events_since
 
 
 def _make_upload(name: str, content: bytes = b"fake pdf content"):
@@ -301,6 +303,38 @@ class TestSourceRegistry:
         update_source_status(run_dir, sid, "parsed")
         reg = load_source_registry(run_dir)
         assert reg["sources"][0]["status"] == "parsed"
+
+    def test_intake_update_persists_before_emitting_durable_event(self, tmp_path):
+        run_dir = tmp_path / "run_test"
+        run_dir.mkdir()
+        source_id = append_source_ref(
+            run_dir,
+            kind="paper_pdf",
+            user_label="paper.pdf",
+            stored_path="sources/src_001/paper.pdf",
+            status="uploaded_not_parsed",
+        )
+
+        update_source_intake_result(
+            run_dir,
+            source_id,
+            status="parsed",
+            intake_status="ok",
+            clear_intake_error=True,
+        )
+
+        source = load_source_registry(run_dir)["sources"][0]
+        assert source["status"] == "parsed"
+        assert source["intake_status"] == "ok"
+        events = load_events_since(run_dir)
+        assert events[-1]["type"] == "source.intake_updated"
+        assert events[-1]["payload"] == {
+            "source_id": source_id,
+            "status": "parsed",
+            "intake_status": "ok",
+            "kind": "paper_pdf",
+            "stored_path": "sources/src_001/paper.pdf",
+        }
 
     def test_new_source_ref_has_v04_fields(self, tmp_path):
         run_dir = tmp_path / "run_test"

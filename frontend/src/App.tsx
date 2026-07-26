@@ -14,12 +14,14 @@ import { ReportPage } from './components/ReportPage';
 import { MarkdownContent } from './components/MarkdownContent';
 import { TaskMenu } from './components/TaskMenu';
 import { ExperimentTaskConfirmation } from './components/ExperimentTaskConfirmation';
+import { ExecutionRepositoryAuthorization } from './components/ExecutionRepositoryAuthorization';
 import { ThemeToggle } from './theme/ThemeToggle';
 import { useConfig } from './hooks/useConfig';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useWebSocket } from './hooks/useWebSocket';
 import {
   ApiError,
+  authorizeExecutionRepository,
   confirmExperimentTask,
   createRun,
   deleteSource,
@@ -71,6 +73,16 @@ function hasIntentSummary(summary: IntentSummary | null): boolean {
   );
 }
 
+function repositoryAuthorizationVisible(readiness: ExperimentTaskReadiness): boolean {
+  if (readiness.execution_repository_state === 'repository_admission_failed') return true;
+  return readiness.execution_repository_state === 'awaiting_repository_confirmation'
+    && readiness.execution_repository_candidates.some(candidate => candidate.assigned_role === null);
+}
+
+function taskDecisionVisible(readiness: ExperimentTaskReadiness): boolean {
+  return readiness.ready || repositoryAuthorizationVisible(readiness);
+}
+
 const MAX_VISIBLE_TOASTS = 3;
 
 function describeRequestError(reason: unknown, fallback: string): string {
@@ -109,6 +121,8 @@ export default function App() {
   const streamingHadDeltaIdsRef = useRef(new Set<string>());
   const completedAssistantIdsRef = useRef(new Set<string>());
   const drainingQueueRunIdRef = useRef<string | null>(null);
+  const sidebarRefreshVersionRef = useRef(new Map<string, number>());
+  const taskConfirmationRefreshVersionRef = useRef(new Map<string, number>());
   const [chatTurnActive, setChatTurnActive] = useState(false);
   const bottomRef = useAutoScroll(messages);
   const activeTask = tasks.find(task => task.run_id === runId) || null;
@@ -136,6 +150,8 @@ export default function App() {
 
   const refreshSidebarForRun = useCallback(async (nextRunId: string) => {
     if (!nextRunId) return;
+    const requestVersion = (sidebarRefreshVersionRef.current.get(nextRunId) || 0) + 1;
+    sidebarRefreshVersionRef.current.set(nextRunId, requestVersion);
     const s = await getSources(nextRunId).catch(() => []);
     const j = await getJobs(nextRunId).catch(() => []);
     const evidenceState = await getEvidenceState(nextRunId).catch(() => ({ usable_evidence: [], unusable_parsed_sources: [] }));
@@ -143,7 +159,10 @@ export default function App() {
     const e = Array.isArray(evidenceState.usable_evidence)
       ? evidenceState.usable_evidence
       : await getEvidence(nextRunId).catch(() => []);
-    if (currentRunIdRef.current && currentRunIdRef.current !== nextRunId) return;
+    if (
+      sidebarRefreshVersionRef.current.get(nextRunId) !== requestVersion
+      || currentRunIdRef.current !== nextRunId
+    ) return;
     setSources(s.map((src: any) => ({
       sourceId: src.source_id || generateId(),
       kind: src.kind || 'unknown',
@@ -164,12 +183,17 @@ export default function App() {
 
   const refreshTaskConfirmation = useCallback(async (nextRunId: string) => {
     if (!nextRunId) return;
+    const requestVersion = (taskConfirmationRefreshVersionRef.current.get(nextRunId) || 0) + 1;
+    taskConfirmationRefreshVersionRef.current.set(nextRunId, requestVersion);
     const [task, readiness] = await Promise.all([
       getPendingExperimentTask(nextRunId).catch(() => null),
       getPendingExperimentTaskReadiness(nextRunId).catch(() => null),
     ]);
-    if (currentRunIdRef.current !== nextRunId) return;
-    if (task?.status === 'pending_confirmation' && readiness?.ready) {
+    if (
+      taskConfirmationRefreshVersionRef.current.get(nextRunId) !== requestVersion
+      || currentRunIdRef.current !== nextRunId
+    ) return;
+    if (task?.status === 'pending_confirmation' && readiness && taskDecisionVisible(readiness)) {
       setPendingExperimentTaskConfirmation({ runId: nextRunId, task, readiness });
       return;
     }
@@ -374,7 +398,7 @@ export default function App() {
               addToast(`任务恢复失败：${message}`, 'error');
             }
           }
-        } else if (res.experiment_task_readiness?.ready) {
+        } else if (res.experiment_task_readiness && taskDecisionVisible(res.experiment_task_readiness)) {
           setPendingExperimentTaskConfirmation({
             runId: targetRunId,
             task,
@@ -549,6 +573,11 @@ export default function App() {
       setExperimentRefreshTick(value => value + 1);
       return;
     }
+    if (msg.type === 'execution_repository.authorization_updated') {
+      void refreshSidebar();
+      void refreshTaskConfirmation(runId);
+      return;
+    }
     const jobId = msg.jobId || msg.job_id;
     const jobType = msg.jobType || msg.job_type;
     const sourceId = msg.sourceId || msg.source_id;
@@ -563,6 +592,17 @@ export default function App() {
     if (msg.type === 'source.deleted') {
       if (sourceId) setSources(prev => prev.filter(source => source.sourceId !== sourceId));
       refreshSidebar();
+    }
+    if (msg.type === 'source.intake_updated') {
+      if (sourceId) {
+        setSources(prev => prev.map(source => source.sourceId === sourceId ? {
+          ...source,
+          status: msg.status || source.status,
+          intakeStatus: msg.intake_status || source.intakeStatus,
+        } : source));
+      }
+      void refreshSidebar();
+      void refreshTaskConfirmation(runId);
     }
     if (msg.type === 'job.queued') {
       if (!jobId) return;
@@ -638,19 +678,50 @@ export default function App() {
   return (
     <div className="app-shell">
       {showConfig && <ConfigModal config={config} onSave={saveConfig} onClose={closeConfig} returnFocusRef={configTriggerRef} />}
-      {pendingExperimentTaskConfirmation && (
-        <ExperimentTaskConfirmation
+      {pendingExperimentTaskConfirmation && repositoryAuthorizationVisible(pendingExperimentTaskConfirmation.readiness) && (
+        <ExecutionRepositoryAuthorization
           task={pendingExperimentTaskConfirmation.task}
           readiness={pendingExperimentTaskConfirmation.readiness}
+          onClose={() => setPendingExperimentTaskConfirmation(null)}
+          onDecision={async (sourceId, decision) => {
+            const pending = pendingExperimentTaskConfirmation;
+            try {
+              await authorizeExecutionRepository(
+                pending.runId,
+                pending.task.task_id,
+                sourceId,
+                decision,
+                pending.readiness.execution_repository_candidate_revision,
+              );
+              setPendingExperimentTaskConfirmation(null);
+              const message = decision === 'confirm'
+                ? '执行仓库已授权，实验任务仍需确认'
+                : decision === 'reference_only'
+                  ? '仓库已保留为只读参考资料'
+                  : '已取消当前仓库授权确认';
+              addToast(message, 'success');
+              await refreshSidebarForRun(pending.runId);
+              await refreshTaskConfirmation(pending.runId);
+            } catch (error) {
+              if (error instanceof ApiError && error.code === 'confirmation_invalid') {
+                void refreshTaskConfirmation(pending.runId);
+              }
+              throw error;
+            }
+          }}
+        />
+      )}
+      {pendingExperimentTaskConfirmation?.readiness.ready && (
+        <ExperimentTaskConfirmation
+          task={pendingExperimentTaskConfirmation.task}
           sources={sources}
           onClose={() => setPendingExperimentTaskConfirmation(null)}
-          onConfirm={async executionRepositorySourceId => {
+          onConfirm={async () => {
             try {
               const prepared = await confirmExperimentTask(
                 pendingExperimentTaskConfirmation.runId,
                 pendingExperimentTaskConfirmation.task.task_id,
                 'agent_assisted_after_approval',
-                executionRepositorySourceId,
               );
               setPendingExperimentTaskConfirmation(null);
               addToast(`实验任务已确认（${prepared.disposition}）`, 'success');

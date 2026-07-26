@@ -66,6 +66,21 @@ class TargetSpec(BaseModel):
     selectors: dict[str, Any]
 
 
+class RepositoryAuthorizationInstruction(BaseModel):
+    """Semantic proposal for one currently projected repository decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal[
+        "confirm_execution_repository",
+        "keep_repository_reference_only",
+        "cancel_execution_repository_confirmation",
+    ]
+    source_id: str = Field(min_length=1)
+    candidate_revision: str = Field(min_length=64, max_length=64)
+    selection_basis: Literal["pending_unique", "explicit_reference"]
+
+
 DialogueMode = Literal["ask", "plan", "act", "act_request", "reject"]
 ActionScope = Literal["none", "source", "repository", "code", "experiment", "system"]
 DialoguePolicy = Literal["allow", "ask_permission", "deny"]
@@ -95,6 +110,7 @@ CurrentTurnIntent = Literal[
     "explore_or_discuss",
     "prepare_experiment",
     "confirm_task",
+    "confirm_repository",
     "execute_experiment",
     "material_action",
     "unspecified",
@@ -147,6 +163,7 @@ class DialogueDecision(BaseModel):
     # Kept for one-turn compatibility with older model payloads and clients.
     local_path_source: LocalPathSourceInstruction | None = None
     task_action: TaskActionProposal | None = None
+    repository_action: RepositoryAuthorizationInstruction | None = None
     target_spec: TargetSpec | None = None
     _is_valid: bool = PrivateAttr(default=False)
 
@@ -192,6 +209,7 @@ class GatedDialogueDecision(BaseModel):
     local_path_sources: list[LocalPathSourceInstruction] = Field(default_factory=list, max_length=32)
     local_path_source: LocalPathSourceInstruction | None = None
     task_action: TaskInstruction | None = None
+    repository_action: RepositoryAuthorizationInstruction | None = None
     target_spec: TargetSpec | None = None
     execution_gate: ExecutionGate = "not_requested"
     gate_notes: list[str] = Field(default_factory=list)
@@ -896,6 +914,7 @@ def _compact_evidence_state(state: dict[str, Any]) -> dict[str, Any]:
         "failed_jobs": state.get("failed_jobs") or [],
         "answerability": state.get("answerability") or {},
         "current_turn_material_actions": state.get("current_turn_material_actions") or {},
+        "current_turn_repository_authorization": state.get("current_turn_repository_authorization") or {},
         "session_contexts": state.get("session_contexts") or [],
         "registered_sources": state.get("registered_sources") or [],
         "material_inspections": state.get("material_inspections") or [],

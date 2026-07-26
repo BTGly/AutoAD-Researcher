@@ -5,10 +5,13 @@ import pytest
 from autoad_researcher.assistant.v2.dialogue_gate import DialogueGate
 from autoad_researcher.assistant.v2.research_dialogue_agent import (
     DialogueDecision,
+    RepositoryAuthorizationInstruction,
     ResearchPolicyAssessment,
     SourceInstruction,
     TargetSpec,
 )
+from autoad_researcher.assistant.v2.execution_repository import ExecutionRepositoryCandidate
+from autoad_researcher.assistant.v2.task_bridge import ExperimentTaskReadiness
 from autoad_researcher.assistant.v2.research_intent_summary import ResearchIntentSummary
 
 
@@ -24,6 +27,26 @@ def _allow_policy() -> ResearchPolicyAssessment:
 def _valid(decision: DialogueDecision) -> DialogueDecision:
     decision._is_valid = True
     return decision
+
+
+def _repository_readiness(*source_ids: str, revision: str = "a" * 64) -> ExperimentTaskReadiness:
+    return ExperimentTaskReadiness(
+        task_id="task_repository",
+        execution_repository_candidate_revision=revision,
+        execution_repository_state="awaiting_repository_confirmation",
+        execution_repository_candidates=[
+            ExecutionRepositoryCandidate(
+                source_id=source_id,
+                source_kind="local_repo",
+                label=source_id,
+                adapter_id="generic_python",
+                repository_fingerprint=(str(index + 1) * 64),
+                attestation_sha256="a" * 64,
+                adapter_manifest_sha256="b" * 64,
+            )
+            for index, source_id in enumerate(source_ids)
+        ],
+    )
 
 
 def test_gate_forces_reject_policy_and_removes_all_actions(tmp_path: Path):
@@ -203,6 +226,113 @@ def test_gate_keeps_valid_source_or_target_candidate(tmp_path: Path):
 
     assert gated_source.source_action == source.source_action
     assert gated_target.target_spec == target.target_spec
+
+
+def test_gate_binds_an_implicit_confirmation_only_to_one_current_candidate(
+    tmp_path: Path,
+    monkeypatch,
+):
+    readiness = _repository_readiness("src_repo")
+    monkeypatch.setattr(
+        "autoad_researcher.assistant.v2.dialogue_gate.TaskBridge.load_pending_experiment_task",
+        lambda run_dir: object(),
+    )
+    monkeypatch.setattr(
+        "autoad_researcher.assistant.v2.dialogue_gate.evaluate_experiment_task_readiness",
+        lambda run_dir, task: readiness,
+    )
+    decision = _valid(DialogueDecision(
+        dialogue_mode="ask",
+        current_turn_intent="confirm_repository",
+        action_scope="repository",
+        conversation_transition="confirm",
+        policy_assessment=_allow_policy(),
+        repository_action=RepositoryAuthorizationInstruction(
+            action="confirm_execution_repository",
+            source_id="src_repo",
+            candidate_revision=readiness.execution_repository_candidate_revision,
+            selection_basis="pending_unique",
+        ),
+    ))
+
+    gated = DialogueGate.validate(decision, run_dir=tmp_path, registered_sources=[])
+
+    assert gated.repository_action == decision.repository_action
+    assert gated.action_scope == "repository"
+
+
+def test_gate_rejects_implicit_or_stale_repository_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    readiness = _repository_readiness("src_one", "src_two")
+    monkeypatch.setattr(
+        "autoad_researcher.assistant.v2.dialogue_gate.TaskBridge.load_pending_experiment_task",
+        lambda run_dir: object(),
+    )
+    monkeypatch.setattr(
+        "autoad_researcher.assistant.v2.dialogue_gate.evaluate_experiment_task_readiness",
+        lambda run_dir, task: readiness,
+    )
+    implicit = _valid(DialogueDecision(
+        dialogue_mode="ask",
+        current_turn_intent="confirm_repository",
+        action_scope="repository",
+        conversation_transition="confirm",
+        policy_assessment=_allow_policy(),
+        repository_action=RepositoryAuthorizationInstruction(
+            action="confirm_execution_repository",
+            source_id="src_one",
+            candidate_revision=readiness.execution_repository_candidate_revision,
+            selection_basis="pending_unique",
+        ),
+    ))
+    stale = _valid(implicit.model_copy(update={
+        "repository_action": implicit.repository_action.model_copy(
+            update={"candidate_revision": "b" * 64},
+        ),
+    }))
+
+    ambiguous = DialogueGate.validate(implicit, run_dir=tmp_path, registered_sources=[])
+    expired = DialogueGate.validate(stale, run_dir=tmp_path, registered_sources=[])
+
+    assert ambiguous.repository_action is None
+    assert "ambiguous_repository_confirmation_removed" in ambiguous.gate_notes
+    assert expired.repository_action is None
+    assert "stale_repository_confirmation_removed" in expired.gate_notes
+
+
+def test_gate_keeps_explicit_choice_from_multiple_current_candidates(
+    tmp_path: Path,
+    monkeypatch,
+):
+    readiness = _repository_readiness("src_one", "src_two")
+    monkeypatch.setattr(
+        "autoad_researcher.assistant.v2.dialogue_gate.TaskBridge.load_pending_experiment_task",
+        lambda run_dir: object(),
+    )
+    monkeypatch.setattr(
+        "autoad_researcher.assistant.v2.dialogue_gate.evaluate_experiment_task_readiness",
+        lambda run_dir, task: readiness,
+    )
+    decision = _valid(DialogueDecision(
+        dialogue_mode="ask",
+        current_turn_intent="confirm_repository",
+        action_scope="repository",
+        conversation_transition="confirm",
+        policy_assessment=_allow_policy(),
+        repository_action=RepositoryAuthorizationInstruction(
+            action="confirm_execution_repository",
+            source_id="src_two",
+            candidate_revision=readiness.execution_repository_candidate_revision,
+            selection_basis="explicit_reference",
+        ),
+    ))
+
+    gated = DialogueGate.validate(decision, run_dir=tmp_path, registered_sources=[])
+
+    assert gated.repository_action is not None
+    assert gated.repository_action.source_id == "src_two"
 
 
 def test_gate_allows_registered_pdf_reparse_and_audits_permission(tmp_path: Path):
